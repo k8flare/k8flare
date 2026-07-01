@@ -26,14 +26,7 @@ func BootstrapCluster(ctx context.Context, stores map[string]*ResourceStore) {
 			})
 
 			// Create default ServiceAccount in each namespace
-			if saStore != nil {
-				saStore.Create(ctx, ns, &corev1.ServiceAccount{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "default",
-						Namespace: ns,
-					},
-				})
-			}
+			ensureDefaultServiceAccount(ctx, saStore, ns)
 		}
 	})
 }

@@ -264,6 +264,43 @@ func TestNamespaceCRUD(t *testing.T) {
 	})
 }
 
+func TestDefaultServiceAccountAutoProvision(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+	nsName := "test-sa-provision"
+
+	_ = client.CoreV1().ServiceAccounts(nsName).Delete(ctx, "default", metav1.DeleteOptions{})
+	_ = client.CoreV1().Namespaces().Delete(ctx, nsName, metav1.DeleteOptions{})
+
+	_, err := client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: nsName},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create namespace: %v", err)
+	}
+
+	// Synchronous (unlike the scheduler's DO-alarm path) — the SA should
+	// already exist by the time Create() above returned. This loop is
+	// defensive/style-consistent, not an eventual-consistency wait.
+	var sa *corev1.ServiceAccount
+	for i := 0; i < 20; i++ {
+		sa, err = client.CoreV1().ServiceAccounts(nsName).Get(ctx, "default", metav1.GetOptions{})
+		if err == nil {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("default ServiceAccount was not created in namespace %q: %v", nsName, err)
+	}
+	if sa.Name != "default" || sa.Namespace != nsName {
+		t.Errorf("got %s/%s, want default/%s", sa.Namespace, sa.Name, nsName)
+	}
+
+	client.CoreV1().ServiceAccounts(nsName).Delete(ctx, "default", metav1.DeleteOptions{})
+	client.CoreV1().Namespaces().Delete(ctx, nsName, metav1.DeleteOptions{})
+}
+
 func TestConfigMapCRUD(t *testing.T) {
 	client := setupWranglerDev(t)
 	ctx := context.Background()

@@ -97,6 +97,9 @@ func HandleAPI(w http.ResponseWriter, r *http.Request, stores map[string]*Resour
 			writeResourceError(w, err, resource, name)
 			return
 		}
+
+		ApplyPostCreateEffects(ctx, stores, obj)
+
 		writeRuntimeObject(w, http.StatusCreated, obj)
 
 	case http.MethodPut:
@@ -363,6 +366,9 @@ func HandleGroupAPI(w http.ResponseWriter, r *http.Request, stores map[string]*R
 			writeResourceError(w, err, resource, name)
 			return
 		}
+
+		ApplyPostCreateEffects(ctx, stores, obj)
+
 		writeRuntimeObject(w, http.StatusCreated, obj)
 
 	case http.MethodPut:
