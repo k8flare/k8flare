@@ -20,6 +20,60 @@ kubectl → Cloudflare Worker (Go WASM + TypeScript)
 - **Etcd** — Durable Object with SQLite, implements kine-compatible storage
 - **Agent** — k3s agent binary with Cloudflare-specific adaptations (CA replacement, token auth, flannel bypass)
 
+## Kubernetes API Support
+
+k8flare implements a subset of the Kubernetes API, not a full distribution. This
+reflects what's actually verified against the official
+[`sig-scheduling`/`sig-api-machinery` conformance suite](https://github.com/kubernetes/kubernetes/tree/master/test/e2e)
+as of this writing, plus direct inspection of the registered API scheme.
+
+### Core resources
+
+| Resource                                                                                              | Status                                                                                 |
+| ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Namespace, ConfigMap, Secret, Pod, Node, ServiceAccount, Endpoints, Service, Event, Lease, LimitRange | ✅ CRUD, watch, label/field selectors                                                  |
+| CSIDriver, CSINode, RuntimeClass                                                                      | ✅ CRUD, watch                                                                         |
+| `DynamicWorker`, `WorkerTrigger` (custom resources)                                                   | ✅ CRUD, watch                                                                         |
+| Deployment, ReplicaSet, StatefulSet, DaemonSet, Job, CronJob                                          | ❌ Not registered — no workload controllers exist yet                                  |
+| PersistentVolume, PersistentVolumeClaim, StorageClass                                                 | ❌ Not implemented                                                                     |
+| Generic `CustomResourceDefinition` (dynamic CRDs)                                                     | ❌ Only the two built-in custom resources above; no generic CRD registration mechanism |
+
+### Scheduling
+
+| Feature                                                          | Status      |
+| ---------------------------------------------------------------- | ----------- |
+| Node `Ready`/`unschedulable` filtering                           | ✅          |
+| `nodeSelector`                                                   | ✅          |
+| CPU request vs. allocatable capacity                             | ✅          |
+| `hostPort` conflict detection                                    | ✅          |
+| `PodScheduled` condition + `Scheduled`/`FailedScheduling` events | ✅          |
+| LimitRange `Default`/`DefaultRequest`/Min-Max enforcement        | ✅          |
+| Memory / ephemeral-storage aware scheduling                      | ❌ CPU only |
+| Node/pod affinity & anti-affinity, taints/tolerations            | ❌          |
+| Priority & preemption                                            | ❌          |
+
+### Controllers
+
+| Controller                                        | Status                                                                                      |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Namespace cascading deletion                      | ✅                                                                                          |
+| Default `ServiceAccount` auto-provisioning        | ✅ (object only — no token/Secret issuance; nothing in this stack consumes SA tokens today) |
+| Node lifecycle (lease-staleness → `NotReady`)     | ❌ Planned, not yet implemented — a dead agent's last-reported status is never corrected    |
+| Endpoints (from Service + Pod selectors)          | ❌ Not implemented                                                                          |
+| Workload controllers (ReplicaSet/Deployment/etc.) | ❌ Blocked on the missing workload types above                                              |
+| Garbage collection (owner references)             | ❌ Not implemented                                                                          |
+
+### Auth & admission
+
+| Feature                                                 | Status                                                  |
+| ------------------------------------------------------- | ------------------------------------------------------- |
+| Bearer token auth (static cluster token)                | ✅                                                      |
+| RBAC                                                    | ❌ Not implemented — the static token is all-or-nothing |
+| Admission webhooks                                      | ❌ Not implemented                                      |
+| OpenAPI schema (`kubectl apply` client-side validation) | ❌ Use `--validate=false`                               |
+
+See [`docs/control-plane-architecture.md`](docs/control-plane-architecture.md) for how these gaps map onto Cloudflare's execution model and the plan for closing them.
+
 ## Quick Start
 
 ### From Release
