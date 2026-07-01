@@ -7,15 +7,27 @@ billable product at `k8flare.com`.
 
 ## Where we start
 
-Today the entire cluster is **one** SQLite-backed Durable Object, addressed as
-`idFromName("default")` in exactly four places (`main.go:37`,
-`packages/k8s/src/watch.ts:164`, `packages/dynamic-worker/src/helpers.ts:5`,
-`packages/crd/src/storage.ts:11`). All state — objects, the cluster CA, node
-password hashes, the PodCIDR counter — lives under a single `/registry` prefix
-in one kine-compatible table. Auth is one static token (`K3S_TOKEN`) that maps
-to `system:masters`. Nothing in any key or code path has a cluster or tenant
+Today the entire cluster is **one** SQLite-backed Durable Object, addressed
+from four call sites (`main.go:37`'s `IdFromName` — capitalized, the
+generated binding's exported-method spelling — plus three lowercase
+`idFromName` calls: `packages/k8s/src/watch.ts:164`,
+`packages/dynamic-worker/src/helpers.ts:5`, `packages/crd/src/storage.ts:11`),
+all with the same literal name `"default"`. Storage is one generic
+kine-compatible table, but application data is **not** all under one prefix:
+Kubernetes objects live under `/registry/...`, the cluster CA under
+`/ca/{client,server}-ca.{crt,key}` (`certmanager.go:43-46`), node password
+hashes under `/nodepasswords/<nodeName>` (`nodepassword.go:25`), and the
+PodCIDR counter at `/registry/_internal/podcidr-counter`
+(`scheduler.ts:80`). Auth is one static token (`K3S_TOKEN`), but it does not
+map to a single fixed identity — depending on transport it resolves to
+`system:masters` (plain bearer, or basic auth as any username other than
+`node`), to `k3s:agent`/`system:nodes` (basic auth as `node`, the agent join
+path), or to whatever identity a fronting TLS proxy asserts via
+`X-Remote-User`/`X-Remote-Group` (`auth.go:40-94`) — one shared secret, three
+possible outcomes. Nothing in any key or code path has a cluster or tenant
 dimension yet. That makes the migration tractable: the blast radius of
-"which cluster am I?" is small and enumerable.
+"which cluster am I?" is small and enumerable — but "one prefix, one
+identity" is a simplification to correct before design work leans on it.
 
 ## Verified Cloudflare platform facts (July 2026)
 
@@ -26,19 +38,36 @@ The design below leans on these verified numbers. Sources:
 [facets docs](https://developers.cloudflare.com/dynamic-workers/usage/durable-object-facets/),
 [Containers limits](https://developers.cloudflare.com/containers/platform-details/limits/).
 
-| Primitive             | Status                                                | Numbers that matter                                                                                                                                                                                                                                                                                      |
-| --------------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| SQLite Durable Object | GA                                                    | **10 GB storage per DO**, ~**1,000 req/s** soft ceiling per DO (200–500 for complex ops), single-threaded, 2 MB max value/row, 32,768 WebSockets per DO, 30-day point-in-time recovery, unlimited instances per namespace                                                                                |
-| DO Facets             | **Open beta** (Dynamic Workers, Agents Week Apr 2026) | Named child DOs of a parent; each facet has its **own isolated SQLite database** and independent lifecycle (`get`/`abort`/`delete`), but **all facets share the parent's 10 GB limit** and are **reachable only through the parent DO**, so all facet traffic funnels through the parent's single thread |
-| Workers for Platforms | GA, $25/mo                                            | Unlimited tenant Workers per dispatch namespace, per-tenant CPU/subrequest limits                                                                                                                                                                                                                        |
-| Cloudflare Containers | GA (Apr 2026)                                         | Max instance **4 vCPU / 12 GiB / 20 GB disk**; each container is paired 1:1 with a Durable Object; scale-to-zero (sleep after timeout); built-in autoscaling not shipped at GA                                                                                                                           |
-| Read replicas for DOs | Not available                                         | Only D1 has read replication; scaling DO reads means adding DOs yourself                                                                                                                                                                                                                                 |
+| Primitive             | Status                                                | Numbers that matter                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| --------------------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| SQLite Durable Object | GA                                                    | **10 GB storage per DO**, ~**1,000 req/s** soft ceiling per DO (200–500 for complex ops), single-threaded, 2 MB max value/row, 32,768 WebSockets per DO, 30-day point-in-time recovery, unlimited instances per namespace                                                                                                                                                                                                                                              |
+| DO Facets             | **Open beta** (Dynamic Workers, Agents Week Apr 2026) | Named child DOs of a parent; each facet has its **own isolated SQLite database** (confirmed) and independent lifecycle (`get`/`abort`/`delete`); reachable **only through the parent DO** (confirmed — no direct Worker binding), so all facet traffic funnels through the parent's single thread. Whether the 10 GB limit is shared across parent+facets or independent per facet is **not explicitly documented anywhere** — treated here as shared (see note below) |
+| Workers for Platforms | GA, $25/mo                                            | Unlimited tenant Workers per dispatch namespace, per-tenant CPU/subrequest limits                                                                                                                                                                                                                                                                                                                                                                                      |
+| Cloudflare Containers | GA (Apr 2026)                                         | Max instance **4 vCPU / 12 GiB / 20 GB disk**; each container is paired 1:1 with a Durable Object; scale-to-zero (sleep after timeout); built-in autoscaling not shipped at GA                                                                                                                                                                                                                                                                                         |
+| Read replicas for DOs | Not available                                         | Only D1 has read replication; scaling DO reads means adding DOs yourself                                                                                                                                                                                                                                                                                                                                                                                               |
 
-Two facet findings are decision-critical and worth repeating: facets buy
-**isolation and lifecycle**, not throughput or storage headroom. Anything that
-needs its own 10 GB or its own thread must be a **top-level** DO. (Whether
-colocated facets execute truly in parallel is undocumented — flagged
-unverified; the design below does not depend on it.)
+Two facet findings are decision-critical. First, facets are reachable only
+through the parent DO (confirmed, no direct binding), so they buy **isolation
+and lifecycle**, not extra throughput — anything that needs its own thread
+must be a **top-level** DO.
+
+Second, whether facets buy their own storage headroom is genuinely
+undocumented — checked the facets usage guide, the DO limits page, the
+announcement blog post, and the Dynamic Workers pricing page directly; none
+states whether the 10 GB SQLite limit is per-facet or shared with the parent.
+The strongest signal available is the blog post's own framing: "each instance
+of `AppRunner` is **one Durable Object** composed of _two_ SQLite databases,"
+and "one Durable Object can have any number of facets (subject to storage
+limits)" (singular limits, not per-facet limits) — both describe parent+facets
+as one billing/limit unit rather than independent ones. That framing is a
+reasonable basis for a conservative planning assumption, not a documented
+fact. **This design treats the 10 GB as shared** (the conservative
+assumption: if wrong, we get more headroom for free; if we assumed
+independent 10 GB and were wrong, namespace DOs would be under-provisioned
+budget in the design). Re-verify against Cloudflare's docs before relying on
+this for capacity planning. (Whether colocated facets execute truly in
+parallel is separately undocumented — flagged unverified; the design below
+does not depend on it either way.)
 
 ## The constraint that shapes everything: resourceVersion ordering
 
@@ -231,12 +260,20 @@ its DO tree's usage.
 
 Rough unit economics (verify by measurement before pricing anything): an
 idle, hibernated cluster costs approximately its storage — a 50 MB cluster is
-~$0.01/month. A small active cluster (3 nodes: Lease renewals + status
-patches ≈ 0.9M requests/month ≈ $0.14, plus rows and active duration) lands
-in single-digit dollars per month of infrastructure cost. The headline
-product property falls out of the platform: **a control plane that costs
-~nothing while idle and wakes in milliseconds** — no other hosted Kubernetes
-offers scale-to-zero control planes. The biggest cost unknown is WebSocket
+~$0.01/month. A small active cluster (3 nodes, each sending a Lease renewal +
+status heartbeat every ~10s ≈ 3 × 8,640/day × 30 ≈ 780,000 requests/month)
+costs **~$0/month in requests standalone** — that volume sits under the
+Workers Paid plan's 1,000,000 requests/month included allowance, so it isn't
+until rows/duration or additional traffic are added that this cluster shows
+up as a line item at all. The catch: that allowance is pooled **per account,
+across every cluster on it**, not per cluster — so it covers roughly one
+active cluster before additional clusters start accruing the standard
+$0.15/million marginal rate. Model pricing on marginal cost per cluster
+above the shared allowance, not on a flat per-cluster number. The headline
+product property still falls out of the platform: **a control plane that
+costs ~nothing while idle and wakes in milliseconds** — no other hosted
+Kubernetes offers scale-to-zero control planes. The biggest cost unknown is
+WebSocket
 message + duration billing under sustained informer watches; measure that
 first.
 
