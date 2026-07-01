@@ -29,12 +29,15 @@ jobs:
         with:
           node-version: "24"
 
+      - name: Enable corepack
+        run: corepack enable
+
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
 
       - name: Install dependencies
-        run: npm install
+        run: pnpm install
 
       - name: Build WASM
         run: npm run build:wasm
