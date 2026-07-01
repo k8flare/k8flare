@@ -38,6 +38,32 @@ as of this writing, plus direct inspection of the registered API scheme.
 | PersistentVolume, PersistentVolumeClaim, StorageClass                                                 | ❌ Not implemented                                                                     |
 | Generic `CustomResourceDefinition` (dynamic CRDs)                                                     | ❌ Only the two built-in custom resources above; no generic CRD registration mechanism |
 
+### What's missing for general-purpose use
+
+The table above covers the API surface; this is about whether a typical
+workload actually _runs_ the way it would on a normal cluster. These are the
+gaps that matter most for everyday use, roughly in the order most users would
+hit them:
+
+| Area                                     | Gap                                                                                                                                                                                                                                                        |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Deploying anything beyond a bare Pod** | No Deployment/ReplicaSet/DaemonSet/Job/CronJob — every Pod has to be created directly and re-created by hand if it dies. This is the single biggest gap to "feels like normal Kubernetes."                                                                 |
+| **Service networking**                   | `Service` objects can be created, but with no Endpoints controller and no kube-proxy, nothing actually load-balances or routes traffic to them — a `ClusterIP` Service doesn't work as one today.                                                          |
+| **DNS**                                  | No CoreDNS/ClusterDNS. Confirmed via real kubelet logs during testing (`MissingClusterDNS: kubelet does not have ClusterDNS IP configured`) — Pods fall back to the node's own DNS policy, so Service/Pod name resolution inside the cluster doesn't work. |
+| **Storage**                              | No PersistentVolume/PersistentVolumeClaim/StorageClass, no dynamic provisioning. Only `emptyDir`-style ephemeral storage works.                                                                                                                            |
+| **Autoscaling**                          | No Metrics API (`metrics.k8s.io`), so no HorizontalPodAutoscaler/VerticalPodAutoscaler, and no Cluster Autoscaler equivalent.                                                                                                                              |
+| **`kubectl logs` / `kubectl exec`**      | Off by default — requires the optional Cloudflare Tunnel + VPC Service setup below.                                                                                                                                                                        |
+| **RBAC**                                 | The cluster token is all-or-nothing; there's no per-user/per-namespace authorization.                                                                                                                                                                      |
+| **Ingress / NetworkPolicy**              | Not implemented — no ingress controller, no network policy enforcement.                                                                                                                                                                                    |
+| **API compatibility details**            | No server-side apply, no protobuf wire format (JSON only), no OpenAPI schema (`kubectl apply` needs `--validate=false`), no dry-run.                                                                                                                       |
+| **Node self-healing**                    | No node lifecycle controller — if an agent's process dies, its last-reported `Ready` status is never corrected and Pods "on" it are never rescheduled.                                                                                                     |
+
+None of this is hidden complexity — see
+[`docs/control-plane-architecture.md`](docs/control-plane-architecture.md) for
+how each gap maps onto Cloudflare's execution model and the plan for closing
+it (workload controllers and a real kube-scheduler/controller-manager are the
+next planned pieces).
+
 ### Scheduling
 
 | Feature                                                          | Status      |
@@ -71,8 +97,6 @@ as of this writing, plus direct inspection of the registered API scheme.
 | RBAC                                                    | ❌ Not implemented — the static token is all-or-nothing |
 | Admission webhooks                                      | ❌ Not implemented                                      |
 | OpenAPI schema (`kubectl apply` client-side validation) | ❌ Use `--validate=false`                               |
-
-See [`docs/control-plane-architecture.md`](docs/control-plane-architecture.md) for how these gaps map onto Cloudflare's execution model and the plan for closing them.
 
 ## Quick Start
 
