@@ -1,0 +1,278 @@
+# Runs the official Kubernetes e2e conformance suite against a fully real,
+# ephemeral instance of this stack: a real `wrangler dev` Worker (Go/WASM
+# apiserver + Durable Object), a real k3s agent (kubelet + containerd + CNI),
+# and the real embedded kube-scheduler (cmd/scheduler). Everything runs
+# local-only on the runner (127.0.0.1) — this never touches the deployed
+# Cloudflare Worker.
+name: E2E Conformance
+
+on:
+  pull_request:
+    paths:
+      - "pkg/apiserver/**"
+      - "cmd/scheduler/**"
+      - "cmd/agent/**"
+      - "packages/etcd/**"
+      - "main.go"
+      - "go.mod"
+      - "go.sum"
+  workflow_dispatch:
+
+jobs:
+  e2e-conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version: "24"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build WASM
+        run: npm run build:wasm
+
+      - name: Build Agent (linux/amd64)
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/k8flare-agent ./cmd/agent/
+
+      - name: Build Scheduler (linux/amd64)
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/k8flare-scheduler ./cmd/scheduler/
+
+      # The CNI `portmap` plugin (exercised by the hostPort conformance test in
+      # the baseline group below) shells out to the `iptables` binary. Not
+      # guaranteed present on every ubuntu-latest image, so install it
+      # defensively regardless.
+      - name: Install iptables
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iptables
+
+      # cmd/agent's prepareK3sDataDir() (main.go) shells out to `k3s
+      # check-config` purely to trigger k3s's own extraction of its embedded
+      # CNI plugins / containerd / runc into <data-dir>/data/<hash>/bin. The
+      # agent code that actually runs is the go.mod-pinned k3s module embedded
+      # via pkg/executor/embed — this installed binary is only ever used as
+      # the source for that one-time asset extraction, so it doesn't need to
+      # match go.mod's k3s version exactly. INSTALL_K3S_SKIP_START stops it
+      # from ever starting its own server/agent (the systemd unit is installed
+      # but not run), so it can't compete with cmd/agent for ports/containerd.
+      - name: Install k3s binary (source for CNI/containerd/runc extraction)
+        run: |
+          curl -sfL https://get.k3s.io | INSTALL_K3S_SKIP_START=true sh -
+          k3s --version
+
+      - name: Download Kubernetes e2e test binaries
+        run: |
+          curl -sfL -o "$RUNNER_TEMP/kubernetes-test-linux-amd64.tar.gz" \
+            https://dl.k8s.io/v1.36.2/kubernetes-test-linux-amd64.tar.gz
+          tar xzf "$RUNNER_TEMP/kubernetes-test-linux-amd64.tar.gz" -C "$RUNNER_TEMP"
+
+      # Token choice: k8flare's AuthMiddleware (pkg/apiserver/auth.go) treats
+      # any bearer token equal to the cluster's shared token as authenticated
+      # system:masters — there's no per-user auth to model here. We deliberately
+      # do NOT generate a random token or write a packages/worker/.dev.vars
+      # file: wrangler resolves .dev.vars relative to the wrangler config's own
+      # directory (packages/worker/), not the invocation cwd, so a token
+      # dropped at the repo root would silently be ignored (verified locally:
+      # this repo's root .dev.vars is not actually loaded by
+      # `wrangler dev --config packages/worker/wrangler.jsonc`, since it's not
+      # next to that config file). With no K3S_TOKEN set, main.go's getToken()
+      # falls back to the hardcoded "k8flare-dev-token" dev value — the exact
+      # fallback pkg/apiserver/apiserver_test.go's setupWranglerDev already
+      # relies on. Reusing that proven fallback everywhere (Worker, agent,
+      # scheduler) is simpler than wiring up a fresh random token end-to-end
+      # for a value that is never a real secret in this ephemeral,
+      # localhost-only CI instance.
+      #
+      # HTTPS is not optional here, for either the agent or the scheduler:
+      # client-go's clientcmd only applies a kubeconfig file's credentials —
+      # including the bearer token — when rest.IsConfigTransportTLS reports
+      # true (client-go's client_config.go: "only try to read the auth
+      # information if we are secure"). Both the real kube-scheduler and k3s's
+      # embedded kubelet load their client from exactly such a file, so
+      # against a plain-HTTP server every one of their requests would be
+      # silently sent unauthenticated rather than fail loudly (verified
+      # locally against cmd/scheduler: informers reported "synced" while
+      # receiving zero actual objects). Generating our own cert (rather than
+      # wrangler's auto-generated one) gives a known path to add to the
+      # runner's system trust store, so the agent's existing
+      # cacert.ReplaceServerCA — built for a publicly-trusted prod cert, not a
+      # self-signed one — validates it with no code changes.
+      - name: Generate a self-signed TLS cert for the local dev instance
+        run: |
+          mkdir -p "$RUNNER_TEMP/devtls"
+          openssl req -x509 -nodes -newkey rsa:2048 -days 1 \
+            -keyout "$RUNNER_TEMP/devtls/dev.key" -out "$RUNNER_TEMP/devtls/dev.crt" \
+            -subj "/CN=127.0.0.1" -addext "subjectAltName=IP:127.0.0.1,DNS:localhost"
+          sudo cp "$RUNNER_TEMP/devtls/dev.crt" /usr/local/share/ca-certificates/k8flare-dev.crt
+          sudo update-ca-certificates
+
+      - name: Write kubeconfig for the local dev instance
+        run: |
+          cat > "$RUNNER_TEMP/kubeconfig.yaml" <<'EOF'
+          apiVersion: v1
+          kind: Config
+          clusters:
+            - name: k8flare-dev
+              cluster:
+                server: https://127.0.0.1:8787
+                insecure-skip-tls-verify: true
+          users:
+            - name: k8flare-dev
+              user:
+                token: k8flare-dev-token
+          contexts:
+            - name: k8flare-dev
+              context:
+                cluster: k8flare-dev
+                user: k8flare-dev
+          current-context: k8flare-dev
+          EOF
+
+      - name: Start wrangler dev (real Worker + Durable Object apiserver)
+        run: |
+          nohup npx wrangler dev --config packages/worker/wrangler.jsonc --port 8787 \
+            --local-protocol https \
+            --https-key-path "$RUNNER_TEMP/devtls/dev.key" \
+            --https-cert-path "$RUNNER_TEMP/devtls/dev.crt" \
+            --log-level error \
+            > "$RUNNER_TEMP/wrangler.log" 2>&1 &
+
+          echo "Waiting for wrangler dev on 127.0.0.1:8787..."
+          for _ in $(seq 1 60); do
+            if curl -sk -o /dev/null "https://127.0.0.1:8787/"; then
+              break
+            fi
+            sleep 1
+          done
+          # Mirrors setupWranglerDev's extra grace period (pkg/apiserver/apiserver_test.go).
+          sleep 2
+
+          curl -skf -o /dev/null https://127.0.0.1:8787/api/v1/namespaces \
+            -H "Authorization: Bearer k8flare-dev-token" || {
+            echo "::error::wrangler dev did not come up cleanly"
+            cat "$RUNNER_TEMP/wrangler.log"
+            exit 1
+          }
+
+      # containerd/cgroups/network namespaces need root. GitHub-hosted
+      # ubuntu-latest runners grant the default `runner` user passwordless
+      # sudo, which is sufficient here — no self-hosted runner needed.
+      - name: Start k3s agent (real kubelet + containerd)
+        run: |
+          # shellcheck disable=SC2024 # intentional: $RUNNER_TEMP is writable by
+          # the unprivileged runner user, so this redirect (opened before sudo
+          # raises privilege) deliberately produces a non-root-owned log file
+          # the later "Upload logs" step can read without sudo.
+          sudo nohup ./bin/k8flare-agent \
+            --server=https://127.0.0.1:8787 \
+            --token=k8flare-dev-token \
+            --node-name=e2e-runner \
+            --data-dir=/var/lib/rancher/k3s \
+            > "$RUNNER_TEMP/agent.log" 2>&1 &
+
+          sleep 5
+          pgrep -f k8flare-agent > /dev/null || {
+            echo "::error::k8flare-agent exited immediately; see uploaded agent.log"
+            cat "$RUNNER_TEMP/agent.log"
+            exit 1
+          }
+
+      - name: Wait for node to register as Ready
+        run: |
+          for _ in $(seq 1 60); do
+            READY=$(curl -sk https://127.0.0.1:8787/api/v1/nodes/e2e-runner \
+              -H "Authorization: Bearer k8flare-dev-token" \
+              | jq -r '.status.conditions[]? | select(.type=="Ready") | .status' 2>/dev/null) || true
+            [ "$READY" = "True" ] && break
+            sleep 5
+          done
+
+          if [ "$READY" != "True" ]; then
+            echo "::error::node e2e-runner did not become Ready in time; see uploaded agent.log"
+            cat "$RUNNER_TEMP/agent.log"
+            exit 1
+          fi
+          echo "Node is Ready."
+
+      # No sudo needed here: the scheduler only writes its own kubeconfig and
+      # KubeSchedulerConfiguration, then talks to the apiserver over HTTPS —
+      # --data-dir is pointed at a runner-writable temp dir instead of its
+      # (root-owned-by-default) production default. --insecure-skip-tls-verify
+      # is belt-and-suspenders on top of the system trust store install above.
+      - name: Start scheduler (real kube-scheduler)
+        run: |
+          nohup ./bin/k8flare-scheduler \
+            --server=https://127.0.0.1:8787 \
+            --token=k8flare-dev-token \
+            --data-dir="$RUNNER_TEMP/k8flare-scheduler" \
+            --insecure-skip-tls-verify \
+            > "$RUNNER_TEMP/scheduler.log" 2>&1 &
+
+          sleep 5
+          pgrep -f k8flare-scheduler > /dev/null || {
+            echo "::error::k8flare-scheduler exited immediately; see uploaded scheduler.log"
+            cat "$RUNNER_TEMP/scheduler.log"
+            exit 1
+          }
+
+      # Baseline group: 11 Conformance tests (2 NodeSelector + 1 resource-limits
+      # + 1 hostPort + 2 LimitRange + 5 Watchers) already fully validated this
+      # session against this exact apiserver. Required check.
+      - name: Run baseline conformance tests (required)
+        run: |
+          echo "=== BASELINE (required) conformance group ==="
+          BASELINE_FOCUS='\[sig-scheduling\] SchedulerPredicates .* validates that NodeSelector is respected if (not )?matching \[Conformance\]|\[sig-scheduling\] SchedulerPredicates .* validates resource limits of pods that are allowed to run \[Conformance\]|\[sig-scheduling\] SchedulerPredicates .* validates that there exists conflict between pods with same hostPort and protocol but one using 0\.0\.0\.0 hostIP \[Conformance\]|\[sig-scheduling\] LimitRange .*\[Conformance\]|\[sig-api-machinery\] Watchers'
+
+          "$RUNNER_TEMP/kubernetes/test/bin/e2e.test" \
+            --kubeconfig="$RUNNER_TEMP/kubeconfig.yaml" \
+            --provider=skeleton \
+            --num-nodes=1 \
+            --disable-log-dump \
+            --ginkgo.no-color \
+            --ginkgo.focus="$BASELINE_FOCUS"
+
+      # Experimental group: broader Conformance tests for resources README.md
+      # documents as implemented (ConfigMap/Secret/Namespace-cascade), but
+      # which are not yet individually confirmed against this apiserver the
+      # way the baseline group above is. Advisory only, must never fail the
+      # required check.
+      - name: Run experimental conformance tests (advisory, non-blocking)
+        id: experimental
+        continue-on-error: true
+        run: |
+          echo "=== EXPERIMENTAL (advisory, not yet individually confirmed) conformance group ==="
+          EXPERIMENTAL_FOCUS='\[sig-node\] ConfigMap .*\[Conformance\]|\[sig-node\] Secrets .*\[Conformance\]|\[sig-api-machinery\] Namespaces \[Serial\] should (ensure that all (pods|services) are removed when a namespace is deleted|patch a Namespace|apply an update to a Namespace) \[Conformance\]'
+
+          "$RUNNER_TEMP/kubernetes/test/bin/e2e.test" \
+            --kubeconfig="$RUNNER_TEMP/kubeconfig.yaml" \
+            --provider=skeleton \
+            --num-nodes=1 \
+            --disable-log-dump \
+            --ginkgo.no-color \
+            --ginkgo.focus="$EXPERIMENTAL_FOCUS"
+
+      - name: Tear down background processes
+        if: always()
+        run: |
+          sudo pkill -f k8flare-agent || true
+          pkill -f k8flare-scheduler || true
+          pkill -f "wrangler dev" || true
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-conformance-logs
+          path: |
+            ${{ runner.temp }}/wrangler.log
+            ${{ runner.temp }}/agent.log
+            ${{ runner.temp }}/scheduler.log
+          if-no-files-found: ignore
