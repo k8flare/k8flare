@@ -138,6 +138,15 @@ func findProjectRoot(t *testing.T) string {
 	return ""
 }
 
+func findPodScheduledCondition(pod *corev1.Pod) *corev1.PodCondition {
+	for i := range pod.Status.Conditions {
+		if pod.Status.Conditions[i].Type == corev1.PodScheduled {
+			return &pod.Status.Conditions[i]
+		}
+	}
+	return nil
+}
+
 func TestDiscovery(t *testing.T) {
 	client := setupWranglerDev(t)
 
@@ -1028,6 +1037,396 @@ func TestSchedulerSkipsNotReadyNodes(t *testing.T) {
 	client.CoreV1().Pods(ns).Delete(ctx, podName, metav1.DeleteOptions{})
 	client.CoreV1().Nodes().Delete(ctx, readyNodeName, metav1.DeleteOptions{})
 	client.CoreV1().Nodes().Delete(ctx, notReadyNodeName, metav1.DeleteOptions{})
+}
+
+func TestSchedulerNodeSelector(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+	ns := "default"
+	matchNodeName := "e2e-sched-selector-match-node"
+	otherNodeName := "e2e-sched-selector-other-node"
+	podName := "e2e-sched-selector-pod"
+
+	client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: ns},
+	}, metav1.CreateOptions{})
+	_ = client.CoreV1().Pods(ns).Delete(ctx, podName, metav1.DeleteOptions{})
+	_ = client.CoreV1().Nodes().Delete(ctx, matchNodeName, metav1.DeleteOptions{})
+	_ = client.CoreV1().Nodes().Delete(ctx, otherNodeName, metav1.DeleteOptions{})
+
+	// Ready node carrying the label the pod will select on.
+	_, err := client.CoreV1().Nodes().Create(ctx, &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   matchNodeName,
+			Labels: map[string]string{"disktype": "ssd"},
+		},
+		Status: corev1.NodeStatus{
+			Conditions: []corev1.NodeCondition{
+				{Type: corev1.NodeReady, Status: corev1.ConditionTrue},
+			},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create matching node: %v", err)
+	}
+
+	// A second Ready node that does NOT carry the label.
+	_, err = client.CoreV1().Nodes().Create(ctx, &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: otherNodeName},
+		Status: corev1.NodeStatus{
+			Conditions: []corev1.NodeCondition{
+				{Type: corev1.NodeReady, Status: corev1.ConditionTrue},
+			},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create other node: %v", err)
+	}
+
+	_, err = client.CoreV1().Pods(ns).Create(ctx, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: ns},
+		Spec: corev1.PodSpec{
+			Containers:   []corev1.Container{{Name: "test", Image: "busybox"}},
+			NodeSelector: map[string]string{"disktype": "ssd"},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create pod: %v", err)
+	}
+
+	var pod *corev1.Pod
+	for i := 0; i < 20; i++ {
+		time.Sleep(500 * time.Millisecond)
+		pod, err = client.CoreV1().Pods(ns).Get(ctx, podName, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("Get pod: %v", err)
+		}
+		if pod.Spec.NodeName != "" {
+			break
+		}
+	}
+
+	if pod.Spec.NodeName != matchNodeName {
+		t.Errorf("Expected pod scheduled to the label-matching node %q, got %q", matchNodeName, pod.Spec.NodeName)
+	}
+	if cond := findPodScheduledCondition(pod); cond == nil || cond.Status != corev1.ConditionTrue {
+		t.Errorf("Expected PodScheduled=True, got %+v", cond)
+	}
+
+	// Cleanup
+	client.CoreV1().Pods(ns).Delete(ctx, podName, metav1.DeleteOptions{})
+	client.CoreV1().Nodes().Delete(ctx, matchNodeName, metav1.DeleteOptions{})
+	client.CoreV1().Nodes().Delete(ctx, otherNodeName, metav1.DeleteOptions{})
+}
+
+func TestSchedulerNodeSelectorNoMatch(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+	ns := "default"
+	nodeName := "e2e-sched-selector-nomatch-node"
+	podName := "e2e-sched-selector-nomatch-pod"
+
+	client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: ns},
+	}, metav1.CreateOptions{})
+	_ = client.CoreV1().Pods(ns).Delete(ctx, podName, metav1.DeleteOptions{})
+	_ = client.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+
+	// Ready node, but with no labels at all: it can never match the pod's selector below.
+	_, err := client.CoreV1().Nodes().Create(ctx, &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+		Status: corev1.NodeStatus{
+			Conditions: []corev1.NodeCondition{
+				{Type: corev1.NodeReady, Status: corev1.ConditionTrue},
+			},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create node: %v", err)
+	}
+
+	_, err = client.CoreV1().Pods(ns).Create(ctx, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: ns},
+		Spec: corev1.PodSpec{
+			Containers:   []corev1.Container{{Name: "test", Image: "busybox"}},
+			NodeSelector: map[string]string{"disktype": "ssd"},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create pod: %v", err)
+	}
+
+	var pod *corev1.Pod
+	var cond *corev1.PodCondition
+	for i := 0; i < 20; i++ {
+		time.Sleep(500 * time.Millisecond)
+		pod, err = client.CoreV1().Pods(ns).Get(ctx, podName, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("Get pod: %v", err)
+		}
+		if cond = findPodScheduledCondition(pod); cond != nil {
+			break
+		}
+	}
+
+	if pod.Spec.NodeName != "" {
+		t.Errorf("Expected pod to remain unscheduled, got nodeName %q", pod.Spec.NodeName)
+	}
+	if cond == nil || cond.Status != corev1.ConditionFalse || cond.Reason != corev1.PodReasonUnschedulable {
+		t.Errorf("Expected PodScheduled=False/Unschedulable, got %+v", cond)
+	}
+
+	// Cleanup
+	client.CoreV1().Pods(ns).Delete(ctx, podName, metav1.DeleteOptions{})
+	client.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+}
+
+func TestSchedulerRespectsResourceCapacity(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+	ns := "default"
+	nodeName := "e2e-sched-capacity-node"
+	fillerPodName := "e2e-sched-capacity-filler-pod"
+	overflowPodName := "e2e-sched-capacity-overflow-pod"
+	selector := map[string]string{"e2e-capacity-node": "true"}
+
+	client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: ns},
+	}, metav1.CreateOptions{})
+	_ = client.CoreV1().Pods(ns).Delete(ctx, fillerPodName, metav1.DeleteOptions{})
+	_ = client.CoreV1().Pods(ns).Delete(ctx, overflowPodName, metav1.DeleteOptions{})
+	_ = client.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+
+	// Label the node so both pods below can pin to it via nodeSelector,
+	// regardless of any other Ready nodes left over from other tests.
+	_, err := client.CoreV1().Nodes().Create(ctx, &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: selector},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create node: %v", err)
+	}
+
+	node, err := client.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Get node: %v", err)
+	}
+	node.Status = corev1.NodeStatus{
+		Conditions: []corev1.NodeCondition{
+			{Type: corev1.NodeReady, Status: corev1.ConditionTrue},
+		},
+		Allocatable: corev1.ResourceList{
+			corev1.ResourceCPU: resource.MustParse("600m"),
+		},
+	}
+	if _, err := client.CoreV1().Nodes().UpdateStatus(ctx, node, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("UpdateStatus node: %v", err)
+	}
+
+	// Filler pod requests 500m of the node's 600m allocatable CPU.
+	_, err = client.CoreV1().Pods(ns).Create(ctx, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: fillerPodName, Namespace: ns},
+		Spec: corev1.PodSpec{
+			NodeSelector: selector,
+			Containers: []corev1.Container{{
+				Name:  "filler",
+				Image: "busybox",
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("500m")},
+				},
+			}},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create filler pod: %v", err)
+	}
+
+	var filler *corev1.Pod
+	for i := 0; i < 20; i++ {
+		time.Sleep(500 * time.Millisecond)
+		filler, err = client.CoreV1().Pods(ns).Get(ctx, fillerPodName, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("Get filler pod: %v", err)
+		}
+		if filler.Spec.NodeName != "" {
+			break
+		}
+	}
+	if filler.Spec.NodeName != nodeName {
+		t.Fatalf("Expected filler pod scheduled to %q, got %q", nodeName, filler.Spec.NodeName)
+	}
+
+	// Overflow pod requests 200m, but only 100m (600m - 500m) is left.
+	_, err = client.CoreV1().Pods(ns).Create(ctx, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: overflowPodName, Namespace: ns},
+		Spec: corev1.PodSpec{
+			NodeSelector: selector,
+			Containers: []corev1.Container{{
+				Name:  "overflow",
+				Image: "busybox",
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("200m")},
+				},
+			}},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create overflow pod: %v", err)
+	}
+
+	var overflow *corev1.Pod
+	var cond *corev1.PodCondition
+	for i := 0; i < 20; i++ {
+		time.Sleep(500 * time.Millisecond)
+		overflow, err = client.CoreV1().Pods(ns).Get(ctx, overflowPodName, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("Get overflow pod: %v", err)
+		}
+		if cond = findPodScheduledCondition(overflow); cond != nil {
+			break
+		}
+	}
+
+	if overflow.Spec.NodeName != "" {
+		t.Errorf("Expected overflow pod to remain unscheduled, got nodeName %q", overflow.Spec.NodeName)
+	}
+	if cond == nil || cond.Status != corev1.ConditionFalse || cond.Reason != corev1.PodReasonUnschedulable {
+		t.Errorf("Expected PodScheduled=False/Unschedulable, got %+v", cond)
+	}
+
+	// The filler pod must keep its assignment.
+	filler, err = client.CoreV1().Pods(ns).Get(ctx, fillerPodName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Get filler pod: %v", err)
+	}
+	if filler.Spec.NodeName != nodeName {
+		t.Errorf("Expected filler pod to keep its assignment to %q, got %q", nodeName, filler.Spec.NodeName)
+	}
+
+	// Cleanup
+	client.CoreV1().Pods(ns).Delete(ctx, fillerPodName, metav1.DeleteOptions{})
+	client.CoreV1().Pods(ns).Delete(ctx, overflowPodName, metav1.DeleteOptions{})
+	client.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+}
+
+func TestSchedulerHostPortConflict(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+	ns := "default"
+	nodeName := "e2e-sched-hostport-node"
+	firstPodName := "e2e-sched-hostport-first-pod"
+	secondPodName := "e2e-sched-hostport-second-pod"
+	thirdPodName := "e2e-sched-hostport-third-pod"
+	selector := map[string]string{"e2e-hostport-node": "true"}
+
+	client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: ns},
+	}, metav1.CreateOptions{})
+	_ = client.CoreV1().Pods(ns).Delete(ctx, firstPodName, metav1.DeleteOptions{})
+	_ = client.CoreV1().Pods(ns).Delete(ctx, secondPodName, metav1.DeleteOptions{})
+	_ = client.CoreV1().Pods(ns).Delete(ctx, thirdPodName, metav1.DeleteOptions{})
+	_ = client.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+
+	// A single Ready node, pinned to via nodeSelector so all three pods
+	// below land on the same node deterministically.
+	_, err := client.CoreV1().Nodes().Create(ctx, &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: selector},
+		Status: corev1.NodeStatus{
+			Conditions: []corev1.NodeCondition{
+				{Type: corev1.NodeReady, Status: corev1.ConditionTrue},
+			},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create node: %v", err)
+	}
+
+	newHostPortPod := func(name string, hostPort int32) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: corev1.PodSpec{
+				NodeSelector: selector,
+				Containers: []corev1.Container{{
+					Name:  "test",
+					Image: "busybox",
+					Ports: []corev1.ContainerPort{{
+						ContainerPort: hostPort,
+						HostPort:      hostPort,
+						Protocol:      corev1.ProtocolTCP,
+					}},
+				}},
+			},
+		}
+	}
+
+	if _, err := client.CoreV1().Pods(ns).Create(ctx, newHostPortPod(firstPodName, 8080), metav1.CreateOptions{}); err != nil {
+		t.Fatalf("Create first pod: %v", err)
+	}
+
+	var first *corev1.Pod
+	for i := 0; i < 20; i++ {
+		time.Sleep(500 * time.Millisecond)
+		first, err = client.CoreV1().Pods(ns).Get(ctx, firstPodName, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("Get first pod: %v", err)
+		}
+		if first.Spec.NodeName != "" {
+			break
+		}
+	}
+	if first.Spec.NodeName != nodeName {
+		t.Fatalf("Expected first pod scheduled to %q, got %q", nodeName, first.Spec.NodeName)
+	}
+
+	// Second pod: same hostPort/protocol on the only (same) node -> must be rejected.
+	if _, err := client.CoreV1().Pods(ns).Create(ctx, newHostPortPod(secondPodName, 8080), metav1.CreateOptions{}); err != nil {
+		t.Fatalf("Create second pod: %v", err)
+	}
+
+	var second *corev1.Pod
+	var secondCond *corev1.PodCondition
+	for i := 0; i < 20; i++ {
+		time.Sleep(500 * time.Millisecond)
+		second, err = client.CoreV1().Pods(ns).Get(ctx, secondPodName, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("Get second pod: %v", err)
+		}
+		if secondCond = findPodScheduledCondition(second); secondCond != nil {
+			break
+		}
+	}
+	if second.Spec.NodeName != "" {
+		t.Errorf("Expected second pod (hostPort conflict) to remain unscheduled, got nodeName %q", second.Spec.NodeName)
+	}
+	if secondCond == nil || secondCond.Status != corev1.ConditionFalse || secondCond.Reason != corev1.PodReasonUnschedulable {
+		t.Errorf("Expected PodScheduled=False/Unschedulable, got %+v", secondCond)
+	}
+
+	// Third pod: different hostPort on the same node -> must succeed, proving
+	// the predicate isn't an overly-broad same-node refusal.
+	if _, err := client.CoreV1().Pods(ns).Create(ctx, newHostPortPod(thirdPodName, 8081), metav1.CreateOptions{}); err != nil {
+		t.Fatalf("Create third pod: %v", err)
+	}
+
+	var third *corev1.Pod
+	for i := 0; i < 20; i++ {
+		time.Sleep(500 * time.Millisecond)
+		third, err = client.CoreV1().Pods(ns).Get(ctx, thirdPodName, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("Get third pod: %v", err)
+		}
+		if third.Spec.NodeName != "" {
+			break
+		}
+	}
+	if third.Spec.NodeName != nodeName {
+		t.Errorf("Expected third pod (different hostPort) scheduled to %q, got %q", nodeName, third.Spec.NodeName)
+	}
+
+	// Cleanup
+	client.CoreV1().Pods(ns).Delete(ctx, firstPodName, metav1.DeleteOptions{})
+	client.CoreV1().Pods(ns).Delete(ctx, secondPodName, metav1.DeleteOptions{})
+	client.CoreV1().Pods(ns).Delete(ctx, thirdPodName, metav1.DeleteOptions{})
+	client.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
 }
 
 func TestSupervisorCACerts(t *testing.T) {
