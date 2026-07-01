@@ -245,14 +245,6 @@ func RegisterGroupDiscovery(mux *http.ServeMux) {
 		PreferredVersion: groupVersion{GroupVersion: "coordination.k8s.io/v1", Version: "v1"},
 	}
 
-	eventsGroup := apiGroup{
-		Name: "events.k8s.io",
-		Versions: []groupVersion{
-			{GroupVersion: "events.k8s.io/v1", Version: "v1"},
-		},
-		PreferredVersion: groupVersion{GroupVersion: "events.k8s.io/v1", Version: "v1"},
-	}
-
 	storageGroup := apiGroup{
 		Name: "storage.k8s.io",
 		Versions: []groupVersion{
@@ -269,11 +261,19 @@ func RegisterGroupDiscovery(mux *http.ServeMux) {
 		PreferredVersion: groupVersion{GroupVersion: "node.k8s.io/v1", Version: "v1"},
 	}
 
+	resourceGroup := apiGroup{
+		Name: "resource.k8s.io",
+		Versions: []groupVersion{
+			{GroupVersion: "resource.k8s.io/v1", Version: "v1"},
+		},
+		PreferredVersion: groupVersion{GroupVersion: "resource.k8s.io/v1", Version: "v1"},
+	}
+
 	mux.HandleFunc("GET /apis", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, apiGroupList{
 			Kind:       "APIGroupList",
 			APIVersion: "v1",
-			Groups:     []interface{}{coordinationGroup, eventsGroup, storageGroup, nodeGroup},
+			Groups:     []interface{}{coordinationGroup, storageGroup, nodeGroup, resourceGroup},
 		})
 	})
 
@@ -291,27 +291,6 @@ func RegisterGroupDiscovery(mux *http.ServeMux) {
 					SingularName: "lease",
 					Namespaced:   true,
 					Kind:         "Lease",
-					Verbs:        []string{"create", "delete", "get", "list", "patch", "update", "watch"},
-				},
-			},
-		})
-	})
-
-	mux.HandleFunc("GET /apis/events.k8s.io", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, eventsGroup)
-	})
-
-	mux.HandleFunc("GET /apis/events.k8s.io/v1", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, apiResourceList{
-			Kind:         "APIResourceList",
-			GroupVersion: "events.k8s.io/v1",
-			Resources: []APIResource{
-				{
-					Name:         "events",
-					SingularName: "event",
-					Namespaced:   true,
-					Kind:         "Event",
-					ShortNames:   []string{"ev"},
 					Verbs:        []string{"create", "delete", "get", "list", "patch", "update", "watch"},
 				},
 			},
@@ -359,6 +338,33 @@ func RegisterGroupDiscovery(mux *http.ServeMux) {
 					SingularName: "runtimeclass",
 					Namespaced:   false,
 					Kind:         "RuntimeClass",
+					Verbs:        []string{"create", "delete", "get", "list", "patch", "update", "watch"},
+				},
+			},
+		})
+	})
+
+	mux.HandleFunc("GET /apis/resource.k8s.io", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, resourceGroup)
+	})
+
+	mux.HandleFunc("GET /apis/resource.k8s.io/v1", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, apiResourceList{
+			Kind:         "APIResourceList",
+			GroupVersion: "resource.k8s.io/v1",
+			Resources: []APIResource{
+				{
+					Name:         "resourceclaims",
+					SingularName: "resourceclaim",
+					Namespaced:   true,
+					Kind:         "ResourceClaim",
+					Verbs:        []string{"create", "delete", "get", "list", "patch", "update", "watch"},
+				},
+				{
+					Name:         "resourceslices",
+					SingularName: "resourceslice",
+					Namespaced:   false,
+					Kind:         "ResourceSlice",
 					Verbs:        []string{"create", "delete", "get", "list", "patch", "update", "watch"},
 				},
 			},

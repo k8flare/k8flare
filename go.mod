@@ -81,6 +81,10 @@ require (
 	k8s.io/api v0.36.2
 	k8s.io/apimachinery v0.36.2
 	k8s.io/client-go v0.36.2
+	k8s.io/component-base v0.36.2
+	k8s.io/kube-scheduler v0.0.0
+	k8s.io/kubernetes v1.36.2
+	sigs.k8s.io/yaml v1.6.0
 )
 
 require (
@@ -445,7 +449,6 @@ require (
 	k8s.io/apiserver v0.36.2 // indirect
 	k8s.io/cloud-provider v0.35.2 // indirect
 	k8s.io/cluster-bootstrap v0.35.2 // indirect
-	k8s.io/component-base v0.36.2 // indirect
 	k8s.io/component-helpers v0.36.2 // indirect
 	k8s.io/controller-manager v0.35.2 // indirect
 	k8s.io/cri-api v0.36.2 // indirect
@@ -461,10 +464,8 @@ require (
 	k8s.io/kube-controller-manager v0.0.0 // indirect
 	k8s.io/kube-openapi v0.0.0-20260319004828-5883c5ee87b9 // indirect
 	k8s.io/kube-proxy v0.35.2 // indirect
-	k8s.io/kube-scheduler v0.0.0 // indirect
 	k8s.io/kubectl v0.36.2 // indirect
 	k8s.io/kubelet v0.36.2 // indirect
-	k8s.io/kubernetes v1.36.2 // indirect
 	k8s.io/metrics v0.0.0 // indirect
 	k8s.io/mount-utils v0.35.2 // indirect
 	k8s.io/pod-security-admission v0.0.0 // indirect
@@ -480,5 +481,4 @@ require (
 	sigs.k8s.io/knftables v0.0.21 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.2 // indirect
-	sigs.k8s.io/yaml v1.6.0 // indirect
 )

@@ -6,8 +6,8 @@ import (
 
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
-	eventsv1 "k8s.io/api/events/v1"
 	nodev1 "k8s.io/api/node/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -52,12 +52,6 @@ func init() {
 		&corev1.LimitRangeList{},
 	)
 
-	// Register events/v1 types
-	Scheme.AddKnownTypes(eventsv1.SchemeGroupVersion,
-		&eventsv1.Event{},
-		&eventsv1.EventList{},
-	)
-
 	// Register coordination/v1 types
 	Scheme.AddKnownTypes(coordinationv1.SchemeGroupVersion,
 		&coordinationv1.Lease{},
@@ -78,12 +72,25 @@ func init() {
 		&nodev1.RuntimeClassList{},
 	)
 
+	// Register resource.k8s.io/v1 types. These are never populated with real
+	// data — they exist only so that a real kube-scheduler's Dynamic Resource
+	// Allocation informers (unconditionally started whenever the DRA feature
+	// gate is on, which is GA-locked as of Kubernetes 1.36) can complete their
+	// initial sync against an empty list instead of hanging in
+	// WaitForCacheSync forever. See docs/control-plane-architecture.md.
+	Scheme.AddKnownTypes(resourcev1.SchemeGroupVersion,
+		&resourcev1.ResourceClaim{},
+		&resourcev1.ResourceClaimList{},
+		&resourcev1.ResourceSlice{},
+		&resourcev1.ResourceSliceList{},
+	)
+
 	// Register metav1 types (Status, ListMeta, etc.)
 	metav1.AddToGroupVersion(Scheme, corev1.SchemeGroupVersion)
-	metav1.AddToGroupVersion(Scheme, eventsv1.SchemeGroupVersion)
 	metav1.AddToGroupVersion(Scheme, coordinationv1.SchemeGroupVersion)
 	metav1.AddToGroupVersion(Scheme, storagev1.SchemeGroupVersion)
 	metav1.AddToGroupVersion(Scheme, nodev1.SchemeGroupVersion)
+	metav1.AddToGroupVersion(Scheme, resourcev1.SchemeGroupVersion)
 
 	Codecs = serializer.NewCodecFactory(Scheme)
 

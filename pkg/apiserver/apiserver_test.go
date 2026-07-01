@@ -24,6 +24,7 @@ import (
 
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -897,6 +898,97 @@ func TestLeaseCRUD(t *testing.T) {
 	t.Run("Delete", func(t *testing.T) {
 		err := client.CoordinationV1().Leases(ns).Delete(ctx, name, metav1.DeleteOptions{})
 		if err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+	})
+}
+
+// TestResourceAPIGroup covers the resource.k8s.io/v1 stub types
+// (ResourceClaim, ResourceSlice) registered so a real kube-scheduler's
+// Dynamic Resource Allocation informers can sync against an empty list
+// instead of hanging in WaitForCacheSync, and locks in that events.k8s.io/v1
+// is intentionally not discoverable (see docs/control-plane-architecture.md
+// for why: client-go's EventBroadcasterAdapter would otherwise prefer it,
+// and this server's Event storage always round-trips as core v1 Event).
+func TestResourceAPIGroup(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+
+	t.Run("Discovery", func(t *testing.T) {
+		resources, err := client.Discovery().ServerResourcesForGroupVersion("resource.k8s.io/v1")
+		if err != nil {
+			t.Fatalf("ServerResourcesForGroupVersion(resource.k8s.io/v1): %v", err)
+		}
+		expected := map[string]bool{"resourceclaims": false, "resourceslices": false}
+		for _, r := range resources.APIResources {
+			if _, ok := expected[r.Name]; ok {
+				expected[r.Name] = true
+			}
+		}
+		for name, found := range expected {
+			if !found {
+				t.Errorf("Resource %q not found in discovery", name)
+			}
+		}
+	})
+
+	t.Run("EventsGroupNotDiscoverable", func(t *testing.T) {
+		if _, err := client.Discovery().ServerResourcesForGroupVersion("events.k8s.io/v1"); err == nil {
+			t.Error("expected events.k8s.io/v1 to be undiscoverable, got no error")
+		}
+	})
+
+	t.Run("ResourceClaimCRUD", func(t *testing.T) {
+		ns := "default"
+		name := "test-resourceclaim-crud"
+		_ = client.ResourceV1().ResourceClaims(ns).Delete(ctx, name, metav1.DeleteOptions{})
+
+		claim, err := client.ResourceV1().ResourceClaims(ns).Create(ctx, &resourcev1.ResourceClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if claim.Name != name {
+			t.Errorf("Name: got %q", claim.Name)
+		}
+
+		if _, err := client.ResourceV1().ResourceClaims(ns).Get(ctx, name, metav1.GetOptions{}); err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+
+		if err := client.ResourceV1().ResourceClaims(ns).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+	})
+
+	t.Run("ResourceSliceCRUD", func(t *testing.T) {
+		name := "test-resourceslice-crud"
+		_ = client.ResourceV1().ResourceSlices().Delete(ctx, name, metav1.DeleteOptions{})
+
+		slice, err := client.ResourceV1().ResourceSlices().Create(ctx, &resourcev1.ResourceSlice{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: resourcev1.ResourceSliceSpec{
+				Driver: "test.example.com",
+				Pool: resourcev1.ResourcePool{
+					Name:               "test-pool",
+					Generation:         1,
+					ResourceSliceCount: 1,
+				},
+			},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if slice.Name != name {
+			t.Errorf("Name: got %q", slice.Name)
+		}
+
+		if _, err := client.ResourceV1().ResourceSlices().Get(ctx, name, metav1.GetOptions{}); err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+
+		if err := client.ResourceV1().ResourceSlices().Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
 			t.Fatalf("Delete: %v", err)
 		}
 	})

@@ -53,6 +53,8 @@ const RESOURCE_KINDS: Record<string, string> = {
   runtimeclasses: "RuntimeClass",
   csidrivers: "CSIDriver",
   csinodes: "CSINode",
+  resourceclaims: "ResourceClaim",
+  resourceslices: "ResourceSlice",
   dynamicworkers: "DynamicWorker",
   workertriggers: "WorkerTrigger",
 };

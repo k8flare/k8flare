@@ -42,6 +42,14 @@ jobs:
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/k8flare-agent-linux-amd64 ./cmd/agent/
 
+      - name: Build Scheduler (linux/arm64)
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o dist/k8flare-scheduler-linux-arm64 ./cmd/scheduler/
+
+      - name: Build Scheduler (linux/amd64)
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/k8flare-scheduler-linux-amd64 ./cmd/scheduler/
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -49,3 +57,4 @@ jobs:
           files: |
             dist/k8flare-worker-*.tar.gz
             dist/k8flare-agent-*
+            dist/k8flare-scheduler-*

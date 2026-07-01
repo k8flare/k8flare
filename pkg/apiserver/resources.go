@@ -4,6 +4,7 @@ import (
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	nodev1 "k8s.io/api/node/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -153,6 +154,42 @@ func NewLeaseStore(s *Storage) *ResourceStore {
 	)
 }
 
+// NewResourceClaimStore creates a ResourceStore for ResourceClaim resources (namespaced).
+// Never populated with real data — see the comment on resourcev1 registration
+// in scheme.go for why this exists.
+func NewResourceClaimStore(s *Storage) *ResourceStore {
+	return NewResourceStore(s, "resourceclaims", true,
+		func() runtime.Object { return &resourcev1.ResourceClaim{} },
+		func() runtime.Object {
+			return &resourcev1.ResourceClaimList{TypeMeta: metav1.TypeMeta{Kind: "ResourceClaimList", APIVersion: "resource.k8s.io/v1"}}
+		},
+		func(list runtime.Object, items []runtime.Object) {
+			rcList := list.(*resourcev1.ResourceClaimList)
+			for _, item := range items {
+				rcList.Items = append(rcList.Items, *item.(*resourcev1.ResourceClaim))
+			}
+		},
+	)
+}
+
+// NewResourceSliceStore creates a ResourceStore for ResourceSlice resources (cluster-scoped).
+// Never populated with real data — see the comment on resourcev1 registration
+// in scheme.go for why this exists.
+func NewResourceSliceStore(s *Storage) *ResourceStore {
+	return NewResourceStore(s, "resourceslices", false,
+		func() runtime.Object { return &resourcev1.ResourceSlice{} },
+		func() runtime.Object {
+			return &resourcev1.ResourceSliceList{TypeMeta: metav1.TypeMeta{Kind: "ResourceSliceList", APIVersion: "resource.k8s.io/v1"}}
+		},
+		func(list runtime.Object, items []runtime.Object) {
+			rsList := list.(*resourcev1.ResourceSliceList)
+			for _, item := range items {
+				rsList.Items = append(rsList.Items, *item.(*resourcev1.ResourceSlice))
+			}
+		},
+	)
+}
+
 // NewEventStore creates a ResourceStore for Event resources (namespaced).
 func NewEventStore(s *Storage) *ResourceStore {
 	return NewResourceStore(s, "events", true,
@@ -209,14 +246,6 @@ func NewResourceStores(s *Storage) map[string]*ResourceStore {
 func NewLeaseStores(s *Storage) map[string]*ResourceStore {
 	return map[string]*ResourceStore{
 		"leases": NewLeaseStore(s),
-	}
-}
-
-// NewEventStores creates ResourceStore instances for events.k8s.io/v1 resources
-// and returns them as a map keyed by resource name.
-func NewEventStores(s *Storage) map[string]*ResourceStore {
-	return map[string]*ResourceStore{
-		"events": NewEventStore(s),
 	}
 }
 
@@ -282,6 +311,15 @@ func NewStorageStores(s *Storage) map[string]*ResourceStore {
 func NewNodeAPIStores(s *Storage) map[string]*ResourceStore {
 	return map[string]*ResourceStore{
 		"runtimeclasses": NewRuntimeClassStore(s),
+	}
+}
+
+// NewResourceAPIStores creates ResourceStore instances for resource.k8s.io/v1
+// resources and returns them as a map keyed by resource name.
+func NewResourceAPIStores(s *Storage) map[string]*ResourceStore {
+	return map[string]*ResourceStore{
+		"resourceclaims": NewResourceClaimStore(s),
+		"resourceslices": NewResourceSliceStore(s),
 	}
 }
 

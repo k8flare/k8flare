@@ -45,10 +45,10 @@ func main() {
 	storage := apiserver.NewStorage(doFetch, "/registry")
 	stores := apiserver.NewResourceStores(storage)
 	leaseStores := apiserver.NewLeaseStores(storage)
-	eventStores := apiserver.NewEventStores(storage)
 	storageStores := apiserver.NewStorageStores(storage)
 	nodeAPIStores := apiserver.NewNodeAPIStores(storage)
-	namespacedStores := apiserver.NamespacedResourceStores(stores, leaseStores, eventStores, storageStores, nodeAPIStores)
+	resourceAPIStores := apiserver.NewResourceAPIStores(storage)
+	namespacedStores := apiserver.NamespacedResourceStores(stores, leaseStores, storageStores, nodeAPIStores, resourceAPIStores)
 
 	// CA Manager for supervisor protocol
 	cam := apiserver.NewCAManager(storage)
@@ -71,11 +71,6 @@ func main() {
 		apiserver.HandleGroupAPI(w, r, leaseStores)
 	})))
 
-	// events.k8s.io/v1 (with auth)
-	mux.Handle("/apis/events.k8s.io/v1/", apiserver.AuthMiddleware(getToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apiserver.HandleGroupAPI(w, r, eventStores)
-	})))
-
 	// storage.k8s.io/v1 (with auth)
 	mux.Handle("/apis/storage.k8s.io/v1/", apiserver.AuthMiddleware(getToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apiserver.HandleGroupAPI(w, r, storageStores)
@@ -84,6 +79,11 @@ func main() {
 	// node.k8s.io/v1 (with auth)
 	mux.Handle("/apis/node.k8s.io/v1/", apiserver.AuthMiddleware(getToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apiserver.HandleGroupAPI(w, r, nodeAPIStores)
+	})))
+
+	// resource.k8s.io/v1 (with auth)
+	mux.Handle("/apis/resource.k8s.io/v1/", apiserver.AuthMiddleware(getToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiserver.HandleGroupAPI(w, r, resourceAPIStores)
 	})))
 
 	workers.Serve(mux)
