@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 
+	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	nodev1 "k8s.io/api/node/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -50,6 +52,10 @@ func init() {
 		&corev1.EventList{},
 		&corev1.LimitRange{},
 		&corev1.LimitRangeList{},
+		// ReplicationController: never populated with real data — see the
+		// stub-type comment below the resource.k8s.io/v1 block.
+		&corev1.ReplicationController{},
+		&corev1.ReplicationControllerList{},
 	)
 
 	// Register coordination/v1 types
@@ -72,17 +78,40 @@ func init() {
 		&nodev1.RuntimeClassList{},
 	)
 
-	// Register resource.k8s.io/v1 types. These are never populated with real
-	// data — they exist only so that a real kube-scheduler's Dynamic Resource
-	// Allocation informers (unconditionally started whenever the DRA feature
-	// gate is on, which is GA-locked as of Kubernetes 1.36) can complete their
-	// initial sync against an empty list instead of hanging in
-	// WaitForCacheSync forever. See docs/control-plane-architecture.md.
+	// Register resource.k8s.io/v1 types. ResourceClaim/ResourceSlice are
+	// never populated with real data — they exist only so that a real
+	// kube-scheduler's Dynamic Resource Allocation informers (unconditionally
+	// started whenever the DRA feature gate is on, which is GA-locked as of
+	// Kubernetes 1.36) can complete their initial sync against an empty list
+	// instead of hanging in WaitForCacheSync forever. See
+	// docs/control-plane-architecture.md.
 	Scheme.AddKnownTypes(resourcev1.SchemeGroupVersion,
 		&resourcev1.ResourceClaim{},
 		&resourcev1.ResourceClaimList{},
 		&resourcev1.ResourceSlice{},
 		&resourcev1.ResourceSliceList{},
+		&resourcev1.DeviceClass{},
+		&resourcev1.DeviceClassList{},
+	)
+
+	// Register apps/v1 and policy/v1 types. Like the resource.k8s.io/v1 types
+	// above, ReplicaSet/StatefulSet/PodDisruptionBudget (and
+	// ReplicationController, registered in the core/v1 block above) are
+	// never populated with real data — confirmed empirically by running the
+	// real scheduler: its default InterPodAffinity/PodTopologySpread
+	// (owning-controller lookups) and DefaultPreemption (PDB checks) plugins
+	// start informers for these types unconditionally, the same way DRA's
+	// plugin does for ResourceClaim/ResourceSlice/DeviceClass, even when no
+	// pod in the cluster uses any of the corresponding features.
+	Scheme.AddKnownTypes(appsv1.SchemeGroupVersion,
+		&appsv1.ReplicaSet{},
+		&appsv1.ReplicaSetList{},
+		&appsv1.StatefulSet{},
+		&appsv1.StatefulSetList{},
+	)
+	Scheme.AddKnownTypes(policyv1.SchemeGroupVersion,
+		&policyv1.PodDisruptionBudget{},
+		&policyv1.PodDisruptionBudgetList{},
 	)
 
 	// Register metav1 types (Status, ListMeta, etc.)
@@ -91,6 +120,8 @@ func init() {
 	metav1.AddToGroupVersion(Scheme, storagev1.SchemeGroupVersion)
 	metav1.AddToGroupVersion(Scheme, nodev1.SchemeGroupVersion)
 	metav1.AddToGroupVersion(Scheme, resourcev1.SchemeGroupVersion)
+	metav1.AddToGroupVersion(Scheme, appsv1.SchemeGroupVersion)
+	metav1.AddToGroupVersion(Scheme, policyv1.SchemeGroupVersion)
 
 	Codecs = serializer.NewCodecFactory(Scheme)
 

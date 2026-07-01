@@ -51,11 +51,48 @@ export function kineEventToWatchEvent(kineEvent: KineEvent): WatchEvent {
   return { type, object: decodeKineValueObject(kineEvent.kv) };
 }
 
+interface FieldSelectorTerm {
+  field: string;
+  value: string;
+  negate: boolean;
+}
+
+/** Parse a fieldSelector query param into individual terms. Supports both
+ * "field=value" and "field!=value" (not-equal) terms, matching real
+ * Kubernetes field selector syntax — real kube-scheduler's Pod informer, for
+ * example, filters with "status.phase!=Succeeded,status.phase!=Failed". */
+function parseFieldSelector(param: string): FieldSelectorTerm[] {
+  if (!param) return [];
+  return param
+    .split(",")
+    .map((s): FieldSelectorTerm | null => {
+      // Check "!=" before "=", since "=" alone would otherwise match inside it.
+      const neIdx = s.indexOf("!=");
+      if (neIdx !== -1) {
+        return { field: s.slice(0, neIdx), value: s.slice(neIdx + 2), negate: true };
+      }
+      const eqIdx = s.indexOf("=");
+      if (eqIdx === -1) return null;
+      return { field: s.slice(0, eqIdx), value: s.slice(eqIdx + 1), negate: false };
+    })
+    .filter((t): t is FieldSelectorTerm => t !== null);
+}
+
+/** Read a dotted field path from a decoded object, or undefined if any segment is missing. */
+function getFieldValue(obj: Record<string, unknown>, field: string): unknown {
+  let current: unknown = obj;
+  for (const part of field.split(".")) {
+    if (current == null || typeof current !== "object") return undefined;
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
+}
+
 /** Check whether a decoded object satisfies both the label and field selectors. */
 function objectMatchesSelectors(
   obj: Record<string, unknown>,
   labelRequirements: LabelRequirement[],
-  fieldSelectors: { field: string; value: string }[],
+  fieldSelectors: FieldSelectorTerm[],
 ): boolean {
   if (labelRequirements.length > 0) {
     const metadata = obj.metadata as Record<string, unknown> | undefined;
@@ -63,14 +100,9 @@ function objectMatchesSelectors(
     if (!matchesLabelSelector(labels, labelRequirements)) return false;
   }
   if (fieldSelectors.length > 0) {
-    const match = fieldSelectors.every(({ field, value }) => {
-      const parts = field.split(".");
-      let current: unknown = obj;
-      for (const part of parts) {
-        if (current == null) return false;
-        current = (current as Record<string, unknown>)[part];
-      }
-      return current === value;
+    const match = fieldSelectors.every(({ field, value, negate }) => {
+      const equal = getFieldValue(obj, field) === value;
+      return negate ? !equal : equal;
     });
     if (!match) return false;
   }
@@ -121,18 +153,7 @@ export async function handleWatch(
   const resourceKind = resourceKindForPath(url.pathname);
   const allowWatchBookmarks = url.searchParams.get("allowWatchBookmarks") === "true";
 
-  // Parse fieldSelector into an array of {field, value} pairs
-  const fieldSelectorParam = url.searchParams.get("fieldSelector") || "";
-  const fieldSelectors: { field: string; value: string }[] = fieldSelectorParam
-    ? (fieldSelectorParam
-        .split(",")
-        .map((s) => {
-          const eqIdx = s.indexOf("=");
-          if (eqIdx === -1) return null;
-          return { field: s.slice(0, eqIdx), value: s.slice(eqIdx + 1) };
-        })
-        .filter(Boolean) as { field: string; value: string }[])
-    : [];
+  const fieldSelectors = parseFieldSelector(url.searchParams.get("fieldSelector") || "");
 
   const labelSelectorParam = url.searchParams.get("labelSelector") || "";
   const labelRequirements = parseLabelSelector(labelSelectorParam);

@@ -1,9 +1,11 @@
 package apiserver
 
 import (
+	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	nodev1 "k8s.io/api/node/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -224,20 +226,39 @@ func NewLimitRangeStore(s *Storage) *ResourceStore {
 	)
 }
 
+// NewReplicationControllerStore creates a ResourceStore for ReplicationController
+// resources (namespaced). Never populated with real data — see the comment on
+// the apps/v1 and policy/v1 scheme registration in scheme.go for why this exists.
+func NewReplicationControllerStore(s *Storage) *ResourceStore {
+	return NewResourceStore(s, "replicationcontrollers", true,
+		func() runtime.Object { return &corev1.ReplicationController{} },
+		func() runtime.Object {
+			return &corev1.ReplicationControllerList{TypeMeta: metav1.TypeMeta{Kind: "ReplicationControllerList", APIVersion: "v1"}}
+		},
+		func(list runtime.Object, items []runtime.Object) {
+			rcList := list.(*corev1.ReplicationControllerList)
+			for _, item := range items {
+				rcList.Items = append(rcList.Items, *item.(*corev1.ReplicationController))
+			}
+		},
+	)
+}
+
 // NewResourceStores creates all supported core/v1 ResourceStore instances and returns them
 // as a map keyed by resource name.
 func NewResourceStores(s *Storage) map[string]*ResourceStore {
 	return map[string]*ResourceStore{
-		"namespaces":      NewNamespaceStore(s),
-		"configmaps":      NewConfigMapStore(s),
-		"secrets":         NewSecretStore(s),
-		"pods":            NewPodStore(s),
-		"nodes":           NewNodeStore(s),
-		"serviceaccounts": NewServiceAccountStore(s),
-		"endpoints":       NewEndpointsStore(s),
-		"services":        NewServiceStore(s),
-		"events":          NewEventStore(s),
-		"limitranges":     NewLimitRangeStore(s),
+		"namespaces":             NewNamespaceStore(s),
+		"configmaps":             NewConfigMapStore(s),
+		"secrets":                NewSecretStore(s),
+		"pods":                   NewPodStore(s),
+		"nodes":                  NewNodeStore(s),
+		"serviceaccounts":        NewServiceAccountStore(s),
+		"endpoints":              NewEndpointsStore(s),
+		"services":               NewServiceStore(s),
+		"events":                 NewEventStore(s),
+		"limitranges":            NewLimitRangeStore(s),
+		"replicationcontrollers": NewReplicationControllerStore(s),
 	}
 }
 
@@ -314,12 +335,103 @@ func NewNodeAPIStores(s *Storage) map[string]*ResourceStore {
 	}
 }
 
+// NewDeviceClassStore creates a ResourceStore for DeviceClass resources (cluster-scoped).
+// Never populated with real data — see the comment on resourcev1 registration
+// in scheme.go for why this exists.
+func NewDeviceClassStore(s *Storage) *ResourceStore {
+	return NewResourceStore(s, "deviceclasses", false,
+		func() runtime.Object { return &resourcev1.DeviceClass{} },
+		func() runtime.Object {
+			return &resourcev1.DeviceClassList{TypeMeta: metav1.TypeMeta{Kind: "DeviceClassList", APIVersion: "resource.k8s.io/v1"}}
+		},
+		func(list runtime.Object, items []runtime.Object) {
+			dcList := list.(*resourcev1.DeviceClassList)
+			for _, item := range items {
+				dcList.Items = append(dcList.Items, *item.(*resourcev1.DeviceClass))
+			}
+		},
+	)
+}
+
 // NewResourceAPIStores creates ResourceStore instances for resource.k8s.io/v1
 // resources and returns them as a map keyed by resource name.
 func NewResourceAPIStores(s *Storage) map[string]*ResourceStore {
 	return map[string]*ResourceStore{
 		"resourceclaims": NewResourceClaimStore(s),
 		"resourceslices": NewResourceSliceStore(s),
+		"deviceclasses":  NewDeviceClassStore(s),
+	}
+}
+
+// NewReplicaSetStore creates a ResourceStore for ReplicaSet resources (namespaced).
+// Never populated with real data — see the comment on the apps/v1 and
+// policy/v1 scheme registration in scheme.go for why this exists.
+func NewReplicaSetStore(s *Storage) *ResourceStore {
+	return NewResourceStore(s, "replicasets", true,
+		func() runtime.Object { return &appsv1.ReplicaSet{} },
+		func() runtime.Object {
+			return &appsv1.ReplicaSetList{TypeMeta: metav1.TypeMeta{Kind: "ReplicaSetList", APIVersion: "apps/v1"}}
+		},
+		func(list runtime.Object, items []runtime.Object) {
+			rsList := list.(*appsv1.ReplicaSetList)
+			for _, item := range items {
+				rsList.Items = append(rsList.Items, *item.(*appsv1.ReplicaSet))
+			}
+		},
+	)
+}
+
+// NewStatefulSetStore creates a ResourceStore for StatefulSet resources (namespaced).
+// Never populated with real data — see the comment on the apps/v1 and
+// policy/v1 scheme registration in scheme.go for why this exists.
+func NewStatefulSetStore(s *Storage) *ResourceStore {
+	return NewResourceStore(s, "statefulsets", true,
+		func() runtime.Object { return &appsv1.StatefulSet{} },
+		func() runtime.Object {
+			return &appsv1.StatefulSetList{TypeMeta: metav1.TypeMeta{Kind: "StatefulSetList", APIVersion: "apps/v1"}}
+		},
+		func(list runtime.Object, items []runtime.Object) {
+			ssList := list.(*appsv1.StatefulSetList)
+			for _, item := range items {
+				ssList.Items = append(ssList.Items, *item.(*appsv1.StatefulSet))
+			}
+		},
+	)
+}
+
+// NewAppsStores creates ResourceStore instances for apps/v1 resources and
+// returns them as a map keyed by resource name.
+func NewAppsStores(s *Storage) map[string]*ResourceStore {
+	return map[string]*ResourceStore{
+		"replicasets":  NewReplicaSetStore(s),
+		"statefulsets": NewStatefulSetStore(s),
+	}
+}
+
+// NewPodDisruptionBudgetStore creates a ResourceStore for PodDisruptionBudget
+// resources (namespaced). Never populated with real data — see the comment
+// on the apps/v1 and policy/v1 scheme registration in scheme.go for why this
+// exists.
+func NewPodDisruptionBudgetStore(s *Storage) *ResourceStore {
+	return NewResourceStore(s, "poddisruptionbudgets", true,
+		func() runtime.Object { return &policyv1.PodDisruptionBudget{} },
+		func() runtime.Object {
+			return &policyv1.PodDisruptionBudgetList{TypeMeta: metav1.TypeMeta{Kind: "PodDisruptionBudgetList", APIVersion: "policy/v1"}}
+		},
+		func(list runtime.Object, items []runtime.Object) {
+			pdbList := list.(*policyv1.PodDisruptionBudgetList)
+			for _, item := range items {
+				pdbList.Items = append(pdbList.Items, *item.(*policyv1.PodDisruptionBudget))
+			}
+		},
+	)
+}
+
+// NewPolicyStores creates ResourceStore instances for policy/v1 resources and
+// returns them as a map keyed by resource name.
+func NewPolicyStores(s *Storage) map[string]*ResourceStore {
+	return map[string]*ResourceStore{
+		"poddisruptionbudgets": NewPodDisruptionBudgetStore(s),
 	}
 }
 

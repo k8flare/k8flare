@@ -231,39 +231,57 @@ func applyFieldSelector(items []runtime.Object, fieldSelector string) []runtime.
 }
 
 // matchesFieldSelector checks whether a single object matches all field selectors.
-// Returns false if any selector does not match.
+// Returns false if any selector does not match. Supports both "field=value" and
+// "field!=value" (not-equal) terms, matching real Kubernetes field selector
+// syntax — real kube-scheduler's Pod informer, for example, filters with
+// "status.phase!=Succeeded,status.phase!=Failed".
 func matchesFieldSelector(obj runtime.Object, selectors []string) bool {
 	meta := getObjectMeta(obj)
 	for _, sel := range selectors {
-		parts := strings.SplitN(sel, "=", 2)
-		if len(parts) != 2 {
+		field, value, negate := parseFieldSelectorTerm(sel)
+		if field == "" {
 			continue
 		}
-		field, value := parts[0], parts[1]
+
+		var actual string
 		switch field {
 		case "metadata.name":
-			if meta != nil && meta.Name != value {
-				return false
+			if meta != nil {
+				actual = meta.Name
 			}
 		case "metadata.namespace":
-			if meta != nil && meta.Namespace != value {
-				return false
+			if meta != nil {
+				actual = meta.Namespace
 			}
 		case "spec.nodeName":
 			if pod, ok := obj.(*corev1.Pod); ok {
-				if pod.Spec.NodeName != value {
-					return false
-				}
+				actual = pod.Spec.NodeName
 			}
 		case "status.phase":
 			if pod, ok := obj.(*corev1.Pod); ok {
-				if string(pod.Status.Phase) != value {
-					return false
-				}
+				actual = string(pod.Status.Phase)
 			}
+		default:
+			continue
+		}
+
+		if (actual == value) == negate {
+			return false
 		}
 	}
 	return true
+}
+
+// parseFieldSelectorTerm splits a single "field=value" or "field!=value" term.
+// "!=" is checked before "=" since "=" alone would otherwise match inside it.
+func parseFieldSelectorTerm(sel string) (field, value string, negate bool) {
+	if idx := strings.Index(sel, "!="); idx != -1 {
+		return sel[:idx], sel[idx+2:], true
+	}
+	if idx := strings.Index(sel, "="); idx != -1 {
+		return sel[:idx], sel[idx+1:], false
+	}
+	return "", "", false
 }
 
 // Create stores a new resource in storage. It sets UID, creation timestamp,

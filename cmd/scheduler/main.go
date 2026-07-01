@@ -26,6 +26,8 @@ func main() {
 	serverURL := flag.String("server", "", "Control plane URL (e.g., https://your-k8flare.workers.dev)")
 	token := flag.String("token", os.Getenv("K3S_TOKEN"), "Cluster token")
 	dataDir := flag.String("data-dir", "/var/lib/rancher/k8flare-scheduler", "Directory for the generated kubeconfig and scheduler config")
+	verbosity := flag.String("v", "0", "klog verbosity level, forwarded to the underlying kube-scheduler")
+	insecureSkipTLSVerify := flag.Bool("insecure-skip-tls-verify", false, "Skip TLS certificate verification (for local/self-signed dev servers only)")
 	flag.Parse()
 
 	if *serverURL == "" {
@@ -40,7 +42,7 @@ func main() {
 	}
 
 	kubeconfigPath := filepath.Join(*dataDir, "kubeconfig.yaml")
-	if err := writeKubeconfig(kubeconfigPath, *serverURL, *token); err != nil {
+	if err := writeKubeconfig(kubeconfigPath, *serverURL, *token, *insecureSkipTLSVerify); err != nil {
 		log.Fatalf("failed to write kubeconfig: %v", err)
 	}
 
@@ -61,6 +63,7 @@ func main() {
 	command.SetArgs([]string{
 		"--config=" + schedulerConfigPath,
 		"--leader-elect=false",
+		"--v=" + *verbosity,
 	})
 
 	if err := command.ExecuteContext(ctx); err != nil {
@@ -73,10 +76,19 @@ func main() {
 // cluster token as authenticated with system:masters, so no client-cert
 // bootstrap (unlike cmd/agent's cacert dance) is needed here, and Cloudflare
 // Workers serves a publicly-trusted TLS cert, so no custom CA is needed either.
-func writeKubeconfig(path, serverURL, token string) error {
+//
+// serverURL must use https:// for the token to actually be sent: client-go's
+// clientcmd only applies a kubeconfig's credentials — including the bearer
+// token — when rest.IsConfigTransportTLS reports true (client-go's
+// client_config.go: "only try to read the auth information if we are
+// secure"), so a plain-http server here would make every request silently
+// unauthenticated rather than fail loudly. insecureSkipTLSVerify is for
+// local/self-signed dev servers only; production Cloudflare Workers serving
+// already has a publicly-trusted cert and doesn't need it.
+func writeKubeconfig(path, serverURL, token string, insecureSkipTLSVerify bool) error {
 	cfg := clientcmdapi.Config{
 		Clusters: map[string]*clientcmdapi.Cluster{
-			"k8flare": {Server: serverURL},
+			"k8flare": {Server: serverURL, InsecureSkipTLSVerify: insecureSkipTLSVerify},
 		},
 		AuthInfos: map[string]*clientcmdapi.AuthInfo{
 			"scheduler": {Token: token},
@@ -106,6 +118,8 @@ func writeSchedulerConfig(path, kubeconfigPath string) error {
 		},
 		ClientConnection: componentbaseconfigv1alpha1.ClientConnectionConfiguration{
 			Kubeconfig: kubeconfigPath,
+			QPS:        50,
+			Burst:      100,
 		},
 		LeaderElection: componentbaseconfigv1alpha1.LeaderElectionConfiguration{
 			LeaderElect: &leaderElect,

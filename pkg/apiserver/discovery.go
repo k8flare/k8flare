@@ -178,6 +178,14 @@ func DefaultResources() []APIResource {
 			ShortNames:   []string{"limits"},
 			Verbs:        []string{"create", "delete", "deletecollection", "get", "list", "patch", "update", "watch"},
 		},
+		{
+			Name:         "replicationcontrollers",
+			SingularName: "replicationcontroller",
+			Namespaced:   true,
+			Kind:         "ReplicationController",
+			ShortNames:   []string{"rc"},
+			Verbs:        []string{"create", "delete", "get", "list", "patch", "update", "watch"},
+		},
 	}
 }
 
@@ -269,11 +277,27 @@ func RegisterGroupDiscovery(mux *http.ServeMux) {
 		PreferredVersion: groupVersion{GroupVersion: "resource.k8s.io/v1", Version: "v1"},
 	}
 
+	appsGroup := apiGroup{
+		Name: "apps",
+		Versions: []groupVersion{
+			{GroupVersion: "apps/v1", Version: "v1"},
+		},
+		PreferredVersion: groupVersion{GroupVersion: "apps/v1", Version: "v1"},
+	}
+
+	policyGroup := apiGroup{
+		Name: "policy",
+		Versions: []groupVersion{
+			{GroupVersion: "policy/v1", Version: "v1"},
+		},
+		PreferredVersion: groupVersion{GroupVersion: "policy/v1", Version: "v1"},
+	}
+
 	mux.HandleFunc("GET /apis", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, apiGroupList{
 			Kind:       "APIGroupList",
 			APIVersion: "v1",
-			Groups:     []interface{}{coordinationGroup, storageGroup, nodeGroup, resourceGroup},
+			Groups:     []interface{}{coordinationGroup, storageGroup, nodeGroup, resourceGroup, appsGroup, policyGroup},
 		})
 	})
 
@@ -365,6 +389,63 @@ func RegisterGroupDiscovery(mux *http.ServeMux) {
 					SingularName: "resourceslice",
 					Namespaced:   false,
 					Kind:         "ResourceSlice",
+					Verbs:        []string{"create", "delete", "get", "list", "patch", "update", "watch"},
+				},
+				{
+					Name:         "deviceclasses",
+					SingularName: "deviceclass",
+					Namespaced:   false,
+					Kind:         "DeviceClass",
+					Verbs:        []string{"create", "delete", "get", "list", "patch", "update", "watch"},
+				},
+			},
+		})
+	})
+
+	mux.HandleFunc("GET /apis/apps", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, appsGroup)
+	})
+
+	mux.HandleFunc("GET /apis/apps/v1", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, apiResourceList{
+			Kind:         "APIResourceList",
+			GroupVersion: "apps/v1",
+			Resources: []APIResource{
+				{
+					Name:         "replicasets",
+					SingularName: "replicaset",
+					Namespaced:   true,
+					Kind:         "ReplicaSet",
+					ShortNames:   []string{"rs"},
+					Verbs:        []string{"create", "delete", "get", "list", "patch", "update", "watch"},
+				},
+				{
+					Name:         "statefulsets",
+					SingularName: "statefulset",
+					Namespaced:   true,
+					Kind:         "StatefulSet",
+					ShortNames:   []string{"sts"},
+					Verbs:        []string{"create", "delete", "get", "list", "patch", "update", "watch"},
+				},
+			},
+		})
+	})
+
+	mux.HandleFunc("GET /apis/policy", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, policyGroup)
+	})
+
+	mux.HandleFunc("GET /apis/policy/v1", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, apiResourceList{
+			Kind:         "APIResourceList",
+			GroupVersion: "policy/v1",
+			Resources: []APIResource{
+				{
+					Name:         "poddisruptionbudgets",
+					SingularName: "poddisruptionbudget",
+					Namespaced:   true,
+					Kind:         "PodDisruptionBudget",
+					ShortNames:   []string{"pdb"},
 					Verbs:        []string{"create", "delete", "get", "list", "patch", "update", "watch"},
 				},
 			},

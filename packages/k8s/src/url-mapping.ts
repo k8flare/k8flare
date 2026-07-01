@@ -55,6 +55,11 @@ const RESOURCE_KINDS: Record<string, string> = {
   csinodes: "CSINode",
   resourceclaims: "ResourceClaim",
   resourceslices: "ResourceSlice",
+  deviceclasses: "DeviceClass",
+  replicationcontrollers: "ReplicationController",
+  replicasets: "ReplicaSet",
+  statefulsets: "StatefulSet",
+  poddisruptionbudgets: "PodDisruptionBudget",
   dynamicworkers: "DynamicWorker",
   workertriggers: "WorkerTrigger",
 };
