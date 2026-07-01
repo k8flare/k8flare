@@ -4,6 +4,7 @@ import { LIST_SQL } from "./schema.ts";
 import { currentRevision, getCurrent, insert, type SqlExec } from "./queries.ts";
 import { handleWebSocket, broadcastEvent, type DurableObjectContext } from "./watch.ts";
 import { runScheduler, needsSchedulerAttention } from "./scheduler.ts";
+import { allocateClusterIPs, needsServiceIPAttention } from "./serviceip.ts";
 
 // The scheduler wakes on-demand (see wakeSchedulerSoon) whenever a write
 // needs its attention, so this is only a safety net for a missed trigger
@@ -51,6 +52,11 @@ export class Etcd {
     if (current === null || current > target) {
       this.ctx.storage.setAlarm(target);
     }
+  }
+
+  /** Whether any alarm-driven controller needs to react to this write. */
+  private needsControllerAttention(key: string, value: ArrayBuffer | string | null): boolean {
+    return needsSchedulerAttention(key, value) || needsServiceIPAttention(key, value);
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -116,7 +122,7 @@ export class Etcd {
       if (event) prevRevision = event.kv.modRevision;
       const id = insert(this.sql, key, true, false, 0, prevRevision, lease, value, null);
       broadcastEvent(this.ctx, this.sql, key, id);
-      if (needsSchedulerAttention(key, value)) await this.wakeSchedulerSoon();
+      if (this.needsControllerAttention(key, value)) await this.wakeSchedulerSoon();
       return jsonResponse({ revision: id }, 201);
     } else {
       const { rev, event } = getCurrent(this.sql, key, false);
@@ -143,12 +149,12 @@ export class Etcd {
         lease,
       };
       broadcastEvent(this.ctx, this.sql, key, id);
-      if (needsSchedulerAttention(key, value)) await this.wakeSchedulerSoon();
+      if (this.needsControllerAttention(key, value)) await this.wakeSchedulerSoon();
       return jsonResponse({ revision: id, kv, updated: true });
     }
   }
 
-  private handleDelete(key: string, revision: number): Response {
+  private async handleDelete(key: string, revision: number): Promise<Response> {
     const { rev, event } = getCurrent(this.sql, key, true);
     if (!event) return jsonResponse({ revision: rev, kv: null, deleted: true });
     if (event.delete) return jsonResponse({ revision: rev, kv: event.kv, deleted: true });
@@ -167,6 +173,7 @@ export class Etcd {
       oldValue,
     );
     broadcastEvent(this.ctx, this.sql, key, id);
+    if (this.needsControllerAttention(key, oldValue)) await this.wakeSchedulerSoon();
     return jsonResponse({ revision: id, kv: event.kv, deleted: true });
   }
 
@@ -190,6 +197,7 @@ export class Etcd {
   async alarm(): Promise<void> {
     this.initialize();
     runScheduler(this.ctx, this.sql, this.env);
+    allocateClusterIPs(this.ctx, this.sql);
     // Re-arm the safety-net resync; a write needing sooner attention will
     // pull this in via wakeSchedulerSoon.
     this.ctx.storage.setAlarm(Date.now() + SAFETY_NET_INTERVAL_MS);

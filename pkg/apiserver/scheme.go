@@ -7,6 +7,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	nodev1 "k8s.io/api/node/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	resourcev1 "k8s.io/api/resource/v1"
@@ -114,6 +115,14 @@ func init() {
 		&policyv1.PodDisruptionBudgetList{},
 	)
 
+	// Register discovery/v1 types. EndpointSlice is populated for real by the
+	// Endpoints/EndpointSlice controller (packages/etcd/src/endpoints.ts) --
+	// unlike the stub types above, this one is actually written to.
+	Scheme.AddKnownTypes(discoveryv1.SchemeGroupVersion,
+		&discoveryv1.EndpointSlice{},
+		&discoveryv1.EndpointSliceList{},
+	)
+
 	// Register metav1 types (Status, ListMeta, etc.)
 	metav1.AddToGroupVersion(Scheme, corev1.SchemeGroupVersion)
 	metav1.AddToGroupVersion(Scheme, coordinationv1.SchemeGroupVersion)
@@ -122,6 +131,7 @@ func init() {
 	metav1.AddToGroupVersion(Scheme, resourcev1.SchemeGroupVersion)
 	metav1.AddToGroupVersion(Scheme, appsv1.SchemeGroupVersion)
 	metav1.AddToGroupVersion(Scheme, policyv1.SchemeGroupVersion)
+	metav1.AddToGroupVersion(Scheme, discoveryv1.SchemeGroupVersion)
 
 	Codecs = serializer.NewCodecFactory(Scheme)
 

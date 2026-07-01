@@ -44,7 +44,7 @@ func defaultClusterConfig() clusterConfig {
 		SupervisorPort:     6443,
 		DisableCCM:         true,
 		DisableNPC:         true,
-		DisableKubeProxy:   true,
+		DisableKubeProxy:   false,
 		DisableServiceLB:   true,
 		FlannelBackend:     "host-gw",
 		EgressSelectorMode: "disabled",

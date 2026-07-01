@@ -4,6 +4,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	nodev1 "k8s.io/api/node/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	resourcev1 "k8s.io/api/resource/v1"
@@ -432,6 +433,33 @@ func NewPodDisruptionBudgetStore(s *Storage) *ResourceStore {
 func NewPolicyStores(s *Storage) map[string]*ResourceStore {
 	return map[string]*ResourceStore{
 		"poddisruptionbudgets": NewPodDisruptionBudgetStore(s),
+	}
+}
+
+// NewEndpointSliceStore creates a ResourceStore for EndpointSlice resources
+// (namespaced). Populated by the Endpoints/EndpointSlice controller
+// (packages/etcd/src/endpoints.ts), which reconciles Service selectors
+// against ready Pods -- unlike the stub types above, this one is real.
+func NewEndpointSliceStore(s *Storage) *ResourceStore {
+	return NewResourceStore(s, "endpointslices", true,
+		func() runtime.Object { return &discoveryv1.EndpointSlice{} },
+		func() runtime.Object {
+			return &discoveryv1.EndpointSliceList{TypeMeta: metav1.TypeMeta{Kind: "EndpointSliceList", APIVersion: "discovery.k8s.io/v1"}}
+		},
+		func(list runtime.Object, items []runtime.Object) {
+			epsList := list.(*discoveryv1.EndpointSliceList)
+			for _, item := range items {
+				epsList.Items = append(epsList.Items, *item.(*discoveryv1.EndpointSlice))
+			}
+		},
+	)
+}
+
+// NewDiscoveryStores creates ResourceStore instances for discovery.k8s.io/v1
+// resources and returns them as a map keyed by resource name.
+func NewDiscoveryStores(s *Storage) map[string]*ResourceStore {
+	return map[string]*ResourceStore{
+		"endpointslices": NewEndpointSliceStore(s),
 	}
 }
 
