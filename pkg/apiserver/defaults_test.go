@@ -122,6 +122,74 @@ func TestApplyDefaults_Pod_ContainerDefaults(t *testing.T) {
 	}
 }
 
+// TestApplyDefaults_Pod_ProbeDefaults guards against a real kubelet crash
+// found via live e2e testing: PeriodSeconds is passed straight into
+// time.NewTicker, which panics on 0 and takes down the whole kubelet
+// process, not just the offending pod.
+func TestApplyDefaults_Pod_ProbeDefaults(t *testing.T) {
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:           "test",
+					Image:          "nginx",
+					LivenessProbe:  &corev1.Probe{},
+					ReadinessProbe: &corev1.Probe{},
+					StartupProbe:   &corev1.Probe{},
+				},
+			},
+		},
+	}
+	ApplyDefaults(pod)
+
+	for _, p := range []*corev1.Probe{
+		pod.Spec.Containers[0].LivenessProbe,
+		pod.Spec.Containers[0].ReadinessProbe,
+		pod.Spec.Containers[0].StartupProbe,
+	} {
+		if p.PeriodSeconds != 10 {
+			t.Errorf("PeriodSeconds = %d, want 10", p.PeriodSeconds)
+		}
+		if p.TimeoutSeconds != 1 {
+			t.Errorf("TimeoutSeconds = %d, want 1", p.TimeoutSeconds)
+		}
+		if p.SuccessThreshold != 1 {
+			t.Errorf("SuccessThreshold = %d, want 1", p.SuccessThreshold)
+		}
+		if p.FailureThreshold != 3 {
+			t.Errorf("FailureThreshold = %d, want 3", p.FailureThreshold)
+		}
+	}
+}
+
+func TestApplyDefaults_Pod_ProbeDefaults_DoesNotOverwriteExplicitValues(t *testing.T) {
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "test",
+					Image: "nginx",
+					LivenessProbe: &corev1.Probe{
+						PeriodSeconds:    5,
+						TimeoutSeconds:   2,
+						SuccessThreshold: 1,
+						FailureThreshold: 1,
+					},
+				},
+			},
+		},
+	}
+	ApplyDefaults(pod)
+
+	p := pod.Spec.Containers[0].LivenessProbe
+	if p.PeriodSeconds != 5 {
+		t.Errorf("PeriodSeconds overwritten: got %d, want 5", p.PeriodSeconds)
+	}
+	if p.FailureThreshold != 1 {
+		t.Errorf("FailureThreshold overwritten: got %d, want 1", p.FailureThreshold)
+	}
+}
+
 func TestApplyDefaults_Pod_InitContainerDefaults(t *testing.T) {
 	pod := &corev1.Pod{
 		Spec: corev1.PodSpec{

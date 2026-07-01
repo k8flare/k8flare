@@ -67,6 +67,31 @@ func defaultContainer(c *corev1.Container) {
 	if c.ImagePullPolicy == "" {
 		c.ImagePullPolicy = corev1.PullIfNotPresent
 	}
+	defaultProbe(c.LivenessProbe)
+	defaultProbe(c.ReadinessProbe)
+	defaultProbe(c.StartupProbe)
+}
+
+// defaultProbe fills in a probe's timing fields when left unset. Real
+// kubelet passes PeriodSeconds straight into time.NewTicker, which panics
+// on a non-positive interval — a probe with an explicit action but no
+// PeriodSeconds crashes the whole kubelet process, not just that one pod.
+func defaultProbe(p *corev1.Probe) {
+	if p == nil {
+		return
+	}
+	if p.TimeoutSeconds == 0 {
+		p.TimeoutSeconds = 1
+	}
+	if p.PeriodSeconds == 0 {
+		p.PeriodSeconds = 10
+	}
+	if p.SuccessThreshold == 0 {
+		p.SuccessThreshold = 1
+	}
+	if p.FailureThreshold == 0 {
+		p.FailureThreshold = 3
+	}
 }
 
 // ApplyLimitRangeDefaults fills in any container resource requests/limits a
