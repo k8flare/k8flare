@@ -5,6 +5,7 @@ import { currentRevision, getCurrent, insert, type SqlExec } from "./queries.ts"
 import { handleWebSocket, broadcastEvent, type DurableObjectContext } from "./watch.ts";
 import { runScheduler, needsSchedulerAttention } from "./scheduler.ts";
 import { allocateClusterIPs, needsServiceIPAttention } from "./serviceip.ts";
+import { reconcileEndpoints, needsEndpointsAttention } from "./endpoints.ts";
 
 // The scheduler wakes on-demand (see wakeSchedulerSoon) whenever a write
 // needs its attention, so this is only a safety net for a missed trigger
@@ -56,7 +57,11 @@ export class Etcd {
 
   /** Whether any alarm-driven controller needs to react to this write. */
   private needsControllerAttention(key: string, value: ArrayBuffer | string | null): boolean {
-    return needsSchedulerAttention(key, value) || needsServiceIPAttention(key, value);
+    return (
+      needsSchedulerAttention(key, value) ||
+      needsServiceIPAttention(key, value) ||
+      needsEndpointsAttention(key, value)
+    );
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -198,6 +203,7 @@ export class Etcd {
     this.initialize();
     runScheduler(this.ctx, this.sql, this.env);
     allocateClusterIPs(this.ctx, this.sql);
+    reconcileEndpoints(this.ctx, this.sql);
     // Re-arm the safety-net resync; a write needing sooner attention will
     // pull this in via wakeSchedulerSoon.
     this.ctx.storage.setAlarm(Date.now() + SAFETY_NET_INTERVAL_MS);
