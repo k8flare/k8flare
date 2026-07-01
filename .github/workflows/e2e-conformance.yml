@@ -249,7 +249,7 @@ jobs:
         continue-on-error: true
         run: |
           echo "=== EXPERIMENTAL (advisory, not yet individually confirmed) conformance group ==="
-          EXPERIMENTAL_FOCUS='\[sig-node\] ConfigMap .*\[Conformance\]|\[sig-node\] Secrets .*\[Conformance\]|\[sig-api-machinery\] Namespaces \[Serial\] should (ensure that all (pods|services) are removed when a namespace is deleted|patch a Namespace|apply an update to a Namespace) \[Conformance\]'
+          EXPERIMENTAL_FOCUS='\[sig-node\] ConfigMap .*\[Conformance\]|\[sig-node\] Secrets .*\[Conformance\]|\[sig-api-machinery\] Namespaces \[Serial\] should (ensure that all (pods|services) are removed when a namespace is deleted|patch a Namespace|apply an update to a Namespace) \[Conformance\]|\[sig-network\] EndpointSlice should create Endpoints and EndpointSlices for Pods matching a Service \[Conformance\]|\[sig-network\] EndpointSlice should create and delete EndpointSlices for a Service with a selector that matches no pods \[Conformance\]|\[sig-network\] EndpointsController should create Endpoints for Pods matching a Service \[Conformance\]|\[sig-network\] EndpointsController should create and delete Endpoints for a Service with a selector that matches no pods \[Conformance\]|\[sig-network\] Services should serve a basic endpoint from pods \[Conformance\]'
 
           "$RUNNER_TEMP/kubernetes/test/bin/e2e.test" \
             --kubeconfig="$RUNNER_TEMP/kubeconfig.yaml" \
