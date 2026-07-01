@@ -44,7 +44,7 @@ func setupWranglerDev(t *testing.T) *kubernetes.Clientset {
 		testPort = findFreePort(t)
 		projectRoot := findProjectRoot(t)
 
-		devCmd = exec.Command("mise", "exec", "--", "npx", "wrangler", "dev",
+		devCmd = exec.Command("npx", "wrangler", "dev",
 			"--config", "packages/worker/wrangler.jsonc",
 			"--port", fmt.Sprintf("%d", testPort),
 			"--log-level", "error",
