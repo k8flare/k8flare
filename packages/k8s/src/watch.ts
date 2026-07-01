@@ -36,7 +36,7 @@ export function kineEventToWatchEvent(kineEvent: KineEvent): WatchEvent {
 }
 
 /**
- * Handle a watch request by opening a WebSocket to the KineStore DO and
+ * Handle a watch request by opening a WebSocket to the Etcd DO and
  * streaming Kubernetes WatchEvent JSON lines back to the client.
  *
  * `env` is typed as `any` because the full Env type lives in @k8flare/worker.
@@ -90,8 +90,8 @@ export async function handleWatch(
         .filter(Boolean) as { field: string; value: string }[])
     : [];
 
-  // Get KineStore DO stub
-  const ns = env.KINE_STORE;
+  // Get Etcd DO stub
+  const ns = env.ETCD;
   const id = ns.idFromName("default");
   const stub = ns.get(id);
 

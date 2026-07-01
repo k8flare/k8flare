@@ -45,6 +45,7 @@ func setupWranglerDev(t *testing.T) *kubernetes.Clientset {
 		projectRoot := findProjectRoot(t)
 
 		devCmd = exec.Command("mise", "exec", "--", "npx", "wrangler", "dev",
+			"--config", "packages/worker/wrangler.jsonc",
 			"--port", fmt.Sprintf("%d", testPort),
 			"--log-level", "error",
 		)
@@ -123,7 +124,7 @@ func findProjectRoot(t *testing.T) string {
 		t.Fatalf("Getwd: %v", err)
 	}
 	for {
-		if _, err := os.Stat(filepath.Join(dir, "wrangler.jsonc")); err == nil {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
 			return dir
 		}
 		parent := filepath.Dir(dir)
@@ -132,7 +133,7 @@ func findProjectRoot(t *testing.T) string {
 		}
 		dir = parent
 	}
-	t.Fatalf("Could not find project root (wrangler.jsonc) from working directory")
+	t.Fatalf("Could not find project root (go.mod) from working directory")
 	return ""
 }
 

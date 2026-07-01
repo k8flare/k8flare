@@ -1,8 +1,8 @@
 import type { Condition } from "./types.ts";
 
-/** Get the KineStore DO stub. */
+/** Get the Etcd DO stub. */
 export function dwStub(env: any): any {
-  return env.KINE_STORE.get(env.KINE_STORE.idFromName("default"));
+  return env.ETCD.get(env.ETCD.idFromName("default"));
 }
 
 /** Decode a kine value (base64 string or Uint8Array) to a UTF-8 string. */
@@ -30,7 +30,7 @@ export interface CRGetResult {
   modRevision: number;
 }
 
-/** Fetch a single CR from the KineStore DO. */
+/** Fetch a single CR from the Etcd DO. */
 export async function crGet(
   env: any,
   prefix: string,
@@ -46,7 +46,7 @@ export async function crGet(
   return { obj: JSON.parse(decodeKineValue(v)), modRevision: body.kv.modRevision };
 }
 
-/** Store a CR in the KineStore DO, optionally with a previous revision for CAS. */
+/** Store a CR in the Etcd DO, optionally with a previous revision for CAS. */
 export async function crPut(
   env: any,
   prefix: string,

@@ -29,10 +29,8 @@ func getToken() string {
 func main() {
 	mux := http.NewServeMux()
 
-	serverURL := ""
-
 	doFetch := func(req *http.Request) (*http.Response, error) {
-		ns, err := cloudflare.NewDurableObjectNamespace("KINE_STORE")
+		ns, err := cloudflare.NewDurableObjectNamespace("ETCD")
 		if err != nil {
 			return nil, err
 		}
@@ -59,7 +57,7 @@ func main() {
 	apiserver.RegisterGroupDiscovery(mux)
 
 	// Supervisor endpoints (/cacerts, /v1-k3s/*)
-	apiserver.RegisterSupervisorHandlers(mux, cam, storage, getToken, serverURL)
+	apiserver.RegisterSupervisorHandlers(mux, cam, storage, getToken)
 
 	// Core API v1 (with auth)
 	mux.Handle("/api/v1/", apiserver.AuthMiddleware(getToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

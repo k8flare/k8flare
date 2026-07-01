@@ -54,7 +54,7 @@ func defaultClusterConfig() clusterConfig {
 // RegisterSupervisorHandlers registers all k3s supervisor protocol endpoints on the mux.
 // These endpoints are called by k3s agents during bootstrap to obtain CA certificates,
 // cluster configuration, signed certificates, and server information.
-func RegisterSupervisorHandlers(mux *http.ServeMux, cam *CAManager, storage *Storage, tokenFn TokenFunc, serverURL string) {
+func RegisterSupervisorHandlers(mux *http.ServeMux, cam *CAManager, storage *Storage, tokenFn TokenFunc) {
 	// 1. /cacerts — unauthenticated, returns empty so the agent uses system CAs.
 	// Cloudflare terminates TLS with a publicly trusted certificate. If we returned
 	// our self-signed CA here, the agent would use it as the sole trust root and
@@ -147,7 +147,10 @@ func RegisterSupervisorHandlers(mux *http.ServeMux, cam *CAManager, storage *Sto
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode([]string{serverURL})
+		// Cloudflare always terminates TLS in front of the Worker, so the
+		// agent-facing URL is always https regardless of how this request
+		// itself arrived (e.g. plain HTTP under `wrangler dev` locally).
+		json.NewEncoder(w).Encode([]string{"https://" + r.Host})
 	}))
 
 	// 10. /v1-k3s/readyz — readiness check

@@ -27,9 +27,8 @@ export const GET_SQL = (includeDeleted: boolean): string => `
     kv.id AS theid, kv.name AS thename, kv.created, kv.deleted,
     kv.create_revision, kv.prev_revision, kv.lease, kv.value, kv.old_value
   FROM kine AS kv
-  WHERE kv.name = ?1 AND (kv.deleted = 0 OR ${includeDeleted ? 1 : 0})
-  ORDER BY kv.id DESC
-  LIMIT 1`;
+  WHERE kv.id = (SELECT MAX(mkv.id) FROM kine AS mkv WHERE mkv.name = ?1)
+    AND (kv.deleted = 0 OR ${includeDeleted ? 1 : 0})`;
 
 // LIST_SQL uses range queries (>= and <) instead of LIKE to avoid D1's
 // "LIKE or GLOB pattern too complex" error. ?1 = prefix, ?2 = prefixEnd

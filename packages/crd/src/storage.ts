@@ -6,9 +6,9 @@ function decodeKineValue(v: string | ArrayLike<number>): string {
   return new TextDecoder().decode(new Uint8Array(v as ArrayLike<number>));
 }
 
-/** Get the KineStore DO stub. */
+/** Get the Etcd DO stub. */
 export function dwStub(env: any): any {
-  return env.KINE_STORE.get(env.KINE_STORE.idFromName("default"));
+  return env.ETCD.get(env.ETCD.idFromName("default"));
 }
 
 /** Construct a kine storage key for a namespaced resource. */
@@ -21,7 +21,7 @@ export function crListPrefix(prefix: string, namespace: string): string {
   return namespace ? prefix + namespace + "/" : prefix;
 }
 
-/** Fetch a single CR from the KineStore DO. */
+/** Fetch a single CR from the Etcd DO. */
 export async function crGet(
   env: any,
   prefix: string,
@@ -37,7 +37,7 @@ export async function crGet(
   return { obj: JSON.parse(decodeKineValue(v)), modRevision: body.kv.modRevision };
 }
 
-/** List CRs from the KineStore DO, optionally scoped to a namespace. */
+/** List CRs from the Etcd DO, optionally scoped to a namespace. */
 export async function crList(env: any, prefix: string, namespace: string): Promise<any[]> {
   const lp = crListPrefix(prefix, namespace);
   const resp = await dwStub(env).fetch(new Request("http://do.internal/list" + lp));
@@ -48,7 +48,7 @@ export async function crList(env: any, prefix: string, namespace: string): Promi
   });
 }
 
-/** Store a CR in the KineStore DO, optionally with a previous revision for CAS. */
+/** Store a CR in the Etcd DO, optionally with a previous revision for CAS. */
 export async function crPut(
   env: any,
   prefix: string,
@@ -71,7 +71,7 @@ export async function crPut(
   );
 }
 
-/** Delete a CR from the KineStore DO. */
+/** Delete a CR from the Etcd DO. */
 export async function crDelete(
   env: any,
   prefix: string,
