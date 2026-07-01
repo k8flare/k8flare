@@ -301,11 +301,19 @@ func RegisterGroupDiscovery(mux *http.ServeMux) {
 		PreferredVersion: groupVersion{GroupVersion: "discovery.k8s.io/v1", Version: "v1"},
 	}
 
+	networkingGroup := apiGroup{
+		Name: "networking.k8s.io",
+		Versions: []groupVersion{
+			{GroupVersion: "networking.k8s.io/v1", Version: "v1"},
+		},
+		PreferredVersion: groupVersion{GroupVersion: "networking.k8s.io/v1", Version: "v1"},
+	}
+
 	mux.HandleFunc("GET /apis", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, apiGroupList{
 			Kind:       "APIGroupList",
 			APIVersion: "v1",
-			Groups:     []interface{}{coordinationGroup, storageGroup, nodeGroup, resourceGroup, appsGroup, policyGroup, discoveryGroup},
+			Groups:     []interface{}{coordinationGroup, storageGroup, nodeGroup, resourceGroup, appsGroup, policyGroup, discoveryGroup, networkingGroup},
 		})
 	})
 
@@ -474,6 +482,26 @@ func RegisterGroupDiscovery(mux *http.ServeMux) {
 					SingularName: "endpointslice",
 					Namespaced:   true,
 					Kind:         "EndpointSlice",
+					Verbs:        []string{"create", "delete", "get", "list", "patch", "update", "watch"},
+				},
+			},
+		})
+	})
+
+	mux.HandleFunc("GET /apis/networking.k8s.io", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, networkingGroup)
+	})
+
+	mux.HandleFunc("GET /apis/networking.k8s.io/v1", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, apiResourceList{
+			Kind:         "APIResourceList",
+			GroupVersion: "networking.k8s.io/v1",
+			Resources: []APIResource{
+				{
+					Name:         "servicecidrs",
+					SingularName: "servicecidr",
+					Namespaced:   false,
+					Kind:         "ServiceCIDR",
 					Verbs:        []string{"create", "delete", "get", "list", "patch", "update", "watch"},
 				},
 			},

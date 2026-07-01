@@ -261,6 +261,13 @@ func matchesFieldSelector(obj runtime.Object, selectors []string) bool {
 			if pod, ok := obj.(*corev1.Pod); ok {
 				actual = string(pod.Status.Phase)
 			}
+		case "spec.clusterIP":
+			// Needed by kube-proxy's Service informer, which filters with
+			// "spec.clusterIP!=None" to skip headless Services (proxied by
+			// DNS directly to Pod IPs, not by kube-proxy).
+			if svc, ok := obj.(*corev1.Service); ok {
+				actual = svc.Spec.ClusterIP
+			}
 		default:
 			continue
 		}

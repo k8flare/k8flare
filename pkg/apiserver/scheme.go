@@ -8,6 +8,7 @@ import (
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	nodev1 "k8s.io/api/node/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	resourcev1 "k8s.io/api/resource/v1"
@@ -123,6 +124,18 @@ func init() {
 		&discoveryv1.EndpointSliceList{},
 	)
 
+	// Register networking.k8s.io/v1 ServiceCIDR. Never populated with real
+	// data -- exists only because MultiCIDRServiceAllocator is GA and
+	// LockToDefault: true as of Kubernetes 1.35 (pkg/features/kube_features.go),
+	// so kube-proxy's server.go unconditionally creates and starts a
+	// ServiceCIDR informer regardless of whether anything in the cluster
+	// uses dynamic ServiceCIDR allocation. Same stub-type pattern as
+	// resource.k8s.io/v1 and apps/v1 above.
+	Scheme.AddKnownTypes(networkingv1.SchemeGroupVersion,
+		&networkingv1.ServiceCIDR{},
+		&networkingv1.ServiceCIDRList{},
+	)
+
 	// Register metav1 types (Status, ListMeta, etc.)
 	metav1.AddToGroupVersion(Scheme, corev1.SchemeGroupVersion)
 	metav1.AddToGroupVersion(Scheme, coordinationv1.SchemeGroupVersion)
@@ -132,6 +145,7 @@ func init() {
 	metav1.AddToGroupVersion(Scheme, appsv1.SchemeGroupVersion)
 	metav1.AddToGroupVersion(Scheme, policyv1.SchemeGroupVersion)
 	metav1.AddToGroupVersion(Scheme, discoveryv1.SchemeGroupVersion)
+	metav1.AddToGroupVersion(Scheme, networkingv1.SchemeGroupVersion)
 
 	Codecs = serializer.NewCodecFactory(Scheme)
 

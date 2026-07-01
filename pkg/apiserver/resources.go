@@ -5,6 +5,7 @@ import (
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	nodev1 "k8s.io/api/node/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	resourcev1 "k8s.io/api/resource/v1"
@@ -460,6 +461,33 @@ func NewEndpointSliceStore(s *Storage) *ResourceStore {
 func NewDiscoveryStores(s *Storage) map[string]*ResourceStore {
 	return map[string]*ResourceStore{
 		"endpointslices": NewEndpointSliceStore(s),
+	}
+}
+
+// NewServiceCIDRStore creates a ResourceStore for ServiceCIDR resources
+// (cluster-scoped). Never populated with real data -- see the comment on
+// the networking.k8s.io/v1 scheme registration in scheme.go for why this
+// exists.
+func NewServiceCIDRStore(s *Storage) *ResourceStore {
+	return NewResourceStore(s, "servicecidrs", false,
+		func() runtime.Object { return &networkingv1.ServiceCIDR{} },
+		func() runtime.Object {
+			return &networkingv1.ServiceCIDRList{TypeMeta: metav1.TypeMeta{Kind: "ServiceCIDRList", APIVersion: "networking.k8s.io/v1"}}
+		},
+		func(list runtime.Object, items []runtime.Object) {
+			cidrList := list.(*networkingv1.ServiceCIDRList)
+			for _, item := range items {
+				cidrList.Items = append(cidrList.Items, *item.(*networkingv1.ServiceCIDR))
+			}
+		},
+	)
+}
+
+// NewNetworkingStores creates ResourceStore instances for networking.k8s.io/v1
+// resources and returns them as a map keyed by resource name.
+func NewNetworkingStores(s *Storage) map[string]*ResourceStore {
+	return map[string]*ResourceStore{
+		"servicecidrs": NewServiceCIDRStore(s),
 	}
 }
 

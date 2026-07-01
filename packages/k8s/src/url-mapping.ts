@@ -60,6 +60,8 @@ const RESOURCE_KINDS: Record<string, string> = {
   replicasets: "ReplicaSet",
   statefulsets: "StatefulSet",
   poddisruptionbudgets: "PodDisruptionBudget",
+  endpointslices: "EndpointSlice",
+  servicecidrs: "ServiceCIDR",
   dynamicworkers: "DynamicWorker",
   workertriggers: "WorkerTrigger",
 };
