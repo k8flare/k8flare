@@ -7,6 +7,24 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
+func TestApplyDefaults_Pod_StatusPhasePending(t *testing.T) {
+	pod := &corev1.Pod{}
+	ApplyDefaults(pod)
+
+	if pod.Status.Phase != corev1.PodPending {
+		t.Errorf("Status.Phase = %v, want %v", pod.Status.Phase, corev1.PodPending)
+	}
+}
+
+func TestApplyDefaults_Pod_StatusPhaseNotOverwritten(t *testing.T) {
+	pod := &corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodRunning}}
+	ApplyDefaults(pod)
+
+	if pod.Status.Phase != corev1.PodRunning {
+		t.Errorf("Status.Phase overwritten: got %v, want %v", pod.Status.Phase, corev1.PodRunning)
+	}
+}
+
 func TestApplyDefaults_Pod_EnableServiceLinks(t *testing.T) {
 	pod := &corev1.Pod{}
 	ApplyDefaults(pod)
@@ -242,6 +260,65 @@ func TestApplyLimitRangeDefaults_FillsMissingRequestsAndLimits(t *testing.T) {
 	}
 	if got := c.Resources.Requests[corev1.ResourceMemory]; got.Cmp(resource.MustParse("200Mi")) != 0 {
 		t.Errorf("Requests[memory] = %v, want 200Mi", got.String())
+	}
+}
+
+// TestApplyLimitRangeDefaults_RequestDefaultsToExplicitLimit covers the real
+// Kubernetes LimitRanger nuance the official e2e conformance suite exercises:
+// a container with an explicit limit but no request gets its request
+// defaulted to that limit, NOT to LimitRange.DefaultRequest — DefaultRequest
+// only applies when the container has no limit for the resource at all.
+func TestApplyLimitRangeDefaults_RequestDefaultsToExplicitLimit(t *testing.T) {
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "test",
+					Image: "nginx",
+					Resources: corev1.ResourceRequirements{
+						// cpu: explicit limit, no request.
+						Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("300m")},
+						// memory: explicit request, no limit.
+						Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("150Mi")},
+					},
+				},
+			},
+		},
+	}
+	limitRanges := []corev1.LimitRange{
+		{
+			Spec: corev1.LimitRangeSpec{
+				Limits: []corev1.LimitRangeItem{
+					{
+						Type: corev1.LimitTypeContainer,
+						Default: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("500m"),
+							corev1.ResourceMemory: resource.MustParse("500Mi"),
+						},
+						DefaultRequest: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("100m"),
+							corev1.ResourceMemory: resource.MustParse("200Mi"),
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ApplyLimitRangeDefaults(pod, limitRanges)
+
+	c := pod.Spec.Containers[0]
+	if got := c.Resources.Limits[corev1.ResourceCPU]; got.Cmp(resource.MustParse("300m")) != 0 {
+		t.Errorf("Limits[cpu] = %v, want 300m (explicit, unchanged)", got.String())
+	}
+	if got := c.Resources.Requests[corev1.ResourceCPU]; got.Cmp(resource.MustParse("300m")) != 0 {
+		t.Errorf("Requests[cpu] = %v, want 300m (defaulted from explicit limit, not DefaultRequest's 100m)", got.String())
+	}
+	if got := c.Resources.Limits[corev1.ResourceMemory]; got.Cmp(resource.MustParse("500Mi")) != 0 {
+		t.Errorf("Limits[memory] = %v, want 500Mi (from LimitRange.Default, no explicit limit)", got.String())
+	}
+	if got := c.Resources.Requests[corev1.ResourceMemory]; got.Cmp(resource.MustParse("150Mi")) != 0 {
+		t.Errorf("Requests[memory] = %v, want 150Mi (explicit, unchanged)", got.String())
 	}
 }
 

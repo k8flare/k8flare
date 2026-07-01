@@ -1,7 +1,7 @@
 import { LIST_SQL, INSERT_SQL, GET_SQL } from "./schema.ts";
 import { prefixEnd, decodeKineValue, rowToEvent } from "./helpers.ts";
 import type { KineRow } from "./helpers.ts";
-import type { SqlExec } from "./queries.ts";
+import { getCurrent, insert, type SqlExec } from "./queries.ts";
 import { broadcastEvent, type DurableObjectContext } from "./watch.ts";
 import { parseCPU } from "./quantity.ts";
 
@@ -185,6 +185,56 @@ function persistPod(ctx: DurableObjectContext, sql: SqlExec, row: KineRow, pod: 
 }
 
 /**
+ * Emit a Kubernetes Event recording a scheduling decision. Real kube-scheduler
+ * emits a "Scheduled" (Normal) or "FailedScheduling" (Warning) Event
+ * alongside setting the pod's status directly; tooling (including the
+ * official e2e conformance suite) watches for these Events specifically,
+ * not just the PodScheduled condition, so both are needed.
+ */
+function emitSchedulingEvent(
+  ctx: DurableObjectContext,
+  sql: SqlExec,
+  pod: any,
+  type: "Normal" | "Warning",
+  reason: string,
+  message: string,
+): void {
+  const namespace = pod.metadata?.namespace;
+  const podName = pod.metadata?.name;
+  if (!namespace || !podName) return;
+
+  const now = new Date().toISOString();
+  const suffix = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  const eventName = `${podName}.${suffix}`;
+  const key = `/registry/events/${namespace}/${eventName}`;
+
+  const eventObj = {
+    kind: "Event",
+    apiVersion: "v1",
+    metadata: { name: eventName, namespace },
+    involvedObject: {
+      kind: "Pod",
+      namespace,
+      name: podName,
+      uid: pod.metadata?.uid,
+    },
+    reason,
+    message,
+    source: { component: "default-scheduler" },
+    firstTimestamp: now,
+    lastTimestamp: now,
+    count: 1,
+    type,
+  };
+
+  const encodedValue = new TextEncoder().encode(JSON.stringify(eventObj)).buffer;
+  const { rev, event: existing } = getCurrent(sql, key, true);
+  const prevRevision = existing ? existing.kv.modRevision : rev;
+  const newId = insert(sql, key, true, false, 0, prevRevision, 0, encodedValue, null);
+  broadcastEvent(ctx, sql, key, newId);
+}
+
+/**
  * Allocate PodCIDRs to nodes that don't have one.
  * Each node gets a /24 subnet from 10.42.0.0/16.
  * The subnet index is persisted in a counter key so allocations are stable.
@@ -316,13 +366,15 @@ export function scheduleUnboundPods(ctx: DurableObjectContext, sql: SqlExec): vo
 
       const candidates = schedulableNodes.filter((n) => nodeMatchesSelector(n, pod));
       if (candidates.length === 0) {
-        const changed = setPodScheduledCondition(
-          pod,
-          "False",
-          "Unschedulable",
-          `0/${schedulableNodes.length} nodes are available: node(s) didn't match Pod's node selector.`,
-        );
-        if (changed) persistPod(ctx, sql, row, pod);
+        const message = `0/${schedulableNodes.length} nodes are available: node(s) didn't match Pod's node selector.`;
+        const changed = setPodScheduledCondition(pod, "False", "Unschedulable", message);
+        if (changed) {
+          persistPod(ctx, sql, row, pod);
+          // Only emit a fresh Event when the condition actually changed, so a
+          // permanently-unschedulable pod doesn't accumulate a new Event
+          // object on every periodic safety-net tick forever.
+          emitSchedulingEvent(ctx, sql, pod, "Warning", "FailedScheduling", message);
+        }
         continue;
       }
 
@@ -334,13 +386,12 @@ export function scheduleUnboundPods(ctx: DurableObjectContext, sql: SqlExec): vo
         );
       });
       if (feasible.length === 0) {
-        const changed = setPodScheduledCondition(
-          pod,
-          "False",
-          "Unschedulable",
-          `0/${candidates.length} nodes are available: insufficient resources or hostPort conflict.`,
-        );
-        if (changed) persistPod(ctx, sql, row, pod);
+        const message = `0/${candidates.length} nodes are available: insufficient resources or hostPort conflict.`;
+        const changed = setPodScheduledCondition(pod, "False", "Unschedulable", message);
+        if (changed) {
+          persistPod(ctx, sql, row, pod);
+          emitSchedulingEvent(ctx, sql, pod, "Warning", "FailedScheduling", message);
+        }
         continue;
       }
 
@@ -350,6 +401,14 @@ export function scheduleUnboundPods(ctx: DurableObjectContext, sql: SqlExec): vo
       pod.spec.nodeName = chosen.metadata.name;
       setPodScheduledCondition(pod, "True", "Scheduled");
       persistPod(ctx, sql, row, pod);
+      emitSchedulingEvent(
+        ctx,
+        sql,
+        pod,
+        "Normal",
+        "Scheduled",
+        `Successfully assigned ${pod.metadata.namespace}/${pod.metadata.name} to ${chosen.metadata.name}`,
+      );
 
       // Commit this pod's own usage before scheduling the next pod in this pass.
       let entry = committed.get(chosen.metadata.name);
