@@ -25,18 +25,22 @@ storage is heading around them.
 `ClusterIP` Services must actually route. Three pieces, in dependency order:
 
 1. **ClusterIP allocation** — an allocator over `ServiceIPRange`
-   (`10.43.0.0/16`, already declared in `supervisor.go:37-51`), same
-   counter-in-DO pattern as PodCIDR allocation.
+   (`10.43.0.0/16`, declared in `defaultClusterConfig()`,
+   `supervisor.go:36-52`), same counter-in-DO pattern as PodCIDR allocation
+   (no ClusterIP allocator exists yet — confirmed by grep, this is new work).
 2. **EndpointSlice controller** — Service selector + ready Pods →
-   `discovery.k8s.io/v1` EndpointSlices. Note: kube-proxy in v1.36 consumes
-   **EndpointSlices, not Endpoints** — serving the legacy `Endpoints` type
-   (which we already register) is for app compatibility, so the controller
-   mirrors to both.
-3. **kube-proxy on agents** — the embedded k3s agent already ships
-   kube-proxy; it is explicitly disabled in the config the supervisor hands
-   out (`supervisor.go:45-51`). Enable it so in-cluster
-   pod→ClusterIP traffic is programmed node-side with zero Worker
-   involvement.
+   `discovery.k8s.io/v1` EndpointSlices (not registered anywhere yet —
+   confirmed). Note: kube-proxy in v1.36 consumes **EndpointSlices, not
+   Endpoints** — serving the legacy `Endpoints` type (which we already
+   register) is for app compatibility, so the controller mirrors to both.
+3. **kube-proxy on agents** — the embedded k3s agent (the real,
+   unmodified `github.com/k3s-io/k3s/pkg/agent`, run from `cmd/agent`) has
+   its own real kube-proxy code, gated by the `DisableKubeProxy` field it
+   reads from the supervisor's `/v1-k3s/config` response
+   (`k3s`'s own `pkg/agent/config/config.go`'s `getKubeProxyDisabled`); our
+   supervisor sets that field `true` (`supervisor.go:47`). Flip it to
+   `false` so in-cluster pod→ClusterIP traffic is programmed node-side with
+   zero Worker involvement.
 
 Separately, a Worker-side path resolving a Service to a backing Pod IP (via
 the existing VPC/tunnel plumbing) gives **external** HTTP exposure — that is
