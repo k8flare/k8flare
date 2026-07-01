@@ -17,7 +17,8 @@ import (
 	"github.com/k8flare/k8flare/pkg/cacert"
 	"github.com/k3s-io/k3s/pkg/agent"
 	"github.com/k3s-io/k3s/pkg/cli/cmds"
-	_ "github.com/k3s-io/k3s/pkg/executor/embed" // registers the embedded executor
+	"github.com/k3s-io/k3s/pkg/daemons/executor"
+	"github.com/k3s-io/k3s/pkg/executor/embed"
 )
 
 // prepareK3sDataDir ensures k3s data directory is extracted and adds its
@@ -109,6 +110,12 @@ func main() {
 	// The k3s flannel informer often fails to sync during startup because the
 	// Go WASM API handler is temporarily overloaded. This bypasses the informer.
 	go cacert.WriteSubnetEnv(ctx, *serverURL, *token, *nodeName)
+
+	embedded, err := embed.New(ctx, &agentConfig)
+	if err != nil {
+		log.Fatalf("failed to create embedded executor: %v", err)
+	}
+	executor.Set(embedded)
 
 	if err := agent.Run(ctx, &wg, agentConfig); err != nil {
 		log.Fatalf("agent failed: %v", err)
