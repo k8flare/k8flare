@@ -10,6 +10,37 @@ export function runScheduler(ctx: DurableObjectContext, sql: SqlExec, _env: any)
 }
 
 /**
+ * Whether writing this key is a change the scheduler should react to
+ * promptly (an unbound pod, or a node that still needs a PodCIDR) rather
+ * than waiting for the periodic safety-net resync.
+ */
+export function needsSchedulerAttention(key: string, value: ArrayBuffer | string | null): boolean {
+  if (!value) return false;
+  try {
+    if (key.startsWith("/registry/pods/")) {
+      const pod = JSON.parse(decodeKineValue(value));
+      return !pod.spec?.nodeName;
+    }
+    if (key.startsWith("/registry/nodes/")) {
+      const node = JSON.parse(decodeKineValue(value));
+      return !node.spec?.podCIDR;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+/** Whether a node is eligible to receive newly-scheduled pods. */
+function isNodeSchedulable(node: any): boolean {
+  if (node.spec?.unschedulable) return false;
+  const conditions = node.status?.conditions;
+  if (!Array.isArray(conditions)) return false;
+  const ready = conditions.find((c: any) => c.type === "Ready");
+  return ready?.status === "True";
+}
+
+/**
  * Allocate PodCIDRs to nodes that don't have one.
  * Each node gets a /24 subnet from 10.42.0.0/16.
  * The subnet index is persisted in a counter key so allocations are stable.
@@ -100,7 +131,7 @@ export function scheduleUnboundPods(ctx: DurableObjectContext, sql: SqlExec): vo
 
   if (nodeRows.length === 0) return; // No nodes available
 
-  // Decode nodes
+  // Decode nodes, keeping only those ready and schedulable to receive pods
   const nodes: string[] = [];
   for (const row of nodeRows) {
     if (row.deleted === 1) continue;
@@ -108,7 +139,7 @@ export function scheduleUnboundPods(ctx: DurableObjectContext, sql: SqlExec): vo
       const value = row.value;
       if (!value) continue;
       const obj = JSON.parse(decodeKineValue(value));
-      if (obj.metadata && obj.metadata.name) {
+      if (obj.metadata && obj.metadata.name && isNodeSchedulable(obj)) {
         nodes.push(obj.metadata.name);
       }
     } catch (_) {}

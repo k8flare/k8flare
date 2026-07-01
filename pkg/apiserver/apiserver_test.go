@@ -622,9 +622,17 @@ func TestSchedulerE2E(t *testing.T) {
 	_ = client.CoreV1().Pods(ns).Delete(ctx, podName, metav1.DeleteOptions{})
 	_ = client.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
 
-	// Create node
+	// Create node. The scheduler only considers Ready nodes, so a real
+	// Ready condition is required here — a bare Node (as a fresh
+	// registration would look before its first heartbeat) must not be
+	// scheduled to.
 	_, err := client.CoreV1().Nodes().Create(ctx, &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+		Status: corev1.NodeStatus{
+			Conditions: []corev1.NodeCondition{
+				{Type: corev1.NodeReady, Status: corev1.ConditionTrue},
+			},
+		},
 	}, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatalf("Create node: %v", err)
@@ -663,6 +671,79 @@ func TestSchedulerE2E(t *testing.T) {
 	// Cleanup
 	client.CoreV1().Pods(ns).Delete(ctx, podName, metav1.DeleteOptions{})
 	client.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+}
+
+func TestSchedulerSkipsNotReadyNodes(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+	ns := "default"
+	readyNodeName := "e2e-sched-ready-node"
+	notReadyNodeName := "e2e-sched-notready-node"
+	podName := "e2e-sched-filter-pod"
+
+	client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: ns},
+	}, metav1.CreateOptions{})
+	_ = client.CoreV1().Pods(ns).Delete(ctx, podName, metav1.DeleteOptions{})
+	_ = client.CoreV1().Nodes().Delete(ctx, readyNodeName, metav1.DeleteOptions{})
+	_ = client.CoreV1().Nodes().Delete(ctx, notReadyNodeName, metav1.DeleteOptions{})
+
+	// NotReady node: must never receive pods.
+	_, err := client.CoreV1().Nodes().Create(ctx, &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: notReadyNodeName},
+		Status: corev1.NodeStatus{
+			Conditions: []corev1.NodeCondition{
+				{Type: corev1.NodeReady, Status: corev1.ConditionFalse},
+			},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create not-ready node: %v", err)
+	}
+
+	// Ready node: the only valid scheduling target.
+	_, err = client.CoreV1().Nodes().Create(ctx, &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: readyNodeName},
+		Status: corev1.NodeStatus{
+			Conditions: []corev1.NodeCondition{
+				{Type: corev1.NodeReady, Status: corev1.ConditionTrue},
+			},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create ready node: %v", err)
+	}
+
+	_, err = client.CoreV1().Pods(ns).Create(ctx, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: ns},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "test", Image: "busybox"}},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create pod: %v", err)
+	}
+
+	var pod *corev1.Pod
+	for i := 0; i < 20; i++ {
+		time.Sleep(500 * time.Millisecond)
+		pod, err = client.CoreV1().Pods(ns).Get(ctx, podName, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("Get pod: %v", err)
+		}
+		if pod.Spec.NodeName != "" {
+			break
+		}
+	}
+
+	if pod.Spec.NodeName != readyNodeName {
+		t.Errorf("Expected pod scheduled to the Ready node %q, got %q", readyNodeName, pod.Spec.NodeName)
+	}
+
+	// Cleanup
+	client.CoreV1().Pods(ns).Delete(ctx, podName, metav1.DeleteOptions{})
+	client.CoreV1().Nodes().Delete(ctx, readyNodeName, metav1.DeleteOptions{})
+	client.CoreV1().Nodes().Delete(ctx, notReadyNodeName, metav1.DeleteOptions{})
 }
 
 func TestSupervisorCACerts(t *testing.T) {

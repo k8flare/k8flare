@@ -3,10 +3,22 @@ import { prefixEnd, base64ToArrayBuffer, jsonResponse, rowToEvent } from "./help
 import { LIST_SQL } from "./schema.ts";
 import { currentRevision, getCurrent, insert, type SqlExec } from "./queries.ts";
 import { handleWebSocket, broadcastEvent, type DurableObjectContext } from "./watch.ts";
-import { runScheduler } from "./scheduler.ts";
+import { runScheduler, needsSchedulerAttention } from "./scheduler.ts";
+
+// The scheduler wakes on-demand (see wakeSchedulerSoon) whenever a write
+// needs its attention, so this is only a safety net for a missed trigger
+// (e.g. a pod that only becomes schedulable once a node's Ready condition
+// flips, without any further pod/node write of its own) — not the primary
+// mechanism. Keeping it long keeps idle clusters cheap.
+const SAFETY_NET_INTERVAL_MS = 60_000;
+// How long to wait after a write that needs scheduling before waking the
+// alarm, so a burst of writes coalesces into a single scheduler pass.
+const DEBOUNCE_MS = 1_000;
 
 export class Etcd {
-  private ctx: DurableObjectContext & { storage: { sql: SqlExec; setAlarm(ms: number): void } };
+  private ctx: DurableObjectContext & {
+    storage: { sql: SqlExec; setAlarm(ms: number): void; getAlarm(): Promise<number | null> };
+  };
   private env: any;
   private sql: SqlExec;
   private initialized: boolean;
@@ -24,8 +36,21 @@ export class Etcd {
       this.sql.exec(stmt);
     }
     this.initialized = true;
-    // Start scheduler alarm
-    this.ctx.storage.setAlarm(Date.now() + 5000);
+    // Start the safety-net resync loop.
+    this.ctx.storage.setAlarm(Date.now() + SAFETY_NET_INTERVAL_MS);
+  }
+
+  /**
+   * Pull the alarm in to fire soon if it isn't already due sooner, so a
+   * write that needs scheduling gets handled promptly instead of waiting
+   * for the next safety-net resync. Never pushes the alarm further out.
+   */
+  private async wakeSchedulerSoon(): Promise<void> {
+    const target = Date.now() + DEBOUNCE_MS;
+    const current = await this.ctx.storage.getAlarm();
+    if (current === null || current > target) {
+      this.ctx.storage.setAlarm(target);
+    }
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -48,7 +73,7 @@ export class Etcd {
           case "GET":
             return this.handleGet(key);
           case "PUT":
-            return this.handlePut(key, await request.json());
+            return await this.handlePut(key, await request.json());
           case "DELETE":
             return this.handleDelete(key, parseInt(url.searchParams.get("revision") || "0"));
         }
@@ -79,7 +104,7 @@ export class Etcd {
     return jsonResponse({ revision: rev, kv: event.kv });
   }
 
-  private handlePut(key: string, body: any): Response {
+  private async handlePut(key: string, body: any): Promise<Response> {
     const value = body.value ? base64ToArrayBuffer(body.value) : null;
     const lease = body.lease || 0;
     const revision = body.revision || 0;
@@ -91,6 +116,7 @@ export class Etcd {
       if (event) prevRevision = event.kv.modRevision;
       const id = insert(this.sql, key, true, false, 0, prevRevision, lease, value, null);
       broadcastEvent(this.ctx, this.sql, key, id);
+      if (needsSchedulerAttention(key, value)) await this.wakeSchedulerSoon();
       return jsonResponse({ revision: id }, 201);
     } else {
       const { rev, event } = getCurrent(this.sql, key, false);
@@ -117,6 +143,7 @@ export class Etcd {
         lease,
       };
       broadcastEvent(this.ctx, this.sql, key, id);
+      if (needsSchedulerAttention(key, value)) await this.wakeSchedulerSoon();
       return jsonResponse({ revision: id, kv, updated: true });
     }
   }
@@ -163,8 +190,9 @@ export class Etcd {
   async alarm(): Promise<void> {
     this.initialize();
     runScheduler(this.ctx, this.sql, this.env);
-    // Re-schedule next alarm
-    this.ctx.storage.setAlarm(Date.now() + 5000);
+    // Re-arm the safety-net resync; a write needing sooner attention will
+    // pull this in via wakeSchedulerSoon.
+    this.ctx.storage.setAlarm(Date.now() + SAFETY_NET_INTERVAL_MS);
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
