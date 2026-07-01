@@ -3,7 +3,9 @@
 Notes from investigating how much of a real Kubernetes control plane
 (scheduler, controller-manager) k8flare currently has, and how the rest
 could be implemented within Cloudflare's execution model. This reflects the
-state as of the watch-conformance and scheduler-cost fixes.
+state as of the scheduling-conformance pass (node-selector/capacity/hostPort
+predicates, scheduling Events, LimitRange enforcement, ServiceAccount
+auto-provisioning, namespace cascading deletion).
 
 ## What exists today
 
@@ -34,14 +36,17 @@ state as of the watch-conformance and scheduler-cost fixes.
 
 ## What's missing
 
-- Any real scheduling algorithm beyond round-robin (taints/tolerations,
-  affinity, resource-aware bin-packing, `nodeSelector`).
-- Any controller-manager-equivalent reconciliation: Endpoints generation
-  from Services+Pods, Node lifecycle (a node whose agent dies is never
-  marked NotReady — it heartbeats itself via a direct write, so nothing
-  currently double-checks staleness), ServiceAccount + token
-  auto-provisioning per namespace, namespace cascading deletion, owner
-  reference garbage collection.
+- Scheduling beyond CPU-aware predicates: memory / ephemeral-storage
+  awareness, taints/tolerations, node/pod affinity and anti-affinity,
+  priority and preemption. (`nodeSelector`, CPU request-vs-capacity, and
+  `hostPort` conflict detection are implemented — see the Scheduling table
+  in the README.)
+- Controller-manager-equivalent reconciliation beyond what exists today
+  (namespace cascading deletion, default ServiceAccount auto-provisioning —
+  object only, no token/Secret issuance yet): Endpoints generation from
+  Services+Pods, Node lifecycle (a node whose agent dies is never marked
+  NotReady — it heartbeats itself via a direct write, so nothing currently
+  double-checks staleness), owner reference garbage collection.
 - Workload API types — `Deployment`, `ReplicaSet`, `StatefulSet`,
   `DaemonSet`, `Job`, `CronJob` — aren't registered in the scheme or
   resource stores at all (`pkg/apiserver/scheme.go`, `resources.go`).
@@ -109,21 +114,105 @@ DO — using it would mean the DO calling back out through the Worker into
 the Go apiserver, which then calls back into the same DO to persist the
 result. That's a lot of cross-boundary indirection for marginal benefit
 over the current direct write, which already persists and broadcasts the
-change correctly. Worth reconsidering if/when the binding subresource
-needs to do something the direct write can't (admission hooks, audit
-trail).
+change correctly.
+
+This indirection problem goes away entirely once the scheduler is an
+external process instead of code running inside the DO — see below.
+
+## Migrating to the real `kube-scheduler`
+
+The predicates above (`nodeSelector`, capacity, `hostPort`) are a
+hand-written subset of what `kube-scheduler` already does. Rather than
+keep extending the TypeScript reimplementation, the plan is to run the
+actual, unmodified `k8s.io/kubernetes/cmd/kube-scheduler` binary against
+this apiserver. This is verified feasible end-to-end, with exactly one
+real gap to close.
+
+**The embedding pattern already exists in this dependency tree.** k3s's
+own `pkg/executor/embed/embed.go` embeds kube-scheduler with the same
+three calls it uses for kubelet — `sapp.NewSchedulerCommand(ctx.Done())`
+→ `command.SetArgs(args)` → `command.ExecuteContext(ctx)`
+(`k3s-io/k3s@.../pkg/executor/embed/embed.go` lines 263–283). A
+`cmd/scheduler` binary in this repo would follow the same shape as the
+existing `cmd/agent`.
+
+**Auth is simpler than kubelet's case.** `pkg/apiserver/auth.go`'s
+`AuthMiddleware` treats any bearer token equal to the shared cluster token
+as authenticated with `system:masters`. A scheduler client needs only
+`Host` + `BearerToken` in its kubeconfig — no client-cert bootstrap, no
+`pkg/cacert` CA-swap dance. `DelegatingAuthenticationOptions` /
+`DelegatingAuthorizationOptions` (used only for the scheduler's own
+metrics/healthz endpoint) default to tolerating a missing
+TokenReview/SubjectAccessReview API, so k8flare doesn't need to implement
+either.
+
+**Leader election turns off cleanly.** `--leader-elect=false` is the same
+flag k3s itself passes when `cfg.NoLeaderElect` is set
+(`pkg/daemons/control/server.go`). With it set, `Options.Config()` never
+builds a `LeaderElectionConfig` and `Run()` calls `sched.Run(ctx)` directly
+— zero Lease API calls needed for this mode (though Lease CRUD already
+works here today if leader election is ever turned on instead).
+
+**No new dependencies.** `k8s.io/kube-scheduler`, `k8s.io/kube-controller-manager`,
+`k8s.io/controller-manager`, and `k8s.io/kubernetes` are already present in
+`go.mod` as `// indirect` requires, pulled in transitively because
+`k3s-io/k3s` itself imports `kube-scheduler/app`. Wiring up `cmd/scheduler`
+only needs `go mod tidy` to promote them to direct requires.
+
+**The one real gap: Dynamic Resource Allocation.** DRA's feature gate is
+GA and `LockToDefault: true` as of v1.36 (`pkg/features/kube_features.go`)
+— it cannot be turned off with `--feature-gates`. `scheduler.New()`
+unconditionally starts informers for `ResourceClaim` and `ResourceSlice`
+(`resource.k8s.io/v1`) whenever that gate is on, regardless of which
+plugins are enabled in the scheduler profile. Since neither type is
+registered in `pkg/apiserver/scheme.go`, those informers would never sync
+and the scheduler would hang forever in `WaitForCacheSync`. The fix is
+mechanical: register empty `ResourceStore`s for `ResourceClaim` and
+`ResourceSlice`, the same pattern already used for `CSIDriver`/`CSINode`
+in `pkg/apiserver/resources.go` — they never need real data, just to exist
+so the informer can sync against an empty list.
+
+**PV/PVC/StorageClass-touching plugins are avoidable via config, unlike
+DRA.** `VolumeBinding`, `VolumeRestrictions`, `NodeVolumeLimits`, and
+`VolumeZone` all touch storage types this apiserver doesn't register, but
+unlike DRA these are ordinary enabled/disabled plugins — disabling them in
+`KubeSchedulerConfiguration` (`profiles[0].plugins.multiPoint.disabled`)
+prevents their informers from ever being registered in the first place
+(`pkg/scheduler/eventhandlers.go`'s `addAllEventHandlers` only wires up
+GVKs required by _enabled_ plugins).
+
+**Binding becomes a normal external call.** Once the scheduler runs
+outside the DO, assigning `nodeName` naturally goes through the real
+`pods/binding` subresource (already implemented in
+`pkg/apiserver/subresource.go`, currently unused) as an ordinary external
+HTTP POST — the DO-calls-Worker-calls-DO indirection concern noted above
+no longer applies, since the caller is now a separate process, exactly
+like kubelet's own status PATCH calls today.
+
+**Cross-compilation and CI** follow the existing `cmd/agent` pattern
+exactly — two more `GOOS=linux GOARCH={arm64,amd64}` build steps in
+`.github/workflows/release.yml`, output as
+`k8flare-scheduler-linux-{arm64,amd64}`.
 
 ## Suggested sequencing for the rest
 
-1. **Scheduler cost + correctness** (this pass): event-driven alarm,
-   Ready/unschedulable filtering.
-2. **Small reconcilers on the same pattern**: Node lifecycle (lease
-   staleness → NotReady), ServiceAccount + token auto-provisioning per
-   namespace, namespace cascading deletion. These are all "watch one or
-   two resource types, fix up related state" — the same shape as the
-   existing scheduler functions, and establish the reconciler pattern
-   other controllers can follow.
-3. **Workload API types**: register `ReplicaSet` (and its Pod-template
+1. ~~Scheduler cost + correctness~~ — done: event-driven alarm,
+   Ready/unschedulable filtering, `nodeSelector`, capacity, `hostPort`,
+   scheduling Events, LimitRange enforcement.
+2. ~~ServiceAccount auto-provisioning, namespace cascading deletion~~ —
+   done (object-level only for ServiceAccount; no token/Secret issuance
+   yet).
+3. **Real `kube-scheduler` migration** (next): see "Migrating to the real
+   `kube-scheduler`" above. Confirmed feasible with one mechanical gap to
+   close (stub `ResourceClaim`/`ResourceSlice` stores).
+4. **Endpoints controller**: Service + Pod label selectors → Endpoints,
+   paired with a Worker-side HTTP path so `ClusterIP` Services actually
+   route traffic — the most-hit gap for anyone trying to run more than a
+   single bare Pod.
+5. **Node lifecycle**: lease staleness → `NotReady`, so a dead agent's
+   pods actually get rescheduled instead of being considered "on" a node
+   forever.
+6. **Workload API types**: register `ReplicaSet` (and its Pod-template
    diffing/create/delete reconciler) first, since `Deployment` is a
    rollout state machine layered on top of `ReplicaSet` management, not a
    separate reconciliation loop.
