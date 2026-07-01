@@ -64,10 +64,52 @@ reasonable basis for a conservative planning assumption, not a documented
 fact. **This design treats the 10 GB as shared** (the conservative
 assumption: if wrong, we get more headroom for free; if we assumed
 independent 10 GB and were wrong, namespace DOs would be under-provisioned
-budget in the design). Re-verify against Cloudflare's docs before relying on
-this for capacity planning. (Whether colocated facets execute truly in
-parallel is separately undocumented — flagged unverified; the design below
-does not depend on it either way.)
+budget in the design). (Whether colocated facets execute truly in parallel is
+separately undocumented — flagged unverified; the design below does not
+depend on it either way.)
+
+**Empirical check against a real deployment (July 2026, KOOFFICE account).**
+Deployed a throwaway supervisor-DO Worker implementing the documented facets
+pattern and exercised it directly. Findings:
+
+- A facet's `class` **must** come from the Dynamic Workers loader
+  (`env.LOADER.get(...).getDurableObjectClass(...)`) — passing a plain,
+  statically-imported `DurableObject` subclass to `ctx.facets.get(name, () =>
+({ class: LocalClass }))` fails at runtime with `TypeError: Incorrect type
+for the 'class' field on 'StartupOptions': the provided value is not of
+type 'DurableObjectClass or LoopbackDurableObjectNamespace or
+LoopbackColoLocalActorNamespace'`. This isn't stated as a hard requirement
+  anywhere in the docs (every example just happens to use the loader) —
+  confirmed here to actually be one. Practically: our internal-CRD-as-facet
+  design must go through the same `worker_loaders`/`LOADER` machinery
+  `packages/dynamic-worker` already uses for user-supplied code, even for our
+  own first-party facet classes.
+- Storage isolation holds under real, nontrivial data, not just toy values:
+  wrote independent keys into two sibling facets and the supervisor, then
+  confirmed cross-reads return nothing (each only sees its own writes).
+  `abort()` preserves a facet's data on next `get()`; `delete()` genuinely
+  destroys it (subsequent `get()` returns a fresh, empty facet). Neither
+  operation on one facet affects sibling facets or the supervisor.
+- **`PRAGMA` statements are rejected** inside a Durable Object's
+  `ctx.storage.sql.exec()` with `Error: not authorized: SQLITE_AUTH` —
+  Cloudflare deliberately blocks this introspection path. There is
+  consequently **no way for application code to directly query a facet's or
+  a DO's actual on-disk SQLite size**; the wrangler CLI has no equivalent
+  command either. This is a real operational gap for the design above: a
+  cluster or namespace DO cannot self-report "how close to 10 GB am I"
+  without maintaining its own byte-accounting (e.g. summing value lengths on
+  write) rather than asking SQLite directly.
+- Wrote ~1.01 GB into one facet (1,010 × 1 MB rows, confirmed via `SELECT
+COUNT(*)`) with no error, no slowdown, and no smaller-than-10-GB checkpoint
+  encountered. Concurrently wrote 100 MB into the supervisor and created a
+  brand-new sibling facet — both succeeded immediately and remained correctly
+  isolated from the 1 GB facet's data throughout. This confirms coexistence
+  and isolation hold under real data volume, but **1 GB is too small to
+  distinguish shared-vs-independent 10 GB** — under either model, 1 GB
+  (or even 1 GB + 100 MB combined) is nowhere near either a 10 GB shared
+  ceiling or a 10 GB-per-facet independent one. Definitively resolving that
+  question needs a test near the actual boundary (one side filled to ~9 GB+,
+  then checked whether the other side is constrained), which was not run.
 
 ## The constraint that shapes everything: resourceVersion ordering
 
