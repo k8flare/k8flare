@@ -267,3 +267,27 @@ func NewNodeAPIStores(s *Storage) map[string]*ResourceStore {
 		"runtimeclasses": NewRuntimeClassStore(s),
 	}
 }
+
+// NamespacedResourceStores collects every ResourceStore that is namespaced
+// across however many store maps are passed in, de-duplicating by resource
+// name (e.g. "events" may appear in more than one map pointing at the same
+// underlying storage).
+//
+// Derived from the existing registration maps rather than hand-listed, so a
+// future namespaced resource type added to any of
+// NewResourceStores/NewLeaseStores/etc. is automatically swept on namespace
+// deletion without a second place to remember to update.
+func NamespacedResourceStores(storeMaps ...map[string]*ResourceStore) []*ResourceStore {
+	seen := make(map[string]bool)
+	var out []*ResourceStore
+	for _, m := range storeMaps {
+		for _, rs := range m {
+			if !rs.namespaced || seen[rs.resource] {
+				continue
+			}
+			seen[rs.resource] = true
+			out = append(out, rs)
+		}
+	}
+	return out
+}

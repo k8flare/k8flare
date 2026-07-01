@@ -363,3 +363,34 @@ func (rs *ResourceStore) Delete(ctx context.Context, namespace, name string) (ru
 
 	return obj, nil
 }
+
+// DeleteAllInNamespace removes every object of this resource type within the
+// given namespace. Used by namespace cascading deletion (see
+// namespacedelete.go) to sweep dependents before the Namespace object itself
+// is removed.
+//
+// Deletes are unconditional (revision 0), not CAS against the revision seen
+// during listing: the intent is "this object's namespace is going away,
+// remove whatever is there now," not "abort if it changed since I looked."
+func (rs *ResourceStore) DeleteAllInNamespace(ctx context.Context, namespace string) (int, error) {
+	if !rs.namespaced {
+		return 0, fmt.Errorf("resource %q is not namespaced", rs.resource)
+	}
+	prefix := rs.storagePrefix(namespace)
+	objs, _, err := rs.storage.List(ctx, prefix, 0, 0)
+	if err != nil {
+		return 0, fmt.Errorf("list %s for cascade delete: %w", rs.resource, err)
+	}
+	for _, obj := range objs {
+		// obj.Key is the full stored key (e.g. "/registry/pods/ns/name"), but
+		// Storage.Delete expects a key relative to its own prefix (it
+		// re-prepends the prefix itself) — must strip it here or the request
+		// double-prefixes and fails to find the key.
+		key := strings.TrimPrefix(obj.Key, rs.storage.prefix)
+		// Revision 0 means unconditional delete (see Storage.Delete/handleDelete).
+		if _, err := rs.storage.Delete(ctx, key, 0); err != nil {
+			return 0, fmt.Errorf("delete %s: %w", obj.Key, err)
+		}
+	}
+	return len(objs), nil
+}

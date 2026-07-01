@@ -48,6 +48,7 @@ func main() {
 	eventStores := apiserver.NewEventStores(storage)
 	storageStores := apiserver.NewStorageStores(storage)
 	nodeAPIStores := apiserver.NewNodeAPIStores(storage)
+	namespacedStores := apiserver.NamespacedResourceStores(stores, leaseStores, eventStores, storageStores, nodeAPIStores)
 
 	// CA Manager for supervisor protocol
 	cam := apiserver.NewCAManager(storage)
@@ -62,7 +63,7 @@ func main() {
 	// Core API v1 (with auth)
 	mux.Handle("/api/v1/", apiserver.AuthMiddleware(getToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apiserver.BootstrapCluster(r.Context(), stores)
-		apiserver.HandleAPI(w, r, stores)
+		apiserver.HandleAPI(w, r, stores, namespacedStores)
 	})))
 
 	// coordination.k8s.io/v1 (with auth)

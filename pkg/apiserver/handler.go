@@ -20,17 +20,13 @@ func decodeBody(body []byte) (runtime.Object, error) {
 	return obj, nil
 }
 
-// RegisterAPIHandlers registers a single handler on mux that dispatches
-// Kubernetes-style /api/v1/ requests to the appropriate ResourceStore.
-func RegisterAPIHandlers(mux *http.ServeMux, stores map[string]*ResourceStore) {
-	mux.HandleFunc("/api/v1/", func(w http.ResponseWriter, r *http.Request) {
-		HandleAPI(w, r, stores)
-	})
-}
-
 // HandleAPI parses a Kubernetes API URL and dispatches to the correct
 // ResourceStore method based on the HTTP method and path segments.
-func HandleAPI(w http.ResponseWriter, r *http.Request, stores map[string]*ResourceStore) {
+//
+// namespacedStores is the set of namespaced ResourceStores to sweep when a
+// Namespace object itself is deleted (see NamespacedResourceStores and the
+// http.MethodDelete case below).
+func HandleAPI(w http.ResponseWriter, r *http.Request, stores map[string]*ResourceStore, namespacedStores []*ResourceStore) {
 	// Check for watch requests
 	if r.URL.Query().Get("watch") == "true" {
 		resource, namespace := parseWatchParams(r.URL.Path)
@@ -132,6 +128,24 @@ func HandleAPI(w http.ResponseWriter, r *http.Request, stores map[string]*Resour
 		if name == "" {
 			writeStatusError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "name is required for delete")
 			return
+		}
+
+		if resource == "namespaces" {
+			// Check existence first, so deleting an already-gone namespace
+			// still reports NotFound immediately rather than doing a List
+			// call per namespaced resource type first.
+			if _, err := store.Get(ctx, namespace, name); err != nil {
+				writeResourceError(w, err, resource, name)
+				return
+			}
+			// Sweep dependents BEFORE deleting the Namespace object: if this
+			// fails partway, the Namespace stays visible/gettable, so a
+			// client retry of the same DELETE is the correct recovery path
+			// (every step is idempotent).
+			if err := DeleteNamespaceDependents(ctx, namespacedStores, name); err != nil {
+				writeInternalError(w, err)
+				return
+			}
 		}
 
 		obj, err := store.Delete(ctx, namespace, name)

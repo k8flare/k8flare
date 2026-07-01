@@ -301,6 +301,67 @@ func TestDefaultServiceAccountAutoProvision(t *testing.T) {
 	client.CoreV1().Namespaces().Delete(ctx, nsName, metav1.DeleteOptions{})
 }
 
+func TestNamespaceCascadingDelete(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+	nsName := "test-ns-cascade"
+	podName := "test-cascade-pod"
+	cmName := "test-cascade-cm"
+
+	_ = client.CoreV1().Namespaces().Delete(ctx, nsName, metav1.DeleteOptions{})
+
+	t.Run("SweepsDependents", func(t *testing.T) {
+		if _, err := client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: nsName},
+		}, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("Create namespace: %v", err)
+		}
+		if _, err := client.CoreV1().Pods(nsName).Create(ctx, &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: nsName},
+			Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "nginx", Image: "nginx"}}},
+		}, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("Create pod: %v", err)
+		}
+		if _, err := client.CoreV1().ConfigMaps(nsName).Create(ctx, &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: nsName},
+			Data:       map[string]string{"k": "v"},
+		}, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("Create configmap: %v", err)
+		}
+
+		if err := client.CoreV1().Namespaces().Delete(ctx, nsName, metav1.DeleteOptions{}); err != nil {
+			t.Fatalf("Delete namespace: %v", err)
+		}
+
+		if _, err := client.CoreV1().Namespaces().Get(ctx, nsName, metav1.GetOptions{}); !errors.IsNotFound(err) {
+			t.Errorf("Expected namespace NotFound, got: %v", err)
+		}
+		if _, err := client.CoreV1().Pods(nsName).Get(ctx, podName, metav1.GetOptions{}); !errors.IsNotFound(err) {
+			t.Errorf("Expected pod NotFound after cascade delete, got: %v", err)
+		}
+		if _, err := client.CoreV1().ConfigMaps(nsName).Get(ctx, cmName, metav1.GetOptions{}); !errors.IsNotFound(err) {
+			t.Errorf("Expected configmap NotFound after cascade delete, got: %v", err)
+		}
+	})
+
+	t.Run("RecreateAfterCascadeDelete", func(t *testing.T) {
+		// Directly closes the friction found this session: recreating a
+		// namespace + pod with the same names must succeed, not AlreadyExists.
+		if _, err := client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: nsName},
+		}, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("Recreate namespace: %v", err)
+		}
+		if _, err := client.CoreV1().Pods(nsName).Create(ctx, &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: nsName},
+			Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "nginx", Image: "nginx"}}},
+		}, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("Recreate pod after cascade delete: %v", err)
+		}
+		_ = client.CoreV1().Namespaces().Delete(ctx, nsName, metav1.DeleteOptions{})
+	})
+}
+
 func TestConfigMapCRUD(t *testing.T) {
 	client := setupWranglerDev(t)
 	ctx := context.Background()
