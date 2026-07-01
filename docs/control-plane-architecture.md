@@ -22,7 +22,7 @@ state as of the watch-conformance and scheduler-cost fixes.
   over WebSocket; the Worker (`packages/k8s/src/watch.ts`) translates them
   into Kubernetes `WatchEvent`s with correct ADDED/MODIFIED/DELETED
   synthesis on label/field-selector transitions, and watch-bookmark support
-  for client-go reflectors. This pipeline only serves *external* watchers
+  for client-go reflectors. This pipeline only serves _external_ watchers
   (kubectl, kubelet, informers) today — nothing inside the Worker/DO
   consumes its own event stream to drive reconciliation.
 - **A generic CRD framework** (`packages/crd`) used by both `DynamicWorker`
@@ -54,11 +54,11 @@ Real Kubernetes controllers are level-triggered: watch + periodic full
 resync, so that a missed or dropped watch event is eventually corrected
 regardless. Of Cloudflare's primitives:
 
-| Primitive | Granularity | Fit for controller reconciliation |
-|---|---|---|
-| Cron Triggers | 1 minute minimum | Too coarse for anything reactive; fine for genuinely periodic, user-facing jobs (this is what `WorkerTrigger`'s unused `cron` type is for) |
-| Queues | Async, at-least-once | Good for decoupling "event happened" from "action taken," not explored yet |
-| Durable Object Alarms | Sub-second, single alarm per DO, persists across restarts | Matches the watch+resync pattern well — this is what the existing scheduler already uses |
+| Primitive             | Granularity                                               | Fit for controller reconciliation                                                                                                          |
+| --------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Cron Triggers         | 1 minute minimum                                          | Too coarse for anything reactive; fine for genuinely periodic, user-facing jobs (this is what `WorkerTrigger`'s unused `cron` type is for) |
+| Queues                | Async, at-least-once                                      | Good for decoupling "event happened" from "action taken," not explored yet                                                                 |
+| Durable Object Alarms | Sub-second, single alarm per DO, persists across restarts | Matches the watch+resync pattern well — this is what the existing scheduler already uses                                                   |
 
 **Durable Object Alarms are the right primitive for controller
 reconciliation**, and should stay co-located with the Etcd DO's storage
@@ -95,7 +95,7 @@ actual scheduling latency in the common case dropped from "up to 5s" to
 
 ## Scheduler correctness fix bundled with the above
 
-The round-robin scheduler picked from *every* registered Node regardless
+The round-robin scheduler picked from _every_ registered Node regardless
 of its Ready condition or `spec.unschedulable`. `isNodeSchedulable()` now
 filters candidates to Ready, schedulable nodes before assigning — a node
 that's registered but hasn't reported Ready yet (or was cordoned) is no
