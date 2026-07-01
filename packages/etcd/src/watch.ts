@@ -28,9 +28,7 @@ export function handleWebSocket(
     // Filter by prefix in JS instead of SQL LIKE
     for (const row of rows) {
       const name = row.thename;
-      const match = prefix.endsWith("/")
-        ? name.startsWith(prefix)
-        : name === prefix;
+      const match = prefix.endsWith("/") ? name.startsWith(prefix) : name === prefix;
       if (match) server.send(JSON.stringify({ events: [rowToEvent(row)] }));
     }
   }
@@ -56,9 +54,7 @@ export function broadcastEvent(
   for (const ws of sockets) {
     const tags = ctx.getTags(ws);
     const prefix = tags[0] || "/";
-    const matches = prefix.endsWith("/")
-      ? key.startsWith(prefix)
-      : key === prefix;
+    const matches = prefix.endsWith("/") ? key.startsWith(prefix) : key === prefix;
     if (matches) {
       try {
         ws.send(msg);

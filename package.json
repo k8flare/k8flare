@@ -1,10 +1,10 @@
 {
   "name": "k8flare",
   "private": true,
-  "type": "module",
   "workspaces": [
     "packages/*"
   ],
+  "type": "module",
   "scripts": {
     "dev": "wrangler dev --config packages/worker/wrangler.jsonc",
     "deploy": "wrangler deploy --config packages/worker/wrangler.jsonc",
@@ -12,11 +12,11 @@
     "test": "vitest",
     "build:wasm": "go run github.com/syumai/workers/cmd/workers-assets-gen -mode=go && GOOS=js GOARCH=wasm go build -o ./build/app.wasm ."
   },
-  "packageManager": "pnpm@10.33.0",
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260317.1",
     "typescript": "^6.0.2",
     "vite-plus": "^0.1.14",
     "wrangler": "^4.77.0"
-  }
+  },
+  "packageManager": "pnpm@10.33.0"
 }

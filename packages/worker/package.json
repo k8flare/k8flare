@@ -7,11 +7,11 @@
     "#go-worker": "../../build/worker.mjs"
   },
   "dependencies": {
-    "@k8flare/etcd": "workspace:*",
-    "@k8flare/k8s": "workspace:*",
     "@k8flare/crd": "workspace:*",
     "@k8flare/dynamic-worker": "workspace:*",
-    "@k8flare/worker-trigger": "workspace:*",
-    "@k8flare/proxy": "workspace:*"
+    "@k8flare/etcd": "workspace:*",
+    "@k8flare/k8s": "workspace:*",
+    "@k8flare/proxy": "workspace:*",
+    "@k8flare/worker-trigger": "workspace:*"
   }
 }

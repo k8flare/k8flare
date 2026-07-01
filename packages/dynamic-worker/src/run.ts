@@ -81,9 +81,7 @@ export async function handleDynamicWorkerRun(
     const worker = env.LOADER.get(cacheId, () => workerCode);
 
     // Forward the incoming request body as input
-    const input = req.headers.get("Content-Type")?.includes("json")
-      ? await req.text()
-      : "{}";
+    const input = req.headers.get("Content-Type")?.includes("json") ? await req.text() : "{}";
 
     const entrypointName = spec.entrypoint || undefined;
     const entrypoint = worker.getEntrypoint(entrypointName);

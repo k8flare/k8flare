@@ -50,10 +50,7 @@ export class Etcd {
           case "PUT":
             return this.handlePut(key, await request.json());
           case "DELETE":
-            return this.handleDelete(
-              key,
-              parseInt(url.searchParams.get("revision") || "0"),
-            );
+            return this.handleDelete(key, parseInt(url.searchParams.get("revision") || "0"));
         }
       }
 
@@ -98,10 +95,27 @@ export class Etcd {
     } else {
       const { rev, event } = getCurrent(this.sql, key, false);
       if (!event || event.delete) return jsonResponse({ revision: rev, kv: null, updated: false });
-      if (event.kv.modRevision !== revision) return jsonResponse({ revision: rev, kv: event.kv, updated: false }, 409);
+      if (event.kv.modRevision !== revision)
+        return jsonResponse({ revision: rev, kv: event.kv, updated: false }, 409);
       const oldValue = body.value ? base64ToArrayBuffer(event.kv.value) : null;
-      const id = insert(this.sql, key, false, false, event.kv.createRevision, event.kv.modRevision, lease, value, oldValue);
-      const kv = { key, createRevision: event.kv.createRevision, modRevision: id, value: body.value, lease };
+      const id = insert(
+        this.sql,
+        key,
+        false,
+        false,
+        event.kv.createRevision,
+        event.kv.modRevision,
+        lease,
+        value,
+        oldValue,
+      );
+      const kv = {
+        key,
+        createRevision: event.kv.createRevision,
+        modRevision: id,
+        value: body.value,
+        lease,
+      };
       broadcastEvent(this.ctx, this.sql, key, id);
       return jsonResponse({ revision: id, kv, updated: true });
     }
@@ -111,9 +125,20 @@ export class Etcd {
     const { rev, event } = getCurrent(this.sql, key, true);
     if (!event) return jsonResponse({ revision: rev, kv: null, deleted: true });
     if (event.delete) return jsonResponse({ revision: rev, kv: event.kv, deleted: true });
-    if (revision !== 0 && event.kv.modRevision !== revision) return jsonResponse({ revision: rev, kv: event.kv, deleted: false });
+    if (revision !== 0 && event.kv.modRevision !== revision)
+      return jsonResponse({ revision: rev, kv: event.kv, deleted: false });
     const oldValue = event.kv.value ? base64ToArrayBuffer(event.kv.value) : null;
-    const id = insert(this.sql, key, false, true, event.kv.createRevision, event.kv.modRevision, 0, oldValue, oldValue);
+    const id = insert(
+      this.sql,
+      key,
+      false,
+      true,
+      event.kv.createRevision,
+      event.kv.modRevision,
+      0,
+      oldValue,
+      oldValue,
+    );
     broadcastEvent(this.ctx, this.sql, key, id);
     return jsonResponse({ revision: id, kv: event.kv, deleted: true });
   }
@@ -146,7 +171,12 @@ export class Etcd {
     if (message === "ping") ws.send("pong");
   }
 
-  async webSocketClose(ws: WebSocket, code: number, reason: string, wasClean: boolean): Promise<void> {
+  async webSocketClose(
+    ws: WebSocket,
+    code: number,
+    reason: string,
+    wasClean: boolean,
+  ): Promise<void> {
     ws.close(code, reason);
   }
 

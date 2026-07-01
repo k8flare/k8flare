@@ -1,11 +1,7 @@
 import goWorker from "#go-worker";
 export { Etcd } from "@k8flare/etcd";
 
-import {
-  isKubeletProxyRequest,
-  handleKubeletProxy,
-  handleRemotedialConnect,
-} from "@k8flare/proxy";
+import { isKubeletProxyRequest, handleKubeletProxy, handleRemotedialConnect } from "@k8flare/proxy";
 import { handleWatch, dwAuth } from "@k8flare/k8s";
 import {
   parseCustomGroupPath,
@@ -53,7 +49,13 @@ async function handleCustomGroupAPI(
   const parsed = parseCustomGroupPath(path);
   if (!parsed) {
     return Response.json(
-      { kind: "Status", apiVersion: "v1", status: "Failure", message: `invalid path "${path}"`, code: 404 },
+      {
+        kind: "Status",
+        apiVersion: "v1",
+        status: "Failure",
+        message: `invalid path "${path}"`,
+        code: 404,
+      },
       { status: 404 },
     );
   }
@@ -68,7 +70,13 @@ async function handleCustomGroupAPI(
   }
 
   return Response.json(
-    { kind: "Status", apiVersion: "v1", status: "Failure", message: `unknown resource "${resource}"`, code: 404 },
+    {
+      kind: "Status",
+      apiVersion: "v1",
+      status: "Failure",
+      message: `unknown resource "${resource}"`,
+      code: 404,
+    },
     { status: 404 },
   );
 }

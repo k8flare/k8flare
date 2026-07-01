@@ -15,6 +15,7 @@ kubectl → Cloudflare Worker (Go WASM + TypeScript)
 ```
 
 **Components:**
+
 - **Worker** — TypeScript routing layer + Go WASM K8s API server
 - **Etcd** — Durable Object with SQLite, implements kine-compatible storage
 - **Agent** — k3s agent binary with Cloudflare-specific adaptations (CA replacement, token auth, flannel bypass)
@@ -71,9 +72,9 @@ See [scripts/ec2-user-data.sh](scripts/ec2-user-data.sh) for automated EC2 boots
 
 ### Worker Environment Variables
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `K3S_TOKEN` | Yes | Cluster authentication token. Generate with `openssl rand -hex 32` |
+| Variable    | Required | Description                                                        |
+| ----------- | -------- | ------------------------------------------------------------------ |
+| `K3S_TOKEN` | Yes      | Cluster authentication token. Generate with `openssl rand -hex 32` |
 
 ### Optional: VPC Service (for kubelet proxy)
 
@@ -84,6 +85,7 @@ To enable `kubectl logs` and `kubectl exec`, set up a Cloudflare Tunnel + VPC Se
 ```
 
 Then add the VPC binding to `packages/worker/wrangler.jsonc`:
+
 ```jsonc
 "vpc_services": [{ "binding": "KUBELET_VPC", "service_id": "YOUR_SERVICE_ID" }]
 ```

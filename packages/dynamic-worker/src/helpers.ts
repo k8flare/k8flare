@@ -38,9 +38,7 @@ export async function crGet(
   name: string,
 ): Promise<CRGetResult | null> {
   const key = crKey(prefix, namespace, name);
-  const resp = await dwStub(env).fetch(
-    new Request("http://do.internal/key" + key),
-  );
+  const resp = await dwStub(env).fetch(new Request("http://do.internal/key" + key));
   if (!resp.ok) return null;
   const body = await resp.json();
   if (!body.kv) return null;
@@ -95,10 +93,7 @@ export function makeCondition(
  *   - Otherwise, only `reason` and `message` are updated.
  * If no condition with the type exists, it is appended.
  */
-export function setCondition(
-  statusObj: { conditions?: Condition[] },
-  condition: Condition,
-): void {
+export function setCondition(statusObj: { conditions?: Condition[] }, condition: Condition): void {
   if (!statusObj.conditions) statusObj.conditions = [];
   const idx = statusObj.conditions.findIndex((c) => c.type === condition.type);
   if (idx >= 0) {

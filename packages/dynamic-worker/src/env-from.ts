@@ -24,9 +24,7 @@ export async function resolveEnvFrom(
       return {};
     }
 
-    const resp = await dwStub(env).fetch(
-      new Request("http://do.internal/key" + resourceKey),
-    );
+    const resp = await dwStub(env).fetch(new Request("http://do.internal/key" + resourceKey));
     if (!resp.ok) {
       if (ref.optional) return {};
       throw new Error(`envFrom: "${resourceKey}" not found`);

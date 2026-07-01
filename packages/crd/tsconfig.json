@@ -9,8 +9,5 @@
     }
   },
   "include": ["src"],
-  "references": [
-    { "path": "../k8s" },
-    { "path": "../etcd" }
-  ]
+  "references": [{ "path": "../k8s" }, { "path": "../etcd" }]
 }

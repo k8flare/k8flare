@@ -5,7 +5,7 @@
   "main": "src/index.ts",
   "dependencies": {
     "@k8flare/crd": "workspace:*",
-    "@k8flare/k8s": "workspace:*",
-    "@k8flare/etcd": "workspace:*"
+    "@k8flare/etcd": "workspace:*",
+    "@k8flare/k8s": "workspace:*"
   }
 }

@@ -1,9 +1,4 @@
-export type {
-  Condition,
-  DynamicWorkerSpec,
-  DynamicWorkerStatus,
-  EnvFromRef,
-} from "./types.ts";
+export type { Condition, DynamicWorkerSpec, DynamicWorkerStatus, EnvFromRef } from "./types.ts";
 
 export {
   DW_GROUP,

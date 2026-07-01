@@ -10,9 +10,5 @@
     }
   },
   "include": ["src"],
-  "references": [
-    { "path": "../crd" },
-    { "path": "../k8s" },
-    { "path": "../etcd" }
-  ]
+  "references": [{ "path": "../crd" }, { "path": "../k8s" }, { "path": "../etcd" }]
 }

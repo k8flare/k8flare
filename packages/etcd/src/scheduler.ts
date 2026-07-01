@@ -4,11 +4,7 @@ import type { KineRow } from "./helpers.ts";
 import type { SqlExec } from "./queries.ts";
 import { broadcastEvent, type DurableObjectContext } from "./watch.ts";
 
-export function runScheduler(
-  ctx: DurableObjectContext,
-  sql: SqlExec,
-  _env: any,
-): void {
+export function runScheduler(ctx: DurableObjectContext, sql: SqlExec, _env: any): void {
   allocatePodCIDRs(ctx, sql);
   scheduleUnboundPods(ctx, sql);
 }
@@ -74,7 +70,17 @@ export function nextPodCIDRIndex(sql: SqlExec): number {
   const nextVal = new TextEncoder().encode(String(next)).buffer;
 
   if (rows.length > 0 && !rows[0].deleted) {
-    sql.exec(INSERT_SQL, counterKey, 0, 0, rows[0].create_revision, rows[0].theid, 0, nextVal, rows[0].value);
+    sql.exec(
+      INSERT_SQL,
+      counterKey,
+      0,
+      0,
+      rows[0].create_revision,
+      rows[0].theid,
+      0,
+      nextVal,
+      rows[0].value,
+    );
   } else {
     sql.exec(INSERT_SQL, counterKey, 1, 0, 0, 0, 0, nextVal, null);
   }
@@ -135,17 +141,7 @@ export function scheduleUnboundPods(ctx: DurableObjectContext, sql: SqlExec): vo
       const key = row.thename;
       const prevRevision = row.theid;
 
-      sql.exec(
-        INSERT_SQL,
-        key,
-        0,
-        0,
-        row.create_revision,
-        prevRevision,
-        0,
-        encodedValue,
-        value,
-      );
+      sql.exec(INSERT_SQL, key, 0, 0, row.create_revision, prevRevision, 0, encodedValue, value);
 
       // Broadcast the change
       const newId = sql.exec("SELECT last_insert_rowid() AS id").one().id as number;
