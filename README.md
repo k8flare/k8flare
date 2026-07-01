@@ -160,9 +160,18 @@ reads/watchers/storage scale horizontally, and every namespace gets its own
 
 ### Track C — Cloudflare-native surface
 
-- **More compute backends** — Cloudflare Containers and Cloudflare Mesh as
-  additional node backends alongside EC2/GCE/on-prem, mix-and-match per
-  cluster.
+- **More compute backends** — Cloudflare Containers as an additional node
+  backend alongside EC2/GCE/on-prem, mix-and-match per cluster.
+- **Cloudflare Mesh for cross-cloud node networking** — technically capable
+  of replacing "all nodes in one VPC" for flannel's `host-gw` backend (true
+  L3 routing, CIDR route advertisement, scriptable enrollment), but not a
+  clean drop-in: every packet detours through a Cloudflare PoP (no direct
+  peer-to-peer path), with real throughput cost and UDP-loss tradeoffs, and
+  no existing Kubernetes integration or case study. See
+  [`docs/cloudflare-mesh-networking.md`](docs/cloudflare-mesh-networking.md)
+  for the full evaluation — recommended as a lower-throughput/dev-test/
+  geographically-dispersed option, not the default for performance-sensitive
+  clusters.
 - **`k8f` CLI** — standalone OAuth 2.0 PKCE login (independent of
   Cloudflare's `cf` CLI): log in, provision, get a kubeconfig in one
   command.
