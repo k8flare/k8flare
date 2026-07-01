@@ -121,12 +121,18 @@ external process instead of code running inside the DO — see below.
 
 ## Migrating to the real `kube-scheduler`
 
-The predicates above (`nodeSelector`, capacity, `hostPort`) are a
-hand-written subset of what `kube-scheduler` already does. Rather than
-keep extending the TypeScript reimplementation, the plan is to run the
-actual, unmodified `k8s.io/kubernetes/cmd/kube-scheduler` binary against
-this apiserver. This is verified feasible end-to-end, with exactly one
-real gap to close.
+**Done.** `cmd/scheduler` runs the actual, unmodified
+`k8s.io/kubernetes/cmd/kube-scheduler` binary against this apiserver — the
+TypeScript scheduler's binding logic (predicates, hostPort conflict
+detection, Event emission) has been deleted; `packages/etcd/src/scheduler.ts`
+now only allocates PodCIDRs. Verified against the live cluster: a real Pod
+gets bound with a `Scheduled` Event and runs, and the official
+sig-scheduling conformance suite (6 tests) passes end-to-end.
+
+The predicates that used to live in `scheduler.ts` (`nodeSelector`,
+capacity, `hostPort`) were a hand-written subset of what `kube-scheduler`
+already does — the plan below was to stop extending that reimplementation
+and run the real thing instead, which is what happened.
 
 **The embedding pattern already exists in this dependency tree.** k3s's
 own `pkg/executor/embed/embed.go` embeds kube-scheduler with the same
@@ -194,6 +200,58 @@ exactly — two more `GOOS=linux GOARCH={arm64,amd64}` build steps in
 `.github/workflows/release.yml`, output as
 `k8flare-scheduler-linux-{arm64,amd64}`.
 
+### What the plan above missed, found by actually running it
+
+Everything above was confirmed by reading source. Two more real bugs only
+showed up when a real `cmd/scheduler` was pointed at a real cluster and
+asked to actually bind a pod — static analysis said "informers synced",
+but zero pods were ever being scheduled:
+
+- **DRA's informer problem is broader than ResourceClaim/ResourceSlice.**
+  The default `InterPodAffinity`/`PodTopologySpread` plugins (owning-
+  controller lookups), `DefaultPreemption` (PodDisruptionBudget checks),
+  and DRA's own `DeviceClass` informer are _also_ started unconditionally
+  by the default profile, for the same "always-on regardless of your
+  plugin config" reason as DRA. `ReplicaSet`, `StatefulSet`,
+  `ReplicationController`, `PodDisruptionBudget`, and `DeviceClass` all
+  needed the same empty-`ResourceStore` treatment as `ResourceClaim`/
+  `ResourceSlice` before every informer would actually reach
+  `WaitForCacheSync`.
+
+- **Field selectors silently dropped every `!=` term.** Real
+  kube-scheduler's Pod informer filters with
+  `status.phase!=Succeeded,status.phase!=Failed`
+  (`pkg/scheduler/scheduler.go`'s `newPodInformer`). Both
+  `pkg/apiserver/store.go`'s and `packages/k8s/src/watch.ts`'s field
+  selector parsing split on the first `=` they found — for `!=` terms that
+  `=` is the one inside `!=`, so `status.phase!=Succeeded` parsed as field
+  `status.phase!` (with the `!` stuck to the field name) and value
+  `Succeeded`. That field never matches anything, so every Pod watch event
+  was silently filtered out — the informer still reported "synced" (it did
+  receive the sync bookmark correctly), it just never received an actual
+  pod. Fixed by checking for `!=` before falling back to `=`.
+
+- **The official e2e framework needs `kube-root-ca.crt` too.** Not
+  scheduler-specific, but only surfaced once a namespaced conformance test
+  could get past its own `BeforeEach`: `test/e2e/framework/framework.go`
+  waits for a `kube-root-ca.crt` ConfigMap in every test namespace before
+  proceeding, the same way it waits for the default ServiceAccount. Added
+  to the same `ApplyPostCreateEffects` Namespace hook
+  (`pkg/apiserver/serviceaccount.go`) that already provisions the
+  ServiceAccount.
+
+One thing that did _not_ get resolved: driving these same
+scheduler-dependent tests from `go test` itself (building and running a
+real `cmd/scheduler` as part of `pkg/apiserver/apiserver_test.go`, the way
+`setupWranglerDev` already runs a real `wrangler dev`) hit an unexplained
+hang specific to being a child of the `go test` process — the identical
+binary, same flags, same target server, runs correctly within seconds from
+a plain shell. Not root-caused; reverted rather than left as flaky
+infrastructure. The 6 tests that depended on it were removed, since they
+tested the now-deleted TS scheduler's DO-alarm-based binding specifically —
+scheduler behavior is validated by the official conformance suite instead,
+both by hand against the live cluster and via `.github/workflows/e2e-conformance.yml`.
+
 ## Suggested sequencing for the rest
 
 1. ~~Scheduler cost + correctness~~ — done: event-driven alarm,
@@ -202,10 +260,9 @@ exactly — two more `GOOS=linux GOARCH={arm64,amd64}` build steps in
 2. ~~ServiceAccount auto-provisioning, namespace cascading deletion~~ —
    done (object-level only for ServiceAccount; no token/Secret issuance
    yet).
-3. **Real `kube-scheduler` migration** (next): see "Migrating to the real
-   `kube-scheduler`" above. Confirmed feasible with one mechanical gap to
-   close (stub `ResourceClaim`/`ResourceSlice` stores).
-4. **Endpoints controller**: Service + Pod label selectors → Endpoints,
+3. ~~Real `kube-scheduler` migration~~ — done: see "Migrating to the real
+   `kube-scheduler`" above.
+4. **Endpoints controller** (next): Service + Pod label selectors → Endpoints,
    paired with a Worker-side HTTP path so `ClusterIP` Services actually
    route traffic — the most-hit gap for anyone trying to run more than a
    single bare Pod.

@@ -29,14 +29,15 @@ as of this writing, plus direct inspection of the registered API scheme.
 
 ### Core resources
 
-| Resource                                                                                              | Status                                                                                 |
-| ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Namespace, ConfigMap, Secret, Pod, Node, ServiceAccount, Endpoints, Service, Event, Lease, LimitRange | ✅ CRUD, watch, label/field selectors                                                  |
-| CSIDriver, CSINode, RuntimeClass                                                                      | ✅ CRUD, watch                                                                         |
-| `DynamicWorker`, `WorkerTrigger` (custom resources)                                                   | ✅ CRUD, watch                                                                         |
-| Deployment, ReplicaSet, StatefulSet, DaemonSet, Job, CronJob                                          | ❌ Not registered — no workload controllers exist yet                                  |
-| PersistentVolume, PersistentVolumeClaim, StorageClass                                                 | ❌ Not implemented                                                                     |
-| Generic `CustomResourceDefinition` (dynamic CRDs)                                                     | ❌ Only the two built-in custom resources above; no generic CRD registration mechanism |
+| Resource                                                                                                       | Status                                                                                                                                    |
+| -------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Namespace, ConfigMap, Secret, Pod, Node, ServiceAccount, Endpoints, Service, Event, Lease, LimitRange          | ✅ CRUD, watch, label/field selectors                                                                                                     |
+| CSIDriver, CSINode, RuntimeClass                                                                               | ✅ CRUD, watch                                                                                                                            |
+| `DynamicWorker`, `WorkerTrigger` (custom resources)                                                            | ✅ CRUD, watch                                                                                                                            |
+| ReplicaSet, StatefulSet, ReplicationController, PodDisruptionBudget, ResourceClaim, ResourceSlice, DeviceClass | ⚠️ Registered but always empty — exist only so the real kube-scheduler's informers for these types can sync; not backed by any controller |
+| Deployment, DaemonSet, Job, CronJob                                                                            | ❌ Not registered — no workload controllers exist yet                                                                                     |
+| PersistentVolume, PersistentVolumeClaim, StorageClass                                                          | ❌ Not implemented                                                                                                                        |
+| Generic `CustomResourceDefinition` (dynamic CRDs)                                                              | ❌ Only the two built-in custom resources above; no generic CRD registration mechanism                                                    |
 
 ### What's missing for general-purpose use
 
@@ -61,22 +62,28 @@ hit them:
 None of this is hidden complexity — see
 [`docs/control-plane-architecture.md`](docs/control-plane-architecture.md) for
 how each gap maps onto Cloudflare's execution model and the plan for closing
-it (workload controllers and a real kube-scheduler/controller-manager are the
-next planned pieces).
+it (an Endpoints controller and the rest of a controller-manager are the next
+planned pieces — the real kube-scheduler is already done, see the Roadmap
+below).
 
 ### Scheduling
 
-| Feature                                                          | Status      |
-| ---------------------------------------------------------------- | ----------- |
-| Node `Ready`/`unschedulable` filtering                           | ✅          |
-| `nodeSelector`                                                   | ✅          |
-| CPU request vs. allocatable capacity                             | ✅          |
-| `hostPort` conflict detection                                    | ✅          |
-| `PodScheduled` condition + `Scheduled`/`FailedScheduling` events | ✅          |
-| LimitRange `Default`/`DefaultRequest`/Min-Max enforcement        | ✅          |
-| Memory / ephemeral-storage aware scheduling                      | ❌ CPU only |
-| Node/pod affinity & anti-affinity, taints/tolerations            | ❌          |
-| Priority & preemption                                            | ❌          |
+Pods are bound by the actual, unmodified `k8s.io/kubernetes/cmd/kube-scheduler`
+binary (`cmd/scheduler`) running against this apiserver — not a hand-written
+subset. See
+[`docs/control-plane-architecture.md`](docs/control-plane-architecture.md#migrating-to-the-real-kube-scheduler)
+for how it's wired up. Rows below reflect gaps in what this apiserver stores
+and serves, not scheduler limitations.
+
+| Feature                                                            | Status                                                            |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------- |
+| Node `Ready`/`unschedulable` filtering, `nodeSelector`, `hostPort` | ✅                                                                |
+| CPU/memory/ephemeral-storage request vs. allocatable capacity      | ✅                                                                |
+| Node/pod affinity & anti-affinity, taints/tolerations              | ✅                                                                |
+| `PodScheduled` condition + `Scheduled`/`FailedScheduling` events   | ✅                                                                |
+| LimitRange `Default`/`DefaultRequest`/Min-Max enforcement          | ✅                                                                |
+| Priority via Pod's own `spec.priority`, preemption                 | ✅                                                                |
+| Priority via a named `PriorityClass`                               | ❌ `scheduling.k8s.io` not registered, so the name never resolves |
 
 ### Controllers
 
@@ -103,25 +110,24 @@ next planned pieces).
 Beyond closing the gaps above, these larger initiatives are planned, roughly
 in this order:
 
-### 1. Real `kube-scheduler` instead of the built-in scheduler
+### 1. ~~Real `kube-scheduler` instead of the built-in scheduler~~ — done
 
-The current TypeScript scheduler (predicates for `nodeSelector`, CPU
-capacity, `hostPort`) is a hand-written subset of what `kube-scheduler`
-already does. The plan is to run the actual, unmodified
-`k8s.io/kubernetes/cmd/kube-scheduler` binary against this apiserver instead
-— the same embedding pattern k3s itself already uses for kubelet, with auth
-handled by the existing shared-token middleware (no client-cert bootstrap
-needed) and leader election simply turned off (`--leader-elect=false`, the
-same flag k3s uses). All required Kubernetes modules are already indirect
-dependencies via k3s, so no new dependency versions are needed. The one real
-gap — the Dynamic Resource Allocation feature gate being GA-locked in k3s's
-v1.36 build, which makes the scheduler watch `ResourceClaim`/`ResourceSlice`
-unconditionally — is closed by registering empty stores for those two types,
-the same pattern already used for `CSIDriver`/`CSINode`. See
-[`docs/control-plane-architecture.md`](docs/control-plane-architecture.md)
-for the full trace behind each point.
+`cmd/scheduler` runs the actual, unmodified
+`k8s.io/kubernetes/cmd/kube-scheduler` binary against this apiserver — the
+same embedding pattern k3s itself uses for kubelet, authenticated via the
+existing shared-token middleware (no client-cert bootstrap needed), with
+leader election turned off (`--leader-elect=false`, the same flag k3s uses).
+All required Kubernetes modules were already indirect dependencies via k3s,
+so no new dependency versions were needed. Verified against the live
+cluster: a real Pod gets bound with a `Scheduled` event and runs, and the
+official sig-scheduling conformance suite passes end-to-end. See
+[`docs/control-plane-architecture.md`](docs/control-plane-architecture.md#migrating-to-the-real-kube-scheduler)
+for the full trace, including two real bugs (informers for types beyond
+`ResourceClaim`/`ResourceSlice`, and a field-selector parsing bug) that only
+surfaced once a real scheduler was actually run against a live cluster
+rather than reasoned about from source.
 
-### 2. Endpoints controller and Service HTTP exposure
+### 2. Endpoints controller and Service HTTP exposure (next)
 
 A real Endpoints controller (Service + Pod label selectors → Endpoints),
 paired with a Worker-side HTTP path that resolves a Service to one of its
