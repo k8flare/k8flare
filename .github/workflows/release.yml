@@ -30,7 +30,7 @@ jobs:
       - name: Package Worker
         run: |
           mkdir -p dist/k8flare-worker
-          cp -r build/ packages/worker/wrangler.jsonc packages/worker/src/ dist/k8flare-worker/
+          cp -r packages/worker/build/ packages/worker/wrangler.jsonc packages/worker/src/ dist/k8flare-worker/
           cp package.json dist/k8flare-worker/
           tar czf dist/k8flare-worker-${{ github.ref_name }}.tar.gz -C dist k8flare-worker
 

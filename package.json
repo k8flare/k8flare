@@ -10,7 +10,7 @@
     "deploy": "wrangler deploy --config packages/worker/wrangler.jsonc",
     "check": "vp check",
     "test": "vitest",
-    "build:wasm": "go run github.com/syumai/workers/cmd/workers-assets-gen -mode=go && GOOS=js GOARCH=wasm go build -o ./build/app.wasm ."
+    "build:wasm": "go run github.com/syumai/workers/cmd/workers-assets-gen -mode=go -o packages/worker/build && GOOS=js GOARCH=wasm go build -o ./packages/worker/build/app.wasm ."
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260317.1",

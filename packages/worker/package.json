@@ -4,7 +4,7 @@
   "type": "module",
   "main": "src/index.ts",
   "imports": {
-    "#go-worker": "../../build/worker.mjs"
+    "#go-worker": "./build/worker.mjs"
   },
   "dependencies": {
     "@k8flare/crd": "workspace:*",
