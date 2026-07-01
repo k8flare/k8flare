@@ -9,7 +9,9 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 )
@@ -156,8 +158,9 @@ func (rs *ResourceStore) Get(ctx context.Context, namespace, name string) (runti
 }
 
 // List retrieves all resources matching the given namespace (empty string for all namespaces
-// or cluster-scoped resources). Results are filtered by fieldSelector if non-empty.
-func (rs *ResourceStore) List(ctx context.Context, namespace string, fieldSelector string) (runtime.Object, error) {
+// or cluster-scoped resources). Results are filtered by fieldSelector and labelSelector, if
+// either is non-empty.
+func (rs *ResourceStore) List(ctx context.Context, namespace string, fieldSelector string, labelSelector string) (runtime.Object, error) {
 	prefix := rs.storagePrefix(namespace)
 	storedObjects, rev, err := rs.storage.List(ctx, prefix, 0, 0)
 	if err != nil {
@@ -175,6 +178,10 @@ func (rs *ResourceStore) List(ctx context.Context, namespace string, fieldSelect
 	}
 
 	items = applyFieldSelector(items, fieldSelector)
+	items, err = applyLabelSelector(items, labelSelector)
+	if err != nil {
+		return nil, fmt.Errorf("store list: %w", err)
+	}
 
 	listObj := rs.newListFunc()
 	rs.setItemsFunc(listObj, items)
@@ -185,6 +192,26 @@ func (rs *ResourceStore) List(ctx context.Context, namespace string, fieldSelect
 	}
 
 	return listObj, nil
+}
+
+// applyLabelSelector filters a list of runtime.Object by the given Kubernetes label
+// selector string (e.g. "env=prod,tier in (web,api)"). An empty selector matches everything.
+func applyLabelSelector(items []runtime.Object, labelSelector string) ([]runtime.Object, error) {
+	if labelSelector == "" {
+		return items, nil
+	}
+	selector, err := labels.Parse(labelSelector)
+	if err != nil {
+		return nil, fmt.Errorf("parse label selector %q: %w", labelSelector, err)
+	}
+	filtered := make([]runtime.Object, 0, len(items))
+	for _, item := range items {
+		meta := getObjectMeta(item)
+		if meta != nil && selector.Matches(labels.Set(meta.Labels)) {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered, nil
 }
 
 // applyFieldSelector filters a list of runtime.Object by the given fieldSelector string.
@@ -362,6 +389,38 @@ func (rs *ResourceStore) Delete(ctx context.Context, namespace, name string) (ru
 	}
 
 	return obj, nil
+}
+
+// DeleteCollection deletes every object of this resource type in namespace
+// that matches labelSelector (all objects if labelSelector is empty), and
+// returns a typed list of the objects that were deleted.
+func (rs *ResourceStore) DeleteCollection(ctx context.Context, namespace, labelSelector string) (runtime.Object, error) {
+	listObj, err := rs.List(ctx, namespace, "", labelSelector)
+	if err != nil {
+		return nil, fmt.Errorf("store delete collection: list: %w", err)
+	}
+
+	items, err := meta.ExtractList(listObj)
+	if err != nil {
+		return nil, fmt.Errorf("store delete collection: extract list: %w", err)
+	}
+
+	deleted := make([]runtime.Object, 0, len(items))
+	for _, item := range items {
+		itemMeta := getObjectMeta(item)
+		if itemMeta == nil {
+			continue
+		}
+		obj, err := rs.Delete(ctx, namespace, itemMeta.Name)
+		if err != nil {
+			return nil, fmt.Errorf("store delete collection: delete %s: %w", itemMeta.Name, err)
+		}
+		deleted = append(deleted, obj)
+	}
+
+	resultList := rs.newListFunc()
+	rs.setItemsFunc(resultList, deleted)
+	return resultList, nil
 }
 
 // DeleteAllInNamespace removes every object of this resource type within the

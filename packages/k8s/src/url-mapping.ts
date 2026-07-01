@@ -48,6 +48,7 @@ const RESOURCE_KINDS: Record<string, string> = {
   endpoints: "Endpoints",
   services: "Service",
   events: "Event",
+  limitranges: "LimitRange",
   leases: "Lease",
   runtimeclasses: "RuntimeClass",
   csidrivers: "CSIDriver",

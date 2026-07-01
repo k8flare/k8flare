@@ -25,6 +25,7 @@ import (
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
@@ -435,6 +436,191 @@ func TestConfigMapCRUD(t *testing.T) {
 			t.Errorf("Expected NotFound, got: %v", err)
 		}
 	})
+}
+
+func TestLimitRangeCRUD(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+	ns := "default"
+	name := "test-lr-crud"
+
+	client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: ns},
+	}, metav1.CreateOptions{})
+	_ = client.CoreV1().LimitRanges(ns).Delete(ctx, name, metav1.DeleteOptions{})
+
+	t.Run("Create", func(t *testing.T) {
+		lr, err := client.CoreV1().LimitRanges(ns).Create(ctx, &corev1.LimitRange{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: corev1.LimitRangeSpec{
+				Limits: []corev1.LimitRangeItem{
+					{
+						Type:    corev1.LimitTypeContainer,
+						Default: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("500m")},
+					},
+				},
+			},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if len(lr.Spec.Limits) != 1 {
+			t.Errorf("Limits: got %v", lr.Spec.Limits)
+		}
+	})
+
+	t.Run("Get", func(t *testing.T) {
+		lr, err := client.CoreV1().LimitRanges(ns).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if lr.Name != name {
+			t.Errorf("Name: got %q, want %q", lr.Name, name)
+		}
+	})
+
+	t.Run("List", func(t *testing.T) {
+		list, err := client.CoreV1().LimitRanges(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		found := false
+		for _, lr := range list.Items {
+			if lr.Name == name {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("LimitRange %q not in list (%d items)", name, len(list.Items))
+		}
+	})
+
+	t.Run("Update", func(t *testing.T) {
+		lr, _ := client.CoreV1().LimitRanges(ns).Get(ctx, name, metav1.GetOptions{})
+		lr.Labels = map[string]string{"env": "test"}
+		updated, err := client.CoreV1().LimitRanges(ns).Update(ctx, lr, metav1.UpdateOptions{})
+		if err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+		if updated.Labels["env"] != "test" {
+			t.Errorf("Labels: got %v, want env=test", updated.Labels)
+		}
+	})
+
+	t.Run("ListWithLabelSelector", func(t *testing.T) {
+		ns2 := "test-lr-crud-ns2"
+		client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: ns2},
+		}, metav1.CreateOptions{})
+		_ = client.CoreV1().LimitRanges(ns2).Delete(ctx, "lr-in-ns2", metav1.DeleteOptions{})
+
+		selectorLabels := map[string]string{"lr-selector-test": "yes"}
+		client.CoreV1().LimitRanges(ns).Update(ctx, &corev1.LimitRange{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: selectorLabels},
+			Spec:       corev1.LimitRangeSpec{Limits: []corev1.LimitRangeItem{{Type: corev1.LimitTypeContainer}}},
+		}, metav1.UpdateOptions{})
+		if _, err := client.CoreV1().LimitRanges(ns2).Create(ctx, &corev1.LimitRange{
+			ObjectMeta: metav1.ObjectMeta{Name: "lr-in-ns2", Namespace: ns2, Labels: selectorLabels},
+			Spec:       corev1.LimitRangeSpec{Limits: []corev1.LimitRangeItem{{Type: corev1.LimitTypeContainer}}},
+		}, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("Create in ns2: %v", err)
+		}
+
+		list, err := client.CoreV1().LimitRanges(metav1.NamespaceAll).List(ctx, metav1.ListOptions{
+			LabelSelector: "lr-selector-test=yes",
+		})
+		if err != nil {
+			t.Fatalf("List with labelSelector: %v", err)
+		}
+		if len(list.Items) != 2 {
+			t.Errorf("Expected 2 LimitRanges across namespaces matching selector, got %d", len(list.Items))
+		}
+
+		t.Run("DeleteCollection", func(t *testing.T) {
+			err := client.CoreV1().LimitRanges(ns2).DeleteCollection(ctx, metav1.DeleteOptions{}, metav1.ListOptions{
+				LabelSelector: "lr-selector-test=yes",
+			})
+			if err != nil {
+				t.Fatalf("DeleteCollection: %v", err)
+			}
+			if _, err := client.CoreV1().LimitRanges(ns2).Get(ctx, "lr-in-ns2", metav1.GetOptions{}); !errors.IsNotFound(err) {
+				t.Errorf("Expected lr-in-ns2 NotFound after DeleteCollection, got: %v", err)
+			}
+			// The matching LimitRange in ns (not ns2) must survive — DeleteCollection is scoped to ns2 only.
+			if _, err := client.CoreV1().LimitRanges(ns).Get(ctx, name, metav1.GetOptions{}); err != nil {
+				t.Errorf("Expected %s in namespace %s to survive DeleteCollection scoped to %s, got: %v", name, ns, ns2, err)
+			}
+		})
+	})
+
+	t.Run("Delete", func(t *testing.T) {
+		err := client.CoreV1().LimitRanges(ns).Delete(ctx, name, metav1.DeleteOptions{})
+		if err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+		_, err = client.CoreV1().LimitRanges(ns).Get(ctx, name, metav1.GetOptions{})
+		if !errors.IsNotFound(err) {
+			t.Errorf("Expected NotFound, got: %v", err)
+		}
+	})
+}
+
+func TestPodLimitRangeDefaultingE2E(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+	ns := "test-pod-limitrange-defaulting"
+	podName := "test-lr-default-pod"
+
+	_ = client.CoreV1().Pods(ns).Delete(ctx, podName, metav1.DeleteOptions{})
+	_ = client.CoreV1().LimitRanges(ns).Delete(ctx, "defaults", metav1.DeleteOptions{})
+	_ = client.CoreV1().Namespaces().Delete(ctx, ns, metav1.DeleteOptions{})
+
+	if _, err := client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: ns},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("Create namespace: %v", err)
+	}
+	if _, err := client.CoreV1().LimitRanges(ns).Create(ctx, &corev1.LimitRange{
+		ObjectMeta: metav1.ObjectMeta{Name: "defaults", Namespace: ns},
+		Spec: corev1.LimitRangeSpec{
+			Limits: []corev1.LimitRangeItem{
+				{
+					Type: corev1.LimitTypeContainer,
+					Default: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("500m"),
+						corev1.ResourceMemory: resource.MustParse("500Mi"),
+					},
+					DefaultRequest: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("100m"),
+						corev1.ResourceMemory: resource.MustParse("200Mi"),
+					},
+				},
+			},
+		},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("Create LimitRange: %v", err)
+	}
+
+	pod, err := client.CoreV1().Pods(ns).Create(ctx, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: ns},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "test", Image: "busybox"}},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create pod: %v", err)
+	}
+
+	c := pod.Spec.Containers[0]
+	if got := c.Resources.Limits[corev1.ResourceCPU]; got.Cmp(resource.MustParse("500m")) != 0 {
+		t.Errorf("Limits[cpu] = %v, want 500m", got.String())
+	}
+	if got := c.Resources.Requests[corev1.ResourceCPU]; got.Cmp(resource.MustParse("100m")) != 0 {
+		t.Errorf("Requests[cpu] = %v, want 100m", got.String())
+	}
+
+	client.CoreV1().Pods(ns).Delete(ctx, podName, metav1.DeleteOptions{})
+	client.CoreV1().Namespaces().Delete(ctx, ns, metav1.DeleteOptions{})
 }
 
 func TestSecretCRUD(t *testing.T) {

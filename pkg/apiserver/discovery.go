@@ -170,6 +170,14 @@ func DefaultResources() []APIResource {
 			ShortNames:   []string{"ev"},
 			Verbs:        []string{"create", "delete", "get", "list", "patch", "update", "watch"},
 		},
+		{
+			Name:         "limitranges",
+			SingularName: "limitrange",
+			Namespaced:   true,
+			Kind:         "LimitRange",
+			ShortNames:   []string{"limits"},
+			Verbs:        []string{"create", "delete", "deletecollection", "get", "list", "patch", "update", "watch"},
+		},
 	}
 }
 

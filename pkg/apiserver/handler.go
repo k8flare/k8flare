@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -57,7 +58,8 @@ func HandleAPI(w http.ResponseWriter, r *http.Request, stores map[string]*Resour
 	case http.MethodGet:
 		if name == "" {
 			fieldSelector := r.URL.Query().Get("fieldSelector")
-			obj, err := store.List(ctx, namespace, fieldSelector)
+			labelSelector := r.URL.Query().Get("labelSelector")
+			obj, err := store.List(ctx, namespace, fieldSelector, labelSelector)
 			if err != nil {
 				writeInternalError(w, err)
 				return
@@ -87,6 +89,19 @@ func HandleAPI(w http.ResponseWriter, r *http.Request, stores map[string]*Resour
 		}
 
 		ApplyDefaults(rObj)
+
+		// Fill in any container resource requests/limits the pod itself
+		// didn't specify, from Container-scoped LimitRanges in its
+		// namespace. stores["limitranges"] is absent from the group-API
+		// store maps (leases/events/storage/nodeAPI), so this is a no-op
+		// there — Pod is core/v1-only and always routes through HandleAPI.
+		if pod, ok := rObj.(*corev1.Pod); ok {
+			if lrStore, exists := stores["limitranges"]; exists {
+				if lrList, err := lrStore.List(ctx, namespace, "", ""); err == nil {
+					ApplyLimitRangeDefaults(pod, lrList.(*corev1.LimitRangeList).Items)
+				}
+			}
+		}
 
 		obj, err := store.Create(ctx, namespace, rObj)
 		if err != nil {
@@ -126,7 +141,13 @@ func HandleAPI(w http.ResponseWriter, r *http.Request, stores map[string]*Resour
 
 	case http.MethodDelete:
 		if name == "" {
-			writeStatusError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "name is required for delete")
+			labelSelector := r.URL.Query().Get("labelSelector")
+			obj, err := store.DeleteCollection(ctx, namespace, labelSelector)
+			if err != nil {
+				writeInternalError(w, err)
+				return
+			}
+			writeRuntimeObject(w, http.StatusOK, obj)
 			return
 		}
 
@@ -344,7 +365,8 @@ func HandleGroupAPI(w http.ResponseWriter, r *http.Request, stores map[string]*R
 	case http.MethodGet:
 		if name == "" {
 			fieldSelector := r.URL.Query().Get("fieldSelector")
-			obj, err := store.List(ctx, namespace, fieldSelector)
+			labelSelector := r.URL.Query().Get("labelSelector")
+			obj, err := store.List(ctx, namespace, fieldSelector, labelSelector)
 			if err != nil {
 				writeInternalError(w, err)
 				return
@@ -374,6 +396,19 @@ func HandleGroupAPI(w http.ResponseWriter, r *http.Request, stores map[string]*R
 		}
 
 		ApplyDefaults(rObj)
+
+		// Fill in any container resource requests/limits the pod itself
+		// didn't specify, from Container-scoped LimitRanges in its
+		// namespace. stores["limitranges"] is absent from the group-API
+		// store maps (leases/events/storage/nodeAPI), so this is a no-op
+		// there — Pod is core/v1-only and always routes through HandleAPI.
+		if pod, ok := rObj.(*corev1.Pod); ok {
+			if lrStore, exists := stores["limitranges"]; exists {
+				if lrList, err := lrStore.List(ctx, namespace, "", ""); err == nil {
+					ApplyLimitRangeDefaults(pod, lrList.(*corev1.LimitRangeList).Items)
+				}
+			}
+		}
 
 		obj, err := store.Create(ctx, namespace, rObj)
 		if err != nil {
@@ -413,7 +448,13 @@ func HandleGroupAPI(w http.ResponseWriter, r *http.Request, stores map[string]*R
 
 	case http.MethodDelete:
 		if name == "" {
-			writeStatusError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "name is required for delete")
+			labelSelector := r.URL.Query().Get("labelSelector")
+			obj, err := store.DeleteCollection(ctx, namespace, labelSelector)
+			if err != nil {
+				writeInternalError(w, err)
+				return
+			}
+			writeRuntimeObject(w, http.StatusOK, obj)
 			return
 		}
 

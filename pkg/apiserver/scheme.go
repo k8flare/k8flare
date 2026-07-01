@@ -48,6 +48,8 @@ func init() {
 		&corev1.ServiceList{},
 		&corev1.Event{},
 		&corev1.EventList{},
+		&corev1.LimitRange{},
+		&corev1.LimitRangeList{},
 	)
 
 	// Register events/v1 types

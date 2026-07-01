@@ -171,6 +171,22 @@ func NewEventStore(s *Storage) *ResourceStore {
 	)
 }
 
+// NewLimitRangeStore creates a ResourceStore for LimitRange resources (namespaced).
+func NewLimitRangeStore(s *Storage) *ResourceStore {
+	return NewResourceStore(s, "limitranges", true,
+		func() runtime.Object { return &corev1.LimitRange{} },
+		func() runtime.Object {
+			return &corev1.LimitRangeList{TypeMeta: metav1.TypeMeta{Kind: "LimitRangeList", APIVersion: "v1"}}
+		},
+		func(list runtime.Object, items []runtime.Object) {
+			lrList := list.(*corev1.LimitRangeList)
+			for _, item := range items {
+				lrList.Items = append(lrList.Items, *item.(*corev1.LimitRange))
+			}
+		},
+	)
+}
+
 // NewResourceStores creates all supported core/v1 ResourceStore instances and returns them
 // as a map keyed by resource name.
 func NewResourceStores(s *Storage) map[string]*ResourceStore {
@@ -184,6 +200,7 @@ func NewResourceStores(s *Storage) map[string]*ResourceStore {
 		"endpoints":       NewEndpointsStore(s),
 		"services":        NewServiceStore(s),
 		"events":          NewEventStore(s),
+		"limitranges":     NewLimitRangeStore(s),
 	}
 }
 

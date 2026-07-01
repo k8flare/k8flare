@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 func TestApplyDefaults_Pod_EnableServiceLinks(t *testing.T) {
@@ -198,5 +199,115 @@ func TestApplyDefaults_Pod_DoesNotOverwriteExistingValues(t *testing.T) {
 	}
 	if c.ImagePullPolicy != corev1.PullAlways {
 		t.Errorf("ImagePullPolicy overwritten: got %v, want %v", c.ImagePullPolicy, corev1.PullAlways)
+	}
+}
+
+func TestApplyLimitRangeDefaults_FillsMissingRequestsAndLimits(t *testing.T) {
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "test", Image: "nginx"}},
+		},
+	}
+	limitRanges := []corev1.LimitRange{
+		{
+			Spec: corev1.LimitRangeSpec{
+				Limits: []corev1.LimitRangeItem{
+					{
+						Type: corev1.LimitTypeContainer,
+						Default: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("500m"),
+							corev1.ResourceMemory: resource.MustParse("500Mi"),
+						},
+						DefaultRequest: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("100m"),
+							corev1.ResourceMemory: resource.MustParse("200Mi"),
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ApplyLimitRangeDefaults(pod, limitRanges)
+
+	c := pod.Spec.Containers[0]
+	if got := c.Resources.Limits[corev1.ResourceCPU]; got.Cmp(resource.MustParse("500m")) != 0 {
+		t.Errorf("Limits[cpu] = %v, want 500m", got.String())
+	}
+	if got := c.Resources.Limits[corev1.ResourceMemory]; got.Cmp(resource.MustParse("500Mi")) != 0 {
+		t.Errorf("Limits[memory] = %v, want 500Mi", got.String())
+	}
+	if got := c.Resources.Requests[corev1.ResourceCPU]; got.Cmp(resource.MustParse("100m")) != 0 {
+		t.Errorf("Requests[cpu] = %v, want 100m", got.String())
+	}
+	if got := c.Resources.Requests[corev1.ResourceMemory]; got.Cmp(resource.MustParse("200Mi")) != 0 {
+		t.Errorf("Requests[memory] = %v, want 200Mi", got.String())
+	}
+}
+
+func TestApplyLimitRangeDefaults_DoesNotOverwriteExplicitValues(t *testing.T) {
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "test",
+					Image: "nginx",
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("250m")},
+						Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("750m")},
+					},
+				},
+			},
+		},
+	}
+	limitRanges := []corev1.LimitRange{
+		{
+			Spec: corev1.LimitRangeSpec{
+				Limits: []corev1.LimitRangeItem{
+					{
+						Type:           corev1.LimitTypeContainer,
+						Default:        corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("500m")},
+						DefaultRequest: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")},
+					},
+				},
+			},
+		},
+	}
+
+	ApplyLimitRangeDefaults(pod, limitRanges)
+
+	c := pod.Spec.Containers[0]
+	if got := c.Resources.Requests[corev1.ResourceCPU]; got.Cmp(resource.MustParse("250m")) != 0 {
+		t.Errorf("Requests[cpu] overwritten: got %v, want 250m", got.String())
+	}
+	if got := c.Resources.Limits[corev1.ResourceCPU]; got.Cmp(resource.MustParse("750m")) != 0 {
+		t.Errorf("Limits[cpu] overwritten: got %v, want 750m", got.String())
+	}
+}
+
+func TestApplyLimitRangeDefaults_IgnoresPodScopedItems(t *testing.T) {
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "test", Image: "nginx"}},
+		},
+	}
+	limitRanges := []corev1.LimitRange{
+		{
+			Spec: corev1.LimitRangeSpec{
+				Limits: []corev1.LimitRangeItem{
+					{
+						Type:    corev1.LimitTypePod,
+						Default: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("500m")},
+					},
+				},
+			},
+		},
+	}
+
+	ApplyLimitRangeDefaults(pod, limitRanges)
+
+	c := pod.Spec.Containers[0]
+	if _, exists := c.Resources.Limits[corev1.ResourceCPU]; exists {
+		t.Errorf("Pod-scoped LimitRangeItem should not apply to container resources, got %v", c.Resources.Limits)
 	}
 }

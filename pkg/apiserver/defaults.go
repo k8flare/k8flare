@@ -65,3 +65,41 @@ func defaultContainer(c *corev1.Container) {
 		c.ImagePullPolicy = corev1.PullIfNotPresent
 	}
 }
+
+// ApplyLimitRangeDefaults fills in any container resource requests/limits a
+// pod didn't specify itself, using the Default/DefaultRequest values from any
+// Container-scoped LimitRange in the pod's namespace — mirroring the subset
+// of real Kubernetes LimitRange admission behavior needed for defaulting.
+// Min/Max range enforcement (rejecting a pod for violating range bounds) is
+// deliberately not implemented; nothing in this codebase exercises it.
+func ApplyLimitRangeDefaults(pod *corev1.Pod, limitRanges []corev1.LimitRange) {
+	for _, lr := range limitRanges {
+		for _, item := range lr.Spec.Limits {
+			if item.Type != corev1.LimitTypeContainer {
+				continue // Pod-scoped/PVC-scoped items are out of scope here
+			}
+			for i := range pod.Spec.Containers {
+				applyContainerLimitRangeDefaults(&pod.Spec.Containers[i], item)
+			}
+		}
+	}
+}
+
+func applyContainerLimitRangeDefaults(c *corev1.Container, item corev1.LimitRangeItem) {
+	if c.Resources.Limits == nil {
+		c.Resources.Limits = corev1.ResourceList{}
+	}
+	if c.Resources.Requests == nil {
+		c.Resources.Requests = corev1.ResourceList{}
+	}
+	for name, val := range item.Default {
+		if _, exists := c.Resources.Limits[name]; !exists {
+			c.Resources.Limits[name] = val
+		}
+	}
+	for name, val := range item.DefaultRequest {
+		if _, exists := c.Resources.Requests[name]; !exists {
+			c.Resources.Requests[name] = val
+		}
+	}
+}
