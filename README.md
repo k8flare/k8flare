@@ -60,11 +60,11 @@ hit them:
 | **Node self-healing**                    | No node lifecycle controller — if an agent's process dies, its last-reported `Ready` status is never corrected and Pods "on" it are never rescheduled.                                                                                                     |
 
 None of this is hidden complexity — see
+[`docs/general-purpose-k8s-plan.md`](docs/general-purpose-k8s-plan.md) for the
+dependency-ordered plan that closes every row above (measured by growing the
+conformance CI's required focus set), and
 [`docs/control-plane-architecture.md`](docs/control-plane-architecture.md) for
-how each gap maps onto Cloudflare's execution model and the plan for closing
-it (an Endpoints controller and the rest of a controller-manager are the next
-planned pieces — the real kube-scheduler is already done, see the Roadmap
-below).
+how each gap maps onto Cloudflare's execution model.
 
 ### Scheduling
 
@@ -107,66 +107,69 @@ and serves, not scheduler limitations.
 
 ## Roadmap
 
-Beyond closing the gaps above, these larger initiatives are planned, roughly
-in this order:
+Two detailed plans drive the work from here:
 
-### 1. ~~Real `kube-scheduler` instead of the built-in scheduler~~ — done
+- [`docs/general-purpose-k8s-plan.md`](docs/general-purpose-k8s-plan.md) —
+  closing the gap table above in dependency order, with the conformance CI's
+  required focus set as the definition of done.
+- [`docs/multi-tenancy-and-hosting.md`](docs/multi-tenancy-and-hosting.md) —
+  multi-cluster isolation, scale, and the hosted `k8flare.com` product.
 
-`cmd/scheduler` runs the actual, unmodified
-`k8s.io/kubernetes/cmd/kube-scheduler` binary against this apiserver — the
-same embedding pattern k3s itself uses for kubelet, authenticated via the
-existing shared-token middleware (no client-cert bootstrap needed), with
-leader election turned off (`--leader-elect=false`, the same flag k3s uses).
-All required Kubernetes modules were already indirect dependencies via k3s,
-so no new dependency versions were needed. Verified against the live
-cluster: a real Pod gets bound with a `Scheduled` event and runs, and the
-official sig-scheduling conformance suite passes end-to-end. See
-[`docs/control-plane-architecture.md`](docs/control-plane-architecture.md#migrating-to-the-real-kube-scheduler)
-for the full trace, including two real bugs (informers for types beyond
-`ResourceClaim`/`ResourceSlice`, and a field-selector parsing bug) that only
-surfaced once a real scheduler was actually run against a live cluster
-rather than reasoned about from source.
+### Track A — general-purpose Kubernetes
 
-### 2. Endpoints controller and Service HTTP exposure (next)
+1. ~~**Real `kube-scheduler`**~~ — done. `cmd/scheduler` runs the actual,
+   unmodified upstream binary against this apiserver, verified on the live
+   cluster and by the sig-scheduling conformance suite. See
+   [`docs/control-plane-architecture.md`](docs/control-plane-architecture.md#migrating-to-the-real-kube-scheduler)
+   for the full trace, including the real bugs that only surfaced by running
+   it (scheduler-informer coverage, a field-selector parsing bug).
+2. **Service networking** (next) — ClusterIP allocation, an EndpointSlice
+   controller (kube-proxy in v1.36 consumes EndpointSlices, not Endpoints),
+   enabling the agent's embedded kube-proxy, and a Worker-side HTTP path for
+   external Service exposure.
+3. **Node lifecycle** — lease staleness → `NotReady` + taints → pod GC, so a
+   dead agent's pods actually get replaced.
+4. **Workload controllers + GC** — ReplicaSet → Deployment → Job/CronJob →
+   DaemonSet, with ownerReference cascading deletion; the largest single
+   jump in official conformance coverage.
+5. **Cluster DNS** — CoreDNS as a Deployment, `kube-dns` Service at
+   `10.43.0.10`, then (and only then) advertise `cluster-dns` to kubelets.
+6. **API & auth parity** — OpenAPI discovery (no more `--validate=false`),
+   PriorityClass, TokenRequest/TokenReview, RBAC.
 
-A real Endpoints controller (Service + Pod label selectors → Endpoints),
-paired with a Worker-side HTTP path that resolves a Service to one of its
-backing Pod IPs, so `ClusterIP` Services actually route traffic and can be
-reached over HTTP through the Worker. This is the most-hit gap in the table
-above and unblocks anything that depends on in-cluster service discovery
-working end-to-end.
+### Track B — multi-tenancy, scale, and hosted `k8flare.com`
 
-### 3. More compute backends: Cloudflare Containers and Cloudflare Mesh
+Target architecture (decided July 2026, detailed in
+[`docs/multi-tenancy-and-hosting.md`](docs/multi-tenancy-and-hosting.md)):
+**one ordering Durable Object per cluster, one follower Durable Object per
+namespace, Facets for churn/CA isolation, WatchHub DOs for fan-out** —
+writes serialize per cluster (the same single-writer shape as etcd itself),
+reads/watchers/storage scale horizontally, and every namespace gets its own
+10 GB.
 
-Both land as additional node backends alongside the existing EC2/GCE/on-prem
-agent setup — parallel options, not replacements. A cluster will be able to
-mix and match:
+1. Cluster resolution + per-cluster tokens (retire the single hardcoded
+   `"default"` cluster; zero-config single-cluster mode stays).
+2. Namespace follower DOs + value trimming (per-namespace 10 GB) and
+   WatchHub fan-out.
+3. Durable Object Facets (open beta) for Event churn and CA-vault isolation.
+4. `k8flare.com`: wildcard routing, provisioning API, metering → billing —
+   a hosted control plane that costs ~nothing while idle because it scales
+   to zero.
+5. Managed node pools on Cloudflare Containers (4 vCPU / 12 GiB per node,
+   scale-to-zero), alongside BYO agents.
 
-- **Cloudflare Containers** (GA since April 2026) — run the k3s agent
-  (kubelet + containerd) inside a Cloudflare Container instead of a VM, so a
-  node can exist with no external cloud account at all.
-- **Cloudflare Mesh** — bridge AWS EC2, GCP, and on-prem machines into one
-  private network so they can join as nodes without the manual VPC/security
-  group setup the current EC2 script needs.
+### Track C — Cloudflare-native surface
 
-### 4. `k8f` CLI
-
-A standalone CLI with its own OAuth 2.0 Authorization Code + PKCE login flow
-(in the spirit of `wrangler login`, but independent of Cloudflare's own `cf`
-CLI) that logs in, provisions the Worker + Durable Object, and writes a
-working kubeconfig in one command.
-
-### 5. Deeper Cloudflare platform integration
-
-- **Cloudflare Access** — native integration for both connectivity (reaching
-  the API/exec/logs endpoints) and RBAC (mapping Access identities/groups to
-  per-user/per-namespace authorization), replacing today's all-or-nothing
-  static token.
-- **Worker / Durable Object / DynamicWorker / Durable Object Facets as
-  Kubernetes resources** — both a user-facing resource kind, so `kubectl` can
-  create and manage real Workers and Durable Objects directly, and internal
-  use of Facets to give each namespace/tenant its own isolated child Durable
-  Object instead of sharing the single global `Etcd` instance.
+- **More compute backends** — Cloudflare Containers and Cloudflare Mesh as
+  additional node backends alongside EC2/GCE/on-prem, mix-and-match per
+  cluster.
+- **`k8f` CLI** — standalone OAuth 2.0 PKCE login (independent of
+  Cloudflare's `cf` CLI): log in, provision, get a kubeconfig in one
+  command.
+- **Cloudflare Access integration** — connectivity and identity for the API,
+  mapped onto RBAC once Track A lands it.
+- **Worker / Durable Object / DynamicWorker / Facets as Kubernetes
+  resources** — manage real Cloudflare primitives with `kubectl`.
 
 ## Quick Start
 

@@ -72,6 +72,13 @@ share the same SQLite instance, so cross-DO reconciliation would need
 HTTP/RPC calls for no real benefit at the current scale. Revisit this only
 if a single DO's alarm tick becomes a measured bottleneck.
 
+This position survives the multi-tenancy target architecture
+([`multi-tenancy-and-hosting.md`](multi-tenancy-and-hosting.md)) with one
+refinement: namespaced _storage_ moves out into per-namespace follower DOs,
+but controllers are writers, so they stay in the cluster DO — the one place
+that assigns revisions — and that is exactly where the alarm loop already
+lives.
+
 ## Cost problem with the original scheduler loop, and the fix
 
 The original loop set `setAlarm(Date.now() + 5000)` unconditionally,
@@ -273,3 +280,10 @@ both by hand against the live cluster and via `.github/workflows/e2e-conformance
    diffing/create/delete reconciler) first, since `Deployment` is a
    rollout state machine layered on top of `ReplicaSet` management, not a
    separate reconciliation loop.
+
+This list is now superseded by two fuller plans it grew into:
+[`general-purpose-k8s-plan.md`](general-purpose-k8s-plan.md) (items 4–6
+above, extended through DNS, API machinery, and auth, with conformance CI as
+the definition of done) and
+[`multi-tenancy-and-hosting.md`](multi-tenancy-and-hosting.md) (the
+multi-cluster / namespace-DO / facets / hosted-product track).
