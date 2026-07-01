@@ -280,17 +280,35 @@ func (rs *ResourceStore) Create(ctx context.Context, namespace string, obj runti
 }
 
 // Update performs a compare-and-swap update on an existing resource.
-// The object's ResourceVersion must match the current stored revision.
+// If the object's ResourceVersion is set, it must match the current stored
+// revision. An empty ResourceVersion means an unconditional update, matching
+// Kubernetes' behavior for updates that omit resourceVersion: the current
+// stored revision is fetched and used as the CAS token.
 func (rs *ResourceStore) Update(ctx context.Context, namespace, name string, obj runtime.Object) (runtime.Object, error) {
 	meta := getObjectMeta(obj)
 	if meta == nil {
 		return nil, fmt.Errorf("store update: object does not implement ObjectMetaAccessor")
 	}
 
-	// Parse the resource version from the incoming object for CAS
-	currentRevision, err := strconv.ParseInt(meta.ResourceVersion, 10, 64)
-	if err != nil {
-		return nil, fmt.Errorf("store update: invalid resource version %q: %w", meta.ResourceVersion, err)
+	key := rs.storageKey(namespace, name)
+
+	var currentRevision int64
+	if meta.ResourceVersion == "" {
+		stored, err := rs.storage.Get(ctx, key)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil, &StatusError{Status: notFoundStatus(rs.resource, name)}
+			}
+			return nil, fmt.Errorf("store update: get current: %w", err)
+		}
+		currentRevision = stored.ModRevision
+	} else {
+		// Parse the resource version from the incoming object for CAS
+		var err error
+		currentRevision, err = strconv.ParseInt(meta.ResourceVersion, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("store update: invalid resource version %q: %w", meta.ResourceVersion, err)
+		}
 	}
 
 	// Clear resource version before encoding for storage
@@ -301,7 +319,6 @@ func (rs *ResourceStore) Update(ctx context.Context, namespace, name string, obj
 		return nil, fmt.Errorf("store update: encode: %w", err)
 	}
 
-	key := rs.storageKey(namespace, name)
 	newRevision, updated, err := rs.storage.Update(ctx, key, data, currentRevision)
 	if err != nil {
 		if errors.Is(err, ErrConflict) {
