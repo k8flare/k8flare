@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version: "24"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build WASM
+        run: npm run build:wasm
+
+      - name: Package Worker
+        run: |
+          mkdir -p dist/k8flare-worker
+          cp -r build/ packages/worker/wrangler.jsonc packages/worker/src/ dist/k8flare-worker/
+          cp package.json dist/k8flare-worker/
+          tar czf dist/k8flare-worker-${{ github.ref_name }}.tar.gz -C dist k8flare-worker
+
+      - name: Build Agent (linux/arm64)
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o dist/k8flare-agent-linux-arm64 ./cmd/agent/
+
+      - name: Build Agent (linux/amd64)
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/k8flare-agent-linux-amd64 ./cmd/agent/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/k8flare-worker-*.tar.gz
+            dist/k8flare-agent-*

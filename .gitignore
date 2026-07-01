@@ -1,0 +1,10 @@
+node_modules/
+build/
+dist/
+.dev.vars
+*.wasm
+.wrangler/
+bin/
+.secrets/
+/kubeconfig.yaml
+/k3s-on-cloudflare

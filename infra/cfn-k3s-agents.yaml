@@ -1,0 +1,159 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  k3s agent nodes on EC2 Spot instances (ARM64 Graviton).
+  3 x t4g.small with SSM access and containerd. Agent binary deployed separately.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC to deploy into
+
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet to deploy instances into
+
+  K3sToken:
+    Type: String
+    NoEcho: true
+    Description: K3s cluster token (reserved for future use)
+    Default: ""
+
+  TunnelToken:
+    Type: String
+    NoEcho: true
+    Description: Cloudflare Tunnel token (reserved for future use)
+    Default: ""
+
+  LatestAL2023ArmAmi:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
+    Description: Latest Amazon Linux 2023 ARM64 AMI (resolved via SSM parameter)
+
+Resources:
+  # ----- IAM -----
+  K3sAgentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: k3s-agent-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  K3sAgentInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: k3s-agent-profile
+      Roles:
+        - !Ref K3sAgentRole
+
+  # ----- Security Group -----
+  K3sAgentSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: k3s-agent-sg
+      GroupDescription: k3s agent nodes - outbound all, inbound self-referencing for mesh
+      VpcId: !Ref VpcId
+
+  K3sAgentSGIngressSelf:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref K3sAgentSecurityGroup
+      IpProtocol: "-1"
+      SourceSecurityGroupId: !Ref K3sAgentSecurityGroup
+
+  # ----- Launch Template -----
+  K3sAgentLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: k3s-agent-lt
+      LaunchTemplateData:
+        InstanceType: t4g.small
+        ImageId: !Ref LatestAL2023ArmAmi
+        IamInstanceProfile:
+          Arn: !GetAtt K3sAgentInstanceProfile.Arn
+        InstanceMarketOptions:
+          MarketType: spot
+          SpotOptions:
+            SpotInstanceType: persistent
+            InstanceInterruptionBehavior: stop
+        SecurityGroupIds:
+          - !Ref K3sAgentSecurityGroup
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: k3s-agent
+              - Key: Project
+                Value: k8flare
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            set -euo pipefail
+            # k3s-cf-agent is a single binary that manages everything:
+            # kubelet, containerd, cloudflared, flannel
+            # Binary will be deployed via SSM or S3
+            echo "Ready for k3s-cf-agent deployment"
+
+  # ----- EC2 Instances -----
+  K3sAgent1:
+    Type: AWS::EC2::Instance
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref K3sAgentLaunchTemplate
+        Version: !GetAtt K3sAgentLaunchTemplate.LatestVersionNumber
+      SubnetId: !Ref SubnetId
+
+  K3sAgent2:
+    Type: AWS::EC2::Instance
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref K3sAgentLaunchTemplate
+        Version: !GetAtt K3sAgentLaunchTemplate.LatestVersionNumber
+      SubnetId: !Ref SubnetId
+
+  K3sAgent3:
+    Type: AWS::EC2::Instance
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref K3sAgentLaunchTemplate
+        Version: !GetAtt K3sAgentLaunchTemplate.LatestVersionNumber
+      SubnetId: !Ref SubnetId
+
+Outputs:
+  Instance1Id:
+    Description: Instance ID of k3s-agent-1
+    Value: !Ref K3sAgent1
+
+  Instance2Id:
+    Description: Instance ID of k3s-agent-2
+    Value: !Ref K3sAgent2
+
+  Instance3Id:
+    Description: Instance ID of k3s-agent-3
+    Value: !Ref K3sAgent3
+
+  Instance1PrivateIp:
+    Description: Private IP of k3s-agent-1
+    Value: !GetAtt K3sAgent1.PrivateIp
+
+  Instance2PrivateIp:
+    Description: Private IP of k3s-agent-2
+    Value: !GetAtt K3sAgent2.PrivateIp
+
+  Instance3PrivateIp:
+    Description: Private IP of k3s-agent-3
+    Value: !GetAtt K3sAgent3.PrivateIp
+
+  SecurityGroupId:
+    Description: Security Group ID
+    Value: !Ref K3sAgentSecurityGroup
+
+  LaunchTemplateId:
+    Description: Launch Template ID
+    Value: !Ref K3sAgentLaunchTemplate

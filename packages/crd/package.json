@@ -1,0 +1,10 @@
+{
+  "name": "@k8flare/crd",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "@k8flare/k8s": "workspace:*",
+    "@k8flare/etcd": "workspace:*"
+  }
+}
