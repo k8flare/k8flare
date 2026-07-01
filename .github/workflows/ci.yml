@@ -29,11 +29,11 @@ jobs:
       - name: TypeScript check
         run: vp check
 
+      - name: Build WASM
+        run: npm run build:wasm
+
       - name: Go vet
         run: go vet ./pkg/apiserver/...
 
       - name: Go test
         run: go test ./pkg/apiserver/...
-
-      - name: Build WASM
-        run: npm run build:wasm
