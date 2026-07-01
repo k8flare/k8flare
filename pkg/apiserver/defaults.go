@@ -1,6 +1,8 @@
 package apiserver
 
 import (
+	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -94,12 +96,53 @@ func defaultProbe(p *corev1.Probe) {
 	}
 }
 
+// ValidateLimitRange checks a pod's container resource requests/limits
+// against any Container-scoped Min/Max bounds in the given LimitRanges,
+// returning an error naming the first violation found. Must run after
+// ApplyLimitRangeDefaults, so Min/Max are checked against the final,
+// resolved values rather than the pod's pre-defaulting spec — matching real
+// Kubernetes, where LimitRanger both defaults and validates in one pass.
+func ValidateLimitRange(pod *corev1.Pod, limitRanges []corev1.LimitRange) error {
+	for _, lr := range limitRanges {
+		for _, item := range lr.Spec.Limits {
+			if item.Type != corev1.LimitTypeContainer {
+				continue
+			}
+			for _, c := range pod.Spec.Containers {
+				if err := validateContainerAgainstLimitRange(c, item); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func validateContainerAgainstLimitRange(c corev1.Container, item corev1.LimitRangeItem) error {
+	for name, min := range item.Min {
+		if req, ok := c.Resources.Requests[name]; ok && req.Cmp(min) < 0 {
+			return fmt.Errorf("minimum %s usage per Container is %s, but request for container %q is %s", name, min.String(), c.Name, req.String())
+		}
+		if lim, ok := c.Resources.Limits[name]; ok && lim.Cmp(min) < 0 {
+			return fmt.Errorf("minimum %s usage per Container is %s, but limit for container %q is %s", name, min.String(), c.Name, lim.String())
+		}
+	}
+	for name, max := range item.Max {
+		if req, ok := c.Resources.Requests[name]; ok && req.Cmp(max) > 0 {
+			return fmt.Errorf("maximum %s usage per Container is %s, but request for container %q is %s", name, max.String(), c.Name, req.String())
+		}
+		if lim, ok := c.Resources.Limits[name]; ok && lim.Cmp(max) > 0 {
+			return fmt.Errorf("maximum %s usage per Container is %s, but limit for container %q is %s", name, max.String(), c.Name, lim.String())
+		}
+	}
+	return nil
+}
+
 // ApplyLimitRangeDefaults fills in any container resource requests/limits a
 // pod didn't specify itself, using the Default/DefaultRequest values from any
 // Container-scoped LimitRange in the pod's namespace — mirroring the subset
 // of real Kubernetes LimitRange admission behavior needed for defaulting.
-// Min/Max range enforcement (rejecting a pod for violating range bounds) is
-// deliberately not implemented; nothing in this codebase exercises it.
+// Callers should also call ValidateLimitRange afterward to enforce Min/Max.
 func ApplyLimitRangeDefaults(pod *corev1.Pod, limitRanges []corev1.LimitRange) {
 	for _, lr := range limitRanges {
 		for _, item := range lr.Spec.Limits {

@@ -91,14 +91,20 @@ func HandleAPI(w http.ResponseWriter, r *http.Request, stores map[string]*Resour
 		ApplyDefaults(rObj)
 
 		// Fill in any container resource requests/limits the pod itself
-		// didn't specify, from Container-scoped LimitRanges in its
+		// didn't specify, then reject it if it still violates a
+		// Container-scoped LimitRange's Min/Max, from LimitRanges in its
 		// namespace. stores["limitranges"] is absent from the group-API
 		// store maps (leases/events/storage/nodeAPI), so this is a no-op
 		// there — Pod is core/v1-only and always routes through HandleAPI.
 		if pod, ok := rObj.(*corev1.Pod); ok {
 			if lrStore, exists := stores["limitranges"]; exists {
 				if lrList, err := lrStore.List(ctx, namespace, "", ""); err == nil {
-					ApplyLimitRangeDefaults(pod, lrList.(*corev1.LimitRangeList).Items)
+					limitRanges := lrList.(*corev1.LimitRangeList).Items
+					ApplyLimitRangeDefaults(pod, limitRanges)
+					if err := ValidateLimitRange(pod, limitRanges); err != nil {
+						writeStatusError(w, http.StatusForbidden, "Forbidden", err.Error())
+						return
+					}
 				}
 			}
 		}
@@ -398,14 +404,20 @@ func HandleGroupAPI(w http.ResponseWriter, r *http.Request, stores map[string]*R
 		ApplyDefaults(rObj)
 
 		// Fill in any container resource requests/limits the pod itself
-		// didn't specify, from Container-scoped LimitRanges in its
+		// didn't specify, then reject it if it still violates a
+		// Container-scoped LimitRange's Min/Max, from LimitRanges in its
 		// namespace. stores["limitranges"] is absent from the group-API
 		// store maps (leases/events/storage/nodeAPI), so this is a no-op
 		// there — Pod is core/v1-only and always routes through HandleAPI.
 		if pod, ok := rObj.(*corev1.Pod); ok {
 			if lrStore, exists := stores["limitranges"]; exists {
 				if lrList, err := lrStore.List(ctx, namespace, "", ""); err == nil {
-					ApplyLimitRangeDefaults(pod, lrList.(*corev1.LimitRangeList).Items)
+					limitRanges := lrList.(*corev1.LimitRangeList).Items
+					ApplyLimitRangeDefaults(pod, limitRanges)
+					if err := ValidateLimitRange(pod, limitRanges); err != nil {
+						writeStatusError(w, http.StatusForbidden, "Forbidden", err.Error())
+						return
+					}
 				}
 			}
 		}

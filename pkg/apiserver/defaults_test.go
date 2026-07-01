@@ -456,3 +456,77 @@ func TestApplyLimitRangeDefaults_IgnoresPodScopedItems(t *testing.T) {
 		t.Errorf("Pod-scoped LimitRangeItem should not apply to container resources, got %v", c.Resources.Limits)
 	}
 }
+
+func limitRangeWithBounds() []corev1.LimitRange {
+	return []corev1.LimitRange{
+		{
+			Spec: corev1.LimitRangeSpec{
+				Limits: []corev1.LimitRangeItem{
+					{
+						Type: corev1.LimitTypeContainer,
+						Min:  corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("50m")},
+						Max:  corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("500m")},
+					},
+				},
+			},
+		},
+	}
+}
+
+func TestValidateLimitRange_RejectsBelowMin(t *testing.T) {
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "test",
+					Image: "nginx",
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("10m")},
+					},
+				},
+			},
+		},
+	}
+	if err := ValidateLimitRange(pod, limitRangeWithBounds()); err == nil {
+		t.Error("Expected an error for a request below LimitRange.Min, got nil")
+	}
+}
+
+func TestValidateLimitRange_RejectsAboveMax(t *testing.T) {
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "test",
+					Image: "nginx",
+					Resources: corev1.ResourceRequirements{
+						Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+					},
+				},
+			},
+		},
+	}
+	if err := ValidateLimitRange(pod, limitRangeWithBounds()); err == nil {
+		t.Error("Expected an error for a limit above LimitRange.Max, got nil")
+	}
+}
+
+func TestValidateLimitRange_AllowsWithinBounds(t *testing.T) {
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "test",
+					Image: "nginx",
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")},
+						Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("300m")},
+					},
+				},
+			},
+		},
+	}
+	if err := ValidateLimitRange(pod, limitRangeWithBounds()); err != nil {
+		t.Errorf("Expected no error for values within bounds, got: %v", err)
+	}
+}
