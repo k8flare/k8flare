@@ -36,3 +36,54 @@ export function urlToStoragePrefix(pathname: string): string | null {
 
   return null;
 }
+
+/** Maps a resource's plural name to its Kind. Covers every resource this apiserver serves. */
+const RESOURCE_KINDS: Record<string, string> = {
+  namespaces: "Namespace",
+  configmaps: "ConfigMap",
+  secrets: "Secret",
+  pods: "Pod",
+  nodes: "Node",
+  serviceaccounts: "ServiceAccount",
+  endpoints: "Endpoints",
+  services: "Service",
+  events: "Event",
+  leases: "Lease",
+  runtimeclasses: "RuntimeClass",
+  csidrivers: "CSIDriver",
+  csinodes: "CSINode",
+  dynamicworkers: "DynamicWorker",
+  workertriggers: "WorkerTrigger",
+};
+
+/**
+ * Determine the Kind and apiVersion for a resource URL, e.g. for constructing
+ * a synthetic object (such as a watch bookmark) that must decode as the
+ * correct concrete type. Returns null for unrecognized resources.
+ */
+export function resourceKindForPath(pathname: string): { kind: string; apiVersion: string } | null {
+  let group = "";
+  let version: string;
+  let rest: string;
+
+  if (pathname.startsWith("/api/v1/")) {
+    version = "v1";
+    rest = pathname.slice(8);
+  } else if (pathname.startsWith("/apis/")) {
+    const parts = pathname.split("/");
+    group = parts[2];
+    version = parts[3];
+    rest = parts.slice(4).join("/");
+  } else {
+    return null;
+  }
+
+  rest = rest.replace(/\/$/, "");
+  const parts = rest.split("/");
+  const resource = parts[0] === "namespaces" && parts.length >= 3 ? parts[2] : parts[0];
+
+  const kind = RESOURCE_KINDS[resource];
+  if (!kind) return null;
+
+  return { kind, apiVersion: group ? `${group}/${version}` : version };
+}

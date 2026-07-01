@@ -1,7 +1,39 @@
-import type { KineEvent, WatchEvent } from "./types.ts";
+import type { KineEvent, KineKV, WatchEvent } from "./types.ts";
 import { decodeKineValue } from "./helpers.ts";
 import { dwAuth } from "./auth.ts";
-import { urlToStoragePrefix } from "./url-mapping.ts";
+import { urlToStoragePrefix, resourceKindForPath } from "./url-mapping.ts";
+import {
+  parseLabelSelector,
+  matchesLabelSelector,
+  type LabelRequirement,
+} from "./label-selector.ts";
+
+/** Decode a kine KV's JSON value into an object, stamping resourceVersion. */
+function decodeKineValueObject(kv: KineKV): Record<string, unknown> {
+  let object: Record<string, unknown> = {};
+  if (kv.value) {
+    try {
+      object = JSON.parse(decodeKineValue(kv.value));
+    } catch {
+      // If value is not valid JSON, wrap it as-is
+      object = { rawValue: kv.value };
+    }
+  }
+
+  // Ensure metadata exists and set resourceVersion
+  if (!object.metadata) {
+    object.metadata = {};
+  }
+  (object.metadata as Record<string, unknown>).resourceVersion = String(kv.modRevision);
+
+  return object;
+}
+
+/** Decode the pre-event KV carried on a kine event, if any. */
+function decodePrevValueObject(kv: KineKV | undefined): Record<string, unknown> | null {
+  if (!kv || !kv.value) return null;
+  return decodeKineValueObject(kv);
+}
 
 /**
  * Convert a kine event (from DO WebSocket) to a Kubernetes WatchEvent.
@@ -16,23 +48,33 @@ export function kineEventToWatchEvent(kineEvent: KineEvent): WatchEvent {
     type = "MODIFIED";
   }
 
-  let object: Record<string, unknown> = {};
-  if (kineEvent.kv && kineEvent.kv.value) {
-    try {
-      object = JSON.parse(decodeKineValue(kineEvent.kv.value));
-    } catch {
-      // If value is not valid JSON, wrap it as-is
-      object = { rawValue: kineEvent.kv.value };
-    }
-  }
+  return { type, object: decodeKineValueObject(kineEvent.kv) };
+}
 
-  // Ensure metadata exists and set resourceVersion
-  if (!object.metadata) {
-    object.metadata = {};
+/** Check whether a decoded object satisfies both the label and field selectors. */
+function objectMatchesSelectors(
+  obj: Record<string, unknown>,
+  labelRequirements: LabelRequirement[],
+  fieldSelectors: { field: string; value: string }[],
+): boolean {
+  if (labelRequirements.length > 0) {
+    const metadata = obj.metadata as Record<string, unknown> | undefined;
+    const labels = metadata?.labels as Record<string, string> | undefined;
+    if (!matchesLabelSelector(labels, labelRequirements)) return false;
   }
-  (object.metadata as Record<string, unknown>).resourceVersion = String(kineEvent.kv.modRevision);
-
-  return { type, object };
+  if (fieldSelectors.length > 0) {
+    const match = fieldSelectors.every(({ field, value }) => {
+      const parts = field.split(".");
+      let current: unknown = obj;
+      for (const part of parts) {
+        if (current == null) return false;
+        current = (current as Record<string, unknown>)[part];
+      }
+      return current === value;
+    });
+    if (!match) return false;
+  }
+  return true;
 }
 
 /**
@@ -76,6 +118,8 @@ export async function handleWatch(
   }
 
   const resourceVersion = url.searchParams.get("resourceVersion") || "0";
+  const resourceKind = resourceKindForPath(url.pathname);
+  const allowWatchBookmarks = url.searchParams.get("allowWatchBookmarks") === "true";
 
   // Parse fieldSelector into an array of {field, value} pairs
   const fieldSelectorParam = url.searchParams.get("fieldSelector") || "";
@@ -89,6 +133,10 @@ export async function handleWatch(
         })
         .filter(Boolean) as { field: string; value: string }[])
     : [];
+
+  const labelSelectorParam = url.searchParams.get("labelSelector") || "";
+  const labelRequirements = parseLabelSelector(labelSelectorParam);
+  const hasSelectors = fieldSelectors.length > 0 || labelRequirements.length > 0;
 
   // Get Etcd DO stub
   const ns = env.ETCD;
@@ -144,24 +192,75 @@ export async function handleWatch(
   ws.addEventListener("message", (event: MessageEvent) => {
     try {
       const data = JSON.parse(event.data as string);
+      if (typeof data.bookmark === "number" && resourceKind && allowWatchBookmarks) {
+        // End of initial replay: tell the client's watch reflector it has
+        // seen the full current state, so it can mark its cache synced.
+        // The object must decode as the watched Kind, or client-go rejects
+        // the whole watch stream with "Object 'Kind' is missing".
+        const bookmarkEvent: WatchEvent = {
+          type: "BOOKMARK",
+          object: {
+            kind: resourceKind.kind,
+            apiVersion: resourceKind.apiVersion,
+            metadata: {
+              resourceVersion: String(data.bookmark),
+              // client-go's reflector only treats a Bookmark as marking the
+              // end of the initial events stream when this annotation is
+              // present (k8s.io/apimachinery meta/v1.InitialEventsAnnotationKey).
+              // Without it, reflectors log "hasn't received required bookmark
+              // event" every 10s and never consider themselves synced.
+              annotations: { "k8s.io/initial-events-end": "true" },
+            },
+          },
+        };
+        writer.write(encoder.encode(JSON.stringify(bookmarkEvent) + "\n"));
+      }
       if (data.events) {
         for (const kineEvent of data.events) {
           const watchEvent = kineEventToWatchEvent(kineEvent);
-          // Apply fieldSelector filter if specified
-          if (fieldSelectors.length > 0) {
-            const obj = watchEvent.object;
-            const match = fieldSelectors.every(({ field, value }) => {
-              const parts = field.split(".");
-              let current: unknown = obj;
-              for (const part of parts) {
-                if (current == null) return false;
-                current = (current as Record<string, unknown>)[part];
+          let finalType = watchEvent.type;
+          let finalObject = watchEvent.object;
+
+          if (hasSelectors) {
+            const newMatches = objectMatchesSelectors(
+              watchEvent.object,
+              labelRequirements,
+              fieldSelectors,
+            );
+
+            if (watchEvent.type === "ADDED") {
+              if (!newMatches) continue;
+            } else if (watchEvent.type === "DELETED") {
+              const oldObj = decodePrevValueObject(kineEvent.prevKV);
+              const oldMatches =
+                oldObj !== null &&
+                objectMatchesSelectors(oldObj, labelRequirements, fieldSelectors);
+              if (!oldMatches && !newMatches) continue;
+            } else {
+              // MODIFIED: a selector transition can turn this into a synthetic
+              // ADDED/DELETED, or suppress it entirely, mirroring how a real
+              // apiserver watch cache treats objects entering/leaving a
+              // selector's view.
+              const oldObj = decodePrevValueObject(kineEvent.prevKV);
+              const oldMatches =
+                oldObj !== null &&
+                objectMatchesSelectors(oldObj, labelRequirements, fieldSelectors);
+              if (oldMatches && newMatches) {
+                // stays MODIFIED
+              } else if (!oldMatches && newMatches) {
+                finalType = "ADDED";
+              } else if (oldMatches && !newMatches) {
+                finalType = "DELETED";
+                finalObject = oldObj as Record<string, unknown>;
+              } else {
+                continue;
               }
-              return current === value;
-            });
-            if (!match) continue;
+            }
           }
-          writer.write(encoder.encode(JSON.stringify(watchEvent) + "\n"));
+
+          writer.write(
+            encoder.encode(JSON.stringify({ type: finalType, object: finalObject }) + "\n"),
+          );
         }
       }
     } catch {

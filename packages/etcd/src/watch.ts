@@ -1,5 +1,6 @@
-import { AFTER_SQL } from "./schema.ts";
-import { rowToEvent } from "./helpers.ts";
+import { AFTER_SQL, LIST_SQL } from "./schema.ts";
+import { rowToEvent, prefixEnd } from "./helpers.ts";
+import { currentRevision } from "./queries.ts";
 import type { SqlExec } from "./queries.ts";
 
 export interface DurableObjectContext {
@@ -24,6 +25,7 @@ export function handleWebSocket(
   (server as any).serializeAttachment({ prefix, revision });
 
   if (revision > 0) {
+    // Resuming from a known point: replay only what changed since then.
     const rows = sql.exec(AFTER_SQL, revision).toArray();
     // Filter by prefix in JS instead of SQL LIKE
     for (const row of rows) {
@@ -31,7 +33,23 @@ export function handleWebSocket(
       const match = prefix.endsWith("/") ? name.startsWith(prefix) : name === prefix;
       if (match) server.send(JSON.stringify({ events: [rowToEvent(row)] }));
     }
+  } else {
+    // Starting fresh (resourceVersion 0/unset): replay current state as
+    // synthetic ADDED events, matching Kubernetes watch semantics for
+    // clients that watch without a prior List call.
+    const rows = sql.exec(LIST_SQL(""), prefix, prefixEnd(prefix), 0).toArray();
+    for (const row of rows) {
+      const event = rowToEvent(row);
+      event.create = true;
+      event.delete = false;
+      server.send(JSON.stringify({ events: [event] }));
+    }
   }
+
+  // Mark the end of the initial replay so the client's watch reflector can
+  // consider its cache synced (Kubernetes watch bookmark semantics) —
+  // without this, informers built on client-go's reflector never converge.
+  server.send(JSON.stringify({ bookmark: currentRevision(sql) }));
 
   return new Response(null, { status: 101, webSocket: client });
 }

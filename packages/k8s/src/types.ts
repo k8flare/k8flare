@@ -35,7 +35,7 @@ export interface Status {
 
 /** Kubernetes WatchEvent — streamed during watch operations. */
 export interface WatchEvent {
-  type: "ADDED" | "MODIFIED" | "DELETED";
+  type: "ADDED" | "MODIFIED" | "DELETED" | "BOOKMARK";
   object: Record<string, unknown>;
 }
 
