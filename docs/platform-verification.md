@@ -33,12 +33,12 @@ documentation or guesswork alone has a proven cost.
 |---|---|---|---|
 | S1 | Facets (limits, storage accounting, parallelism, alarms, delete) | verified (the 10GB shared-vs-independent boundary test alone was intentionally not run — non-blocking) | Phase 4 (storage v2) |
 | S2 | Dynamic Workers Loader (bundling WASM, size limits, env bindings) | verified (local wrangler dev; production limits unconfirmed) | Phase 2 / Phase 4 |
-| S3 | Containers (startup, onActivityExpired, cold start, arbitrary images, UDP, wrangler dev) | not started | Phase 5 route B / Phase 7 |
+| S3 | Containers (startup, onActivityExpired, cold start, arbitrary images, UDP, wrangler dev) | verified (local + desk research; production confirmation of egress-policy enforcement and UDP blocking still open) | Phase 7 (controllers motivation dropped — WASM-only by user decision) |
 | S4 | Cloudflare Mesh (billing scope, flannel prototype, Cluster DNS replacement) | verified (desk research) | Phase 9 |
-| S5 | WASM isolate singleton-ization (syumai fork) | not started | Phase 2 (apiserver) |
+| S5 | WASM isolate singleton-ization (syumai fork) | partially confirmed (doneCh reuse fork verified and works for short, non-blocking request/response handlers; goroutine/timer scheduling across request boundaries does not survive reuse — see S8) | Phase 2 (apiserver) |
 | S6 | R2 (PVC access isolation, S3 access from Containers) | verified (desk research + one read-only check) | Phase 8 |
 | S7 | Re-verifying apiserver residency (double-checking the rejection) | not started | Final confirmation of the rejection decision |
-| S8 | Whether controllers can run WASM-resident | not started (in progress) | ★Highest priority. Decides Phase 5's execution technique (Containers fallback ruled out 2026-07-02 — see Correction log) |
+| S8 | Whether controllers can run WASM-resident | partially confirmed — (a)(c)(d) verified locally with real 10+ min runs; instance reuse across independent requests hits a hard scheduling limit; **new unplanned blocking finding: outbound `net/http` calls crash the WASM instance in unmodified syumai/workers v0.32.0** (workaround found, needs re-verification) | ★Highest priority. Decides Phase 5's execution technique (Containers fallback ruled out 2026-07-02 — see Correction log) |
 
 ---
 
@@ -342,41 +342,125 @@ DynamicWorker `networkAccess: "restricted"` mode.
 - Whether outbound UDP works
 - The Containers + DO local dev experience under `wrangler dev`
 
-**Status**: not started
+**Status**: verified (local testing + desk research; production
+confirmation of egress-policy enforcement and UDP blocking remain open)
 
 **Confirmed facts**
 
-- Cloudflare Containers is GA (April 2026). Instance ceiling of 4 vCPU /
-  12 GiB / 20 GB disk; a container is paired 1:1 with a DO and scales to
-  zero (sleeps after timeout); built-in autoscaling wasn't shipped at GA.
-  Source: `docs/multi-tenancy-and-hosting.md`'s Verified Cloudflare
-  platform facts table (source:
-  [Containers limits](https://developers.cloudflare.com/containers/platform-details/limits/)).
-- If `onActivityExpired()` is overridden and `stop()` / `destroy()` is
-  never called, the container won't stop on its own. Source: a Warning
-  note in the official docs (per the v2 rewrite plan; primary source URL
-  not recorded in this document — to be added when referenced). → This is
-  the basis for the self-managed lifecycle design (demand-start/idle-stop,
-  route B).
-- As a general figure, Containers cold starts are typically reported at
-  1–3 seconds, with real-world cases reaching 3–15 seconds (per
-  architecture articles and measurement blog posts, as cited in the v2
-  rewrite plan — orders of magnitude apart from a Workers isolate's
-  sub-5ms warm-up). **This is a general figure from other projects'
-  measurements, not a measurement of this project's own scheduler/KCM
-  images** (project-specific measurement happens in S7).
+Source: `spikes/s3-containers/FINDINGS.md` (commit `7568a98`,
+2026-07-02), measured locally (Docker 29.4.0 via OrbStack, wrangler
+4.106.0, `@cloudflare/containers` 0.3.7) plus desk research against
+official docs and the Containers changelog (read 2025-09-25 through
+2026-07-01). Scope was narrowed mid-spike once the user decision on
+controllers (WASM-only, no Containers fallback) landed — S3's original
+controllers-fallback motivation is moot, but its Phase 7 (Pod backend)
+motivation stands, so this section now speaks primarily to Phase 7.
+
+1. **Real binaries measured**: `cmd/scheduler` 73.5MB (`FROM scratch`) /
+   75.6MB (distroless), `cmd/controller-manager` 95.2MB / 97.2MB.
+   **`FROM scratch` has no CA bundle** — a request to
+   `https://cloudflare.com` from a scratch image failed TLS verification
+   (`x509: certificate signed by unknown authority`); distroless adds
+   ~2MB and includes the bundle. → **k8flare-provided base images
+   (including any Pod base images) should be distroless-family, not
+   scratch.** `docker stop` completes in 0.2s (graceful `SIGTERM`
+   shutdown via `signal.NotifyContext` works). These images are no
+   longer needed for Phase 5 (controllers are WASM-only) but remain
+   useful for BYO VM Docker distribution.
+2. **`wrangler dev` + Containers + DO developer experience**:
+   `wrangler dev` performs a real local `docker build` (same path as
+   deploy). **The Dockerfile must contain `EXPOSE <port>`** — setting
+   `defaultPort` on the DO class alone fails at startup (undocumented,
+   found empirically). Local demand-start latency measured at ≈0.86s —
+   **not representative of production cold start** (official figures
+   remain 1–3s typical, up to 3–15s in practice, per S7 and
+   `docs/multi-tenancy-and-hosting.md`).
+3. **`onActivityExpired` override behavior confirmed accurate against
+   the official Warning**, comparing two DO variants side by side:
+   without an override, the container stops after `sleepAfter` and
+   `onStop` fires; with the hook overridden and `stop()`/`destroy()`
+   never called, the container stays `healthy` indefinitely and
+   **`onActivityExpired` fires repeatedly (not a one-shot hook)** —
+   observed every ~20s for a 20s `sleepAfter`. Reading the shipped
+   `@cloudflare/containers@0.3.7` source directly (not just docs)
+   additionally found: the Container class self-arms a DO `alarm()` at
+   most every 3 minutes (or the remaining `sleepAfter`, whichever is
+   shorter) while the container runs, and calls
+   `ctx.storage.deleteAlarm()` once stopped with no pending schedule —
+   i.e. **it parks itself when idle**, matching this repo's event-armed
+   alarm rule. → **Quantitative Phase 7 cost consequence: each running
+   Pod container implies a DO alarm firing at least every 3 minutes**
+   while that Pod is up (folded into `docs/cost-model.md`'s `nodes` row).
+4. **Arbitrary images at runtime are not possible**, confirmed via Image
+   Management docs and a full changelog read (2025-09-25 through
+   2026-07-01, including the 2026-07-01 Google Artifact Registry entry):
+   `containers[].image` is fixed at deploy time (a Dockerfile path or a
+   fully-qualified registry reference); no API lets a Worker/DO select
+   an arbitrary image at runtime, and recent platform changes only
+   extend deploy-time configuration. → **Phase 7 v1 is settled on a
+   "wrangler-defined image allowlist" model** — `kubectl
+   run --image=<anything>` cannot work; Pods can only run images
+   k8flare has pre-registered. Must be stated honestly in the README.
+5. **Outbound UDP is officially unsupported, and non-80/443 ports have
+   no handler at all**: DNS resolution is Cloudflare's own resolvers
+   only, and the port restriction applies regardless of
+   `enableInternet`. → CoreDNS running as a Containers-hosted Pod cannot
+   serve UDP:53; VXLAN-over-UDP also can't run on Containers as-is.
+   **However, local `wrangler dev` does not enforce any of this** — a
+   default-configured container successfully reached a non-80/443 port
+   (`host.docker.internal:8846`), and so did a container with
+   `enableInternet=false` and no `allowedHosts` explicitly set. → A
+   concrete instance of "worked locally ≠ same in production": egress
+   policy (`enableInternet`/`allowedHosts`/`deniedHosts`) must be
+   re-verified against a real deployment before anything relies on it
+   for Pod network isolation.
+6. **Container → host long-lived streaming works**: a host-side chunked
+   HTTP stream (1s interval × 25 ticks) relayed from inside the
+   container preserved timing and completed fully, including under
+   `enableInternet=false` (consistent with finding 5's local
+   non-enforcement). This proves Docker-level stream mechanics only —
+   the production "container → apiserver watch" path (reconnects,
+   resourceVersion continuation) remains a Phase 5/7 implementation-time
+   concern.
+7. **Instance sizing is also deploy-time-fixed** (same-day addendum,
+   double-sourced from the Limits page and the 2026-01-05 "Custom
+   instance types" changelog entry): `instance_type` is set per
+   `containers[]` entry at deploy time (six predefined tiers from `lite`
+   1/16 vCPU·256MiB·2GB up to `standard-4` 4vCPU·12GiB·20GB, or a custom
+   `{vcpu, memory_mib, disk_mb}` — opened to all users 2026-01-05,
+   previously Enterprise-only); runtime `startOptions` can only override
+   `envVars`/`entrypoint`/`enableInternet`/`labels`, never size.
+   Account-level caps: 1,500 concurrent vCPU / 6TiB memory / 30TB disk /
+   50GB image storage — no documented cap on the number of Container
+   classes. → **Phase 7 consequence: the allowlist is effectively
+   (image × size-tier) pairs**, since honoring Pod
+   `resources.requests/limits` needs a separate Container class per size
+   tier — realistic v1 is a small curated set of base images × a few
+   size tiers, rounding each Pod's requested resources up to the
+   nearest tier (to be settled during Phase 7 detailed design).
+
+**Correction recorded by the spike itself**: the report behind this
+section initially inferred that S8 had "succeeded" from the task-list
+title alone ("WASM 一本化" / WASM-only). That's wrong as to cause — the
+WASM-only direction for controllers is a user decision (2026-07-02) made
+independently of S8's outcome; S8 was still running when this spike
+completed. Recorded here so the incorrect causal claim doesn't
+propagate, per this document's honest-correction convention.
 
 **Open questions**
 
-- Whether arbitrary OCI images can be run dynamically (this is the very
-  precondition for the Pod backend to work; if not, the design needs to
-  change to an allowlist approach).
-- Whether outbound UDP works (affects k3s/flannel-style networking).
-- The Containers + DO local dev experience under `wrangler dev`.
-- Measured cold-start time for this project's own scheduler/KCM images
-  (→ planned for S7).
-- The call granularity of `onActivityExpired` (needed to tune route B's
-  idle-timeout).
+- Whether `enableInternet`/`allowedHosts`/`deniedHosts` are actually
+  enforced in production (confirmed **not** enforced locally — see
+  finding 5).
+- Empirical confirmation that UDP is fully blocked in production
+  (currently based on official docs, not a production test).
+- How the egress-control sidecar (`docker.io/cloudflare/proxy-everything`)
+  is billed.
+- Cold-start penalty for pulls from non-Cloudflare registries.
+- Project-specific cold-start measurement against a real deployment
+  (this was S7's original charter; S7 is now moot for controllers per
+  the WASM-only decision, but the measurement is still relevant to
+  Phase 7 Pod startup latency).
 
 ---
 
