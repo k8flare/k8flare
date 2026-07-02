@@ -35,10 +35,10 @@ documentation or guesswork alone has a proven cost.
 | S2 | Dynamic Workers Loader (bundling WASM, size limits, env bindings) | verified (local wrangler dev; production limits unconfirmed) | Phase 2 / Phase 4 |
 | S3 | Containers (startup, onActivityExpired, cold start, arbitrary images, UDP, wrangler dev) | verified (local + desk research; production confirmation of egress-policy enforcement and UDP blocking still open) | Phase 7 (controllers motivation dropped — WASM-only by user decision) |
 | S4 | Cloudflare Mesh (billing scope, flannel prototype, Cluster DNS replacement) | verified (desk research) | Phase 9 |
-| S5 | WASM isolate singleton-ization (syumai fork) | partially confirmed (doneCh reuse fork verified and works for short, non-blocking request/response handlers; goroutine/timer scheduling across request boundaries does not survive reuse — see S8) | Phase 2 (apiserver) |
+| S5 | WASM isolate singleton-ization (syumai fork) | partially confirmed (doneCh reuse fork verified; state persists across reused-instance requests; a *new* timer wait fails only when nothing else is concurrently active — an open stream, a blocked outbound read, or a `ctx.waitUntil` task all keep the whole scheduler pumped for every goroutine — see S8) | Phase 2 (apiserver) |
 | S6 | R2 (PVC access isolation, S3 access from Containers) | verified (desk research + one read-only check) | Phase 8 |
 | S7 | Re-verifying apiserver residency (double-checking the rejection) | not started | Final confirmation of the rejection decision |
-| S8 | Whether controllers can run WASM-resident | partially confirmed — (a)(c)(d) verified locally with real 10+ min runs; instance reuse across independent requests hits a hard scheduling limit; **new unplanned blocking finding: outbound `net/http` calls crash the WASM instance in unmodified syumai/workers v0.32.0** (workaround found, needs re-verification) | ★Highest priority. Decides Phase 5's execution technique (Containers fallback ruled out 2026-07-02 — see Correction log) |
+| S8 | Whether controllers can run WASM-resident (reframed 2026-07-02: WASM execution-*shape* design material, not a go/no-go gate — Containers isn't an option under any outcome) | partially confirmed — (a)(c)(d) verified locally with real 10+ min runs; the outbound-`net/http` crash found mid-spike has a verified one-file library-level fix (`wasm_exec.js` patch); startup-tax measured against the real apiserver binary (~14ms cold); `ctx.waitUntil` confirmed to keep the whole scheduler pumped with no client connected (45s+ observed) — see the S8 follow-up subsection for the failure-mode layer table and candidate execution shapes | ★Highest priority. Informs which WASM execution shape Phase 5 adopts |
 
 ---
 
@@ -1043,6 +1043,256 @@ verification (below) is also still outstanding.
 - Whether the surprising "`cloudflare.WaitUntil` didn't throw on a stale
   context" result (S5 section) holds in real `workerd` and isn't a
   wrangler-dev-only emulation quirk.
+
+**Follow-up (2026-07-02, same day): reframed as WASM execution-shape
+design material, not a go/no-go gate.** Per user decision, Containers is
+not available as a fallback under any outcome (see Correction log
+entry above) — scheduler/KCM **will** run as WASM on Workers or Durable
+Objects regardless. The remaining work below is therefore in service of
+choosing *which* WASM execution shape, not whether to use one.
+
+**Failure-mode layer attribution.** For every break found in this spike,
+which layer owns it, the exact error, and whether a workaround exists:
+
+| # | What breaks | Layer | Exact error | Workaround? |
+|---|---|---|---|---|
+| 1 | 2nd request dispatched to a reused instance | syumai/workers library design (`handler_js.go`'s `doneCh`, assumes one instance = one request) | `panic: close of closed channel` | Yes — `sync.Once` guard, 1 line, verified |
+| 2 | A *new* `time.Ticker`/`time.Sleep`, on a reused instance, with **nothing else currently active** | Go's wasm scheduler (`wasm_exec.js`'s `setTimeout`-driven resume) × `workerd`'s per-request IoContext isolation (a deliberate platform boundary, not a bug) | `"...detected that your Worker's code had hung..."`, ~2ms, looks structural | Narrower than first thought — see below |
+| 3 | Any outbound `net/http` call, on **any** instance (not reuse-specific) | Go stdlib (`net/http/roundtrip_js.go` calling `js.Global().Call("fetch",...)`) × syumai's `wasm_exec.js` `Proxy`-wrapped `globalThis` (added to inject per-instance `context`) × `workerd`/V8's native receiver/brand check on `fetch()` (standard JS platform behavior, not a bug) | `panic: JavaScript error: Illegal invocation: function called with incorrect \`this\` reference` | **Yes, at the library level** — see the `wasm_exec.js` patch below |
+| 4 | A naive "bind every function retrieved off the proxy" attempt at fixing #3 | Same Proxy, but the fix itself: `Function.prototype.bind()` does not forward a function's own properties, so e.g. `Array.bind(target).from` is `undefined` | `TypeError: Cannot read properties of undefined (reading 'exports')` (cascades from a WASM VM-level failure once a bound class loses its static methods) | Yes — narrow the bind to `fetch` only, verified working with no regressions |
+
+  **Corrected understanding of #2, the practical scope is much
+  narrower than "any reused-instance timer wait fails":**
+  - Outbound blocking I/O (reading a live outbound HTTP response body,
+    the shape a real watch client uses) works fine on a reused instance,
+    **including as a non-originating request**, as long as *this*
+    request itself stays open for the duration — verified with a
+    synchronous outbound read against a separate worker process: 3 real
+    heartbeat lines, 6.05s elapsed, exactly matching the source's 2s
+    cadence, both as request #1 and as request #2. The failure in #2 is
+    specific to Go's *shared internal timer scheduler*
+    (`time.Sleep`/`time.Ticker`/`time.After`), not to blocking I/O in
+    general.
+  - Whenever *anything* is actively keeping the scheduler pumped — an
+    open inbound stream, a blocked outbound read, or (see below) an
+    active `cloudflare.WaitUntil` task — **every other goroutine's
+    timers also make correct real-time progress**, not just the one
+    doing the active work. Confirmed by watching `main_ticker` (a plain,
+    unwrapped background ticker) advance correctly in lockstep while a
+    *different* goroutine was blocked on an outbound read.
+  - The failure only actually occurs when a *new* timer-blocking wait is
+    started and **nothing at all** is concurrently active (no stream, no
+    blocked read, no waitUntil task) — confirmed as a clean, isolated
+    negative case: with zero other traffic, `/stream` dispatched as a
+    reused instance's 2nd request still failed immediately even after
+    the above was understood, ruling out "maybe it always secretly
+    works now."
+  - Self-referential outbound calls (a Go program calling *its own*
+    route via HTTP loopback, re-entering `binding.handleRequest`)
+    inherit this same failure if the inner route itself needs a fresh
+    timer and the instance has already served prior requests — the
+    inner call is dispatched exactly like any other new request. Don't
+    have a resident worker call its own timer-blocking routes via
+    self-loopback; call a genuinely separate process/worker, or avoid
+    self-loopback for such routes.
+
+**`wasm_exec.js` fetch fix, verified working.** Root cause of failure #3
+above is specific and fixable: `wasm_exec.js`'s `Proxy` `get` trap
+returns raw (unbound) function references, and `fetch()` rejects being
+invoked with a `Proxy` as `this`. Patch (in
+`spikes/s8-wasm-resident/vendor/syumai-workers-fork/cmd/workers-assets-gen/assets/wasm_exec_go.js`,
+the source `workers-assets-gen` copies into every project's
+`wasm_exec.js`):
+```js
+get(target, prop) {
+  if (prop === 'context') { return context; }
+  const val = Reflect.get(target, prop, target);
+  if (prop === 'fetch' && typeof val === 'function') {
+    return val.bind(target);   // fetch specifically; NOT every function -- see failure #4
+  }
+  return val;
+}
+```
+Regenerated `wasm_exec.js` from this patched fork and re-ran, with **no
+service-binding workaround at all**: a plain `http.Get()` to this same
+worker's own loopback route returned a clean 200, and a plain
+`http.Get("https://example.com/")` to a genuinely external URL also
+returned a clean 200 with real HTML content. Existing behavior
+unaffected (streaming, instance reuse, `/status` all still worked
+identically after the patch). **This is a ~10-line, one-file fix that
+would let every outbound call client-go/KCM makes internally work
+unmodified**, instead of requiring an audit-and-rewrite of every call
+site to use explicit service bindings. This substantially de-risks the
+"any upstream code that calls `http.Get` will crash the instance"
+open question from the original S8 write-up above. Not yet verified
+against production `workerd`, and not yet re-verified against the real,
+much larger apiserver/controllers-shaped binary (only tested against
+this spike's minimal Go programs).
+
+**WASM instantiation "startup tax", measured** (assumes module bytes
+already compiled/cached, which is how this library always works — only
+the `WebAssembly.Instance` + Go runtime bootstrap + all package `init()`s
++ `main()` up to first byte is being timed here, via `curl -w
+"%{time_starttransfer}"`, 10 samples each, local `wrangler dev`):
+
+| Target | Pattern | `time_starttransfer` |
+|---|---|---|
+| This spike's minimal `stock` binary (~5MB uncompressed) | fresh instantiate every request | ~4.2–5.5ms (avg ~4.6ms) |
+| This spike's minimal `resident` binary, already warm | dispatch only, no instantiate | ~1.8–3.5ms (avg ~2.3ms) |
+| **The real k8flare apiserver** (`packages/worker/build/app.wasm`, 38MB raw / 7.07MB gzip, current build, unmodified) | fresh instantiate every request (`GET /api`, no-auth discovery endpoint, current production pattern) | **~13.6–17.2ms (avg ~14.4ms)** |
+
+  Delta between minimal-fresh and minimal-warm (~2.3ms) is the pure
+  instantiate+bootstrap tax for a *trivial* program. The real
+  apiserver's fresh-instantiate cost (~14.4ms) is markedly higher,
+  confirming the tax scales with program complexity/size, not a fixed
+  constant — expected, since a larger binary means more package-level
+  `init()`s (more resource stores, more registered routes) to run
+  before the first request can be served. **Even so, ~14ms is fast in
+  absolute terms** — far below human-perceptible latency, and orders of
+  magnitude below Cloudflare Containers' typical 1–3s cold start (see S3
+  section). This is a meaningful, favorable data point for any
+  "event-driven re-entrant" execution shape (fresh instantiate per
+  wake-event: a DO alarm firing, a WebSocket hibernation wake) — it
+  would not need to keep an instance "resident" at all to stay fast, at
+  least not for apiserver-sized binaries. **Caveat**: a real
+  `workers/controllers` binary (embedding kube-scheduler/KCM and much of
+  client-go) is likely to be substantially larger/more complex than
+  apiserver, so its own instantiate tax could be higher still — this
+  needs measuring against an actual controllers-shaped binary once one
+  exists, not extrapolated from apiserver's number. Also: local
+  `wrangler dev` only; production instantiate cost (isolate
+  pooling/warm-start optimizations Cloudflare may apply) is unverified.
+
+**Global state (Go package vars) persistence conditions, precisely
+stated:**
+- **Persists** across every request dispatched into the same reused
+  `WebAssembly.Instance` (the S5 fork's model) — confirmed via a request
+  counter and instance ID staying constant and a ticker's count
+  correctly accumulating across many separate `curl` invocations,
+  minutes apart.
+- **Resets to zero** the instant a *new* `WebAssembly.Instance` is
+  created — this is what happens on every request under the *current,
+  unmodified* generated glue (one instance per request, confirmed via a
+  different random instance ID on every call).
+- **Is destroyed entirely** if the reused instance's Go program panics
+  unrecovered (fatal to the whole program, same as any Go program) —
+  demonstrated twice, by the pre-fix `doneCh` double-close and
+  separately by the pre-patch outbound-fetch crash; every subsequent
+  request to that isolate then fails with `"Error: Go program has
+  already exited"` until the dev server itself reloads.
+  **Practical implication for a reused-instance design: every goroutine
+  must be wrapped in `recover()`, since one unrecovered panic anywhere
+  takes down all accumulated state for every tenant/request sharing that
+  instance, not just the request that triggered it.**
+- **Not observed to expire from mere idleness** in local `wrangler dev`
+  — an instance that received zero requests for almost a minute still
+  answered correctly with all prior state intact when the next request
+  arrived. This is very likely a `wrangler dev` characteristic (a single
+  long-running local process, not realistic isolate lifecycle
+  management) rather than a property of production `workerd`, which is
+  expected to evict idle isolates on its own schedule — **not
+  verified against production**, listed as an open question above.
+
+**`ctx.waitUntil` life-extension past the visible response closing —
+the single most useful new result for shape selection.** Tested whether
+wrapping a background goroutine in `cloudflare.WaitUntil` lets it keep
+making real, wall-clock progress with **zero other requests open**,
+which earlier testing had shown a plain (unwrapped) background ticker
+cannot do (it freezes, advancing at most +1 tick per later incoming
+request, never proportionally to elapsed time). Handler
+(`/close-then-extend`) returns its own short response immediately
+(closes in ~40ms) but, before returning, registers via
+`cloudflare.WaitUntil` a goroutine that ticks a counter once per second.
+Polled `/status` afterwards with **no other traffic in between**:
+```
+after ~45.5s idle:  extend_ticker=45   main_ticker=22   (both ≈ real elapsed time)
+after ~41.9s idle:  extend_ticker=41   main_ticker=20   (both ≈ real elapsed time)
+```
+**Confirmed: yes, `ctx.waitUntil` keeps the goroutine progressing in real
+time with the visible response fully closed and no client connected.**
+Re-run with a 600s (10 min) budget and polled at increasing intervals
+with zero other traffic in between:
+```
+uptime= 45.5s: extend_ticker= 45  main_ticker=22
+uptime=105.5s: extend_ticker= 92  main_ticker=47
+uptime=150.8s: extend_ticker=137  main_ticker=70
+uptime=255.2s: extend_ticker=241  main_ticker=122
+```
+Both counters track real elapsed time closely the entire way out to
+**4+ minutes (255s)**, no slowing, no cap hit. (Numbers come from two
+consecutive runs on the same instance — the first was accidentally
+interrupted at ~50s by an unrelated test that had to restart the dev
+server; the counters above are the second, uninterrupted run. Raw logs:
+`spikes/s8-wasm-resident/logs/resident-dev-14.log`,
+`resident-dev-15.log`.) And — matching the "anything active pumps everything" pattern found for
+failure #2 above — the *plain, unwrapped* `main_ticker` **also** tracked
+real elapsed time correctly during this same window, purely because the
+waitUntil task was active; with no waitUntil task running (all earlier
+tests), the identical `main_ticker` code only ever got +1 tick per
+incoming request while idle. **This means a single `cloudflare.WaitUntil`
+call is sufficient to keep the *entire* shared scheduler pumped for
+every goroutine on that instance, not just the wrapped one.**
+Practical implication: **"return an ack immediately, then run the real
+reconcile/watch loop via one `cloudflare.WaitUntil` call" is a
+credible, simpler alternative to "keep a client-visible stream open"**
+for a resident-style execution shape — it doesn't require a connected
+client at all. Caveats, all unverified: (1) local `wrangler dev` only —
+production may cap `waitUntil` duration or bill it differently than
+streaming CPU time (the pricing model referenced earlier for streaming
+responses was not confirmed to also apply to `waitUntil`); (2) not
+tested past ~45s of continuous observation in this pass; (3) whether
+`waitUntil`'s extension is itself vulnerable to the same "only works if
+it's the originating/currently-valid IoContext" constraint when called
+from a *non-originating* request was separately tested and did **not**
+throw (S5 section, point 4) but that result is flagged there as not
+fully understood.
+
+**Candidate WASM execution shapes, informed by all of the above** (for
+Phase 5 design, not a recommendation to pick one yet):
+1. **Stream-resident** (this spike's (a)): one instance per logical
+   "session," keeps a client-visible response stream open for its whole
+   life. Proven to work cleanly for 11+ minutes. Needs a client willing
+   to hold a connection open.
+2. **WaitUntil-resident** (new, from the finding above): one instance
+   answers a triggering request immediately, then keeps running via a
+   self-perpetuating `cloudflare.WaitUntil` task. No open client
+   connection required; same underlying scheduler-pumping mechanism as
+   (1). Needs production verification of duration limits/billing.
+3. **Event-driven re-entrant** (fresh instantiate per wake, no
+   residency at all): viable if per-wake instantiate tax stays low
+   enough — apiserver-scale measured at ~14ms locally, likely higher for
+   a controllers-scale binary, not yet measured. Sidesteps every
+   cross-request scheduling problem in this document entirely, at the
+   cost of losing in-memory state between wakes (would need to
+   externalize informer caches/resourceVersions, e.g. to DO storage).
+4. **DO-hosted execution**: running the WASM instantiate/dispatch inside
+   a Durable Object's own methods instead of a Worker `fetch()` handler,
+   to combine DO's persistent in-memory object lifetime with
+   alarm/hibernation-driven wake-ups. **Minimal feasibility confirmed**
+   (`spikes/s8-wasm-resident/do-hosted/`, a `WasmDO` class with the same
+   instantiate-once-then-reuse pattern as the plain-Worker `resident`
+   spike, moved to DO instance fields instead of module-scope `let`
+   vars):
+   - Instantiating and dispatching into the Go program from inside the
+     DO's own `fetch(request)` method works cleanly; state (instance ID,
+     request counter) persists across separate requests routed to the
+     same DO id, exactly like the plain-Worker case.
+   - **Dispatching from the DO's `alarm()` handler also works**: armed a
+     one-shot alarm (`storage.setAlarm(Date.now()+2000)`, fired once, not
+     re-armed — event-armed per the cost invariants, not polling), and
+     when it fired, the `alarm()` handler successfully called into the
+     *same* already-running Go instance (`binding.handleRequest`) and
+     got back correct state (matching instance ID, correctly incremented
+     request counter, `main_ticker` having advanced proportionally to
+     real elapsed time since the instance was created). This is the
+     concrete mechanism a "wake via alarm, reconcile, sleep" execution
+     shape would depend on, and it works in local `wrangler dev`.
+   - Not yet tested: whether the same timer-scheduling constraints found
+     in the plain-Worker case (a *new* blocking timer wait failing when
+     nothing else is active) also apply to alarm-triggered dispatch —
+     expected to, by the same underlying `wasm_exec.js` mechanism, but
+     not independently re-verified here. Also not tested: WebSocket
+     hibernation wake-up specifically, or production DO behavior.
 
 ---
 
