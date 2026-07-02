@@ -27,16 +27,95 @@ costs.
 
 ## Per-component estimates
 
-| Component                    | Idle monthly cost (target: ~0)                                                                                                   | Active unit cost                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Estimate         | Actual                                                    |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- | --------------------------------------------------------- |
-| gateway (TS Worker)          | ~0 (stateless, no DO)                                                                                                            | Workers request billing (actual CPU time)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | TBD              | Not yet done (not implemented, Phase 2)                   |
-| apiserver (Go WASM)          | ~0                                                                                                                               | Workers request billing (actual CPU time). Whether the WASM startup tax applies depends on S5's outcome (isolate singleton-ization, see `docs/platform-verification.md` S5)                                                                                                                                                                                                                                                                                                                                                                               | TBD (pending S5) | Not yet done (not implemented, Phase 2)                   |
-| storage: Cluster DO          | Target: storage cost only (alarm parked)                                                                                         | DO requests / duration GB-s / rows read-written + alarm invocation count (event-armed only)                                                                                                                                                                                                                                                                                                                                                                                                                                                               | TBD              | Not yet done (not implemented, Phase 4)                   |
-| storage: WatchHub DO         | ~0 (while hibernating)                                                                                                           | DO requests / duration GB-s (hibernating WS connections are assumed not billed for inactive time — needs measurement)                                                                                                                                                                                                                                                                                                                                                                                                                                     | TBD              | Not yet done (not implemented, Phase 4)                   |
-| runtime (TS Worker + LOADER) | ~0 (when cron hasn't fired)                                                                                                      | Workers request billing + Worker Loader $0.002/unique/day                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | TBD              | Not yet done (not implemented, Phase 2)                   |
-| controllers                  | See "controllers execution path: two-route estimate" below                                                                       | Same                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Same             | Not yet done (pending `docs/platform-verification.md` S8) |
-| nodes (Pod-on-Containers)    | Target ~0, though a lightweight alarm is expected to be needed for virtual-node Lease renewal (regardless of whether Pods exist) | Containers vCPU/GiB-second billing. **Each running Pod container implies a DO alarm firing at least every ≤3 minutes** while it's up — confirmed by reading the `@cloudflare/containers` self-monitoring source (`spikes/s3-containers/FINDINGS.md`); it re-arms on that cadence while running and calls `deleteAlarm()` once stopped, so it parks when idle (event-armed rule satisfied, but not zero-alarm while any Pod is running). **The Pod's own running cost is the user's workload cost** (cost invariant #6, not counted as control-plane cost) | TBD              | Not yet done (not implemented, Phase 7)                   |
-| R2 PV/PVC                    | Target: storage cost only                                                                                                        | R2 operation billing                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | TBD              | Not yet done (not implemented, Phase 8)                   |
+| Component                    | Idle monthly cost (target: ~0)                                                                                                   | Active unit cost                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Estimate         | Actual                                                    |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- | --------------------------------------------------------- |
+| gateway (TS Worker)          | ~0 (stateless, no DO)                                                                                                            | Workers request billing (actual CPU time)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | TBD              | Not yet done (not implemented, Phase 2)                   |
+| apiserver (Go WASM)          | ~0                                                                                                                               | Workers request billing (actual CPU time). Whether the WASM startup tax applies depends on S5's outcome (isolate singleton-ization, see `docs/platform-verification.md` S5)                                                                                                                                                                                                                                                                                                                                                                                   | TBD (pending S5) | Not yet done (not implemented, Phase 2)                   |
+| storage: Cluster DO          | Target: storage cost only (alarm parked)                                                                                         | DO requests / duration GB-s / rows read-written + alarm invocation count (event-armed only). A namespaced key op now costs 1 parent request + 1 facet request (GET/list) or 1 parent write + 1 facet `/apply` write (PUT/DELETE) -- roughly double the DO-request count of the pre-facet single-table design, in exchange for per-namespace storage headroom. Loader cost is a flat $0.002/day regardless of namespace count: one generic facet class, one content-hash loader key, reused via `ctx.facets.get(name, ...)` for every ns/events/ca-vault facet | TBD              | See Actual: idle alarm parking measured, Phase 4          |
+| storage: WatchHub DO         | ~0 (while hibernating)                                                                                                           | DO requests: 1 `/push` per write that touches a watched key (from Cluster, awaited synchronously) + 1 `/replay` per new client connection (to Cluster) + N WebSocket sends per push (N = matching connected clients). No upstream connection to hold open (see design note below), so nothing keeps WatchHub resident between events -- nothing added to WatchHub's own idle cost beyond the DO-request cost of whichever push/replay call last touched it                                                                                                    | TBD              | See Actual below, Phase 4                                 |
+| runtime (TS Worker + LOADER) | ~0 (when cron hasn't fired)                                                                                                      | Workers request billing + Worker Loader $0.002/unique/day                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | TBD              | Not yet done (not implemented, Phase 2)                   |
+| controllers                  | See "controllers execution path: two-route estimate" below                                                                       | Same                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Same             | Not yet done (pending `docs/platform-verification.md` S8) |
+| nodes (Pod-on-Containers)    | Target ~0, though a lightweight alarm is expected to be needed for virtual-node Lease renewal (regardless of whether Pods exist) | Containers vCPU/GiB-second billing. **Each running Pod container implies a DO alarm firing at least every ≤3 minutes** while it's up — confirmed by reading the `@cloudflare/containers` self-monitoring source (`spikes/s3-containers/FINDINGS.md`); it re-arms on that cadence while running and calls `deleteAlarm()` once stopped, so it parks when idle (event-armed rule satisfied, but not zero-alarm while any Pod is running). **The Pod's own running cost is the user's workload cost** (cost invariant #6, not counted as control-plane cost)     | TBD              | Not yet done (not implemented, Phase 7)                   |
+| R2 PV/PVC                    | Target: storage cost only                                                                                                        | R2 operation billing                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | TBD              | Not yet done (not implemented, Phase 8)                   |
+
+## Phase 4 (storage v2) actuals
+
+Written after implementation, per cost invariant #5's "estimate before
+implementing, update from measurement" cycle -- the estimate row above
+was written first, this section records what was actually verified
+against real `wrangler dev` (2026-07-02).
+
+**Alarm parking (cost invariant #1/#3) -- verified working end to end**:
+using a temporary debug endpoint exposing `ctx.storage.getAlarm()`
+(removed before committing), the full cycle was observed directly:
+
+1. Fresh cluster, no Nodes/Services: `alarm: null` (never armed at all
+   -- `initialize()` only arms if `hasPendingSafetyNetWork()` is already
+   true, e.g. a DO waking from eviction with live state).
+2. Create a Node: alarm arms (debounced ~1s pull-in via
+   `wakeSchedulerSoon`), fires once (PodCIDR allocated, confirmed), and
+   _re-arms_ ~60s later because the Node is still live.
+3. Delete the Node, then wait past the next scheduled fire: the alarm
+   fires (no-op, nothing to allocate), evaluates
+   `hasPendingSafetyNetWork()` (now false), and does **not** re-arm:
+   `alarm: null` again. Confirms the idle cluster genuinely stops
+   costing alarm invocations, not just "polls less often."
+4. Single write (a Service needing a ClusterIP) from that parked state:
+   alarm immediately re-arms. Confirms resume-on-write.
+
+This is the strongest evidence available short of a production billing
+statement: an idle cluster (no Nodes, no Services) incurs zero DO alarm
+invocations after its initial settle, and a cluster with live
+infrastructure still bounds its safety-net cost to once per
+`SAFETY_NET_INTERVAL_MS` (60s) regardless of write volume (writes that
+need prompt attention pull the _existing_ alarm closer via
+`wakeSchedulerSoon` rather than scheduling additional ones).
+
+**Facet routing overhead**: every namespaced key operation (all of
+Pod/Service/ConfigMap/Secret/etc. -- the bulk of real workload data)
+now involves at least one additional DO-to-DO `fetch()` call from
+Cluster to the owning `ns/<namespace>` facet (or `events-log`/
+`ca-vault`), versus zero extra calls in the pre-facet single-table
+design. All-namespaces LIST/replay fans out to every namespace's facet
+concurrently (`Promise.all`) rather than serially, so wall-clock cost
+scales with the slowest facet, not the sum -- consistent with S1's
+finding that facet dispatch isn't serialized. This trade (more DO
+requests, less storage pressure on the parent) is the intended one:
+see docs/multi-tenancy-and-hosting.md's honest-correction note for why
+per-namespace storage headroom was worth this.
+
+**WatchHub redesign cost implications**: the original design (WatchHub
+holds one upstream WebSocket to Cluster) turned out to not be a
+supported platform pattern at all (see the redesign commit and
+watchhub.ts's module comment) -- Cluster instead pushes each event to
+WatchHub via a plain `fetch()` POST, awaited as part of the write path.
+This is a _better_ cost shape than the original design, not just a
+workaround: no upstream connection means nothing keeps WatchHub
+DO-resident between events (the original design's upstream socket would
+have been held via `.accept()`, which -- per the redesign commit's
+finding -- cannot be hibernation-managed for a socket obtained from
+another DO's response, meaning WatchHub would have stayed non-hibernated
+for as long as any client was connected, a wall-clock-shaped cost this
+redesign avoids entirely).
+
+**Verified working, cost mechanism not yet measurable in $**: the
+above confirms the _shape_ of billable events (request counts, when
+alarms fire) is correct. Actual $ costs require either Cloudflare's
+published per-request DO pricing (not yet looked up into this doc) or a
+production account with real traffic -- both out of scope for this
+phase (no `wrangler deploy`).
+
+**Known gap this phase leaves for production verification**: a
+minimal Go `net/http` client (and therefore client-go, and therefore
+kubectl and every real Kubernetes controller) does not receive any
+bytes from a long-lived streaming watch response against local
+`wrangler dev`, while curl reads the identical bytes immediately. See
+the WatchHub redesign commit message for the full repro. If this
+reproduces against production Cloudflare too, it is cost-relevant as
+well as functionally blocking: a watch connection that a real client
+can't consume can't be measured for its actual duration/request cost
+either. This must be re-verified against a real deployment before
+watch can be considered done, not just facet storage.
 
 ## controllers execution path: two-route estimate
 
@@ -141,15 +220,30 @@ for Phase 6 (see the v2 rewrite plan's "add a cost gate" section).
 - [ ] Container instance count is 0 (if route B is adopted; for route A,
       confirm via `wrangler tail` etc. that the controllers Worker's
       actual consumed CPU time is effectively zero)
-- [ ] No DO alarm is scheduled (parked state — only re-armed on waiting
-      events, with no fixed-interval polling left running)
-- [ ] WebSocket connections are hibernating (WatchHub DO; the
-      `ctx.waitUntil` keep-alive used while holding a connection isn't
-      active)
+- [x] No DO alarm is scheduled (parked state — only re-armed on waiting
+      events, with no fixed-interval polling left running) -- **verified
+      2026-07-02 against real `wrangler dev`** for the Cluster DO's
+      safety-net alarm: idle (no Nodes/Services) parks to `alarm: null`
+      and stays there; a single write resumes it; deleting the last
+      live Node/Service lets the next scheduled fire park it again
+      rather than re-arming forever. See "Phase 4 (storage v2) actuals"
+      above for the full sequence.
+- [ ] WebSocket connections are hibernating (WatchHub DO) -- client-facing
+      sockets use `ctx.acceptWebSocket` as designed, but end-to-end watch
+      consumption by a real Kubernetes client (client-go/kubectl) could
+      not be verified this phase (see the known gap above); the
+      `ctx.waitUntil` keep-alive this line originally referred to no
+      longer exists in gateway's watch relay in the same shape after
+      Phase 4 -- worth re-auditing once the client-go gap is resolved.
 - [ ] No billable DO operations (alarm firing, facet access, etc.) occur
-      over a sustained period
+      over a sustained period -- alarm firing is now verified (above);
+      facet access under sustained idle (i.e. confirming a namespace
+      with no activity causes zero facet fetch() calls) was not
+      separately measured this phase.
 
-As of this document's creation (Phase 1), every item here is
-unimplemented and unverified. Alarm parking and hibernation will be
-measured once Phase 4 (storage v2) is done, and controllers' idle
-behavior once Phase 5/6 is done, to confirm this checklist is satisfied.
+As of Phase 4 (storage v2, 2026-07-02): the alarm-parking item is
+verified against real `wrangler dev`, the strongest evidence available
+without a production deployment. The other items remain open --
+WebSocket hibernation specifically is blocked on the client-go
+transport gap documented above and in the WatchHub redesign commit.
+Container/controllers items remain for Phase 5/6.

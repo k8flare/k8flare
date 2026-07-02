@@ -1,7 +1,8 @@
-import { LIST_SQL, INSERT_SQL, GET_SQL } from "./schema.ts";
-import { prefixEnd, decodeKineValue } from "./helpers.ts";
+import { GET_SQL, INSERT_SQL } from "./schema.ts";
+import { decodeKineValue } from "./helpers.ts";
 import type { SqlExec } from "./queries.ts";
-import { broadcastEvent, type DurableObjectContext } from "./watch.ts";
+import { broadcastEvent, type WatchHost } from "./watch.ts";
+import { storeInsert, storeListRaw } from "./store.ts";
 
 // 10.43.0.1 is reserved for the future "kubernetes.default" Service (the
 // standard first address in the service range) and 10.43.0.10 for
@@ -37,11 +38,14 @@ function serviceNeedsClusterIP(svc: any): boolean {
  * Skips headless Services (spec.clusterIP === "None") and ExternalName
  * Services, neither of which get a ClusterIP. Addresses come from
  * 10.43.0.0/16, the ServiceIPRange declared in supervisor.go.
+ *
+ * Services are namespaced (see keyspace.ts), so the scan fans out across
+ * every namespace facet via storeListRaw and each write is routed to the
+ * owning facet via storeInsert.
  */
-export function allocateClusterIPs(ctx: DurableObjectContext, sql: SqlExec): void {
+export async function allocateClusterIPs(host: WatchHost, sql: SqlExec): Promise<void> {
   const svcPrefix = "/registry/services/";
-  const svcQuery = LIST_SQL("AND mkv.name > ?4");
-  const svcRows = sql.exec(svcQuery, svcPrefix, prefixEnd(svcPrefix), 0, "").toArray();
+  const svcRows = await storeListRaw(sql, host, svcPrefix, false);
 
   for (const row of svcRows) {
     if (row.deleted === 1) continue;
@@ -68,9 +72,19 @@ export function allocateClusterIPs(ctx: DurableObjectContext, sql: SqlExec): voi
       const encodedValue = new TextEncoder().encode(updatedJson).buffer;
       const key = row.thename;
 
-      sql.exec(INSERT_SQL, key, 0, 0, row.create_revision, row.theid, 0, encodedValue, value);
-      const newId = sql.exec("SELECT last_insert_rowid() AS id").one().id as number;
-      broadcastEvent(ctx, sql, key, newId);
+      const newId = await storeInsert(
+        sql,
+        host,
+        key,
+        false,
+        false,
+        row.create_revision,
+        row.theid,
+        0,
+        encodedValue,
+        value,
+      );
+      await broadcastEvent(host, sql, key, newId);
       console.log(
         `Allocated ClusterIP ${clusterIP} to ${svc.metadata?.namespace}/${svc.metadata?.name}`,
       );
@@ -86,6 +100,9 @@ function serviceIPFromIndex(index: number): string {
   return `10.43.${high}.${low}`;
 }
 
+// The serviceip-counter key is a cluster-internal key (not under a
+// namespace resource), so this stays on direct sql access -- see
+// keyspace.ts's CLUSTER_SCOPED_RESOURCES ("_internal").
 export function nextServiceIPIndex(sql: SqlExec): number {
   const counterKey = "/registry/_internal/serviceip-counter";
   const q = GET_SQL(false);

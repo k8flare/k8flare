@@ -110,8 +110,9 @@ function objectMatchesSelectors(
 }
 
 /**
- * Handle a watch request by opening a WebSocket to the Cluster DO and
- * streaming Kubernetes WatchEvent JSON lines back to the client.
+ * Handle a watch request by opening a WebSocket to the WatchHub DO (fan-out
+ * in front of Cluster's single upstream watch firehose) and streaming
+ * Kubernetes WatchEvent JSON lines back to the client.
  *
  * `env` is typed as `any` because the full Env type lives in the calling
  * Worker (workers/gateway).
@@ -160,8 +161,9 @@ export async function handleWatch(
   const labelRequirements = parseLabelSelector(labelSelectorParam);
   const hasSelectors = fieldSelectors.length > 0 || labelRequirements.length > 0;
 
-  // Get Cluster DO stub
-  const ns = env.CLUSTER;
+  // Get WatchHub DO stub (fan-out in front of Cluster's single upstream
+  // watch firehose -- see docs/multi-tenancy-and-hosting.md).
+  const ns = env.WATCHHUB;
   const id = ns.idFromName("default");
   const stub = ns.get(id);
 
@@ -323,6 +325,7 @@ export async function handleWatch(
       "Content-Type": "application/json",
       "Transfer-Encoding": "chunked",
       "Cache-Control": "no-cache, no-transform",
+      "Content-Encoding": "identity",
     },
   });
 }

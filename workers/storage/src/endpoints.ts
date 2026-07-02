@@ -1,7 +1,7 @@
-import { LIST_SQL, INSERT_SQL, GET_SQL } from "./schema.ts";
-import { prefixEnd, decodeKineValue } from "./helpers.ts";
+import { decodeKineValue, base64ToArrayBuffer } from "./helpers.ts";
 import type { SqlExec } from "./queries.ts";
-import { broadcastEvent, type DurableObjectContext } from "./watch.ts";
+import { broadcastEvent, type WatchHost } from "./watch.ts";
+import { storeGetCurrent, storeInsert, storeListRaw } from "./store.ts";
 
 const SERVICES_PREFIX = "/registry/services/";
 const PODS_PREFIX = "/registry/pods/";
@@ -35,11 +35,15 @@ export function needsEndpointsAttention(key: string, value: ArrayBuffer | string
  * selector are still managed here — only ClusterIP allocation skips them, not
  * endpoint computation. Services without a selector are owned externally (by
  * the user or another controller) and are left untouched.
+ *
+ * Services, Pods, EndpointSlices and Endpoints are all namespaced (see
+ * keyspace.ts): the Service scan fans out across every namespace facet, each
+ * Service's Pod lookup is scoped to its own namespace facet, and every write
+ * (upsertKey/deleteKey) is routed to the owning facet.
  */
-export function reconcileEndpoints(ctx: DurableObjectContext, sql: SqlExec): void {
-  const svcQuery = LIST_SQL("AND mkv.name > ?4");
-  // includeDeleted = 1 so deleted Services can have their endpoints cleaned up.
-  const svcRows = sql.exec(svcQuery, SERVICES_PREFIX, prefixEnd(SERVICES_PREFIX), 1, "").toArray();
+export async function reconcileEndpoints(host: WatchHost, sql: SqlExec): Promise<void> {
+  // includeDeleted so deleted Services can have their endpoints cleaned up.
+  const svcRows = await storeListRaw(sql, host, SERVICES_PREFIX, true);
 
   for (const row of svcRows) {
     try {
@@ -48,8 +52,8 @@ export function reconcileEndpoints(ctx: DurableObjectContext, sql: SqlExec): voi
         // namespace/name from the key since the tombstone value may be stale.
         const nsName = keyNamespaceName(row.thename, SERVICES_PREFIX);
         if (!nsName) continue;
-        deleteKey(ctx, sql, endpointSliceKey(nsName.namespace, nsName.name));
-        deleteKey(ctx, sql, endpointsKey(nsName.namespace, nsName.name));
+        await deleteKey(host, sql, endpointSliceKey(nsName.namespace, nsName.name));
+        await deleteKey(host, sql, endpointsKey(nsName.namespace, nsName.name));
         continue;
       }
 
@@ -61,19 +65,19 @@ export function reconcileEndpoints(ctx: DurableObjectContext, sql: SqlExec): voi
       const selector = svc.spec?.selector;
       if (!selector || Object.keys(selector).length === 0) continue;
 
-      reconcileService(ctx, sql, svc, selector);
+      await reconcileService(host, sql, svc, selector);
     } catch (e) {
       console.error("Endpoints reconciliation error:", e);
     }
   }
 }
 
-function reconcileService(
-  ctx: DurableObjectContext,
+async function reconcileService(
+  host: WatchHost,
   sql: SqlExec,
   svc: any,
   selector: Record<string, string>,
-): void {
+): Promise<void> {
   const namespace: string | undefined = svc.metadata?.namespace;
   const name: string | undefined = svc.metadata?.name;
   if (!namespace || !name) return;
@@ -82,9 +86,7 @@ function reconcileService(
   // Service selector. Service selectors are always simple equality maps, so a
   // plain object comparison is correct (no set-based label-selector parsing).
   const podPrefix = `${PODS_PREFIX}${namespace}/`;
-  const podRows = sql
-    .exec(LIST_SQL("AND mkv.name > ?4"), podPrefix, prefixEnd(podPrefix), 0, "")
-    .toArray();
+  const podRows = await storeListRaw(sql, host, podPrefix, false);
 
   const pods: any[] = [];
   for (const podRow of podRows) {
@@ -155,7 +157,7 @@ function reconcileService(
     endpoints: sliceEndpoints,
     ports,
   };
-  upsertKey(ctx, sql, endpointSliceKey(namespace, name), JSON.stringify(slice));
+  await upsertKey(host, sql, endpointSliceKey(namespace, name), JSON.stringify(slice));
 
   // Legacy core/v1 Endpoints, sharing the Service's name/namespace by
   // convention. A single subset covers the homogeneous-Pod case; an empty
@@ -174,7 +176,7 @@ function reconcileService(
     metadata: { name, namespace },
     subsets,
   };
-  upsertKey(ctx, sql, endpointsKey(namespace, name), JSON.stringify(endpoints));
+  await upsertKey(host, sql, endpointsKey(namespace, name), JSON.stringify(endpoints));
 }
 
 /**
@@ -202,65 +204,81 @@ function resolveTargetPort(svcPort: any, pods: any[]): number | undefined {
 /**
  * Write `json` to `key` unless the stored value is already identical. Skipping
  * unchanged writes avoids revision churn and watch-event noise on every
- * reconcile pass. GET_SQL(true) is used (not false) so a re-create over a
- * delete tombstone chains prev_revision correctly instead of colliding on the
- * (name, prev_revision) unique index.
+ * reconcile pass. includeDeleted=true is used (not false) so a re-create over
+ * a delete tombstone chains prev_revision correctly instead of colliding on
+ * the (name, prev_revision) unique index.
  */
-function upsertKey(ctx: DurableObjectContext, sql: SqlExec, key: string, json: string): void {
-  const rows = sql.exec(GET_SQL(true), key).toArray();
-  const existing = rows.length > 0 ? rows[0] : null;
-  const live = existing !== null && existing.deleted !== 1;
+async function upsertKey(host: WatchHost, sql: SqlExec, key: string, json: string): Promise<void> {
+  const { event } = await storeGetCurrent(sql, host, key, true);
+  const live = event !== null && !event.delete;
+  // event.kv.value is base64 (storeGetCurrent goes through rowToEvent) --
+  // decode back to a real ArrayBuffer before comparing/reusing as oldValue,
+  // so decodeKineValue's proper-UTF8 (TextDecoder) path is used rather than
+  // its raw-binary-string (atob) path.
+  const currentValue = live && event!.kv.value ? base64ToArrayBuffer(event!.kv.value) : null;
 
-  if (live && existing!.value && decodeKineValue(existing!.value) === json) return;
+  if (live && currentValue && decodeKineValue(currentValue) === json) return;
 
   const encoded = new TextEncoder().encode(json).buffer;
+  let newId: number;
   if (live) {
     // Update the live row, chaining prev_revision to its current id.
-    sql.exec(
-      INSERT_SQL,
+    newId = await storeInsert(
+      sql,
+      host,
       key,
-      0,
-      0,
-      existing!.create_revision,
-      existing!.theid,
+      false,
+      false,
+      event!.kv.createRevision,
+      event!.kv.modRevision,
       0,
       encoded,
-      existing!.value,
+      currentValue,
     );
-  } else if (existing) {
+  } else if (event) {
     // Re-create over a delete tombstone.
-    sql.exec(INSERT_SQL, key, 1, 0, 0, existing.theid, 0, encoded, null);
+    newId = await storeInsert(
+      sql,
+      host,
+      key,
+      true,
+      false,
+      0,
+      event.kv.modRevision,
+      0,
+      encoded,
+      null,
+    );
   } else {
     // Brand new key.
-    sql.exec(INSERT_SQL, key, 1, 0, 0, 0, 0, encoded, null);
+    newId = await storeInsert(sql, host, key, true, false, 0, 0, 0, encoded, null);
   }
-  const newId = sql.exec("SELECT last_insert_rowid() AS id").one().id as number;
-  broadcastEvent(ctx, sql, key, newId);
+  await broadcastEvent(host, sql, key, newId);
 }
 
 /**
  * Write a delete tombstone for `key` if it currently exists and isn't already
  * deleted, mirroring handleDelete in index.ts.
  */
-function deleteKey(ctx: DurableObjectContext, sql: SqlExec, key: string): void {
-  const rows = sql.exec(GET_SQL(true), key).toArray();
-  if (rows.length === 0) return; // never existed
-  const existing = rows[0];
-  if (existing.deleted === 1) return; // already a tombstone
+async function deleteKey(host: WatchHost, sql: SqlExec, key: string): Promise<void> {
+  const { event } = await storeGetCurrent(sql, host, key, true);
+  if (!event) return; // never existed
+  if (event.delete) return; // already a tombstone
 
-  sql.exec(
-    INSERT_SQL,
+  const valueBuf = event.kv.value ? base64ToArrayBuffer(event.kv.value) : null;
+  const newId = await storeInsert(
+    sql,
+    host,
     key,
+    false,
+    true,
+    event.kv.createRevision,
+    event.kv.modRevision,
     0,
-    1,
-    existing.create_revision,
-    existing.theid,
-    0,
-    existing.value,
-    existing.value,
+    valueBuf,
+    valueBuf,
   );
-  const newId = sql.exec("SELECT last_insert_rowid() AS id").one().id as number;
-  broadcastEvent(ctx, sql, key, newId);
+  await broadcastEvent(host, sql, key, newId);
 }
 
 function endpointSliceKey(namespace: string, name: string): string {

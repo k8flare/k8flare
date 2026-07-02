@@ -1,0 +1,113 @@
+// Classifies kine keys/prefixes into the facet (or parent) that owns them.
+//
+// Resource-type scoping (namespaced vs cluster-scoped) mirrors real
+// Kubernetes API discovery, which this apiserver doesn't yet expose as a
+// programmatically shared table between Go and TS (see CLAUDE.md Go-first
+// note; pkg/apiserver is out of scope for this phase). CLUSTER_SCOPED_RESOURCES
+// is therefore a small, hand-maintained denylist: unknown resource types
+// default to "namespaced" (the common case in Kubernetes), so a new
+// namespaced kind registered elsewhere works correctly without this file
+// being updated. Only newly-registered *cluster-scoped* kinds need adding
+// here.
+const CLUSTER_SCOPED_RESOURCES = new Set([
+  "namespaces",
+  "nodes",
+  "runtimeclasses",
+  "csidrivers",
+  "csinodes",
+  "resourceslices",
+  "deviceclasses",
+  "servicecidrs",
+  "_internal",
+  // Standard Kubernetes cluster-scoped kinds not yet registered by this
+  // apiserver (see url-mapping.ts's RESOURCE_KINDS) but included defensively
+  // per CLAUDE.md rule 3 (upstream's real scoping, not a repo-specific guess)
+  // so a future addition doesn't silently misroute into a namespace facet.
+  "persistentvolumes",
+  "storageclasses",
+  "clusterroles",
+  "clusterrolebindings",
+  "certificatesigningrequests",
+  "priorityclasses",
+  "mutatingwebhookconfigurations",
+  "validatingwebhookconfigurations",
+  "apiservices",
+  "customresourcedefinitions",
+  "volumeattachments",
+  "ingressclasses",
+]);
+
+const REGISTRY_PREFIX = "/registry/";
+
+/** Facet name for the events-log facet (shared across all namespaces). */
+export const EVENTS_FACET = "events-log";
+/** Facet name for the ca-vault facet (CA keys + node-password hashes). */
+export const CA_VAULT_FACET = "ca-vault";
+
+/** Facet name for a given namespace's facet. */
+export function namespaceFacet(namespace: string): string {
+  return `ns/${namespace}`;
+}
+
+export type KeyClass =
+  | { kind: "cluster" }
+  | { kind: "namespace"; namespace: string; facet: string }
+  | { kind: "events"; facet: string }
+  | { kind: "ca-vault"; facet: string };
+
+/** Classify a single fully-qualified key (e.g. "/registry/pods/default/foo" or "/ca/client-ca.crt"). */
+export function classifyKey(key: string): KeyClass {
+  if (key.startsWith("/ca/") || key.startsWith("/nodepasswords/")) {
+    return { kind: "ca-vault", facet: CA_VAULT_FACET };
+  }
+  if (!key.startsWith(REGISTRY_PREFIX)) return { kind: "cluster" };
+
+  const rest = key.slice(REGISTRY_PREFIX.length); // "pods/default/foo" | "nodes/foo"
+  const firstSlash = rest.indexOf("/");
+  const resource = firstSlash === -1 ? rest : rest.slice(0, firstSlash);
+
+  if (resource === "events") return { kind: "events", facet: EVENTS_FACET };
+  if (CLUSTER_SCOPED_RESOURCES.has(resource)) return { kind: "cluster" };
+  if (firstSlash === -1) return { kind: "cluster" }; // malformed/no name segment at all -- keep local defensively
+
+  const afterResource = rest.slice(firstSlash + 1); // "default/foo"
+  const nsSlash = afterResource.indexOf("/");
+  const namespace = nsSlash === -1 ? afterResource : afterResource.slice(0, nsSlash);
+  if (!namespace) return { kind: "cluster" }; // malformed -- keep local defensively
+  return { kind: "namespace", namespace, facet: namespaceFacet(namespace) };
+}
+
+export type PrefixClass =
+  | { kind: "cluster" } // served entirely by the parent's own log
+  | { kind: "namespace"; namespace: string; facet: string } // one specific facet
+  | { kind: "all-namespaces"; resource: string } // fan out across every namespace facet
+  | { kind: "events"; facet: string }
+  | { kind: "ca-vault"; facet: string }
+  | { kind: "root" }; // "/" itself -- the WatchHub firehose subscription
+
+/** Classify a prefix (list/watch scope), e.g. "/registry/pods/" or "/registry/pods/default/". */
+export function classifyPrefix(prefix: string): PrefixClass {
+  if (prefix === "/") return { kind: "root" };
+  if (prefix.startsWith("/ca/") || prefix.startsWith("/nodepasswords/")) {
+    return { kind: "ca-vault", facet: CA_VAULT_FACET };
+  }
+  if (!prefix.startsWith(REGISTRY_PREFIX)) return { kind: "cluster" };
+
+  const rest = prefix.slice(REGISTRY_PREFIX.length); // "pods/" | "pods/default/" | ""
+  const parts = rest.split("/").filter((p) => p.length > 0);
+  if (parts.length === 0) return { kind: "cluster" };
+
+  const resource = parts[0];
+  if (resource === "events") return { kind: "events", facet: EVENTS_FACET };
+  if (CLUSTER_SCOPED_RESOURCES.has(resource)) return { kind: "cluster" };
+
+  if (parts.length >= 2) {
+    return { kind: "namespace", namespace: parts[1], facet: namespaceFacet(parts[1]) };
+  }
+  return { kind: "all-namespaces", resource };
+}
+
+/** Whether a key belongs to a facet at all (vs. staying in the parent's own log). */
+export function isFacetKey(cls: KeyClass): cls is Exclude<KeyClass, { kind: "cluster" }> {
+  return cls.kind !== "cluster";
+}

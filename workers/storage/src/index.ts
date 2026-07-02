@@ -1,12 +1,13 @@
-import { SCHEMA } from "./schema.ts";
-import { prefixEnd, base64ToArrayBuffer, jsonResponse, rowToEvent } from "./helpers.ts";
-import { LIST_SQL } from "./schema.ts";
-import { currentRevision, getCurrent, insert, type SqlExec } from "./queries.ts";
-import { handleWebSocket, broadcastEvent, type DurableObjectContext } from "./watch.ts";
+import { SCHEMA, LIST_SQL } from "./schema.ts";
+import { prefixEnd, base64ToArrayBuffer, jsonResponse } from "./helpers.ts";
+import { currentRevision, type SqlExec } from "./queries.ts";
+import { handleReplay, broadcastEvent, type WatchHost } from "./watch.ts";
+import { storeGetCurrent, storeInsert, storeList } from "./store.ts";
 import { runScheduler, needsSchedulerAttention } from "./scheduler.ts";
 import { allocateClusterIPs, needsServiceIPAttention } from "./serviceip.ts";
 import { reconcileEndpoints, needsEndpointsAttention } from "./endpoints.ts";
 import { reconcileNodeLifecycle } from "./nodelifecycle.ts";
+export { WatchHub } from "./watchhub.ts";
 
 // The scheduler wakes on-demand (see wakeSchedulerSoon) whenever a write
 // needs its attention, so this is only a safety net for a missed trigger
@@ -18,18 +19,52 @@ const SAFETY_NET_INTERVAL_MS = 60_000;
 // alarm, so a burst of writes coalesces into a single scheduler pass.
 const DEBOUNCE_MS = 1_000;
 
-export class Cluster {
-  private ctx: DurableObjectContext & {
-    storage: { sql: SqlExec; setAlarm(ms: number): void; getAlarm(): Promise<number | null> };
+/** Cheap local existence check -- no facet round trip needed since a key's
+ * envelope (including its `deleted` flag) always lives in the parent, even
+ * for namespaced keys whose value lives in a facet (see store.ts). */
+function hasLiveKeyUnderPrefix(sql: SqlExec, prefix: string): boolean {
+  const q = LIST_SQL("AND mkv.name > ?4") + " LIMIT 1";
+  const rows = sql.exec(q, prefix, prefixEnd(prefix), 0, "").toArray();
+  return rows.length > 0;
+}
+
+/**
+ * Whether the safety-net alarm should stay armed. Node lease staleness
+ * (nodelifecycle.ts) can only be detected by the ABSENCE of a write, so it
+ * needs a periodic check for as long as any Node is registered; Service/
+ * Endpoint reconciliation is event-triggered via wakeSchedulerSoon but keeps
+ * this as a safety net for missed triggers for as long as any Service
+ * exists. A cluster with neither has nothing left for the safety net to do
+ * -- it parks (cost invariants #1/#3: no alarm chain on an idle cluster).
+ */
+function hasPendingSafetyNetWork(sql: SqlExec): boolean {
+  return (
+    hasLiveKeyUnderPrefix(sql, "/registry/nodes/") ||
+    hasLiveKeyUnderPrefix(sql, "/registry/services/")
+  );
+}
+
+/** Minimal ctx shape Cluster needs: facets (FacetHost) plus DO storage/alarm access. */
+interface ClusterContext {
+  facets: {
+    get(name: string, factory: () => { class: any }): { fetch(req: Request): Promise<Response> };
+    delete(name: string): void;
   };
+  storage: { sql: SqlExec; setAlarm(ms: number): void; getAlarm(): Promise<number | null> };
+}
+
+export class Cluster {
+  private ctx: ClusterContext;
   private env: any;
   private sql: SqlExec;
+  private host: WatchHost;
   private initialized: boolean;
 
   constructor(ctx: any, env: any) {
     this.ctx = ctx;
     this.env = env;
     this.sql = ctx.storage.sql;
+    this.host = { env, ctx };
     this.initialized = false;
   }
 
@@ -39,8 +74,13 @@ export class Cluster {
       this.sql.exec(stmt);
     }
     this.initialized = true;
-    // Start the safety-net resync loop.
-    this.ctx.storage.setAlarm(Date.now() + SAFETY_NET_INTERVAL_MS);
+    // Only arm the safety net if there's already something for it to watch
+    // (e.g. this DO woke from hibernation/eviction with live Nodes/Services
+    // from before). A genuinely fresh/empty cluster stays parked until its
+    // first write arms it via wakeSchedulerSoon.
+    if (hasPendingSafetyNetWork(this.sql)) {
+      this.ctx.storage.setAlarm(Date.now() + SAFETY_NET_INTERVAL_MS);
+    }
   }
 
   /**
@@ -70,31 +110,31 @@ export class Cluster {
     const url = new URL(request.url);
     const path = url.pathname;
 
-    if (request.headers.get("Upgrade") === "websocket" || path === "/watch") {
-      return handleWebSocket(this.ctx, this.sql, request);
-    }
-
     try {
       if (path === "/revision" && request.method === "GET") {
         return jsonResponse({ revision: currentRevision(this.sql) });
+      }
+
+      if (path === "/replay" && request.method === "GET") {
+        return await handleReplay(this.host, this.sql, request);
       }
 
       if (path.startsWith("/key/")) {
         const key = "/" + path.slice(5);
         switch (request.method) {
           case "GET":
-            return this.handleGet(key);
+            return await this.handleGet(key);
           case "PUT":
             return await this.handlePut(key, await request.json());
           case "DELETE":
-            return this.handleDelete(key, parseInt(url.searchParams.get("revision") || "0"));
+            return await this.handleDelete(key, parseInt(url.searchParams.get("revision") || "0"));
         }
       }
 
       if (path.startsWith("/list/") && request.method === "GET") {
         let prefix = "/" + path.slice(6);
         if (!prefix.endsWith("/")) prefix += "/";
-        return this.handleList(
+        return await this.handleList(
           prefix,
           parseInt(url.searchParams.get("limit") || "0"),
           parseInt(url.searchParams.get("revision") || "0"),
@@ -110,8 +150,8 @@ export class Cluster {
     }
   }
 
-  private handleGet(key: string): Response {
-    const { rev, event } = getCurrent(this.sql, key, false);
+  private async handleGet(key: string): Promise<Response> {
+    const { rev, event } = await storeGetCurrent(this.sql, this.host, key, false);
     if (!event || event.delete) return jsonResponse({ revision: rev, kv: null });
     return jsonResponse({ revision: rev, kv: event.kv });
   }
@@ -122,22 +162,34 @@ export class Cluster {
     const revision = body.revision || 0;
 
     if (revision === 0) {
-      const { rev, event } = getCurrent(this.sql, key, true);
+      const { rev, event } = await storeGetCurrent(this.sql, this.host, key, true);
       let prevRevision = rev;
       if (event && !event.delete) return jsonResponse({ error: "key already exists" }, 409);
       if (event) prevRevision = event.kv.modRevision;
-      const id = insert(this.sql, key, true, false, 0, prevRevision, lease, value, null);
-      broadcastEvent(this.ctx, this.sql, key, id);
+      const id = await storeInsert(
+        this.sql,
+        this.host,
+        key,
+        true,
+        false,
+        0,
+        prevRevision,
+        lease,
+        value,
+        null,
+      );
+      await broadcastEvent(this.host, this.sql, key, id);
       if (this.needsControllerAttention(key, value)) await this.wakeSchedulerSoon();
       return jsonResponse({ revision: id }, 201);
     } else {
-      const { rev, event } = getCurrent(this.sql, key, false);
+      const { rev, event } = await storeGetCurrent(this.sql, this.host, key, false);
       if (!event || event.delete) return jsonResponse({ revision: rev, kv: null, updated: false });
       if (event.kv.modRevision !== revision)
         return jsonResponse({ revision: rev, kv: event.kv, updated: false }, 409);
       const oldValue = body.value ? base64ToArrayBuffer(event.kv.value) : null;
-      const id = insert(
+      const id = await storeInsert(
         this.sql,
+        this.host,
         key,
         false,
         false,
@@ -154,21 +206,22 @@ export class Cluster {
         value: body.value,
         lease,
       };
-      broadcastEvent(this.ctx, this.sql, key, id);
+      await broadcastEvent(this.host, this.sql, key, id);
       if (this.needsControllerAttention(key, value)) await this.wakeSchedulerSoon();
       return jsonResponse({ revision: id, kv, updated: true });
     }
   }
 
   private async handleDelete(key: string, revision: number): Promise<Response> {
-    const { rev, event } = getCurrent(this.sql, key, true);
+    const { rev, event } = await storeGetCurrent(this.sql, this.host, key, true);
     if (!event) return jsonResponse({ revision: rev, kv: null, deleted: true });
     if (event.delete) return jsonResponse({ revision: rev, kv: event.kv, deleted: true });
     if (revision !== 0 && event.kv.modRevision !== revision)
       return jsonResponse({ revision: rev, kv: event.kv, deleted: false });
     const oldValue = event.kv.value ? base64ToArrayBuffer(event.kv.value) : null;
-    const id = insert(
+    const id = await storeInsert(
       this.sql,
+      this.host,
       key,
       false,
       true,
@@ -178,63 +231,61 @@ export class Cluster {
       oldValue,
       oldValue,
     );
-    broadcastEvent(this.ctx, this.sql, key, id);
+    await broadcastEvent(this.host, this.sql, key, id);
     if (this.needsControllerAttention(key, oldValue)) await this.wakeSchedulerSoon();
+
+    // Namespace deletion does NOT call ctx.facets.delete() here, despite the
+    // original plan calling for it as a GC nicety. Empirically reproduced
+    // (2026-07-02, via repeated create/delete/recreate of the same namespace
+    // name against real wrangler dev): deleting and recreating a facet under
+    // the *same name* works for the first few cycles, then every subsequent
+    // create through that facet name permanently returns a false "already
+    // exists" (create sees a live row that a parallel delete-by-key call
+    // reports as already gone -- an internal inconsistency, not a race:
+    // reproduced deterministically at the 4th cycle, unaffected by adding
+    // delays between requests). The same test with a fresh, never-reused
+    // facet name every time never fails. This looks like an undocumented
+    // platform limitation around repeated ctx.facets.delete()+get() cycles
+    // on one name, not a bug in this file's logic -- S1's spike
+    // (spikes/s1-facets/FINDINGS.md) only ever exercised a single
+    // delete-then-recreate, not a repeated cycle.
+    //
+    // Correctness doesn't depend on the facet being destroyed: every
+    // namespaced object is already individually tombstoned by the cascade
+    // delete (pkg/apiserver/namespacedelete.go) before the Namespace object
+    // itself is deleted, so storeGetCurrent's includeDeleted-aware check
+    // already lets a same-named object be recreated correctly. Skipping the
+    // facet-level delete only forgoes the storage-GC nicety, not
+    // correctness -- kine's own log already carries tombstones indefinitely
+    // in the same way. See docs/multi-tenancy-and-hosting.md's honest
+    // correction for the full writeup and the production-verification
+    // follow-up this leaves open.
     return jsonResponse({ revision: id, kv: event.kv, deleted: true });
   }
 
-  private handleList(prefix: string, limit: number, revision: number): Response {
-    let rows;
-    const end = prefixEnd(prefix);
-
-    if (revision === 0) {
-      const q = LIST_SQL("AND mkv.name > ?4") + (limit > 0 ? ` LIMIT ${limit}` : "");
-      rows = this.sql.exec(q, prefix, end, 0, "").toArray();
-    } else {
-      const q = LIST_SQL("AND mkv.id <= ?4") + (limit > 0 ? ` LIMIT ${limit}` : "");
-      rows = this.sql.exec(q, prefix, end, 0, revision).toArray();
-    }
-
-    const rev = rows.length > 0 ? rows[0].current_rev : currentRevision(this.sql);
-    const kvs = rows.map((r) => rowToEvent(r).kv);
-    return jsonResponse({ revision: rev, count: kvs.length, kvs });
+  private async handleList(prefix: string, limit: number, revision: number): Promise<Response> {
+    const {
+      revision: rev,
+      count,
+      kvs,
+    } = await storeList(this.sql, this.host, prefix, limit, revision);
+    return jsonResponse({ revision: rev, count, kvs });
   }
 
   async alarm(): Promise<void> {
     this.initialize();
-    runScheduler(this.ctx, this.sql, this.env);
-    allocateClusterIPs(this.ctx, this.sql);
-    reconcileEndpoints(this.ctx, this.sql);
-    reconcileNodeLifecycle(this.ctx, this.sql);
-    // Re-arm the safety-net resync; a write needing sooner attention will
-    // pull this in via wakeSchedulerSoon.
-    this.ctx.storage.setAlarm(Date.now() + SAFETY_NET_INTERVAL_MS);
+    await runScheduler(this.host, this.sql, this.env);
+    await allocateClusterIPs(this.host, this.sql);
+    await reconcileEndpoints(this.host, this.sql);
+    await reconcileNodeLifecycle(this.host, this.sql);
+    // Re-arm the safety net only if there's still live Nodes/Services that
+    // need ongoing monitoring; otherwise park (no alarm chain on an idle
+    // cluster -- cost invariants #1/#3). A write needing sooner attention
+    // than the next safety-net tick pulls this in via wakeSchedulerSoon.
+    if (hasPendingSafetyNetWork(this.sql)) {
+      this.ctx.storage.setAlarm(Date.now() + SAFETY_NET_INTERVAL_MS);
+    }
   }
-
-  async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-    if (message === "ping") ws.send("pong");
-  }
-
-  async webSocketClose(
-    ws: WebSocket,
-    code: number,
-    reason: string,
-    wasClean: boolean,
-  ): Promise<void> {
-    ws.close(code, reason);
-  }
-
-  async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
-    ws.close(1011, "WebSocket error");
-  }
-}
-
-// Scaffold only -- binding + class registration for the multi-tenancy watch
-// fan-out DO described in docs/multi-tenancy-and-hosting.md. Not wired to
-// any request path yet; real implementation (hibernatable WebSocket fan-out
-// across Cluster facets) lands in Phase 4.
-export class WatchHub {
-  constructor(_ctx: DurableObjectContext, _env: unknown) {}
 }
 
 // This Worker is never routed to directly -- gateway/apiserver/runtime reach

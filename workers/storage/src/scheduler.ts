@@ -1,7 +1,8 @@
-import { LIST_SQL, INSERT_SQL, GET_SQL } from "./schema.ts";
-import { prefixEnd, decodeKineValue } from "./helpers.ts";
+import { GET_SQL, INSERT_SQL } from "./schema.ts";
+import { decodeKineValue } from "./helpers.ts";
 import type { SqlExec } from "./queries.ts";
-import { broadcastEvent, type DurableObjectContext } from "./watch.ts";
+import { broadcastEvent, type WatchHost } from "./watch.ts";
+import { storeInsert, storeListRaw } from "./store.ts";
 
 // Pod-to-node binding is done by a real kube-scheduler (cmd/scheduler) running
 // as an external process against this apiserver — see
@@ -9,8 +10,8 @@ import { broadcastEvent, type DurableObjectContext } from "./watch.ts";
 // section. This module now only handles PodCIDR allocation, which remains a
 // controller-manager (node-ipam-controller) responsibility that kube-scheduler
 // itself never performed, even before that migration.
-export function runScheduler(ctx: DurableObjectContext, sql: SqlExec, _env: any): void {
-  allocatePodCIDRs(ctx, sql);
+export async function runScheduler(host: WatchHost, sql: SqlExec, _env: any): Promise<void> {
+  await allocatePodCIDRs(host, sql);
 }
 
 /**
@@ -35,11 +36,15 @@ export function needsSchedulerAttention(key: string, value: ArrayBuffer | string
  * Allocate PodCIDRs to nodes that don't have one.
  * Each node gets a /24 subnet from 10.42.0.0/16.
  * The subnet index is persisted in a counter key so allocations are stable.
+ *
+ * Nodes are cluster-scoped (see keyspace.ts), so this reads/writes through
+ * storeListRaw/storeInsert purely for a uniform write path -- classifyKey
+ * routes every key here straight to the parent's own log, identically to a
+ * direct sql call.
  */
-export function allocatePodCIDRs(ctx: DurableObjectContext, sql: SqlExec): void {
+export async function allocatePodCIDRs(host: WatchHost, sql: SqlExec): Promise<void> {
   const nodePrefix = "/registry/nodes/";
-  const nodeQuery = LIST_SQL("AND mkv.name > ?4");
-  const nodeRows = sql.exec(nodeQuery, nodePrefix, prefixEnd(nodePrefix), 0, "").toArray();
+  const nodeRows = await storeListRaw(sql, host, nodePrefix, false);
 
   for (const row of nodeRows) {
     if (row.deleted === 1) continue;
@@ -66,9 +71,19 @@ export function allocatePodCIDRs(ctx: DurableObjectContext, sql: SqlExec): void 
       const encodedValue = new TextEncoder().encode(updatedJson).buffer;
       const key = row.thename;
 
-      sql.exec(INSERT_SQL, key, 0, 0, row.create_revision, row.theid, 0, encodedValue, value);
-      const newId = sql.exec("SELECT last_insert_rowid() AS id").one().id as number;
-      broadcastEvent(ctx, sql, key, newId);
+      const newId = await storeInsert(
+        sql,
+        host,
+        key,
+        false,
+        false,
+        row.create_revision,
+        row.theid,
+        0,
+        encodedValue,
+        value,
+      );
+      await broadcastEvent(host, sql, key, newId);
       console.log(`Allocated PodCIDR 10.42.${subnetIndex}.0/24 to ${node.metadata?.name}`);
     } catch (e) {
       console.error("PodCIDR allocation error:", e);
@@ -76,6 +91,9 @@ export function allocatePodCIDRs(ctx: DurableObjectContext, sql: SqlExec): void 
   }
 }
 
+// The podcidr-counter key is a cluster-internal key (not under a namespace
+// resource), so this stays on direct sql access -- see keyspace.ts's
+// CLUSTER_SCOPED_RESOURCES ("_internal").
 export function nextPodCIDRIndex(sql: SqlExec): number {
   const counterKey = "/registry/_internal/podcidr-counter";
   const q = GET_SQL(false);

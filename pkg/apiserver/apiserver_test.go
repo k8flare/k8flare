@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -896,6 +897,81 @@ func TestPodCRUD(t *testing.T) {
 			t.Errorf("Expected NotFound, got: %v", err)
 		}
 	})
+}
+
+// TestPodWatch drives a real client-go watch.Interface (the same net/http
+// chunked-transfer-encoding codepath kubectl/kubelet/every controller use)
+// end to end: Added on create, Modified on a status update, Deleted on
+// delete. This previously blocked forever on the first Read() against local
+// wrangler dev, because Go's Transport requests "Accept-Encoding: gzip" by
+// default and something in the local dev stack gzip-compresses the
+// streaming response without flushing per chunk; curl (which doesn't
+// request gzip by default) saw the same bytes immediately. Fixed by
+// watch.ts sending an explicit "Content-Encoding: identity" header, which
+// this test guards against regressing.
+func TestPodWatch(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+	ns := "default"
+	name := "test-pod-watch"
+
+	client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: ns},
+	}, metav1.CreateOptions{})
+	_ = client.CoreV1().Pods(ns).Delete(ctx, name, metav1.DeleteOptions{})
+
+	w, err := client.CoreV1().Pods(ns).Watch(ctx, metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	defer w.Stop()
+
+	waitFor := func(t *testing.T, wantType watch.EventType, match func(*corev1.Pod) bool) *corev1.Pod {
+		t.Helper()
+		deadline := time.After(10 * time.Second)
+		for {
+			select {
+			case event, ok := <-w.ResultChan():
+				if !ok {
+					t.Fatalf("watch channel closed while waiting for %s", wantType)
+				}
+				pod, ok := event.Object.(*corev1.Pod)
+				if !ok || pod.Name != name {
+					continue
+				}
+				if event.Type == wantType && match(pod) {
+					return pod
+				}
+			case <-deadline:
+				t.Fatalf("timed out waiting for %s event on pod %q", wantType, name)
+			}
+		}
+	}
+
+	if _, err := client.CoreV1().Pods(ns).Create(ctx, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "nginx", Image: "nginx"}},
+		},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	waitFor(t, watch.Added, func(*corev1.Pod) bool { return true })
+
+	updated, err := client.CoreV1().Pods(ns).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	updated.Status.Phase = corev1.PodRunning
+	if _, err := client.CoreV1().Pods(ns).UpdateStatus(ctx, updated, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("UpdateStatus: %v", err)
+	}
+	waitFor(t, watch.Modified, func(p *corev1.Pod) bool { return p.Status.Phase == corev1.PodRunning })
+
+	if err := client.CoreV1().Pods(ns).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	waitFor(t, watch.Deleted, func(*corev1.Pod) bool { return true })
 }
 
 func TestNodeCRUD(t *testing.T) {
