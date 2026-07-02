@@ -325,6 +325,7 @@ export async function handleWatch(
       "Content-Type": "application/json",
       "Transfer-Encoding": "chunked",
       "Cache-Control": "no-cache, no-transform",
+      "Content-Encoding": "identity",
     },
   });
 }
