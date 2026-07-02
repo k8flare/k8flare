@@ -148,7 +148,8 @@ cluster's write rate ever demands them — see "Scale model" below.
 > unedited for the historical record.
 >
 > **What's different in practice:**
-> - Namespace data lives in a facet of the *same* Cluster DO, not a
+>
+> - Namespace data lives in a facet of the _same_ Cluster DO, not a
 >   separate top-level DO. A facet has its own SQLite database (S1,
 >   confirmed empirically) but is reachable **only through its parent's
 >   thread** (S1/S2) -- so "own thread" below is inaccurate for facets;
@@ -165,7 +166,7 @@ cluster's write rate ever demands them — see "Scale model" below.
 > - **Namespace deletion does NOT call `ctx.facets.delete()`**, contrary
 >   to "namespace deletion = deleteAll() on this DO" below. Reproduced
 >   empirically: repeatedly deleting and recreating a facet under the
->   *same name* (a realistic scenario -- CI suites and iterative
+>   _same name_ (a realistic scenario -- CI suites and iterative
 >   development both reuse namespace names) works for the first few
 >   cycles, then every following create through that facet name
 >   permanently returns a false "already exists", deterministically at
@@ -178,11 +179,11 @@ cluster's write rate ever demands them — see "Scale model" below.
 >   only forgoes a storage-GC nicety. See `workers/storage/src/index.ts`
 >   (`handleDelete`) for the full writeup and the fix this leaves open
 >   (facet names suffixed with the Namespace's own UID, so a reused
->   *name* never reuses a facet *name*).
+>   _name_ never reuses a facet _name_).
 > - **WatchHub does not hold "one WS upstream" to the cluster DO.**
 >   Reproduced empirically: a Durable Object cannot call
 >   `ctx.acceptWebSocket()` on a WebSocket obtained via `resp.webSocket`
->   from calling `fetch()` on a *different* DO -- hibernatable accept is
+>   from calling `fetch()` on a _different_ DO -- hibernatable accept is
 >   only for a WebSocketPair half the same invocation just created, not
 >   for relaying a socket obtained from another DO's response. Instead,
 >   the cluster DO **pushes** each event to WatchHub via a plain `fetch()`
