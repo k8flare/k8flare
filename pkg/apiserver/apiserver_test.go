@@ -50,8 +50,12 @@ func setupWranglerDev(t *testing.T) *kubernetes.Clientset {
 		projectRoot := findProjectRoot(t)
 
 		devCmd = exec.Command("npx", "wrangler", "dev",
-			"--config", "packages/worker/wrangler.jsonc",
+			"-c", "workers/gateway/wrangler.jsonc",
+			"-c", "workers/storage/wrangler.jsonc",
+			"-c", "workers/apiserver/wrangler.jsonc",
+			"-c", "workers/runtime/wrangler.jsonc",
 			"--port", fmt.Sprintf("%d", testPort),
+			"--persist-to", filepath.Join(projectRoot, ".wrangler", "state"),
 			"--log-level", "error",
 		)
 		devCmd.Dir = projectRoot
