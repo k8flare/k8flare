@@ -199,8 +199,8 @@ function sleep(ms: number): Promise<void> {
  * facet name -- not necessarily a call this module can identify in advance.
  */
 export async function facetFetch(
-  stub: { fetch(req: Request): Promise<Response> },
-  req: Request,
+  stub: { fetch(req: Request<any, any>): Promise<Response> },
+  req: Request<any, any>,
   maxAttempts = 3,
 ): Promise<Response> {
   let lastErr: unknown;

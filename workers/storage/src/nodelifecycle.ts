@@ -1,7 +1,7 @@
-import { LIST_SQL, INSERT_SQL, GET_SQL } from "./schema.ts";
-import { prefixEnd, decodeKineValue } from "./helpers.ts";
+import { decodeKineValue, base64ToArrayBuffer } from "./helpers.ts";
 import type { SqlExec } from "./queries.ts";
-import { broadcastEvent, type DurableObjectContext } from "./watch.ts";
+import { broadcastEvent, type WatchHost } from "./watch.ts";
+import { storeGetCurrent, storeInsert, storeListRaw } from "./store.ts";
 
 // Matches upstream Kubernetes' default --node-monitor-grace-period: how long
 // a Lease can go unrenewed before the node is considered unreachable.
@@ -26,10 +26,14 @@ const PODS_PREFIX = "/registry/pods/";
  * Unknown status / taint cleared automatically by kubelet's own next
  * heartbeat overwriting status, but nothing here proactively removes a taint
  * on its own -- an accepted gap for this first pass).
+ *
+ * Nodes are cluster-scoped (direct sql, unchanged); Leases and Pods are
+ * namespaced (see keyspace.ts) -- the Lease lookup is routed to the
+ * "kube-node-lease" namespace facet and the Pod eviction scan fans out
+ * across every namespace facet via storeListRaw/storeInsert.
  */
-export function reconcileNodeLifecycle(ctx: DurableObjectContext, sql: SqlExec): void {
-  const nodeQuery = LIST_SQL("AND mkv.name > ?4");
-  const nodeRows = sql.exec(nodeQuery, NODES_PREFIX, prefixEnd(NODES_PREFIX), 0, "").toArray();
+export async function reconcileNodeLifecycle(host: WatchHost, sql: SqlExec): Promise<void> {
+  const nodeRows = await storeListRaw(sql, host, NODES_PREFIX, false);
 
   for (const row of nodeRows) {
     if (row.deleted === 1) continue;
@@ -41,11 +45,13 @@ export function reconcileNodeLifecycle(ctx: DurableObjectContext, sql: SqlExec):
       if (!nodeName) continue;
 
       const leaseKey = `${LEASE_PREFIX}${nodeName}`;
-      const leaseRows = sql.exec(GET_SQL(false), leaseKey).toArray();
-      if (leaseRows.length === 0 || leaseRows[0].deleted || !leaseRows[0].value) {
+      const { event: leaseEvent } = await storeGetCurrent(sql, host, leaseKey, false);
+      if (!leaseEvent || leaseEvent.delete || !leaseEvent.kv.value) {
         continue; // no lease yet -- node hasn't finished registering
       }
-      const lease = JSON.parse(decodeKineValue(leaseRows[0].value));
+      const leaseValue = base64ToArrayBuffer(leaseEvent.kv.value);
+      if (!leaseValue) continue;
+      const lease = JSON.parse(decodeKineValue(leaseValue));
       const renewTime = lease.spec?.renewTime;
       if (!renewTime) continue;
       const renewMs = new Date(renewTime).getTime();
@@ -90,11 +96,11 @@ export function reconcileNodeLifecycle(ctx: DurableObjectContext, sql: SqlExec):
       }
 
       if (changed) {
-        upsertNode(ctx, sql, row, node);
+        await upsertNode(host, sql, row, node);
       }
 
       if (staleMs > POD_EVICTION_MS) {
-        evictPodsOnNode(ctx, sql, nodeName);
+        await evictPodsOnNode(host, sql, nodeName);
       }
     } catch (e) {
       console.error("Node lifecycle reconciliation error:", e);
@@ -102,19 +108,28 @@ export function reconcileNodeLifecycle(ctx: DurableObjectContext, sql: SqlExec):
   }
 }
 
-function upsertNode(ctx: DurableObjectContext, sql: SqlExec, row: any, node: any): void {
+async function upsertNode(host: WatchHost, sql: SqlExec, row: any, node: any): Promise<void> {
   const updatedJson = JSON.stringify(node);
   const encodedValue = new TextEncoder().encode(updatedJson).buffer;
   const key = row.thename;
-  sql.exec(INSERT_SQL, key, 0, 0, row.create_revision, row.theid, 0, encodedValue, row.value);
-  const newId = sql.exec("SELECT last_insert_rowid() AS id").one().id as number;
-  broadcastEvent(ctx, sql, key, newId);
+  const newId = await storeInsert(
+    sql,
+    host,
+    key,
+    false,
+    false,
+    row.create_revision,
+    row.theid,
+    0,
+    encodedValue,
+    row.value,
+  );
+  await broadcastEvent(host, sql, key, newId);
   console.log(`Node ${node.metadata?.name} marked unreachable (Unknown + tainted)`);
 }
 
-function evictPodsOnNode(ctx: DurableObjectContext, sql: SqlExec, nodeName: string): void {
-  const podQuery = LIST_SQL("AND mkv.name > ?4");
-  const podRows = sql.exec(podQuery, PODS_PREFIX, prefixEnd(PODS_PREFIX), 0, "").toArray();
+async function evictPodsOnNode(host: WatchHost, sql: SqlExec, nodeName: string): Promise<void> {
+  const podRows = await storeListRaw(sql, host, PODS_PREFIX, false);
 
   for (const podRow of podRows) {
     if (podRow.deleted === 1) continue;
@@ -124,19 +139,23 @@ function evictPodsOnNode(ctx: DurableObjectContext, sql: SqlExec, nodeName: stri
       if (pod.spec?.nodeName !== nodeName) continue;
 
       const key = podRow.thename;
-      sql.exec(
-        INSERT_SQL,
+      // storeListRaw always yields a real ArrayBuffer here (see
+      // store.ts's facetRawToKineRow) -- KineRow's wider `string` case
+      // models a raw-driver edge case this path doesn't take.
+      const evictValue = podRow.value as ArrayBuffer | null;
+      const newId = await storeInsert(
+        sql,
+        host,
         key,
-        0,
-        1,
+        false,
+        true,
         podRow.create_revision,
         podRow.theid,
         0,
-        podRow.value,
+        evictValue,
         podRow.value,
       );
-      const newId = sql.exec("SELECT last_insert_rowid() AS id").one().id as number;
-      broadcastEvent(ctx, sql, key, newId);
+      await broadcastEvent(host, sql, key, newId);
       console.log(
         `Evicted pod ${pod.metadata?.namespace}/${pod.metadata?.name} from unreachable node ${nodeName}`,
       );
