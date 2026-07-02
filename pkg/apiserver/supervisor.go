@@ -15,18 +15,18 @@ import (
 // because they require special JSON serialization that differs from plain strings.
 // The agent handles nil/zero values for these fields gracefully.
 type clusterConfig struct {
-	ClusterDomain      string   `json:"ClusterDomain,omitempty"`
+	ClusterDomain      string    `json:"ClusterDomain,omitempty"`
 	ClusterIPRange     net.IPNet `json:"ClusterIPRange"`
 	ServiceIPRange     net.IPNet `json:"ServiceIPRange"`
-	HTTPSPort          int      `json:"HTTPSPort,omitempty"`
-	SupervisorPort     int      `json:"SupervisorPort,omitempty"`
-	DisableCCM         bool     `json:"DisableCCM,omitempty"`
-	DisableNPC         bool     `json:"DisableNPC,omitempty"`
-	DisableKubeProxy   bool     `json:"DisableKubeProxy,omitempty"`
-	DisableServiceLB   bool     `json:"DisableServiceLB,omitempty"`
-	FlannelBackend     string   `json:"FlannelBackend,omitempty"`
-	EgressSelectorMode string   `json:"EgressSelectorMode,omitempty"`
-	NoFlannel          bool     `json:"NoFlannel,omitempty"`
+	HTTPSPort          int       `json:"HTTPSPort,omitempty"`
+	SupervisorPort     int       `json:"SupervisorPort,omitempty"`
+	DisableCCM         bool      `json:"DisableCCM,omitempty"`
+	DisableNPC         bool      `json:"DisableNPC,omitempty"`
+	DisableKubeProxy   bool      `json:"DisableKubeProxy,omitempty"`
+	DisableServiceLB   bool      `json:"DisableServiceLB,omitempty"`
+	FlannelBackend     string    `json:"FlannelBackend,omitempty"`
+	EgressSelectorMode string    `json:"EgressSelectorMode,omitempty"`
+	NoFlannel          bool      `json:"NoFlannel,omitempty"`
 }
 
 // defaultClusterConfig returns the default cluster configuration.
@@ -37,14 +37,21 @@ func defaultClusterConfig() clusterConfig {
 	_, clusterCIDR, _ := net.ParseCIDR("10.42.0.0/16")
 	_, serviceCIDR, _ := net.ParseCIDR("10.43.0.0/16")
 	return clusterConfig{
-		ClusterDomain:      "cluster.local",
-		ClusterIPRange:     *clusterCIDR,
-		ServiceIPRange:     *serviceCIDR,
-		HTTPSPort:          6443,
-		SupervisorPort:     6443,
-		DisableCCM:         true,
-		DisableNPC:         true,
-		DisableKubeProxy:   false,
+		ClusterDomain:  "cluster.local",
+		ClusterIPRange: *clusterCIDR,
+		ServiceIPRange: *serviceCIDR,
+		HTTPSPort:      6443,
+		SupervisorPort: 6443,
+		DisableCCM:     true,
+		DisableNPC:     true,
+		// Kept disabled: enabling this reproducibly hangs the Worker/DO within
+		// seconds (Cloudflare's own "Workers runtime canceled this request
+		// because it detected that your Worker's code had hung" error),
+		// confirmed by direct A/B testing (enabled vs disabled, all else
+		// equal) both locally and in CI. Not yet root-caused -- see
+		// docs/general-purpose-k8s-plan.md's Phase 1 section for the
+		// investigation notes and what to try next.
+		DisableKubeProxy:   true,
 		DisableServiceLB:   true,
 		FlannelBackend:     "host-gw",
 		EgressSelectorMode: "disabled",

@@ -20,35 +20,75 @@ alarms are the right primitive and
 [`multi-tenancy-and-hosting.md`](multi-tenancy-and-hosting.md) for where
 storage is heading around them.
 
-## Phase 1 — Service networking (in progress: the "next" roadmap item)
+## Phase 1 — Service networking (partially done — object model shipped, kube-proxy blocked on a real bug)
 
 `ClusterIP` Services must actually route. Three pieces, in dependency order:
 
-1. **ClusterIP allocation** — an allocator over `ServiceIPRange`
-   (`10.43.0.0/16`, declared in `defaultClusterConfig()`,
-   `supervisor.go:36-52`), same counter-in-DO pattern as PodCIDR allocation
-   (no ClusterIP allocator exists yet — confirmed by grep, this is new work).
-2. **EndpointSlice controller** — Service selector + ready Pods →
-   `discovery.k8s.io/v1` EndpointSlices (not registered anywhere yet —
-   confirmed). Note: kube-proxy in v1.36 consumes **EndpointSlices, not
-   Endpoints** — serving the legacy `Endpoints` type (which we already
-   register) is for app compatibility, so the controller mirrors to both.
-3. **kube-proxy on agents** — the embedded k3s agent (the real,
-   unmodified `github.com/k3s-io/k3s/pkg/agent`, run from `cmd/agent`) has
-   its own real kube-proxy code, gated by the `DisableKubeProxy` field it
-   reads from the supervisor's `/v1-k3s/config` response
-   (`k3s`'s own `pkg/agent/config/config.go`'s `getKubeProxyDisabled`); our
-   supervisor sets that field `true` (`supervisor.go:47`). Flip it to
-   `false` so in-cluster pod→ClusterIP traffic is programmed node-side with
-   zero Worker involvement.
+1. ~~**ClusterIP allocation**~~ — done. An allocator over `ServiceIPRange`
+   (`10.43.0.0/16`, `defaultClusterConfig()`, `supervisor.go`), same
+   counter-in-DO pattern as PodCIDR allocation
+   (`packages/etcd/src/serviceip.ts`). Reserves indices 0–10 for the future
+   `kubernetes.default` (1) and `kube-dns` (10) Services.
+2. ~~**EndpointSlice controller**~~ — done. Service selector + ready Pods →
+   `discovery.k8s.io/v1` EndpointSlices (`packages/etcd/src/endpoints.ts`),
+   mirrored to the legacy `Endpoints` type for app compatibility (kube-proxy
+   in v1.36 itself consumes EndpointSlices, not Endpoints). Registering the
+   type required a matching `discovery.k8s.io/v1` group in the Go apiserver
+   _and_ a `RESOURCE_KINDS` entry in `packages/k8s/src/url-mapping.ts` — the
+   watch layer's bookmark synthesis needs the resolved Kind to fire the
+   `initial-events-end` bookmark client-go's reflector waits for; missing
+   either one leaves the type served but its watches permanently unsynced.
+   Verified end-to-end against a live local `wrangler dev` instance: ClusterIP
+   allocation, named-port resolution, ready/not-ready address separation,
+   headless-with-selector and no-selector edge cases, deletion GC, and
+   reconcile idempotency (no revision churn when nothing changed) all
+   confirmed correct by direct API calls.
+3. **kube-proxy on agents** — **blocked, not yet enabled.** The embedded k3s
+   agent (the real, unmodified `github.com/k3s-io/k3s/pkg/agent`) has its own
+   real kube-proxy code, gated by the `DisableKubeProxy` field the supervisor
+   sends via `/v1-k3s/config`. Flipping it to `false` **reproducibly hangs
+   the Worker/DO** — Cloudflare's own "Workers runtime canceled this request
+   because it detected that your Worker's code had hung" error fires within
+   seconds, and the Worker never recovers (every subsequent request times
+   out) until the instance is torn down. Confirmed by direct A/B testing
+   (`DisableKubeProxy: true` vs `false`, all else identical) both in a local
+   `wrangler dev` + real agent setup and in this repo's own
+   `e2e-conformance.yml` CI run — same failure, same message, both places.
+   **Not yet root-caused.** What's ruled out: a code-level infinite loop (no
+   `while` loops anywhere in the new `serviceip.ts`/`endpoints.ts`, and every
+   `for` loop is bounded by a SQL query result); the exact watch request
+   patterns kube-proxy issues (Service with `spec.clusterIP!=None` +
+   `labelSelector`, EndpointSlice with a label selector, Node by exact name)
+   all independently work fine when reproduced fresh via `curl`. What's
+   suspicious: the hang always appears alongside a
+   `[remotedialer] Agent disconnected: ... (code=1006)` log line
+   (`packages/proxy/src/remotedialer.ts`), though that file's own code looks
+   too simple to hang by itself, and a lone disconnect _without_ kube-proxy
+   enabled does not cause the same permanent stall — kube-proxy adds several
+   new simultaneous long-lived watch connections to the same single-threaded
+   DO (Service, EndpointSlice, ServiceCIDR, plus its own Node informer),
+   which is the next thing to investigate: does the DO's single execution
+   thread getting tied up by one stuck request cascade into every other
+   concurrent watch on that DO stalling too, and does kube-proxy's specific
+   connection count make that cascade unrecoverable where a lighter load
+   (kube-scheduler alone) isn't? Next steps: reproduce with kube-proxy's
+   informers enabled one at a time (Service only, then +EndpointSlice, then
+   +Node) to see which addition first triggers the unrecoverable state;
+   consider whether `workerd`'s hang-detection has a way to surface which
+   specific request/promise never resolved.
 
 Separately, a Worker-side path resolving a Service to a backing Pod IP (via
 the existing VPC/tunnel plumbing) gives **external** HTTP exposure — that is
 an edge feature, not a cluster-networking prerequisite, and doubles as the
 future managed-Ingress story.
 
-Verify: `curl` a ClusterIP from inside a pod; add conformance
-`[sig-network] Services` basics to the required set.
+Verify: EndpointSlice/Endpoints computation verified directly (see above);
+`[sig-network] EndpointSlice`/`EndpointsController` basics added to the
+CI's EXPERIMENTAL group (`.github/workflows/e2e-conformance.yml`) — these
+don't need kube-proxy to pass, since they only check the _objects_, not
+traffic routing. `curl` a ClusterIP from inside a pod and
+`[sig-network] Services should serve a basic endpoint from pods` (real
+traffic routing) stay blocked until the kube-proxy hang above is fixed.
 
 ## Phase 2 — Node lifecycle (self-healing, part 1)
 

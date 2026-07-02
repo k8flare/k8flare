@@ -46,18 +46,18 @@ workload actually _runs_ the way it would on a normal cluster. These are the
 gaps that matter most for everyday use, roughly in the order most users would
 hit them:
 
-| Area                                     | Gap                                                                                                                                                                                                                                                        |
-| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Deploying anything beyond a bare Pod** | No Deployment/ReplicaSet/DaemonSet/Job/CronJob — every Pod has to be created directly and re-created by hand if it dies. This is the single biggest gap to "feels like normal Kubernetes."                                                                 |
-| **Service networking**                   | `Service` objects can be created, but with no Endpoints controller and no kube-proxy, nothing actually load-balances or routes traffic to them — a `ClusterIP` Service doesn't work as one today.                                                          |
-| **DNS**                                  | No CoreDNS/ClusterDNS. Confirmed via real kubelet logs during testing (`MissingClusterDNS: kubelet does not have ClusterDNS IP configured`) — Pods fall back to the node's own DNS policy, so Service/Pod name resolution inside the cluster doesn't work. |
-| **Storage**                              | No PersistentVolume/PersistentVolumeClaim/StorageClass, no dynamic provisioning. Only `emptyDir`-style ephemeral storage works.                                                                                                                            |
-| **Autoscaling**                          | No Metrics API (`metrics.k8s.io`), so no HorizontalPodAutoscaler/VerticalPodAutoscaler, and no Cluster Autoscaler equivalent.                                                                                                                              |
-| **`kubectl logs` / `kubectl exec`**      | Off by default — requires the optional Cloudflare Tunnel + VPC Service setup below.                                                                                                                                                                        |
-| **RBAC**                                 | The cluster token is all-or-nothing; there's no per-user/per-namespace authorization.                                                                                                                                                                      |
-| **Ingress / NetworkPolicy**              | Not implemented — no ingress controller, no network policy enforcement.                                                                                                                                                                                    |
-| **API compatibility details**            | No server-side apply, no protobuf wire format (JSON only), no OpenAPI schema (`kubectl apply` needs `--validate=false`), no dry-run.                                                                                                                       |
-| **Node self-healing**                    | No node lifecycle controller — if an agent's process dies, its last-reported `Ready` status is never corrected and Pods "on" it are never rescheduled.                                                                                                     |
+| Area                                     | Gap                                                                                                                                                                                                                                                                                                             |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Deploying anything beyond a bare Pod** | No Deployment/ReplicaSet/DaemonSet/Job/CronJob — every Pod has to be created directly and re-created by hand if it dies. This is the single biggest gap to "feels like normal Kubernetes."                                                                                                                      |
+| **Service networking**                   | `Service` objects get a real `ClusterIP` and correct `EndpointSlice`/`Endpoints` objects now, but kube-proxy (which would program the actual routing) can't be enabled yet — it reproducibly hangs the Worker/DO, not yet root-caused — so nothing actually load-balances or routes traffic to a Service today. |
+| **DNS**                                  | No CoreDNS/ClusterDNS. Confirmed via real kubelet logs during testing (`MissingClusterDNS: kubelet does not have ClusterDNS IP configured`) — Pods fall back to the node's own DNS policy, so Service/Pod name resolution inside the cluster doesn't work.                                                      |
+| **Storage**                              | No PersistentVolume/PersistentVolumeClaim/StorageClass, no dynamic provisioning. Only `emptyDir`-style ephemeral storage works.                                                                                                                                                                                 |
+| **Autoscaling**                          | No Metrics API (`metrics.k8s.io`), so no HorizontalPodAutoscaler/VerticalPodAutoscaler, and no Cluster Autoscaler equivalent.                                                                                                                                                                                   |
+| **`kubectl logs` / `kubectl exec`**      | Off by default — requires the optional Cloudflare Tunnel + VPC Service setup below.                                                                                                                                                                                                                             |
+| **RBAC**                                 | The cluster token is all-or-nothing; there's no per-user/per-namespace authorization.                                                                                                                                                                                                                           |
+| **Ingress / NetworkPolicy**              | Not implemented — no ingress controller, no network policy enforcement.                                                                                                                                                                                                                                         |
+| **API compatibility details**            | No server-side apply, no protobuf wire format (JSON only), no OpenAPI schema (`kubectl apply` needs `--validate=false`), no dry-run.                                                                                                                                                                            |
+| **Node self-healing**                    | No node lifecycle controller — if an agent's process dies, its last-reported `Ready` status is never corrected and Pods "on" it are never rescheduled.                                                                                                                                                          |
 
 None of this is hidden complexity — see
 [`docs/general-purpose-k8s-plan.md`](docs/general-purpose-k8s-plan.md) for the
@@ -123,10 +123,15 @@ Two detailed plans drive the work from here:
    [`docs/control-plane-architecture.md`](docs/control-plane-architecture.md#migrating-to-the-real-kube-scheduler)
    for the full trace, including the real bugs that only surfaced by running
    it (scheduler-informer coverage, a field-selector parsing bug).
-2. **Service networking** (next) — ClusterIP allocation, an EndpointSlice
-   controller (kube-proxy in v1.36 consumes EndpointSlices, not Endpoints),
-   enabling the agent's embedded kube-proxy, and a Worker-side HTTP path for
-   external Service exposure.
+2. **Service networking** (partially done) — ~~ClusterIP allocation~~ and
+   ~~an EndpointSlice controller~~ (kube-proxy in v1.36 consumes
+   EndpointSlices, not Endpoints) are done and verified. Enabling the
+   agent's embedded kube-proxy is **blocked**: it reproducibly hangs the
+   Worker/DO (a Cloudflare runtime-detected hang, not yet root-caused — see
+   [`docs/general-purpose-k8s-plan.md`](docs/general-purpose-k8s-plan.md#phase-1--service-networking-partially-done--object-model-shipped-kube-proxy-blocked-on-a-real-bug)),
+   so `ClusterIP` Services get real objects and endpoints but no actual
+   traffic routing yet. A Worker-side HTTP path for external Service
+   exposure is still ahead too.
 3. **Node lifecycle** — lease staleness → `NotReady` + taints → pod GC, so a
    dead agent's pods actually get replaced.
 4. **Workload controllers + GC** — ReplicaSet → Deployment → Job/CronJob →
