@@ -22,7 +22,7 @@ import (
 // Known gap: this only covers resource types registered in the Go
 // apiserver's ResourceStore maps. Namespaced CRDs (DynamicWorker,
 // WorkerTrigger) live entirely in the TypeScript packages/crd +
-// packages/worker storage layer and are NOT covered here.
+// workers/runtime storage layer and are NOT covered here.
 func DeleteNamespaceDependents(ctx context.Context, namespacedStores []*ResourceStore, namespace string) error {
 	for _, rs := range namespacedStores {
 		if _, err := rs.DeleteAllInNamespace(ctx, namespace); err != nil {

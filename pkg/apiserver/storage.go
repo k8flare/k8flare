@@ -17,7 +17,7 @@ var (
 	ErrKeyExists = errors.New("already exists")
 )
 
-// StoredObject represents a key-value entry stored in the KineStore Durable Object.
+// StoredObject represents a key-value entry stored in the Cluster Durable Object.
 type StoredObject struct {
 	Key            string
 	Value          []byte // raw bytes (decoded from base64)
@@ -25,7 +25,7 @@ type StoredObject struct {
 	ModRevision    int64
 }
 
-// Storage is a client that talks to the KineStore Durable Object via HTTP.
+// Storage is a client that talks to the Cluster Durable Object via HTTP.
 type Storage struct {
 	doFetch func(req *http.Request) (*http.Response, error)
 	prefix  string // "/registry"

@@ -30,7 +30,7 @@ func main() {
 	mux := http.NewServeMux()
 
 	doFetch := func(req *http.Request) (*http.Response, error) {
-		ns, err := cloudflare.NewDurableObjectNamespace("ETCD")
+		ns, err := cloudflare.NewDurableObjectNamespace("CLUSTER")
 		if err != nil {
 			return nil, err
 		}
