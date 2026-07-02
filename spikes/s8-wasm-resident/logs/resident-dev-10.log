@@ -1,0 +1,6 @@
+
+ ⛅️ wrangler 4.77.0
+───────────────────
+⎔ Starting local server...
+[wrangler:info] Ready on http://localhost:8792
+[wrangler:info] GET /sync-watch-external 200 OK (6044ms)

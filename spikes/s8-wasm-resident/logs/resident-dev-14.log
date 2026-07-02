@@ -1,0 +1,8 @@
+
+ ⛅️ wrangler 4.77.0
+───────────────────
+⎔ Starting local server...
+[wrangler:info] Ready on http://localhost:8792
+[wrangler:info] GET /close-then-extend 200 OK (36ms)
+[wrangler:info] GET /status 200 OK (3ms)
+[wrangler:info] GET /status 200 OK (2ms)

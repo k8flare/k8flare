@@ -1,0 +1,18 @@
+
+ ⛅️ wrangler 4.77.0 (update available 4.106.0)
+──────────────────────────────────────────────
+Your Worker has access to the following bindings:
+Binding                   Resource            Mode
+env.WASM_DO (WasmDO)      Durable Object      local
+
+⎔ Starting local server...
+[wrangler:warn] The latest compatibility date supported by the installed Cloudflare Workers Runtime is "2026-03-17",
+but you've requested "2026-03-24". Falling back to "2026-03-17"...
+Features enabled by your requested compatibility date may not be available.
+Upgrade to `wrangler@4.106.0` to remove this warning.
+[wrangler:info] Ready on http://localhost:8794
+[wrangler:info] GET /do-meta 200 OK (4ms)
+[wrangler:info] GET /status 200 OK (34ms)
+[wrangler:info] GET /status 200 OK (2ms)
+[wrangler:info] GET /arm-alarm 200 OK (4ms)
+[wrangler:info] GET /alarm-result 200 OK (3ms)

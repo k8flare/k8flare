@@ -487,7 +487,21 @@
 					if (prop === 'context') {
 						return context;
 					}
-					return Reflect.get(target, prop, target);
+					const val = Reflect.get(target, prop, target);
+					// S8 spike fix: fetch() does an internal receiver/brand check
+					// and rejects being invoked with this Proxy as `this`
+					// ("Illegal invocation"). Binding it to the real target
+					// fixes that. NOTE: binding is deliberately narrow (fetch
+					// only) -- an earlier attempt bound every function
+					// unconditionally, which broke static methods on class
+					// references retrieved through this same proxy (e.g.
+					// Array.bind(target).from is undefined, since
+					// Function.prototype.bind does not forward a function's own
+					// properties), crashing header parsing (ArrayFrom -> Array.from).
+					if (prop === 'fetch' && typeof val === 'function') {
+						return val.bind(target);
+					}
+					return val;
 				}
 			})
 			this._values = [ // JS values that Go currently has references to, indexed by reference id

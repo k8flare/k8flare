@@ -52,7 +52,118 @@ var (
 	outboundErrMu sync.Mutex
 	outboundErr   string
 	watchSimOnce  sync.Once
+
+	// extendTicker is incremented once per second by a goroutine wrapped in
+	// cloudflare.WaitUntil, started by /close-then-extend, which itself
+	// returns its own (short) response immediately rather than blocking on
+	// the task. Compared against mainTicker (same 1s-ish cadence, NOT
+	// wrapped in WaitUntil) over an identical idle window with zero other
+	// requests in flight, to see whether WaitUntil provides real extra
+	// keep-alive beyond what an ordinary background goroutine gets.
+	extendTicker int64
+	extendOnce   sync.Once
 )
+
+// outboundTestHandler is a plain, un-worked-around outbound GET (same
+// shape as stock's outboundTestHandler). Used to test whether the
+// wasm_exec.js `.bind(target)` patch (vendor/syumai-workers-fork's
+// cmd/workers-assets-gen/assets/wasm_exec_go.js) fixes the "Illegal
+// invocation" crash at its root, without needing a service binding.
+func outboundTestHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	resp, err := http.Get("http://" + r.Host + "/status")
+	if err != nil {
+		fmt.Fprintf(w, `{"ok":false,"stage":"get","err":%q}`, err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	body := make([]byte, 512)
+	n, _ := resp.Body.Read(body)
+	fmt.Fprintf(w, `{"ok":true,"status":%d,"body":%q}`, resp.StatusCode, string(body[:n]))
+}
+
+// externalFetchTestHandler hits a genuine external URL (example.com, IANA's
+// reserved-for-documentation-and-testing domain) instead of looping back to
+// this same worker, to check the wasm_exec.js fetch-bind patch isn't only
+// working for same-origin/self-referential calls.
+func externalFetchTestHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	resp, err := http.Get("https://example.com/")
+	if err != nil {
+		fmt.Fprintf(w, `{"ok":false,"stage":"get","err":%q}`, err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	body := make([]byte, 256)
+	n, _ := resp.Body.Read(body)
+	fmt.Fprintf(w, `{"ok":true,"status":%d,"body_prefix":%q}`, resp.StatusCode, string(body[:n]))
+}
+
+// syncWatchHandler performs the outbound GET to /stream *synchronously in
+// the handler goroutine itself* (not a spawned background goroutine), so
+// this request's own response stays open/unclosed for as long as the
+// outbound read takes. Tests whether outbound blocking I/O needs *some*
+// request to be currently open (any request, not specifically the one that
+// called go.run()) the same way inbound response streaming does.
+func syncWatchHandler(w http.ResponseWriter, r *http.Request) {
+	atomic.AddInt64(&requestsServed, 1)
+	w.Header().Set("Content-Type", "application/json")
+	resp, err := http.Get("http://" + r.Host + "/stream")
+	if err != nil {
+		fmt.Fprintf(w, `{"ok":false,"stage":"get","err":%q}`, err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	scanner := bufio.NewScanner(resp.Body)
+	lines := 0
+	for lines < 3 && scanner.Scan() {
+		lines++
+	}
+	fmt.Fprintf(w, `{"ok":true,"lines_read":%d,"scan_err":%q}`, lines, fmt.Sprint(scanner.Err()))
+}
+
+// syncWatchExternalHandler is syncWatchHandler but targets a genuinely
+// separate worker process (stock, localhost:8791) instead of looping back
+// into this same instance's own binding.handleRequest dispatcher, to rule
+// out nested-self-dispatch as a confound.
+func syncWatchExternalHandler(w http.ResponseWriter, r *http.Request) {
+	atomic.AddInt64(&requestsServed, 1)
+	w.Header().Set("Content-Type", "application/json")
+	start := time.Now()
+	resp, err := http.Get("http://localhost:8791/stream")
+	if err != nil {
+		fmt.Fprintf(w, `{"ok":false,"stage":"get","err":%q}`, err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	scanner := bufio.NewScanner(resp.Body)
+	lines := 0
+	for lines < 3 && scanner.Scan() {
+		lines++
+	}
+	fmt.Fprintf(w, `{"ok":true,"lines_read":%d,"scan_err":%q,"elapsed_ms":%d,"first_line":%q}`,
+		lines, fmt.Sprint(scanner.Err()), time.Since(start).Milliseconds(), scanner.Text())
+}
+
+// closeThenExtendHandler answers immediately (its own visible response
+// closes fast) but, before returning, registers a goroutine wrapped in
+// cloudflare.WaitUntil that ticks a counter once per second for up to 60s.
+// The question: does that counter keep pace with real elapsed time even
+// when *no* request is open afterwards (unlike mainTicker, which we've
+// already shown freezes when idle)?
+func closeThenExtendHandler(w http.ResponseWriter, r *http.Request) {
+	atomic.AddInt64(&requestsServed, 1)
+	extendOnce.Do(func() {
+		cloudflare.WaitUntil(func() {
+			for i := 0; i < 600; i++ {
+				time.Sleep(1 * time.Second)
+				atomic.AddInt64(&extendTicker, 1)
+			}
+		})
+	})
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprint(w, `{"ok":true}`)
+}
 
 func statusHandler(w http.ResponseWriter, r *http.Request) {
 	n := atomic.AddInt64(&requestsServed, 1)
@@ -60,11 +171,11 @@ func statusHandler(w http.ResponseWriter, r *http.Request) {
 	oErr := outboundErr
 	outboundErrMu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"variant":"resident","instance_id":%q,"goroutines":%d,"uptime_s":%.3f,"requests_served":%d,"main_ticker":%d,"on_demand_ticker":%d,"wait_until_calls":%d,"wait_until_completed":%d,"outbound_reads":%d,"outbound_err":%q}`,
+	fmt.Fprintf(w, `{"variant":"resident","instance_id":%q,"goroutines":%d,"uptime_s":%.3f,"requests_served":%d,"main_ticker":%d,"on_demand_ticker":%d,"wait_until_calls":%d,"wait_until_completed":%d,"outbound_reads":%d,"outbound_err":%q,"extend_ticker":%d}`,
 		instanceID, runtime.NumGoroutine(), time.Since(startedAt).Seconds(), n,
 		atomic.LoadInt64(&mainTicker), atomic.LoadInt64(&onDemandTicker),
 		atomic.LoadInt64(&waitUntilCalls), atomic.LoadInt64(&waitUntilCompleted),
-		atomic.LoadInt64(&outboundReads), oErr)
+		atomic.LoadInt64(&outboundReads), oErr, atomic.LoadInt64(&extendTicker))
 }
 
 // watchSimHandler starts a background goroutine that issues its own
@@ -180,6 +291,11 @@ func main() {
 	mux.HandleFunc("/start-worker", startWorkerHandler)
 	mux.HandleFunc("/waituntil", waitUntilHandler)
 	mux.HandleFunc("/watch-sim", watchSimHandler)
+	mux.HandleFunc("/outbound-test", outboundTestHandler)
+	mux.HandleFunc("/external-fetch-test", externalFetchTestHandler)
+	mux.HandleFunc("/sync-watch", syncWatchHandler)
+	mux.HandleFunc("/sync-watch-external", syncWatchExternalHandler)
+	mux.HandleFunc("/close-then-extend", closeThenExtendHandler)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "s8 spike resident variant instance=%s\n", instanceID)
 	})
