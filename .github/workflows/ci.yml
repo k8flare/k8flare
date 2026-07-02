@@ -26,6 +26,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
+      - name: Verify generated code is up to date
+        run: |
+          go run ./cmd/k8flare-gen
+          git diff --exit-code -- pkg/apiserver/zz_generated_*.go packages/k8s/src/gen workers/apiserver/assets/openapi || {
+            echo "::error::cmd/k8flare-gen output differs from what's committed. Run 'go run ./cmd/k8flare-gen' and commit the result." >&2
+            exit 1
+          }
+
       - name: TypeScript check
         run: vp check
 

@@ -2,6 +2,7 @@ package apiserver
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -29,17 +30,33 @@ type clusterConfig struct {
 	NoFlannel          bool      `json:"NoFlannel,omitempty"`
 }
 
+// PodCIDR and ServiceCIDR are the cluster's Pod and Service address ranges.
+// Advertised to agents via /v1-k3s/config's ClusterIPRange/ServiceIPRange
+// below, and (ServiceCIDR only) shared with this apiserver's own ClusterIP
+// allocator (clusterip.go) -- one definition so the two can never drift
+// apart.
+var (
+	PodCIDR     = mustParseCIDR("10.42.0.0/16")
+	ServiceCIDR = mustParseCIDR("10.43.0.0/16")
+)
+
+func mustParseCIDR(s string) *net.IPNet {
+	_, n, err := net.ParseCIDR(s)
+	if err != nil {
+		panic(fmt.Sprintf("apiserver: invalid CIDR literal %q: %v", s, err))
+	}
+	return n
+}
+
 // defaultClusterConfig returns the default cluster configuration.
 // FlannelBackend is "host-gw" because all EC2 agents are in the same VPC
 // subnet, so no encapsulation is needed. The agent sets up flannel and CNI
 // automatically using the PodCIDR allocated by the control plane.
 func defaultClusterConfig() clusterConfig {
-	_, clusterCIDR, _ := net.ParseCIDR("10.42.0.0/16")
-	_, serviceCIDR, _ := net.ParseCIDR("10.43.0.0/16")
 	return clusterConfig{
 		ClusterDomain:      "cluster.local",
-		ClusterIPRange:     *clusterCIDR,
-		ServiceIPRange:     *serviceCIDR,
+		ClusterIPRange:     *PodCIDR,
+		ServiceIPRange:     *ServiceCIDR,
 		HTTPSPort:          6443,
 		SupervisorPort:     6443,
 		DisableCCM:         true,

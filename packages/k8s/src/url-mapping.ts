@@ -1,3 +1,5 @@
+import { RESOURCE_KINDS } from "./gen/resource-kinds.gen.ts";
+
 /**
  * Map a Kubernetes API URL pathname to a kine storage prefix.
  *
@@ -37,39 +39,13 @@ export function urlToStoragePrefix(pathname: string): string | null {
   return null;
 }
 
-/** Maps a resource's plural name to its Kind. Covers every resource this apiserver serves. */
-const RESOURCE_KINDS: Record<string, string> = {
-  namespaces: "Namespace",
-  configmaps: "ConfigMap",
-  secrets: "Secret",
-  pods: "Pod",
-  nodes: "Node",
-  serviceaccounts: "ServiceAccount",
-  endpoints: "Endpoints",
-  services: "Service",
-  events: "Event",
-  limitranges: "LimitRange",
-  leases: "Lease",
-  runtimeclasses: "RuntimeClass",
-  csidrivers: "CSIDriver",
-  csinodes: "CSINode",
-  resourceclaims: "ResourceClaim",
-  resourceslices: "ResourceSlice",
-  deviceclasses: "DeviceClass",
-  replicationcontrollers: "ReplicationController",
-  replicasets: "ReplicaSet",
-  deployments: "Deployment",
-  daemonsets: "DaemonSet",
-  statefulsets: "StatefulSet",
-  controllerrevisions: "ControllerRevision",
-  poddisruptionbudgets: "PodDisruptionBudget",
-  endpointslices: "EndpointSlice",
-  servicecidrs: "ServiceCIDR",
-  jobs: "Job",
-  cronjobs: "CronJob",
-  dynamicworkers: "DynamicWorker",
-  workertriggers: "WorkerTrigger",
-};
+// RESOURCE_KINDS (resource's plural name -> Kind, covering every resource
+// the Go apiserver serves plus the TypeScript-only CRDs) is generated from
+// pkg/apiserver/apidef.Table by cmd/k8flare-gen -- see
+// packages/k8s/src/gen/resource-kinds.gen.ts. It used to be hand-written
+// here, which had already caused two separate watch-bookmark bugs (a
+// resource added to the Go apiserver but forgotten in this map) before the
+// generator existed.
 
 /**
  * Determine the Kind and apiVersion for a resource URL, e.g. for constructing

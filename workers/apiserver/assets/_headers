@@ -1,0 +1,16 @@
+# Cloudflare Static Assets (same _headers convention as Cloudflare Pages)
+# custom response headers. Not generated: cmd/k8flare-gen only owns
+# ./openapi/** (wiped and rewritten on every run, see openapi.go); this
+# file lives one level up specifically so regeneration never touches it.
+#
+# Extensionless files (every path under openapi/, matching the real k8s
+# OpenAPI URL contract, e.g. /openapi/v2 and /openapi/v3/api/v1) get served
+# by Cloudflare's static asset handler with no Content-Type by default --
+# confirmed by curling a running wrangler dev instance, not assumed. kubectl
+# needs application/json to parse these correctly for schema validation
+# (see docs/k8s-version-bump.md and README.md's --validate=false removal).
+/openapi/v2
+  Content-Type: application/json
+
+/openapi/v3/*
+  Content-Type: application/json

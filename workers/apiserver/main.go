@@ -5,7 +5,11 @@ package main
 import (
 	"net/http"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
 	"github.com/k8flare/k8flare/pkg/apiserver"
+	"github.com/k8flare/k8flare/pkg/apiserver/apidef"
 	"github.com/syumai/workers"
 	"github.com/syumai/workers/cloudflare"
 )
@@ -43,78 +47,53 @@ func main() {
 	}
 
 	storage := apiserver.NewStorage(doFetch, "/registry")
-	stores := apiserver.NewResourceStores(storage)
-	leaseStores := apiserver.NewLeaseStores(storage)
-	storageStores := apiserver.NewStorageStores(storage)
-	nodeAPIStores := apiserver.NewNodeAPIStores(storage)
-	resourceAPIStores := apiserver.NewResourceAPIStores(storage)
-	appsStores := apiserver.NewAppsStores(storage)
-	policyStores := apiserver.NewPolicyStores(storage)
-	discoveryStores := apiserver.NewDiscoveryStores(storage)
-	networkingStores := apiserver.NewNetworkingStores(storage)
-	batchStores := apiserver.NewBatchStores(storage)
-	namespacedStores := apiserver.NamespacedResourceStores(stores, leaseStores, storageStores, nodeAPIStores, resourceAPIStores, appsStores, policyStores, discoveryStores, networkingStores, batchStores)
+
+	// One ResourceStore map per GroupVersion in apidef.Table (replaces what
+	// used to be 10 separate hand-written NewXStores calls, one per API
+	// group), plus the union of every namespaced store across all of them
+	// for namespace cascading delete.
+	storesByGV := make(map[schema.GroupVersion]map[string]*apiserver.ResourceStore, len(apidef.GroupVersions()))
+	allStoreMaps := make([]map[string]*apiserver.ResourceStore, 0, len(apidef.GroupVersions()))
+	for _, gv := range apidef.GroupVersions() {
+		stores := apiserver.NewResourceStoresForGroupVersion(storage, gv)
+		storesByGV[gv] = stores
+		allStoreMaps = append(allStoreMaps, stores)
+	}
+	namespacedStores := apiserver.NamespacedResourceStores(allStoreMaps...)
 
 	// CA Manager for supervisor protocol
 	cam := apiserver.NewCAManager(storage)
 
 	// Discovery (no auth)
-	apiserver.RegisterDiscovery(mux, apiserver.DefaultResources())
+	apiserver.RegisterDiscovery(mux)
 	apiserver.RegisterGroupDiscovery(mux)
+	apiserver.RegisterOpenAPIDiscovery(mux)
 
 	// Supervisor endpoints (/cacerts, /v1-k3s/*)
 	apiserver.RegisterSupervisorHandlers(mux, cam, storage, getToken)
 
-	// Core API v1 (with auth)
-	mux.Handle("/api/v1/", apiserver.AuthMiddleware(getToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apiserver.BootstrapCluster(r.Context(), stores)
-		apiserver.HandleAPI(w, r, stores, namespacedStores)
-	})))
+	// One auth-wrapped route per GroupVersion in apidef.Table. core/v1
+	// additionally bootstraps the cluster's baseline namespaces/
+	// ServiceAccounts on first request and sweeps dependents on Namespace
+	// delete (namespacedStores is nil for every other group, since
+	// "namespaces" never exists as a key in a non-core stores map --
+	// HandleResource's doc comment in pkg/apiserver/handler.go explains why
+	// that alone is enough to make the cascading-delete branch a no-op
+	// there).
+	for _, gv := range apidef.GroupVersions() {
+		prefix := apidef.APIPrefix(gv)
+		stores := storesByGV[gv]
+		isCore := gv == corev1.SchemeGroupVersion
 
-	// coordination.k8s.io/v1 (with auth)
-	mux.Handle("/apis/coordination.k8s.io/v1/", apiserver.AuthMiddleware(getToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apiserver.HandleGroupAPI(w, r, leaseStores)
-	})))
-
-	// storage.k8s.io/v1 (with auth)
-	mux.Handle("/apis/storage.k8s.io/v1/", apiserver.AuthMiddleware(getToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apiserver.HandleGroupAPI(w, r, storageStores)
-	})))
-
-	// node.k8s.io/v1 (with auth)
-	mux.Handle("/apis/node.k8s.io/v1/", apiserver.AuthMiddleware(getToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apiserver.HandleGroupAPI(w, r, nodeAPIStores)
-	})))
-
-	// resource.k8s.io/v1 (with auth)
-	mux.Handle("/apis/resource.k8s.io/v1/", apiserver.AuthMiddleware(getToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apiserver.HandleGroupAPI(w, r, resourceAPIStores)
-	})))
-
-	// apps/v1 (with auth)
-	mux.Handle("/apis/apps/v1/", apiserver.AuthMiddleware(getToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apiserver.HandleGroupAPI(w, r, appsStores)
-	})))
-
-	// policy/v1 (with auth)
-	mux.Handle("/apis/policy/v1/", apiserver.AuthMiddleware(getToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apiserver.HandleGroupAPI(w, r, policyStores)
-	})))
-
-	// discovery.k8s.io/v1 (with auth)
-	mux.Handle("/apis/discovery.k8s.io/v1/", apiserver.AuthMiddleware(getToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apiserver.HandleGroupAPI(w, r, discoveryStores)
-	})))
-
-	// networking.k8s.io/v1 (with auth)
-	mux.Handle("/apis/networking.k8s.io/v1/", apiserver.AuthMiddleware(getToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apiserver.HandleGroupAPI(w, r, networkingStores)
-	})))
-
-	// batch/v1 (with auth)
-	mux.Handle("/apis/batch/v1/", apiserver.AuthMiddleware(getToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apiserver.HandleGroupAPI(w, r, batchStores)
-	})))
+		mux.Handle(prefix, apiserver.AuthMiddleware(getToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if isCore {
+				apiserver.BootstrapCluster(r.Context(), stores)
+				apiserver.HandleResource(w, r, prefix, stores, namespacedStores)
+				return
+			}
+			apiserver.HandleResource(w, r, prefix, stores, nil)
+		})))
+	}
 
 	workers.Serve(mux)
 }

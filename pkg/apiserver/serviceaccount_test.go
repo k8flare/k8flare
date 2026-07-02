@@ -12,7 +12,7 @@ import (
 func TestEnsureDefaultServiceAccount_Creates(t *testing.T) {
 	kv := newFakeKV()
 	storage := newTestStorage(kv)
-	saStore := NewServiceAccountStore(storage)
+	saStore := NewResourceStoresForGroupVersion(storage, corev1.SchemeGroupVersion)["serviceaccounts"]
 	ctx := context.Background()
 
 	ensureDefaultServiceAccount(ctx, saStore, "test-ns")
@@ -39,7 +39,7 @@ func TestEnsureDefaultServiceAccount_Creates(t *testing.T) {
 func TestEnsureDefaultServiceAccount_IdempotentOnSecondCall(t *testing.T) {
 	kv := newFakeKV()
 	storage := newTestStorage(kv)
-	saStore := NewServiceAccountStore(storage)
+	saStore := NewResourceStoresForGroupVersion(storage, corev1.SchemeGroupVersion)["serviceaccounts"]
 	ctx := context.Background()
 
 	ensureDefaultServiceAccount(ctx, saStore, "test-ns")
@@ -64,7 +64,7 @@ func TestApplyPostCreateEffects_Namespace_CreatesDefaultServiceAccount(t *testin
 	kv := newFakeKV()
 	storage := newTestStorage(kv)
 	stores := map[string]*ResourceStore{
-		"serviceaccounts": NewServiceAccountStore(storage),
+		"serviceaccounts": NewResourceStoresForGroupVersion(storage, corev1.SchemeGroupVersion)["serviceaccounts"],
 	}
 	ctx := context.Background()
 
@@ -80,7 +80,7 @@ func TestApplyPostCreateEffects_NonNamespace_NoOp(t *testing.T) {
 	kv := newFakeKV()
 	storage := newTestStorage(kv)
 	stores := map[string]*ResourceStore{
-		"serviceaccounts": NewServiceAccountStore(storage),
+		"serviceaccounts": NewResourceStoresForGroupVersion(storage, corev1.SchemeGroupVersion)["serviceaccounts"],
 	}
 	ctx := context.Background()
 

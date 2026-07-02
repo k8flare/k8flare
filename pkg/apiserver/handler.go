@@ -21,21 +21,36 @@ func decodeBody(body []byte) (runtime.Object, error) {
 	return obj, nil
 }
 
-// HandleAPI parses a Kubernetes API URL and dispatches to the correct
-// ResourceStore method based on the HTTP method and path segments.
+// HandleResource parses a Kubernetes API URL under prefix and dispatches to
+// the appropriate ResourceStore method based on HTTP method and path
+// segments. prefix is "/api/v1/" for the legacy core group, or
+// "/apis/{group}/{version}/" for a named API group -- main.go registers one
+// mux route per prefix and passes the matching stores map for each, so
+// prefix and stores always agree on which GroupVersion is being served.
 //
-// namespacedStores is the set of namespaced ResourceStores to sweep when a
-// Namespace object itself is deleted (see NamespacedResourceStores and the
-// http.MethodDelete case below).
-func HandleAPI(w http.ResponseWriter, r *http.Request, stores map[string]*ResourceStore, namespacedStores []*ResourceStore) {
-	// Check for watch requests
+// namespacedStores, if non-nil, is swept when a Namespace object itself is
+// deleted (see NamespacedResourceStores and the http.MethodDelete case
+// below). Only the core/v1 registration passes it: "namespaces" never
+// exists as a key in any other group's stores map, so the cascading-delete
+// branch is naturally unreachable for group-API calls even when they pass
+// their own (always nil) namespacedStores.
+//
+// This single function replaces what used to be two near-identical
+// functions, HandleAPI and HandleGroupAPI: same CRUD switch, same path
+// grammar, differing only in how the group+version prefix got stripped
+// before parsing and in whether a watch query parameter was checked at all
+// (HandleGroupAPI's watch requests fell through to a duplicated list
+// pathway -- a real drift merging them fixes, not just a line-count cut).
+func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, stores map[string]*ResourceStore, namespacedStores []*ResourceStore) {
+	trimmed := strings.TrimPrefix(r.URL.Path, prefix)
+
 	if r.URL.Query().Get("watch") == "true" {
-		resource, namespace := parseWatchParams(r.URL.Path)
+		resource, namespace, _, _, _ := parseResourcePath(trimmed)
 		HandleWatch(w, r, resource, namespace)
 		return
 	}
 
-	resource, namespace, name, subresource, ok := parsePath(r.URL.Path)
+	resource, namespace, name, subresource, ok := parseResourcePath(trimmed)
 	if !ok {
 		writeStatusError(w, http.StatusNotFound, "NotFound", "the path is not valid")
 		return
@@ -61,7 +76,7 @@ func HandleAPI(w http.ResponseWriter, r *http.Request, stores map[string]*Resour
 			labelSelector := r.URL.Query().Get("labelSelector")
 			obj, err := store.List(ctx, namespace, fieldSelector, labelSelector)
 			if err != nil {
-				writeInternalError(w, err)
+				writeResourceError(w, err, resource, name)
 				return
 			}
 			writeRuntimeObject(w, http.StatusOK, obj)
@@ -93,9 +108,10 @@ func HandleAPI(w http.ResponseWriter, r *http.Request, stores map[string]*Resour
 		// Fill in any container resource requests/limits the pod itself
 		// didn't specify, then reject it if it still violates a
 		// Container-scoped LimitRange's Min/Max, from LimitRanges in its
-		// namespace. stores["limitranges"] is absent from the group-API
-		// store maps (leases/events/storage/nodeAPI), so this is a no-op
-		// there — Pod is core/v1-only and always routes through HandleAPI.
+		// namespace. stores["limitranges"] is absent from every group-API
+		// store map (leases/storage/nodeAPI/resourceAPI/apps/policy/discovery/
+		// networking/batch), so this is a no-op there -- Pod is core/v1-only
+		// and always routes through the core/v1 registration.
 		if pod, ok := rObj.(*corev1.Pod); ok {
 			if lrStore, exists := stores["limitranges"]; exists {
 				if lrList, err := lrStore.List(ctx, namespace, "", ""); err == nil {
@@ -106,6 +122,15 @@ func HandleAPI(w http.ResponseWriter, r *http.Request, stores map[string]*Resour
 						return
 					}
 				}
+			}
+		}
+
+		// Services that don't specify a ClusterIP get one allocated here,
+		// synchronously, before the first write -- see clusterip.go.
+		if svc, ok := rObj.(*corev1.Service); ok {
+			if err := AssignClusterIP(ctx, store.storage, svc); err != nil {
+				writeInternalError(w, fmt.Errorf("allocate ClusterIP: %w", err))
+				return
 			}
 		}
 
@@ -148,16 +173,50 @@ func HandleAPI(w http.ResponseWriter, r *http.Request, stores map[string]*Resour
 	case http.MethodDelete:
 		if name == "" {
 			labelSelector := r.URL.Query().Get("labelSelector")
+
+			if resource == "namespaces" && namespacedStores != nil {
+				// A collection-delete of Namespaces needs the same
+				// dependents sweep as a single named delete below, or
+				// DELETE /api/v1/namespaces would silently orphan every
+				// namespaced resource in every namespace it removes.
+				// List first, before anything is actually deleted, so the
+				// sweep runs against exactly the Namespaces this request
+				// is about to remove -- same idempotent-retry reasoning as
+				// the single-delete case: nothing is deleted until every
+				// sweep has succeeded.
+				listObj, err := store.List(ctx, namespace, "", labelSelector)
+				if err != nil {
+					writeInternalError(w, err)
+					return
+				}
+				nsList, ok := listObj.(*corev1.NamespaceList)
+				if !ok {
+					writeInternalError(w, fmt.Errorf("unexpected list type %T for namespaces collection delete", listObj))
+					return
+				}
+				for _, ns := range nsList.Items {
+					if err := DeleteNamespaceDependents(ctx, namespacedStores, ns.Name); err != nil {
+						writeInternalError(w, err)
+						return
+					}
+				}
+			}
+
 			obj, err := store.DeleteCollection(ctx, namespace, labelSelector)
 			if err != nil {
 				writeInternalError(w, err)
 				return
 			}
+			if svcList, ok := obj.(*corev1.ServiceList); ok {
+				for i := range svcList.Items {
+					ReleaseClusterIP(ctx, store.storage, &svcList.Items[i])
+				}
+			}
 			writeRuntimeObject(w, http.StatusOK, obj)
 			return
 		}
 
-		if resource == "namespaces" {
+		if resource == "namespaces" && namespacedStores != nil {
 			// Check existence first, so deleting an already-gone namespace
 			// still reports NotFound immediately rather than doing a List
 			// call per namespaced resource type first.
@@ -179,6 +238,9 @@ func HandleAPI(w http.ResponseWriter, r *http.Request, stores map[string]*Resour
 		if err != nil {
 			writeResourceError(w, err, resource, name)
 			return
+		}
+		if svc, ok := obj.(*corev1.Service); ok {
+			ReleaseClusterIP(ctx, store.storage, svc)
 		}
 		writeRuntimeObject(w, http.StatusOK, obj)
 
@@ -219,33 +281,32 @@ func HandleAPI(w http.ResponseWriter, r *http.Request, stores map[string]*Resour
 	}
 }
 
-// parsePath extracts resource, namespace, name, and subresource from a /api/v1/ path.
-// Returns (resource, namespace, name, subresource, ok).
+// parseResourcePath extracts resource, namespace, name, and subresource
+// from a path that's already had its "/api/v1/" or "/apis/{group}/{version}/"
+// prefix stripped. Returns (resource, namespace, name, subresource, ok).
 //
 // Supported patterns:
-//   - /api/v1/{resource}                                    -> resource list (cluster or all-namespaces)
-//   - /api/v1/{resource}/{name}                             -> cluster-scoped get/update/delete (e.g. namespaces)
-//   - /api/v1/{resource}/{name}/{subresource}               -> cluster-scoped subresource (e.g. nodes/mynode/status)
-//   - /api/v1/namespaces/{ns}/{resource}                    -> namespaced list
-//   - /api/v1/namespaces/{ns}/{resource}/{name}             -> namespaced get/update/delete
-//   - /api/v1/namespaces/{ns}/{resource}/{name}/{subresource} -> namespaced subresource (e.g. pods/nginx/status)
-func parsePath(path string) (resource, namespace, name, subresource string, ok bool) {
-	trimmed := strings.TrimPrefix(path, "/api/v1/")
-	trimmed = strings.TrimSuffix(trimmed, "/")
-	if trimmed == "" {
+//   - {resource}                                    -> resource list (cluster or all-namespaces)
+//   - {resource}/{name}                              -> cluster-scoped get/update/delete (e.g. namespaces)
+//   - {resource}/{name}/{subresource}                -> cluster-scoped subresource (e.g. nodes/mynode/status)
+//   - namespaces/{ns}/{resource}                     -> namespaced list
+//   - namespaces/{ns}/{resource}/{name}              -> namespaced get/update/delete
+//   - namespaces/{ns}/{resource}/{name}/{subresource} -> namespaced subresource (e.g. pods/nginx/status)
+func parseResourcePath(path string) (resource, namespace, name, subresource string, ok bool) {
+	path = strings.TrimSuffix(path, "/")
+	if path == "" {
 		return "", "", "", "", false
 	}
 
-	parts := strings.Split(trimmed, "/")
+	parts := strings.Split(path, "/")
 
 	switch len(parts) {
 	case 1:
-		// /api/v1/{resource}
 		return parts[0], "", "", "", true
 
 	case 2:
 		if parts[0] == "namespaces" {
-			// /api/v1/namespaces/{name} -> get a specific namespace
+			// namespaces/{name} -> get a specific namespace
 			return "namespaces", "", parts[1], "", true
 		}
 		// cluster-scoped resource with name
@@ -253,22 +314,22 @@ func parsePath(path string) (resource, namespace, name, subresource string, ok b
 
 	case 3:
 		if parts[0] == "namespaces" {
-			// /api/v1/namespaces/{ns}/{resource}
+			// namespaces/{ns}/{resource}
 			return parts[2], parts[1], "", "", true
 		}
-		// /api/v1/{resource}/{name}/{subresource}
+		// {resource}/{name}/{subresource}
 		return parts[0], "", parts[1], parts[2], true
 
 	case 4:
 		if parts[0] == "namespaces" {
-			// /api/v1/namespaces/{ns}/{resource}/{name}
+			// namespaces/{ns}/{resource}/{name}
 			return parts[2], parts[1], parts[3], "", true
 		}
 		return "", "", "", "", false
 
 	case 5:
 		if parts[0] == "namespaces" {
-			// /api/v1/namespaces/{ns}/{resource}/{name}/{subresource}
+			// namespaces/{ns}/{resource}/{name}/{subresource}
 			return parts[2], parts[1], parts[3], parts[4], true
 		}
 		return "", "", "", "", false
@@ -276,12 +337,6 @@ func parsePath(path string) (resource, namespace, name, subresource string, ok b
 	default:
 		return "", "", "", "", false
 	}
-}
-
-// parseWatchParams extracts resource and namespace from a watch request path.
-func parseWatchParams(path string) (resource, namespace string) {
-	resource, namespace, _, _, _ = parsePath(path)
-	return resource, namespace
 }
 
 // writeRuntimeObject encodes a runtime.Object to JSON and writes it to the response.
@@ -322,237 +377,4 @@ func writeResourceError(w http.ResponseWriter, err error, resource string, name 
 		return
 	}
 	writeInternalError(w, err)
-}
-
-// HandleGroupAPI handles requests to /apis/{group}/{version}/... paths.
-// It strips the group+version prefix and dispatches to the appropriate ResourceStore.
-func HandleGroupAPI(w http.ResponseWriter, r *http.Request, stores map[string]*ResourceStore) {
-	// Strip /apis/{group}/{version}/ prefix to get the remaining path segments
-	path := r.URL.Path
-	trimmed := strings.TrimPrefix(path, "/apis/")
-	trimmed = strings.TrimSuffix(trimmed, "/")
-	if trimmed == "" {
-		writeStatusError(w, http.StatusNotFound, "NotFound", "the path is not valid")
-		return
-	}
-
-	parts := strings.SplitN(trimmed, "/", 3)
-	if len(parts) < 3 {
-		writeStatusError(w, http.StatusNotFound, "NotFound", "the path is not valid")
-		return
-	}
-
-	// parts[0] = group (e.g. "coordination.k8s.io")
-	// parts[1] = version (e.g. "v1")
-	// parts[2] = remaining path (e.g. "namespaces/kube-system/leases/mynode")
-	remaining := parts[2]
-
-	// Parse the remaining path the same way as parsePath but without the /api/v1/ prefix
-	resource, namespace, name, subresource, ok := parseRemainingPath(remaining)
-	if !ok {
-		writeStatusError(w, http.StatusNotFound, "NotFound", "the path is not valid")
-		return
-	}
-
-	if subresource != "" {
-		HandleSubresource(w, r, stores, resource, namespace, name, subresource)
-		return
-	}
-
-	store, exists := stores[resource]
-	if !exists {
-		writeStatusError(w, http.StatusNotFound, "NotFound", "the server doesn't have a resource type \""+resource+"\"")
-		return
-	}
-
-	ctx := r.Context()
-
-	switch r.Method {
-	case http.MethodGet:
-		if name == "" {
-			fieldSelector := r.URL.Query().Get("fieldSelector")
-			labelSelector := r.URL.Query().Get("labelSelector")
-			obj, err := store.List(ctx, namespace, fieldSelector, labelSelector)
-			if err != nil {
-				writeInternalError(w, err)
-				return
-			}
-			writeRuntimeObject(w, http.StatusOK, obj)
-		} else {
-			obj, err := store.Get(ctx, namespace, name)
-			if err != nil {
-				writeResourceError(w, err, resource, name)
-				return
-			}
-			writeRuntimeObject(w, http.StatusOK, obj)
-		}
-
-	case http.MethodPost:
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to read request body")
-			return
-		}
-		defer r.Body.Close()
-
-		rObj, err := decodeBody(body)
-		if err != nil {
-			writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to decode request body: "+err.Error())
-			return
-		}
-
-		ApplyDefaults(rObj)
-
-		// Fill in any container resource requests/limits the pod itself
-		// didn't specify, then reject it if it still violates a
-		// Container-scoped LimitRange's Min/Max, from LimitRanges in its
-		// namespace. stores["limitranges"] is absent from the group-API
-		// store maps (leases/events/storage/nodeAPI), so this is a no-op
-		// there — Pod is core/v1-only and always routes through HandleAPI.
-		if pod, ok := rObj.(*corev1.Pod); ok {
-			if lrStore, exists := stores["limitranges"]; exists {
-				if lrList, err := lrStore.List(ctx, namespace, "", ""); err == nil {
-					limitRanges := lrList.(*corev1.LimitRangeList).Items
-					ApplyLimitRangeDefaults(pod, limitRanges)
-					if err := ValidateLimitRange(pod, limitRanges); err != nil {
-						writeStatusError(w, http.StatusForbidden, "Forbidden", err.Error())
-						return
-					}
-				}
-			}
-		}
-
-		obj, err := store.Create(ctx, namespace, rObj)
-		if err != nil {
-			writeResourceError(w, err, resource, name)
-			return
-		}
-
-		ApplyPostCreateEffects(ctx, stores, obj)
-
-		writeRuntimeObject(w, http.StatusCreated, obj)
-
-	case http.MethodPut:
-		if name == "" {
-			writeStatusError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "name is required for update")
-			return
-		}
-
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to read request body")
-			return
-		}
-		defer r.Body.Close()
-
-		rObj, err := decodeBody(body)
-		if err != nil {
-			writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to decode request body: "+err.Error())
-			return
-		}
-
-		obj, err := store.Update(ctx, namespace, name, rObj)
-		if err != nil {
-			writeResourceError(w, err, resource, name)
-			return
-		}
-		writeRuntimeObject(w, http.StatusOK, obj)
-
-	case http.MethodDelete:
-		if name == "" {
-			labelSelector := r.URL.Query().Get("labelSelector")
-			obj, err := store.DeleteCollection(ctx, namespace, labelSelector)
-			if err != nil {
-				writeInternalError(w, err)
-				return
-			}
-			writeRuntimeObject(w, http.StatusOK, obj)
-			return
-		}
-
-		obj, err := store.Delete(ctx, namespace, name)
-		if err != nil {
-			writeResourceError(w, err, resource, name)
-			return
-		}
-		writeRuntimeObject(w, http.StatusOK, obj)
-
-	case http.MethodPatch:
-		if name == "" {
-			writeStatusError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "name is required for patch")
-			return
-		}
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to read request body")
-			return
-		}
-		defer r.Body.Close()
-
-		ct := r.Header.Get("Content-Type")
-		currentObj, err := store.Get(ctx, namespace, name)
-		if err != nil {
-			writeResourceError(w, err, resource, name)
-			return
-		}
-
-		patchedObj, err := applyPatch(currentObj, body, ct)
-		if err != nil {
-			writeStatusError(w, http.StatusBadRequest, "BadRequest", "patch failed: "+err.Error())
-			return
-		}
-
-		obj, err := store.Update(ctx, namespace, name, patchedObj)
-		if err != nil {
-			writeResourceError(w, err, resource, name)
-			return
-		}
-		writeRuntimeObject(w, http.StatusOK, obj)
-
-	default:
-		writeStatusError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method "+r.Method+" is not supported")
-	}
-}
-
-// parseRemainingPath parses a path without the /api/v1/ or /apis/{group}/{version}/ prefix.
-// It handles the same patterns as parsePath but operates on the remaining segments directly.
-func parseRemainingPath(path string) (resource, namespace, name, subresource string, ok bool) {
-	path = strings.TrimSuffix(path, "/")
-	if path == "" {
-		return "", "", "", "", false
-	}
-
-	parts := strings.Split(path, "/")
-
-	switch len(parts) {
-	case 1:
-		return parts[0], "", "", "", true
-
-	case 2:
-		if parts[0] == "namespaces" {
-			return "namespaces", "", parts[1], "", true
-		}
-		return parts[0], "", parts[1], "", true
-
-	case 3:
-		if parts[0] == "namespaces" {
-			return parts[2], parts[1], "", "", true
-		}
-		return parts[0], "", parts[1], parts[2], true
-
-	case 4:
-		if parts[0] == "namespaces" {
-			return parts[2], parts[1], parts[3], "", true
-		}
-		return "", "", "", "", false
-
-	case 5:
-		if parts[0] == "namespaces" {
-			return parts[2], parts[1], parts[3], parts[4], true
-		}
-		return "", "", "", "", false
-
-	default:
-		return "", "", "", "", false
-	}
 }

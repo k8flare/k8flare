@@ -13,40 +13,39 @@ import (
 // that kubelet/containerd (and real controllers like kube-controller-manager)
 // can process the objects correctly.
 func ApplyDefaults(obj runtime.Object) {
-	switch o := obj.(type) {
-	case *corev1.Pod:
-		defaultPodSpec(&o.Spec)
-		if o.Status.Phase == "" {
-			o.Status.Phase = corev1.PodPending
+	if pod, ok := obj.(*corev1.Pod); ok {
+		applyPodOverrides(&pod.Spec)
+		if pod.Status.Phase == "" {
+			pod.Status.Phase = corev1.PodPending
 		}
 	}
 
-	// Real upstream apps/v1 and batch/v1 defaulters registered on Scheme
-	// (scheme.go) -- e.g. Deployment/DaemonSet's spec.strategy.type, which
-	// the real deployment/daemonset controllers hard-require to be
-	// non-empty rather than defaulting it themselves.
+	// Real upstream versioned defaulters registered on Scheme (scheme.go,
+	// zz_generated_defaulters.go): core/v1 Pod spec defaults (RestartPolicy,
+	// DNSPolicy, SecurityContext, TerminationGracePeriodSeconds,
+	// SchedulerName, per-container ImagePullPolicy/TerminationMessagePath/
+	// Policy, per-probe TimeoutSeconds/PeriodSeconds/SuccessThreshold/
+	// FailureThreshold, ...) plus every other registered group's (apps/v1's
+	// Deployment/DaemonSet/ReplicaSet strategy defaults, batch/v1's Job/
+	// CronJob completionMode, etc). Must run after applyPodOverrides above,
+	// so its EnableServiceLinks nil-default (see below) wins over
+	// upstream's -- upstream's own Pod defaulter only fills a field when
+	// it's still nil, same rule this project's override relies on.
 	Scheme.Default(obj)
 }
 
-func defaultPodSpec(spec *corev1.PodSpec) {
-	if spec.RestartPolicy == "" {
-		spec.RestartPolicy = corev1.RestartPolicyAlways
-	}
-	if spec.DNSPolicy == "" {
-		spec.DNSPolicy = corev1.DNSClusterFirst
-	}
-	if spec.SecurityContext == nil {
-		spec.SecurityContext = &corev1.PodSecurityContext{}
-	}
-	if spec.TerminationGracePeriodSeconds == nil {
-		grace := int64(30)
-		spec.TerminationGracePeriodSeconds = &grace
-	}
-	if spec.SchedulerName == "" {
-		spec.SchedulerName = corev1.DefaultSchedulerName
-	}
+// applyPodOverrides sets the small number of Pod defaults real upstream
+// core/v1 defaulting (Scheme.Default, above) either doesn't set at all
+// (HostUsers, PreemptionPolicy -- confirmed absent from
+// k8s.io/kubernetes/pkg/apis/core/v1's defaulting functions) or would set
+// differently than this project intentionally wants for a nil input
+// (EnableServiceLinks: upstream defaults nil to true; this project
+// defaults nil to false, since it doesn't inject the corresponding service
+// env vars a client would need for EnableServiceLinks to actually do
+// anything).
+func applyPodOverrides(spec *corev1.PodSpec) {
 	if spec.EnableServiceLinks == nil {
-		enable := false // disable service links since we don't inject service env vars
+		enable := false
 		spec.EnableServiceLinks = &enable
 	}
 	if spec.HostUsers == nil {
@@ -56,50 +55,6 @@ func defaultPodSpec(spec *corev1.PodSpec) {
 	if spec.PreemptionPolicy == nil {
 		policy := corev1.PreemptLowerPriority
 		spec.PreemptionPolicy = &policy
-	}
-
-	for i := range spec.Containers {
-		defaultContainer(&spec.Containers[i])
-	}
-	for i := range spec.InitContainers {
-		defaultContainer(&spec.InitContainers[i])
-	}
-}
-
-func defaultContainer(c *corev1.Container) {
-	if c.TerminationMessagePath == "" {
-		c.TerminationMessagePath = corev1.TerminationMessagePathDefault
-	}
-	if c.TerminationMessagePolicy == "" {
-		c.TerminationMessagePolicy = corev1.TerminationMessageReadFile
-	}
-	if c.ImagePullPolicy == "" {
-		c.ImagePullPolicy = corev1.PullIfNotPresent
-	}
-	defaultProbe(c.LivenessProbe)
-	defaultProbe(c.ReadinessProbe)
-	defaultProbe(c.StartupProbe)
-}
-
-// defaultProbe fills in a probe's timing fields when left unset. Real
-// kubelet passes PeriodSeconds straight into time.NewTicker, which panics
-// on a non-positive interval — a probe with an explicit action but no
-// PeriodSeconds crashes the whole kubelet process, not just that one pod.
-func defaultProbe(p *corev1.Probe) {
-	if p == nil {
-		return
-	}
-	if p.TimeoutSeconds == 0 {
-		p.TimeoutSeconds = 1
-	}
-	if p.PeriodSeconds == 0 {
-		p.PeriodSeconds = 10
-	}
-	if p.SuccessThreshold == 0 {
-		p.SuccessThreshold = 1
-	}
-	if p.FailureThreshold == 0 {
-		p.FailureThreshold = 3
 	}
 }
 
