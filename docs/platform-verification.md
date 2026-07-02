@@ -1,389 +1,449 @@
-# プラットフォーム検証スパイク(S1–S8)
+# Platform verification spikes (S1–S8)
 
-k8flare v2 リライト(`feat/v2-rearchitecture`)は Dynamic Workers・DO
-Facets・Cloudflare Containers・R2・(検証次第)Cloudflare Mesh といった
-2026年の Cloudflare 新機能を前提に設計している。このドキュメントは、それら
-の機能について公式ドキュメントを読んだだけで終わらせず、**実際に動かして
-確認した**結果を記録する場所である。
+The k8flare v2 rewrite (`feat/v2-rearchitecture`) is designed around
+2026-era Cloudflare features: Dynamic Workers, DO Facets, Cloudflare
+Containers, R2, and (pending verification) Cloudflare Mesh. This document
+is where we record what we actually confirmed by running these features,
+not just what the official docs say.
 
-CLAUDE.md の不可侵ルール#2「実際に動かして検証する。ソースを読んだだけの
-結論を事実として書かない」の実践場所がここになる。過去に「kube-proxy が
-Worker をハングさせる」という結論が誤りだった(実際の原因は古い DO state)
-前例があり、ドキュメントの記述や推測だけで設計判断を確定させることのコスト
-は実証済みである。
+This is where CLAUDE.md's inviolable rule #2 — "verify by actually running
+it; don't write source-reading conclusions as fact" — gets put into
+practice. There's precedent for this being expensive to skip: the earlier
+conclusion that "kube-proxy hangs the Worker" turned out to be wrong (the
+real cause was stale DO state). Locking in design decisions from
+documentation or guesswork alone has a proven cost.
 
-## 読み方
+## How to read this
 
-- 各スパイクは v2 リライトプランの Phase 1 で「使い捨てコードで可・結果だけ
-  記録」と定義されている。検証コード自体はリポジトリに残さなくてよい。
-- **ステータス**は次のいずれか: `未着手` / `一部確認済み` / `検証済み`。
-- **確定した事実**には必ず出典(コミットハッシュ・公式ドキュメント名・
-  changelog 日付)を付ける。出典の URL が本ドキュメントに未記録の場合は
-  推測で埋めず、その旨を明記する。
-- **honest correction 規約**: 一度書いた「確定した事実」や判断が後で誤りと
-  判明した場合、該当箇所を書き換えて消すのではなく、末尾の「訂正履歴」に
-  日付と経緯を追記する(CLAUDE.md 不可侵ルール#4)。
+- Each spike is defined in the v2 rewrite plan's Phase 1 as "throwaway code
+  is fine, only the results need to be recorded." The verification code
+  itself doesn't need to stay in the repo.
+- **Status** is one of: `not started` / `partially confirmed` / `verified`.
+- **Confirmed facts** must always carry a source (commit hash, official doc
+  name, changelog date). If the source URL isn't recorded in this document,
+  say so explicitly rather than guessing at one.
+- **Honest correction convention**: if a previously written "confirmed
+  fact" or decision later turns out to be wrong, don't rewrite or delete
+  it — append a dated entry with what happened to the "Correction log" at
+  the end (CLAUDE.md inviolable rule #4).
 
-## スパイク一覧
+## Spike list
 
-| # | 検証対象 | ステータス | 主に前提とするフェーズ |
+| # | What's being verified | Status | Primary dependent phase |
 |---|---|---|---|
-| S1 | Facets(上限・ストレージ計上・並列性・alarm・delete） | 一部確認済み | Phase 4(storage v2) |
-| S2 | Dynamic Workers Loader(WASM同梱・サイズ上限・envバインディング) | 未着手 | Phase 2 / Phase 4 |
-| S3 | Containers(起動・onActivityExpired・コールドスタート・任意イメージ・UDP・wrangler dev) | 未着手 | Phase 5 経路B / Phase 7 |
-| S4 | Cloudflare Mesh(課金範囲・flannelプロトタイプ・Cluster DNS代替) | 未着手 | Phase 9 |
-| S5 | WASM isolate シングルトン化(syumai fork) | 未着手 | Phase 2(apiserver) |
-| S6 | R2(PVCアクセス分離・ContainersからのS3アクセス) | 未着手 | Phase 8 |
-| S7 | apiserver 常駐化の再検証(却下判断の裏取り) | 未着手 | 却下判断の最終確認 |
-| S8 | controllers の WASM 常駐実行可否 | 未着手(検証中) | ★最優先。Phase 5 の実行方式を左右 |
+| S1 | Facets (limits, storage accounting, parallelism, alarms, delete) | partially confirmed | Phase 4 (storage v2) |
+| S2 | Dynamic Workers Loader (bundling WASM, size limits, env bindings) | not started | Phase 2 / Phase 4 |
+| S3 | Containers (startup, onActivityExpired, cold start, arbitrary images, UDP, wrangler dev) | not started | Phase 5 route B / Phase 7 |
+| S4 | Cloudflare Mesh (billing scope, flannel prototype, Cluster DNS replacement) | not started | Phase 9 |
+| S5 | WASM isolate singleton-ization (syumai fork) | not started | Phase 2 (apiserver) |
+| S6 | R2 (PVC access isolation, S3 access from Containers) | not started | Phase 8 |
+| S7 | Re-verifying apiserver residency (double-checking the rejection) | not started | Final confirmation of the rejection decision |
+| S8 | Whether controllers can run WASM-resident | not started (in progress) | ★Highest priority. Decides Phase 5's execution path |
 
 ---
 
 ## S1: Facets
 
-**検証項目**
-- facet 数の実用上限
-- ストレージ計上(親子で 10GB 共有か、facet 毎に独立 10GB か)
-- facet 実行並列性
-- facet 内での alarm 可否
-- `delete()` のセマンティクス(namespace 削除への転用可否)
-- (検証方法)既存の KOOFFICE 実機検証デプロイを再利用する
+**Verification items**
+- Practical limit on facet count
+- Storage accounting (is the 10GB shared between parent and children, or
+  independent per facet?)
+- Facet execution parallelism
+- Whether alarms work inside a facet
+- `delete()` semantics (whether it can be repurposed for namespace
+  deletion)
+- (Method) reuse the existing KOOFFICE live-verification deployment
 
-**ステータス**: 一部確認済み
+**Status**: partially confirmed
 
-**確定した事実**
+**Confirmed facts**
 
-出典: コミット `46df0c0`("Add empirical Facets verification against a real
-KOOFFICE deployment"、2026-07-02)。使い捨ての supervisor-DO Worker を
-KOOFFICE 実アカウントにデプロイし、ドキュメント記載の facets パターン
-(`cloudflare:workers` の `DurableObject` + `worker_loaders`)を実際に動かして
-確認した(この検証結果は `docs/multi-tenancy-and-hosting.md` にも反映済み)。
+Source: commit `46df0c0` ("Add empirical Facets verification against a
+real KOOFFICE deployment", 2026-07-02). A throwaway supervisor-DO Worker
+was deployed to the real KOOFFICE account and the documented facets
+pattern (`cloudflare:workers`'s `DurableObject` + `worker_loaders`) was
+exercised directly (this finding is also already reflected in
+`docs/multi-tenancy-and-hosting.md`).
 
-1. facet の `class` は Dynamic Workers loader
-   (`env.LOADER.get(...).getDurableObjectClass(...)`)経由でなければならない。
-   素の静的 import した `DurableObject` サブクラスを
-   `ctx.facets.get(name, () => ({ class: LocalClass }))` に渡すと実行時に
-   `TypeError: Incorrect type for the 'class' field on 'StartupOptions': the
-   provided value is not of type 'DurableObjectClass or
-   LoopbackDurableObjectNamespace or LoopbackColoLocalActorNamespace'` で
-   失敗する。公式ドキュメントのどこにも「必須」とは明記されていない
-   (サンプルコードがすべて loader を使っているだけ)が、実機検証で必須要件と
-   確認できた。→ 自前 CRD-as-facet 設計も、ユーザー提供コードと同じ
-   `worker_loaders` / `LOADER` 機構を通す必要がある。
-2. ストレージ分離は実データ量下でも成立する。2つの兄弟 facet と supervisor
-   それぞれに独立したキーを書き込み、クロスリードが空を返すことを確認した。
-   `abort()` は facet のデータを次の `get()` でも保持する。`delete()` は
-   本当に破棄する(以後の `get()` は空の新規 facet を返す)。どちらの操作も
-   兄弟 facet や supervisor には影響しない。→ namespace 削除に `delete()`
-   を転用する設計(Phase 4)の裏付けが取れた。
-3. `ctx.storage.sql.exec()` 内で `PRAGMA` 文は
-   `Error: not authorized: SQLITE_AUTH` で拒否される。Cloudflare が意図的に
-   この introspection 経路をブロックしている。アプリケーションコードから
-   facet や DO の実際の SQLite サイズを直接問い合わせる方法は存在しない
-   (wrangler CLI にも相当コマンドなし)。→「10GB にどれだけ近いか」を
-   自己申告させるには、SQLite に聞くのではなく書き込み時に自前でバイト数を
-   積算する仕組みが要る(未実装、設計課題として残る)。
-4. 1 facet に ~1.01GB(1MB 行 × 1,010、`SELECT COUNT(*)` で確認)を書き込み、
-   同時に supervisor へ 100MB、新規の兄弟 facet も作成 — いずれもエラーなく
-   即座に成功し、1GB facet のデータから分離されたまま保たれた。→ 実データ量
-   での共存・分離は確認できたが、**1GB は共有/独立 10GB を区別するには
-   小さすぎる**(どちらのモデルでも 10GB 上限に対して無視できる量)。この
-   問いに決着をつけるには片側を ~9GB+ まで埋めて他方が制約を受けるか確認
-   する境界テストが要るが、未実施。
+1. A facet's `class` must come from the Dynamic Workers loader
+   (`env.LOADER.get(...).getDurableObjectClass(...)`). Passing a plain,
+   statically-imported `DurableObject` subclass to `ctx.facets.get(name, ()
+   => ({ class: LocalClass }))` fails at runtime with `TypeError: Incorrect
+   type for the 'class' field on 'StartupOptions': the provided value is
+   not of type 'DurableObjectClass or LoopbackDurableObjectNamespace or
+   LoopbackColoLocalActorNamespace'`. This isn't stated as a requirement
+   anywhere in the official docs (every sample just happens to use the
+   loader) — confirmed here to actually be one. → Our own CRD-as-facet
+   design must go through the same `worker_loaders` / `LOADER` machinery
+   as user-supplied code.
+2. Storage isolation holds under real data volume. Independent keys were
+   written into two sibling facets and the supervisor, and cross-reads
+   confirmed to return nothing. `abort()` preserves a facet's data across
+   the next `get()`. `delete()` genuinely destroys it (a subsequent
+   `get()` returns a fresh, empty facet). Neither operation affects
+   sibling facets or the supervisor. → This backs the design (Phase 4) of
+   repurposing `delete()` for namespace deletion.
+3. `PRAGMA` statements inside `ctx.storage.sql.exec()` are rejected with
+   `Error: not authorized: SQLITE_AUTH` — Cloudflare deliberately blocks
+   this introspection path. There's no way for application code to
+   directly query a facet's or a DO's actual SQLite size (no equivalent
+   wrangler CLI command either). → Self-reporting "how close to 10GB are
+   we" requires the application to accumulate its own byte count on
+   write, rather than asking SQLite (not implemented yet — remains an
+   open design issue).
+4. ~1.01GB was written into one facet (1,010 × 1MB rows, confirmed via
+   `SELECT COUNT(*)`), while concurrently writing 100MB into the
+   supervisor and creating a new sibling facet — all succeeded
+   immediately with no errors, and stayed isolated from the 1GB facet's
+   data. → This confirms coexistence and isolation hold under real data
+   volume, but **1GB is too small to distinguish shared vs. independent
+   10GB** (negligible against a 10GB ceiling under either model).
+   Settling this needs a boundary test — filling one side to ~9GB+ and
+   checking whether the other side is constrained — which hasn't been
+   run.
 
-上記の実機検証を踏まえ、v2 リライトプランでは以下を確定事実として採用する:
+Based on the above empirical verification, the v2 rewrite plan adopts the
+following as confirmed facts:
 
-- facet は facet 毎に独自 SQLite DB を持つ(実機確認済み、上記2)。
-- facet クラスのロードは Worker Loader 経由必須(実機確認済み、上記1。
-  公式ブログの記述とも一致)。
-- **10GB が親子共有か独立かは公式未文書のまま**。本プランでは
-  **非共有(facet 毎に独立 10GB)と仮定して設計する**(理由: 共有だった場合は
-  自然に上限で頭打ちになるだけで設計は破綻しないが、非共有を前提にしないと
-  本来使えるスケールを設計段階で捨てることになる。ダウンサイドが非対称なので
-  楽観側を仮定し、境界テストで外れたら容量設計だけ修正する方針)。
-- facet の実行並列性は未検証のまま。全トラフィックが親 DO の単一スレッド
-  経由という制約はどちらの仮定でも変わらないため、設計はこれに依存しない。
+- Each facet has its own independent SQLite DB (confirmed empirically,
+  item 2 above).
+- Loading a facet class requires the Worker Loader (confirmed empirically,
+  item 1 above; matches the official blog post's description too).
+- **Whether the 10GB is shared between parent and children or independent
+  remains officially undocumented.** This plan **designs on the
+  assumption that it's not shared (10GB independent per facet)**
+  (rationale: if it turns out to be shared, the design simply hits the
+  ceiling naturally without breaking; but assuming shared when it's
+  actually independent throws away real scale at the design stage. The
+  downside is asymmetric, so we assume the optimistic side and fix only
+  the capacity design if the boundary test proves it wrong).
+- Facet execution parallelism remains unverified. The constraint that all
+  traffic funnels through the parent DO's single thread holds under
+  either assumption, so the design doesn't depend on this.
 
-DO / Facets の一般的なプラットフォーム数値(SQLite DO 10GB storage、
-~1,000 req/s ソフト上限、単一スレッド、2MB max value/row、32,768
-WebSocket/DO、30日 PITR。DO Facets は Dynamic Workers 上の Open Beta、
-Agents Week 2026年4月)は `docs/multi-tenancy-and-hosting.md` の Verified
-Cloudflare platform facts 表(引用元: [DO limits](https://developers.cloudflare.com/durable-objects/platform/limits/)、
-[DO pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)、
-[facets blog post](https://blog.cloudflare.com/durable-object-facets-dynamic-workers/)、
-[facets docs](https://developers.cloudflare.com/dynamic-workers/usage/durable-object-facets/))
-で確認済み。
+The general DO/Facets platform numbers (10GB storage per SQLite DO,
+~1,000 req/s soft ceiling, single-threaded, 2MB max value/row, 32,768
+WebSockets/DO, 30-day PITR; DO Facets is an Open Beta on Dynamic Workers,
+Agents Week April 2026) are confirmed in `docs/multi-tenancy-and-hosting.md`'s
+Verified Cloudflare platform facts table (sources:
+[DO limits](https://developers.cloudflare.com/durable-objects/platform/limits/),
+[DO pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/),
+[facets blog post](https://blog.cloudflare.com/durable-object-facets-dynamic-workers/),
+[facets docs](https://developers.cloudflare.com/dynamic-workers/usage/durable-object-facets/)).
 
-**未解決の問い**
+**Open questions**
 
-- facet 数の実用上限(未検証。今回は兄弟 facet 2 + supervisor の3者構成のみ)。
-- 10GB の親子共有 vs 独立の境界テスト(片側を ~9GB+ まで埋める実験、未実施)。
-- facet 内での alarm 可否(未検証)。
-- facet 実行並列性(未検証。`docs/multi-tenancy-and-hosting.md` も
-  「undocumented」として設計を依存させない方針を取っている)。
-- **`docs/multi-tenancy-and-hosting.md` の既存記述との仮定の向きの相違**:
-  同ドキュメントは 10GB を「保守的に共有と仮定」している(誤って独立と
-  仮定した場合のダウンサイドの方が大きいという理由)。一方、本プラン
-  (v2 リライト)は逆に「非共有と仮定」している(理由は上記)。どちらも
-  「公式未文書」という同じ事実からの異なるリスク評価であり、実測で決着する
-  までは2つの docs で矛盾したまま残る。境界テストが完了し次第、いずれかを
-  honest correction として更新する必要がある。
+- Practical limit on facet count (unverified — this pass only tested a
+  3-way setup of 2 sibling facets + supervisor).
+- Boundary test for shared vs. independent 10GB (filling one side to
+  ~9GB+, not yet run).
+- Whether alarms work inside a facet (unverified).
+- Facet execution parallelism (unverified; `docs/multi-tenancy-and-hosting.md`
+  also flags this as "undocumented" and deliberately avoids depending on
+  it in its design).
+- **The assumption direction conflicts with the existing
+  `docs/multi-tenancy-and-hosting.md` text**: that document conservatively
+  assumes the 10GB is *shared* (reasoning: the downside of wrongly
+  assuming independent is worse). This plan (v2 rewrite), by contrast,
+  assumes *not shared* (rationale above). Both are different risk
+  assessments drawn from the same underlying fact — "officially
+  undocumented" — and the two docs will remain contradictory until this
+  is settled by measurement. Once the boundary test is done, one of them
+  needs to be updated as an honest correction.
 
 ---
 
 ## S2: Dynamic Workers Loader
 
-**検証項目**
-- 動的ロード Worker に WASM モジュールを含められるか
-- ロードコードのサイズ上限
-- `env` にバインディングを渡せるか
+**Verification items**
+- Whether a dynamically-loaded Worker can bundle a WASM module
+- The size limit on loaded code
+- Whether bindings can be passed via `env`
 
-**ステータス**: 未着手
+**Status**: not started
 
-**確定した事実**
+**Confirmed facts**
 
-- Dynamic Workers は 2026年3月にオープンベータ化した。出典: v2 リライト
-  プランの「調査で確定した重要事実」(一次情報 URL は本ドキュメント未記録 —
-  参照時に追記)。
-- facet クラスのロードに Dynamic Workers の loader が必須であることは S1 で
-  実機確認済み(`46df0c0`)。ただしこれは「facet クラスをロードできる」こと
-  の確認であり、S2 が問う「WASM モジュール同梱」「ロードコードのサイズ上限」
-  「env バインディングの受け渡し」はいずれも未検証。
+- Dynamic Workers went to open beta in March 2026. Source: the v2 rewrite
+  plan's "key facts confirmed during investigation" (primary source URL
+  not recorded in this document — to be added when referenced).
+- That loading a facet class requires the Dynamic Workers loader was
+  confirmed empirically in S1 (`46df0c0`). However that only confirms "a
+  facet class can be loaded" — the things S2 asks about (bundling a WASM
+  module, the size limit on loaded code, passing `env` bindings) are all
+  still unverified.
 
-**未解決の問い**
+**Open questions**
 
-- apiserver(Go WASM、gzip 7.07MiB)を Dynamic Workers 経由でロードする場合の
-  サイズ上限(Worker 本体の Paid 上限 10MiB と同じ制約か、別枠かは未確認)。
-- ロードコードに `env` バインディング(DO namespace 等)を渡せるか。
-- S8 で controllers の WASM 常駐案が採用された場合、controllers も Loader
-  経由にする必要があるか(Cluster DO からの service binding 呼び出しと
-  Loader の関係は未整理)。
+- The size limit for loading apiserver (Go WASM, 7.07MiB gzip) via
+  Dynamic Workers (unconfirmed whether it shares the Worker's own 10MiB
+  Paid-plan limit or has a separate budget).
+- Whether `env` bindings (DO namespaces, etc.) can be passed to loaded
+  code.
+- If S8 lands on the WASM-resident design for controllers, whether
+  controllers also need to go through the Loader (the relationship
+  between Cluster DO's service-binding calls and the Loader hasn't been
+  worked out).
 
 ---
 
 ## S3: Containers
 
-**検証項目**
-- `cmd/scheduler` / `cmd/controller-manager` イメージの起動と apiserver への
-  長時間 watch 維持
-- `onActivityExpired` オーバーライド動作(`stop()` を呼ばなければ常駐するか)
-- コールドスタート時間(本プロジェクトのイメージでの実測)
-- 任意イメージの動的実行可否(Pod バックエンドの成立条件。不可なら
-  「wrangler 定義済みイメージの allowlist」方式に確定)
-- outbound UDP 可否
-- `wrangler dev` での Containers + DO 開発体験
+**Verification items**
+- Starting the `cmd/scheduler` / `cmd/controller-manager` images and
+  keeping a long-lived watch to apiserver
+- `onActivityExpired` override behavior (does it stay resident if
+  `stop()` is never called?)
+- Cold start time (measured on this project's own images)
+- Whether arbitrary images can be run dynamically (this is what makes the
+  Pod backend viable; if not, settle on an "allowlist of
+  wrangler-defined images" approach)
+- Whether outbound UDP works
+- The Containers + DO local dev experience under `wrangler dev`
 
-**ステータス**: 未着手
+**Status**: not started
 
-**確定した事実**
+**Confirmed facts**
 
-- Cloudflare Containers は GA(2026年4月)。インスタンス上限 4 vCPU / 12 GiB
-  / 20 GB disk、コンテナは DO と 1:1 でペアリングされ scale-to-zero
-  (timeout 後 sleep)、GA 時点でビルトインのオートスケーリングは未提供。
-  出典: `docs/multi-tenancy-and-hosting.md` の Verified Cloudflare platform
-  facts 表(引用元: [Containers limits](https://developers.cloudflare.com/containers/platform-details/limits/))。
-- `onActivityExpired()` をオーバーライドし `stop()` / `destroy()` を
-  呼ばなければコンテナは自動停止しない。出典: 公式 docs の Warning 注記
-  (v2 リライトプラン記載。一次情報 URL は本ドキュメント未記録 — 参照時に
-  追記)。→ ライフサイクルを自前管理する設計(demand-start/idle-stop、
-  経路B)の根拠。
-- Containers のコールドスタートは一般値として典型 1〜3秒、実運用で
-  3〜15秒に及ぶ例が報告されている(アーキテクチャ記事・実測ブログで確認、
-  v2 リライトプラン記載。Workers isolate のウォームアップ 5ms 未満とは
-  桁違い)。**これは他プロジェクトの実測に基づく一般値であり、本プロジェクト
-  の scheduler/KCM イメージでの実測ではない**(本プロジェクト固有の実測は
-  S7 で行う)。
+- Cloudflare Containers is GA (April 2026). Instance ceiling of 4 vCPU /
+  12 GiB / 20 GB disk; a container is paired 1:1 with a DO and scales to
+  zero (sleeps after timeout); built-in autoscaling wasn't shipped at GA.
+  Source: `docs/multi-tenancy-and-hosting.md`'s Verified Cloudflare
+  platform facts table (source:
+  [Containers limits](https://developers.cloudflare.com/containers/platform-details/limits/)).
+- If `onActivityExpired()` is overridden and `stop()` / `destroy()` is
+  never called, the container won't stop on its own. Source: a Warning
+  note in the official docs (per the v2 rewrite plan; primary source URL
+  not recorded in this document — to be added when referenced). → This is
+  the basis for the self-managed lifecycle design (demand-start/idle-stop,
+  route B).
+- As a general figure, Containers cold starts are typically reported at
+  1–3 seconds, with real-world cases reaching 3–15 seconds (per
+  architecture articles and measurement blog posts, as cited in the v2
+  rewrite plan — orders of magnitude apart from a Workers isolate's
+  sub-5ms warm-up). **This is a general figure from other projects'
+  measurements, not a measurement of this project's own scheduler/KCM
+  images** (project-specific measurement happens in S7).
 
-**未解決の問い**
+**Open questions**
 
-- 任意 OCI イメージの動的実行可否(Pod バックエンドの成立条件そのもの。
-  不可なら allowlist 方式に設計変更が要る)。
-- outbound UDP 可否(k3s/flannel 系のネットワーキングに影響)。
-- `wrangler dev` での Containers + DO のローカル開発体験。
-- 本プロジェクトの scheduler/KCM イメージでの実測コールドスタート時間
-  (→ S7 で実施予定)。
-- `onActivityExpired` の呼び出し粒度(経路Bの idle-timeout チューニングに
-  必要)。
+- Whether arbitrary OCI images can be run dynamically (this is the very
+  precondition for the Pod backend to work; if not, the design needs to
+  change to an allowlist approach).
+- Whether outbound UDP works (affects k3s/flannel-style networking).
+- The Containers + DO local dev experience under `wrangler dev`.
+- Measured cold-start time for this project's own scheduler/KCM images
+  (→ planned for S7).
+- The call granularity of `onActivityExpired` (needed to tune route B's
+  idle-timeout).
 
 ---
 
 ## S4: Cloudflare Mesh
 
-**検証項目**
-- Workers Paid の範囲で使えるか(ライセンス/課金確認)
-- 使い捨て2ノードの flannel-over-Mesh プロトタイプ
-- Cluster DNS 代替になり得るか(`*.svc.cluster.local` を Mesh/Gateway の
-  名前解決で返せるか。不可なら CoreDNS 案を維持)
+**Verification items**
+- Whether it can be used within Workers Paid (license/billing check)
+- A throwaway 2-node flannel-over-Mesh prototype
+- Whether it can replace Cluster DNS (can Mesh/Gateway name resolution
+  return `*.svc.cluster.local`? If not, keep the CoreDNS plan)
 
-**ステータス**: 未着手
+**Status**: not started
 
-**確定した事実**
+**Confirmed facts**
 
-(現時点でなし。`docs/cloudflare-mesh-networking.md` に Mesh 自体の概要調査は
-あるが、本スパイクが問う課金範囲・プロトタイプ動作・DNS代替可否はいずれも
-実機検証されていない。)
+(None yet. `docs/cloudflare-mesh-networking.md` has a general survey of
+Mesh itself, but none of what this spike asks — billing scope, prototype
+behavior, DNS-replacement viability — has been verified empirically.)
 
-**未解決の問い**
+**Open questions**
 
-- 検証項目すべて未着手。
-- 不採用の場合のフォールバック(CoreDNS Deployment + `kube-dns` Service)は
-  `docs/general-purpose-k8s-plan.md` の Phase 4 手順として既に設計されている
-  (S4 が失敗した場合はそちらを正とする)。
+- All verification items are still not started.
+- The fallback if this isn't adopted (a CoreDNS Deployment + `kube-dns`
+  Service) is already designed as the Phase 4 procedure in
+  `docs/general-purpose-k8s-plan.md` (treat that as authoritative if S4
+  fails).
 
 ---
 
-## S5: WASM isolate シングルトン化
+## S5: WASM isolate singleton-ization
 
-**検証項目**
-- isolate シングルトン化の実証(syumai fork の doneCh ガード + mutable
-  context holder)
-- cross-request IoContext エラーの有無
-- `WASM_INSTANCE_REUSE` フォールバックフラグ
+**Verification items**
+- Proving out isolate singleton-ization (the syumai fork's doneCh guard +
+  mutable context holder)
+- Whether cross-request IoContext errors occur
+- The `WASM_INSTANCE_REUSE` fallback flag
 
-**ステータス**: 未着手
+**Status**: not started
 
-**確定した事実**
+**Confirmed facts**
 
-- 現状(v1)は「リクエスト毎に Go ランタイムを再インスタンス化」する設計
-  (モジュールコンパイルのみキャッシュ)。全 API 呼び出しに Go 起動税が
-  掛かり、並行リクエストで 128MB isolate の OOM リスクがある。出典: v2
-  リライトプランの現状分析(「調査で確定した重要事実」)。これが S5 で
-  シングルトン化を検証する動機。
+- The current (v1) design re-instantiates the Go runtime on every request
+  (only module compilation is cached). Every API call pays a Go startup
+  tax, and concurrent requests risk OOM against the 128MB isolate limit.
+  Source: the v2 rewrite plan's analysis of the current state ("key facts
+  confirmed during investigation"). This is the motivation for verifying
+  singleton-ization in S5.
 
-**未解決の問い**
+**Open questions**
 
-- 検証項目すべて未着手。S5 の成否は apiserver(Phase 2)のレイテンシ・安定性
-  に直結し、S8(controllers の WASM 常駐)の fork 作業とも地続き
-  (同じ fork 作業で両方解決する見込み、詳細は S8 参照)。
+- All verification items are still not started. Whether S5 succeeds
+  directly determines apiserver's (Phase 2) latency and stability, and
+  it's continuous with the fork work needed for S8 (controllers WASM
+  residency) — the same fork work is expected to resolve both; see S8
+  for detail.
 
 ---
 
 ## S6: R2
 
-**検証項目**
-- PVC 単位のアクセス分離(バケット/プレフィックス + スコープ付きトークン)
-- Containers からの S3 API アクセス
+**Verification items**
+- Per-PVC access isolation (bucket/prefix + scoped tokens)
+- S3 API access from Containers
 
-**ステータス**: 未着手
+**Status**: not started
 
-**確定した事実**
+**Confirmed facts**
 
-(なし)
+(None)
 
-**未解決の問い**
+**Open questions**
 
-- 検証項目すべて未着手。Phase 8(R2 PV/PVC バックエンド)の前提。
-- Pod へのボリューム提供が FUSE マウントか S3 互換エンドポイント + 認証情報
-  注入になるかは、本スパイクと S3(Containers の制約)両方の結果次第。
-
----
-
-## S7: apiserver 常駐化の再検証(却下案の裏取り)
-
-**検証項目**
-- 本プロジェクトの scheduler/KCM イメージサイズでの実際のコールドスタート
-  時間を計測
-- 上記一般値(典型1〜3秒・最悪15秒、S3参照)との比較
-- apiserver を WASM のまま据え置く判断の最終確認(数値が想定と大きく異なれば
-  再協議)
-
-**ステータス**: 未着手
-
-**確定した事実**
-
-v2 リライトプランの「却下した案: apiserver も Containers 化」節に基づく、
-S7 実施前の暫定的な却下判断とその根拠(S7 の実測で数値が大きく異なれば
-再協議対象):
-
-- レイテンシ比較: Workers isolate のウォームアップは 5ms 未満。Cloudflare
-  Containers のコールドスタートは典型 1〜3秒、実運用で 3〜15秒(S3 と同じ
-  一般値、アーキテクチャ記事・実測ブログで確認)。桁が3〜4桁違う。
-- apiserver はホットパス(kubectl の全コマンドが通る)。scheduler/KCM は
-  ユーザーが結果を直接待たない非同期リコンサイラ。同じ Containers でも
-  「常時ウォームに保つ必要があるか」がここで分岐する。
-- 概算コスト: クラスタ1個・1vCPU+1GiB を24時間常時ウォームに保った場合、
-  vCPU代 $0.00002/vCPU秒 × 2,592,000秒/月 ≈ $52 + メモリ代
-  $0.0000025/GiB秒 × 2,592,000秒/月 ≈ $6.5 → **月 ~$58/クラスタ**
-  (プランの試算)。ホスト型で多数のアイドルクラスタを抱える前提
-  (k8flare.com 構想)ではこれが致命的に効く。ウォームに保たない場合は初回
-  `kubectl get` が数秒〜15秒待たされ、対話的 CLI として破綻する。
-- 「バージョン追随が楽になる」という Containers 化の利点は Runtime
-  非依存: `cmd/k8flare-gen` はテーブル + go.mod pin から生成する設計であり、
-  生成先が WASM でも Container 用ネイティブバイナリでも同じ恩恵を受ける。
-  WASM 固有の負担はサイズ規律(internal 型を避ける・OpenAPI を外出しする等、
-  Phase 3)であって、バージョン追随そのものではない。
-- **暫定結論(却下)**: apiserver は WASM/Worker のまま(低レイテンシ最優先)。
-  S7 はこの結論の最終確認(本プロジェクト固有の実測)であり、まだ実施
-  されていない。
-
-**未解決の問い**
-
-- 本プロジェクトの scheduler/KCM イメージでの実測コールドスタート時間
-  (未計測)。
-- 実測が一般値から大きく乖離した場合の再協議要否。
+- All verification items are still not started. This is the precondition
+  for Phase 8 (R2 PV/PVC backend).
+- Whether volumes are provided to Pods via a FUSE mount or an
+  S3-compatible endpoint + injected credentials depends on the results of
+  both this spike and S3 (Containers' constraints).
 
 ---
 
-## S8: controllers の WASM 常駐実行可否(★最優先)
+## S7: Re-verifying apiserver residency (double-checking the rejection)
 
-Phase 5(controllers 実装)の実行方式(経路A: WASM常駐 / 経路B: Containers
-フォールバック)を左右するため、他のスパイクより先に着手する。
+**Verification items**
+- Measure the actual cold-start time for this project's own scheduler/KCM
+  image sizes
+- Compare against the general figures above (typical 1–3s, worst case
+  15s; see S3)
+- Final confirmation of the decision to keep apiserver on WASM (revisit
+  if the numbers diverge significantly from expectations)
 
-**検証項目**
+**Status**: not started
 
-(a) syumai fork して「レスポンスストリームを閉じずに Go プログラムを
-    生かし続ける」ことができるか
-(b) client-go の informer 相当(複数 goroutine が並行して長時間 watch を
-    張り続ける)を模した負荷を数時間かけて、実消費 CPU-ms が想定通り小さく
-    収まるか(`wrangler tail` 等で CPU 時間を実測)
-(c) 10〜15本規模の同時長時間ストリームが 2026-04 の緩和後の接続制限内で
-    安定するか
-(d) service binding 経由の内部呼び出しでも同じ「壁時計無制限」が成り立つか
+**Confirmed facts**
 
-**ステータス**: 未着手(検証中)
+The provisional rejection decision and its rationale, pending S7, based
+on the v2 rewrite plan's "Rejected idea: also move apiserver to
+Containers" section (subject to reopening if S7's measurements diverge
+significantly):
 
-**分岐条件**: (a)〜(d) の4点すべてが確認できれば `workers/controllers` は
-Containers ではなく Go WASM 常駐として設計する(経路A)。いずれかが致命的に
-破綻した場合は Containers + demand-start/idle-stop(経路B)にフォールバック
-し、常時ビジーな稼働パターンには BYO VM を代替デプロイ先として案内する
-(cmd/scheduler・cmd/controller-manager は元々どこでも動く無改変バイナリ
-なので実装追加なしに提供できる)。ダメだった項目は「具体的にどう壊れたか」
-をこのドキュメントに追記し、経路B採用の根拠とする。
+- Latency comparison: a Workers isolate warms up in under 5ms. Cloudflare
+  Containers cold-starts typically in 1–3 seconds, and 3–15 seconds in
+  real-world use (the same general figures as S3, per architecture
+  articles and measurement blog posts). That's 3–4 orders of magnitude
+  apart.
+- apiserver is on the hot path (every kubectl command goes through it).
+  scheduler/KCM are asynchronous reconcilers the user isn't directly
+  waiting on. This is where the two diverge on "does it need to stay
+  warm at all times," even though both could run on Containers.
+- Rough cost: keeping one cluster's 1vCPU+1GiB instance warm 24 hours a
+  day works out to vCPU cost $0.00002/vCPU-sec × 2,592,000 sec/month ≈
+  $52, plus memory cost $0.0000025/GiB-sec × 2,592,000 sec/month ≈ $6.5,
+  for **~$58/cluster/month** (the plan's estimate). Under a hosted-product
+  model with many idle clusters (the k8flare.com concept), this is fatal.
+  If it isn't kept warm, the first `kubectl get` after idling waits
+  anywhere from a few seconds to 15 seconds, which breaks down as an
+  interactive CLI.
+- The touted benefit of moving to Containers — "easier to keep up with
+  upstream versions" — is runtime-independent: `cmd/k8flare-gen` is
+  designed to generate from a table plus the `go.mod` pin, and gets the
+  same benefit whether the generation target is WASM or a native
+  Container binary. WASM's specific burden is size discipline (avoiding
+  internal types, externalizing OpenAPI, etc. — Phase 3), not
+  version-tracking itself.
+- **Provisional conclusion (rejected)**: apiserver stays on WASM/Worker
+  (lowest latency wins). S7 is the final confirmation of this conclusion
+  via project-specific measurement, and hasn't been carried out yet.
 
-**確定した事実**
+**Open questions**
 
-- **Workers/DO の課金は実 CPU 消費時間のみ(壁時計ではない)。I/O 待ちは
-  無課金**、HTTP ストリーミング応答に壁時計上限はなく、CPU 時間上限
-  (5分/呼び出し)のみが効く。出典: v2 リライトプランの「調査で確定した
-  重要事実」(一次情報: Cloudflare Workers pricing ドキュメント、URL は本
-  ドキュメント未記録 — 参照時に追記)。→ informer(watch を張りっぱなしで
-  大半の時間 I/O 待ち)のような負荷パターンは Workers 上でほぼ無課金に
-  なり得る、という S8 の仮説の根拠。
-- **2026-04-09 に同時接続制限が緩和**され、「ヘッダー待ち」の瞬間だけ6本
-  制限が残り、確立済みの長時間ストリームは無制限になった。出典: Cloudflare
-  changelog、2026-04-09付(プランで確認済みと記載。本ドキュメントには具体的
-  なエントリ URL は未記録 — 参照時に追記)。→ (c) の「10〜15本規模の同時
-  長時間ストリームが安定するか」に直接関係する既知事実(ヘッダー待ちの
-  瞬間的な6本制限には抵触しないはずだが、確立後の安定性そのものは未検証)。
-- 現在の syumai/workers は「1リクエスト=1実行、レスポンスが閉じたら WASM
-  終了」という設計。「閉じないレスポンスストリーム」として Go プログラムを
-  生かし続けるには fork が要る(S5 の isolate 再利用 fork と地続きで、
-  おそらく同じ fork 作業で両方解決する見込み、プラン記載)。
-
-**未解決の問い**
-
-- (a)〜(d) すべて未検証。
-- kube-scheduler/KCM 内部は informer 毎の goroutine + workqueue worker +
-  定期 resync タイマーが並行動作する設計。`GOOS=js/wasm` ターゲットで
-  この規模の並行 I/O 待ちが数時間〜数日安定するかは未実証。
-- client-go の transport(syumai の fetch ベース RoundTripper 経由)が
-  長時間の watch 接続の再接続・backoff・resourceVersion 継続を正しく
-  扱えるかは未実証。
+- Measured cold-start time for this project's own scheduler/KCM images
+  (not yet measured).
+- Whether the decision needs revisiting if the measurement diverges
+  significantly from the general figures.
 
 ---
 
-## 訂正履歴(Honest Corrections)
+## S8: Whether controllers can run WASM-resident (★highest priority)
 
-まだ訂正はない。判断や「確定した事実」が後で誤りと判明した場合は、該当
-セクションを書き換えず、ここに日付と経緯を追記する(CLAUDE.md 不可侵ルール
-#4)。
+This determines Phase 5's (controllers implementation) execution path —
+route A (WASM-resident) vs. route B (Containers fallback) — so it's taken
+up before the other spikes.
+
+**Verification items**
+
+(a) Whether forking syumai to keep a Go program alive as a "response
+    stream that's never closed" is achievable
+(b) Running a load that simulates client-go's informers (multiple
+    goroutines concurrently holding long-lived watches) for several
+    hours, and checking whether actual consumed CPU-ms stays as small as
+    expected (measure CPU time via `wrangler tail` etc.)
+(c) Whether ~10–15 concurrent long-lived streams stay stable within the
+    post-2026-04 relaxed connection limits
+(d) Whether the same "no wall-clock limit" property holds for internal
+    calls made via service bindings too
+
+**Status**: not started (in progress)
+
+**Branch condition**: if all four of (a)–(d) check out, `workers/controllers`
+is designed as a Go WASM-resident process instead of Containers (route
+A). If any one of them fails badly, fall back to Containers +
+demand-start/idle-stop (route B), and point continuously-busy usage
+patterns at BYO VM as an alternative deployment target (since
+`cmd/scheduler` / `cmd/controller-manager` are already unmodified
+binaries that run anywhere, this requires no extra implementation).
+Whatever fails gets recorded here with the specifics of how it broke, as
+the basis for adopting route B.
+
+**Confirmed facts**
+
+- **Workers/DO billing is CPU time actually consumed only (not
+  wall-clock). Waiting on I/O is free**, an HTTP streaming response has
+  no wall-clock limit, and only the CPU time limit (5 minutes per
+  invocation) applies. Source: the v2 rewrite plan's "key facts confirmed
+  during investigation" (primary source: Cloudflare Workers pricing
+  docs, URL not recorded in this document — to be added when
+  referenced). → This is the basis for S8's hypothesis that a workload
+  shaped like an informer (holding a watch open, mostly waiting on I/O)
+  could end up nearly free on Workers.
+- **Concurrent connection limits were relaxed on 2026-04-09**: only the
+  momentary "awaiting headers" phase is still capped at 6, while
+  established long-lived streams became unlimited. Source: the
+  Cloudflare changelog, dated 2026-04-09 (the plan records this as
+  confirmed; the specific entry URL isn't recorded in this document — to
+  be added when referenced). → Directly relevant to (c), "do ~10–15
+  concurrent long-lived streams stay stable" (they shouldn't run into the
+  momentary 6-connection headers-wait cap, but stability once
+  established is still unverified).
+- The current syumai/workers design is "one request = one execution; the
+  WASM instance ends when the response closes." Keeping a Go program
+  alive as a response stream that's never closed requires a fork
+  (continuous with S5's isolate-reuse fork — likely the same fork work
+  resolves both, per the plan).
+
+**Open questions**
+
+- (a)–(d) are all unverified.
+- kube-scheduler/KCM internally run a per-informer goroutine, workqueue
+  workers, and periodic resync timers concurrently. Whether this scale of
+  concurrent I/O-waiting stays stable for hours to days on a
+  `GOOS=js/wasm` target is unproven.
+- Whether client-go's transport (via syumai's fetch-based RoundTripper)
+  correctly handles reconnection, backoff, and resourceVersion
+  continuity for long-lived watch connections is unproven.
+
+---
+
+## Correction log (honest corrections)
+
+No corrections yet. If a decision or a "confirmed fact" later turns out
+to be wrong, don't rewrite the affected section — append a dated entry
+here describing what happened (CLAUDE.md inviolable rule #4).
