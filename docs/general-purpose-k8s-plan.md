@@ -20,7 +20,7 @@ alarms are the right primitive and
 [`multi-tenancy-and-hosting.md`](multi-tenancy-and-hosting.md) for where
 storage is heading around them.
 
-## Phase 1 — Service networking (partially done — object model shipped, kube-proxy blocked on a real bug)
+## Phase 1 — Service networking (object model done + verified; kube-proxy enabled; real traffic routing not yet proven end-to-end)
 
 `ClusterIP` Services must actually route. Three pieces, in dependency order:
 
@@ -43,68 +43,147 @@ storage is heading around them.
    headless-with-selector and no-selector edge cases, deletion GC, and
    reconcile idempotency (no revision churn when nothing changed) all
    confirmed correct by direct API calls.
-3. **kube-proxy on agents** — **blocked, not yet enabled.** The embedded k3s
-   agent (the real, unmodified `github.com/k3s-io/k3s/pkg/agent`) has its own
-   real kube-proxy code, gated by the `DisableKubeProxy` field the supervisor
-   sends via `/v1-k3s/config`. Flipping it to `false` **reproducibly hangs
-   the Worker/DO** — Cloudflare's own "Workers runtime canceled this request
-   because it detected that your Worker's code had hung" error fires within
-   seconds, and the Worker never recovers (every subsequent request times
-   out) until the instance is torn down. Confirmed by direct A/B testing
-   (`DisableKubeProxy: true` vs `false`, all else identical) both in a local
-   `wrangler dev` + real agent setup and in this repo's own
-   `e2e-conformance.yml` CI run — same failure, same message, both places.
-   **Not yet root-caused.** What's ruled out: a code-level infinite loop (no
-   `while` loops anywhere in the new `serviceip.ts`/`endpoints.ts`, and every
-   `for` loop is bounded by a SQL query result); the exact watch request
-   patterns kube-proxy issues (Service with `spec.clusterIP!=None` +
-   `labelSelector`, EndpointSlice with a label selector, Node by exact name)
-   all independently work fine when reproduced fresh via `curl`. What's
-   suspicious: the hang always appears alongside a
-   `[remotedialer] Agent disconnected: ... (code=1006)` log line
-   (`packages/proxy/src/remotedialer.ts`), though that file's own code looks
-   too simple to hang by itself, and a lone disconnect _without_ kube-proxy
-   enabled does not cause the same permanent stall — kube-proxy adds several
-   new simultaneous long-lived watch connections to the same single-threaded
-   DO (Service, EndpointSlice, ServiceCIDR, plus its own Node informer),
-   which is the next thing to investigate: does the DO's single execution
-   thread getting tied up by one stuck request cascade into every other
-   concurrent watch on that DO stalling too, and does kube-proxy's specific
-   connection count make that cascade unrecoverable where a lighter load
-   (kube-scheduler alone) isn't? Next steps: reproduce with kube-proxy's
-   informers enabled one at a time (Service only, then +EndpointSlice, then
-   +Node) to see which addition first triggers the unrecoverable state;
-   consider whether `workerd`'s hang-detection has a way to surface which
-   specific request/promise never resolved.
+3. ~~**kube-proxy on agents**~~ — **enabled** (`DisableKubeProxy: false` in
+   `supervisor.go`). A `networking.k8s.io/v1` `ServiceCIDR` stub had to be
+   registered too: `MultiCIDRServiceAllocator` is GA and `LockToDefault: true`
+   as of Kubernetes 1.35 (`pkg/features/kube_features.go` in the vendored
+   `k8s.io/kubernetes`), so kube-proxy's `server.go` unconditionally creates
+   and starts a `ServiceCIDR` informer regardless of whether anything in the
+   cluster uses dynamic ServiceCIDR allocation — the same "unconditionally-
+   started informer for an unregistered type hangs WaitForCacheSync forever"
+   failure shape already seen twice before during the real-scheduler
+   migration (DRA's ResourceClaim/ResourceSlice/DeviceClass, and
+   ReplicaSet/StatefulSet/PodDisruptionBudget), also confirmed here via the
+   same `matchesFieldSelector` gap (`spec.clusterIP!=None`, which kube-proxy's
+   Service informer filters on, silently passed everything through until
+   `spec.clusterIP` was added to the field allowlist in `store.go`).
+
+   **An important correction, found by chasing this down properly rather than
+   stopping at the first plausible-looking cause:** an earlier pass through
+   this investigation concluded kube-proxy itself reproducibly hangs the
+   Worker/DO, based on A/B testing that looked clean at the time. That
+   conclusion was wrong, and the flaw was in the control: the "kube-proxy
+   disabled" comparison run used a Durable Object instance with leftover
+   state from many earlier manual test iterations (wrangler dev's local
+   persistence lives at `packages/worker/.wrangler/state`, not the repo
+   root's `.wrangler/state`, which is what got cleared) — never a genuinely
+   fresh instance. Redone properly (`rm -rf packages/worker/.wrangler/state`,
+   confirmed by a `resourceVersion` starting at single digits), the _same_
+   "Workers runtime canceled this request because it detected that your
+   Worker's code had hung" error reproduces **on a fresh `main` branch
+   checkout with zero Phase 1 changes and kube-proxy never touched** — both
+   locally is fine (never reproduces there at all, on this Mac) and, more
+   importantly, **in this repo's own `e2e-conformance.yml` CI run on `main`
+   plus only the unrelated `pnpm install` fix**. That is the definitive
+   control: identical failure, identical error message, with none of this
+   session's code in play. The hang is a **pre-existing, CI-environment-
+   specific issue, unrelated to kube-proxy or anything in this phase** — it
+   was never caught before simply because this workflow had never actually
+   completed a run before this session (see the `pnpm install`/`npm install`
+   bug fixed earlier).
+
+   Sub-agent research into `workerd`'s actual source
+   (`cloudflare/workerd`, `io-context.c++`/`io-gate.h`) narrows down what
+   this pre-existing issue likely is, even though it's not yet fixed: hang-
+   detection is idle-based, not a timer, and explicitly **does not apply to
+   Durable Object (actor) requests** (`KJ_ASSERT(actor == kj::none)`) — so
+   the abort fires in the _entry Worker_ awaiting a DO response, not inside
+   the DO's own JS. All requests to one DO instance serialize through a
+   single `InputGate`; if one entry-Worker-to-DO request's promise never
+   settles (e.g. because a burst of simultaneous long-lived WebSocket-watch
+   `fetch()` calls to the same DO instance queues deep enough under a
+   constrained-CPU runner), that hung await gets force-aborted, but the
+   DO-side InputGate it was waiting on may stay held — explaining the
+   observed cascade (every other request to that same DO instance then
+   stalls forever, until the instance is torn down). This is a real,
+   distinct problem from anything in this phase's own code and needs its
+   own investigation (see "Open follow-ups" below) — it is CI-specific,
+   confirmed not to reproduce locally even after extensive repeated testing.
+
+   **What is proven, locally, with kube-proxy enabled:** a real kubelet +
+   kube-proxy joins, the node reaches `Ready`, `ClusterIP`/`EndpointSlice`/
+   `Endpoints` are all created correctly for a real Service+Pod. **What is
+   NOT yet proven:** an actual `curl` to a `ClusterIP` reaching the backing
+   Pod. One local end-to-end attempt hit a separate, third issue before
+   getting that far: kubelet's own Node _lister_ (its local informer cache)
+   intermittently disagreed with direct API queries -- `kubectl`-equivalent
+   `GET`s on the Node object returned correct, fresh data (confirmed
+   directly, and zero errors appeared in the apiserver's own logs during the
+   episode) while kubelet's internal error log kept insisting the node
+   "was not found," blocking pod admission indefinitely. Ruled out as the
+   cause: this session's new `reconcileNodeLifecycle` incorrectly tainting
+   the node (checked directly -- no taint, condition still `Ready: True`,
+   Lease still being renewed normally throughout). Not yet root-caused:
+   likely a watch-delivery reliability gap under concurrent load, distinct
+   from the CI hang above, tracked as a follow-up rather than chased further
+   in this pass.
 
 Separately, a Worker-side path resolving a Service to a backing Pod IP (via
 the existing VPC/tunnel plumbing) gives **external** HTTP exposure — that is
 an edge feature, not a cluster-networking prerequisite, and doubles as the
 future managed-Ingress story.
 
-Verify: EndpointSlice/Endpoints computation verified directly (see above);
-`[sig-network] EndpointSlice`/`EndpointsController` basics added to the
-CI's EXPERIMENTAL group (`.github/workflows/e2e-conformance.yml`) — these
-don't need kube-proxy to pass, since they only check the _objects_, not
-traffic routing. `curl` a ClusterIP from inside a pod and
+Verify: EndpointSlice/Endpoints computation and kube-proxy startup verified
+directly (see above); `[sig-network] EndpointSlice`/`EndpointsController`
+basics added to the CI's EXPERIMENTAL group
+(`.github/workflows/e2e-conformance.yml`) — not yet actually green in CI
+because of the pre-existing environment issue above, unrelated to whether
+these specific tests are correct. `curl` a ClusterIP from inside a pod and
 `[sig-network] Services should serve a basic endpoint from pods` (real
-traffic routing) stay blocked until the kube-proxy hang above is fixed.
+traffic routing) remain unverified pending the watch-delivery follow-up.
 
-## Phase 2 — Node lifecycle (self-healing, part 1)
+### Open follow-ups from this phase
+
+- **CI environment hang** (`e2e-conformance.yml` on GitHub-hosted
+  `ubuntu-latest`): reproduces on a bare `main` checkout, so it blocks _any_
+  future phase's CI verification, not just this one. Next step: reproduce
+  with `wrangler dev --local-protocol http` (ruling out TLS-handshake-related
+  idle time) and/or a self-hosted runner with more CPU, to test the
+  constrained-CPU-runner hypothesis directly; consider filing a
+  `cloudflare/workerd` issue with the InputGate-cascade theory once
+  reproduced with a minimal case.
+- **kubelet Node-lister staleness under concurrent watch load**: observed
+  once, locally, not yet reliably reproduced or root-caused. Next step:
+  reproduce deliberately (same Service/Pod/kube-proxy setup) and check
+  whether the Node watch's underlying WebSocket ever received a
+  message-delivery gap (compare kine revision numbers the DO broadcast vs.
+  what the entry Worker's watch relay actually forwarded) rather than
+  assuming it's connection-level.
+
+## Phase 2 — Node lifecycle (self-healing, part 1) — implemented, not yet end-to-end verified
 
 A dead agent today stays `Ready` forever and its pods are never rescheduled.
-An alarm-driven controller over `kube-node-lease`:
+An alarm-driven controller over `kube-node-lease`
+(`packages/etcd/src/nodelifecycle.ts`, `reconcileNodeLifecycle`, wired into
+the alarm loop like the other controllers):
 
-- Lease staleness past threshold → set `NodeReady=Unknown`, apply
-  `node.kubernetes.io/unreachable` `NoExecute` taint.
-- Node dead past a longer threshold → delete its pods (the upstream pod GC
-  role), so schedulable replacements can exist.
+- ~~Lease staleness past threshold (40s, matching upstream's default
+  `--node-monitor-grace-period`) → set every health condition
+  (`Ready`/`MemoryPressure`/`DiskPressure`/`PIDPressure`) to `Unknown`, apply
+  `node.kubernetes.io/unreachable` `NoExecute` taint~~ — implemented.
+- ~~Node dead past a longer threshold (5 minutes, matching upstream's
+  default `--pod-eviction-timeout`) → delete its Pods (the upstream pod GC
+  role), so schedulable replacements can exist~~ — implemented.
 
-Note the interplay: eviction alone just kills pods — _recreation_ needs Phase 3. Shipping this first is still correct (the scheduler already refuses
-not-Ready nodes; stale state is the bug).
+No `needsXAttention` trigger-check exists for this one deliberately:
+staleness is detected by the _absence_ of an expected write, so only the
+periodic safety-net alarm tick can catch it (already sufficient granularity
+at 60s against a 40s threshold). Deliberately not implemented: recovery (a
+taint/Unknown status is never proactively cleared when a node comes back —
+accepted gap for this pass, noted in the module's own doc comment).
 
-Verify: kill an agent; node goes NotReady and its pods are removed within the
-thresholds. Conformance: node lifecycle tests where applicable.
+Note the interplay: eviction alone just kills pods — _recreation_ needs
+Phase 3. Shipping this first is still correct (the scheduler already refuses
+not-Ready nodes; stale state is the bug). Directly confirmed the write logic
+does _not_ misfire on a healthy node (checked mid-Phase-1-testing: an
+actively-renewed node kept `Ready: True`, no taint, throughout a multi-minute
+session) — but the "kill an agent, watch it actually happen" end-to-end
+check below has not been run yet.
+
+Verify: kill an agent; node goes NotReady/Unknown, gets tainted, and its
+pods are removed within the thresholds. Conformance: node lifecycle tests
+where applicable. **Not yet done** — next session's first step for this
+phase.
 
 ## Phase 3 — Workload controllers + garbage collection (self-healing, part 2)
 

@@ -37,21 +37,14 @@ func defaultClusterConfig() clusterConfig {
 	_, clusterCIDR, _ := net.ParseCIDR("10.42.0.0/16")
 	_, serviceCIDR, _ := net.ParseCIDR("10.43.0.0/16")
 	return clusterConfig{
-		ClusterDomain:  "cluster.local",
-		ClusterIPRange: *clusterCIDR,
-		ServiceIPRange: *serviceCIDR,
-		HTTPSPort:      6443,
-		SupervisorPort: 6443,
-		DisableCCM:     true,
-		DisableNPC:     true,
-		// Kept disabled: enabling this reproducibly hangs the Worker/DO within
-		// seconds (Cloudflare's own "Workers runtime canceled this request
-		// because it detected that your Worker's code had hung" error),
-		// confirmed by direct A/B testing (enabled vs disabled, all else
-		// equal) both locally and in CI. Not yet root-caused -- see
-		// docs/general-purpose-k8s-plan.md's Phase 1 section for the
-		// investigation notes and what to try next.
-		DisableKubeProxy:   true,
+		ClusterDomain:      "cluster.local",
+		ClusterIPRange:     *clusterCIDR,
+		ServiceIPRange:     *serviceCIDR,
+		HTTPSPort:          6443,
+		SupervisorPort:     6443,
+		DisableCCM:         true,
+		DisableNPC:         true,
+		DisableKubeProxy:   false,
 		DisableServiceLB:   true,
 		FlannelBackend:     "host-gw",
 		EgressSelectorMode: "disabled",
