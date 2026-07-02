@@ -20,6 +20,16 @@ import (
 // kine-over-DO storage instead.
 const clusterIPRangeKey = "/ranges/serviceips"
 
+// maxAllocatorRetries bounds AllocateNext/Release's CAS-retry loops. Found
+// too low at 5 by review: N concurrent callers can, in an adversarial
+// ordering, force any one of them to lose up to N-1 races before it's the
+// one whose write lands, so 5 could already be marginal for
+// clusterip_test.go's own 8-way concurrent test, let alone a bursty
+// `kubectl apply` of a manifest with many Services at once. Retries here
+// are cheap (no sleep/backoff -- each is just a DO round trip) and this
+// path only runs under genuine contention, so being generous costs little.
+const maxAllocatorRetries = 16
+
 // addressesReservedForFutureServices mirrors the reservation
 // workers/storage/src/serviceip.ts makes via FIRST_ALLOCATABLE_INDEX:
 // 10.43.0.1 for the future "kubernetes.default" Service (the conventional
@@ -259,9 +269,8 @@ func (a *ClusterIPAllocator) save(ctx context.Context, bitmap *k8sallocator.Allo
 // serialization point, exactly like etcd's resourceVersion CAS on a real
 // cluster.
 func (a *ClusterIPAllocator) AllocateNext(ctx context.Context) (net.IP, error) {
-	const maxRetries = 5
 	var lastErr error
-	for i := 0; i < maxRetries; i++ {
+	for i := 0; i < maxAllocatorRetries; i++ {
 		bitmap, revision, err := a.load(ctx)
 		if err != nil {
 			return nil, err
@@ -299,9 +308,8 @@ func (a *ClusterIPAllocator) Release(ctx context.Context, ip net.IP) error {
 		return err
 	}
 
-	const maxRetries = 5
 	var lastErr error
-	for i := 0; i < maxRetries; i++ {
+	for i := 0; i < maxAllocatorRetries; i++ {
 		bitmap, revision, err := a.load(ctx)
 		if err != nil {
 			return err

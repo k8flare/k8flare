@@ -117,3 +117,49 @@ func TestNamespaceCollectionDeleteSweepsDependents(t *testing.T) {
 		t.Errorf("expected dependent ConfigMap to have been swept by the namespaces DeleteCollection cascade, got: %v", err)
 	}
 }
+
+// TestStatusSubresourceRejectsUndeclaredResource guards against a
+// regression found by review: HandleSubresource used to dispatch "status"
+// requests by subresource name alone, for whatever resource happened to be
+// in the URL -- so a Service (which has a real Go .Status field, just no
+// "status" entry in its apidef.Table ResourceDef) could still be PUT/PATCHed
+// through services/{name}/status despite discovery.go (which is built from
+// the same table) never advertising it. Now gated on apidef.HasSubresource.
+func TestStatusSubresourceRejectsUndeclaredResource(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+	ns := "default"
+	name := "test-status-undeclared-svc"
+
+	client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: ns},
+	}, metav1.CreateOptions{})
+	_ = client.CoreV1().Services(ns).Delete(ctx, name, metav1.DeleteOptions{})
+
+	svc, err := client.CoreV1().Services(ns).Create(ctx, &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec:       corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 80}}},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create service: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = client.CoreV1().Services(ns).Delete(context.Background(), name, metav1.DeleteOptions{})
+	})
+
+	err = client.CoreV1().RESTClient().Put().
+		Namespace(ns).
+		Resource("services").
+		Name(name).
+		SubResource("status").
+		Body(svc).
+		Do(ctx).
+		Error()
+
+	if err == nil {
+		t.Fatal("expected an error PUTting services/.../status, got nil (Service has no declared \"status\" subresource in apidef.Table)")
+	}
+	if !apierrors.IsNotFound(err) {
+		t.Errorf("expected a NotFound-shaped error, got: %v", err)
+	}
+}

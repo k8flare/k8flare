@@ -416,6 +416,28 @@ func (d ResourceDef) EffectiveVerbs() []string {
 	return StandardVerbs
 }
 
+// HasSubresource reports whether resource has a subresource named
+// subresourceName in Table. Used by pkg/apiserver/subresource.go's
+// HandleSubresource to reject a subresource request for a resource that
+// doesn't declare it, instead of dispatching by subresource name alone
+// (which would let e.g. "status" reach any resource with a Go .Status
+// field, whether or not the table -- and therefore discovery.go's
+// advertised API surface -- says it has one).
+func HasSubresource(resource, subresourceName string) bool {
+	for _, def := range Table {
+		if def.Resource != resource {
+			continue
+		}
+		for _, sub := range def.Subresources {
+			if sub.Name == subresourceName {
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
+
 // ForGroupVersion returns every ResourceDef in Table for the given
 // GroupVersion, in table order.
 func ForGroupVersion(gv schema.GroupVersion) []ResourceDef {

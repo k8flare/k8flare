@@ -10,21 +10,27 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
+
+	"github.com/k8flare/k8flare/pkg/apiserver/apidef"
 )
 
 // HandleSubresource routes subresource requests (e.g. pods/status,
 // pods/binding, nodes/status) to the appropriate handler based on resource,
 // subresource, and HTTP method.
 //
-// "status" is dispatched by subresource name alone, not by (resource,
-// subresource) pair: every resource in apidef.Table that has a "status"
-// subresource (pods, nodes, replicasets, deployments, daemonsets, jobs,
-// cronjobs) uses the exact same GET-whole-object / PUT-replaces-.Status /
-// PATCH-whole-object semantics (see handleStatusSubresource), so one
-// generic handler covers all of them -- replacing what used to be 7
-// hand-copied ~55-line blocks, one per resource, that had already drifted
-// from each other (apps/v1 and batch/v1's copies existed here but were
-// never advertised in discovery.go; see apidef.Table's doc comment).
+// "status" dispatches to one generic handler (handleStatusSubresource) for
+// every resource apidef.Table actually declares a "status" subresource for
+// (pods, nodes, replicasets, deployments, daemonsets, jobs, cronjobs) --
+// replacing what used to be 7 hand-copied ~55-line blocks, one per
+// resource, that had already drifted from each other (apps/v1 and batch/v1's
+// copies existed here but were never advertised in discovery.go; see
+// apidef.Table's doc comment). Gated on apidef.HasSubresource rather than
+// dispatching by subresource name alone: Service, for one, has a real Go
+// `.Status` field but no declared "status" subresource in the table, and
+// early versions of this dispatch let it (and anything else with a Status
+// field) through anyway -- the exact kind of table/handler drift this
+// project's generator work elsewhere exists to eliminate, found by review
+// and covered by TestStatusSubresourceRejectsUndeclaredResource.
 //
 // binding/log/exec/attach are still Pod-specific (apidef.Table only ever
 // declares them under "pods") and are explicitly rejected for any other
@@ -42,6 +48,10 @@ func HandleSubresource(w http.ResponseWriter, r *http.Request, stores map[string
 
 	switch subresource {
 	case "status":
+		if !apidef.HasSubresource(resource, "status") {
+			writeStatusError(w, http.StatusNotFound, "NotFound", "the server does not support the subresource \""+subresource+"\" for resource \""+resource+"\"")
+			return
+		}
 		handleStatusSubresource(w, r, store, namespace, name)
 
 	case "binding", "log", "exec", "attach":

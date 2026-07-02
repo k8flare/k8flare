@@ -41,7 +41,10 @@ func newFakeKV() *fakeKV {
 }
 
 // doFetch implements the func(req *http.Request) (*http.Response, error) signature
-// expected by Storage. It handles GET /key/..., PUT /key/..., and DELETE /key/...
+// expected by Storage. It handles GET /key/..., PUT /key/..., DELETE /key/...,
+// and GET /list/... (prefix scan, added for
+// TestDeleteNamespaceDependents_ReleasesServiceClusterIPs -- every prior
+// fakeKV-based test only ever needed single-key Get/Put).
 func (f *fakeKV) doFetch(req *http.Request) (*http.Response, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -55,11 +58,64 @@ func (f *fakeKV) doFetch(req *http.Request) (*http.Response, error) {
 			return f.handleGet(key)
 		case http.MethodPut:
 			return f.handlePut(key, req)
+		case http.MethodDelete:
+			return f.handleDelete(key)
 		}
+	}
+
+	if strings.HasPrefix(path, "/list/") && req.Method == http.MethodGet {
+		prefix := strings.TrimPrefix(path, "/list")
+		return f.handleList(prefix)
 	}
 
 	return jsonResponse(http.StatusNotFound, map[string]interface{}{
 		"error": "not found",
+	}), nil
+}
+
+// handleDelete unconditionally removes key (matching how this project's
+// callers only ever pass revision=0 -- unconditional delete -- through
+// fakeKV-backed tests today; a real CAS-checked delete isn't needed here).
+func (f *fakeKV) handleDelete(key string) (*http.Response, error) {
+	entry, existed := f.data[key]
+	delete(f.data, key)
+	if !existed {
+		return jsonResponse(http.StatusOK, deleteResponse{Revision: f.revision, Deleted: true}), nil
+	}
+	f.revision++
+	return jsonResponse(http.StatusOK, deleteResponse{
+		Revision: f.revision,
+		KV: &kvJSON{
+			Key:            key,
+			Value:          entry.value,
+			CreateRevision: entry.createRevision,
+			ModRevision:    entry.modRevision,
+		},
+		Deleted: true,
+	}), nil
+}
+
+// handleList returns every stored entry whose key starts with prefix, in
+// the same listResponse shape Storage.List expects. Unlike the real Cluster
+// DO, this doesn't filter out entries whose modRevision has been
+// superseded (fakeKV has no delete-tombstone/history concept) -- fine for
+// the tests that use it, which only ever create keys, never delete-then-list.
+func (f *fakeKV) handleList(prefix string) (*http.Response, error) {
+	var kvs []kvJSON
+	for key, entry := range f.data {
+		if strings.HasPrefix(key, prefix) {
+			kvs = append(kvs, kvJSON{
+				Key:            key,
+				Value:          entry.value,
+				CreateRevision: entry.createRevision,
+				ModRevision:    entry.modRevision,
+			})
+		}
+	}
+	return jsonResponse(http.StatusOK, listResponse{
+		Revision: f.revision,
+		Count:    int64(len(kvs)),
+		KVs:      kvs,
 	}), nil
 }
 

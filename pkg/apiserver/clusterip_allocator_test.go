@@ -4,6 +4,10 @@ import (
 	"context"
 	"net"
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // TestClusterIPAllocator_ReleaseAllowsReuse is a fast, wrangler-dev-free
@@ -88,5 +92,66 @@ func TestClusterIPAllocator_ReleaseUnallocatedIsNoop(t *testing.T) {
 
 	if err := a.Release(ctx, net.ParseIP("10.99.0.1")); err != nil {
 		t.Errorf("Release of a never-allocated address should be a no-op, got: %v", err)
+	}
+}
+
+// TestDeleteNamespaceDependents_ReleasesServiceClusterIPs guards against a
+// bug found by review: ResourceStore.DeleteAllInNamespace (what
+// DeleteNamespaceDependents uses to sweep every namespaced resource type)
+// works on raw stored bytes, by design, for genericity across resource
+// types -- so it never decodes a Service and never calls ReleaseClusterIP
+// the way the direct Service DELETE paths in handler.go do. Before the
+// fix, deleting a Namespace that contained a Service permanently leaked
+// that Service's ClusterIP. Checks the allocator's persisted bitmap
+// directly (via the unexported load/offsetFor this white-box test has
+// access to) rather than relying on AllocateNext's random-scan strategy to
+// eventually re-surface the same address, which isn't a practical thing to
+// wait for deterministically against the real /16 ServiceCIDR.
+func TestDeleteNamespaceDependents_ReleasesServiceClusterIPs(t *testing.T) {
+	kv := newFakeKV()
+	storage := newTestStorage(kv)
+	ctx := context.Background()
+	ns := "ns-release-test"
+
+	svcStore := NewResourceStore(storage, "services", true,
+		func() runtime.Object { return &corev1.Service{} },
+		func() runtime.Object { return &corev1.ServiceList{} },
+	)
+
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "svc"}}
+	if err := AssignClusterIP(ctx, storage, svc); err != nil {
+		t.Fatalf("AssignClusterIP: %v", err)
+	}
+	if svc.Spec.ClusterIP == "" {
+		t.Fatal("expected AssignClusterIP to set a ClusterIP")
+	}
+	if _, err := svcStore.Create(ctx, ns, svc); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	allocator := ServiceIPAllocator(storage)
+	offset, err := allocator.offsetFor(net.ParseIP(svc.Spec.ClusterIP))
+	if err != nil {
+		t.Fatalf("offsetFor: %v", err)
+	}
+
+	bitmapBefore, _, err := allocator.load(ctx)
+	if err != nil {
+		t.Fatalf("load (before): %v", err)
+	}
+	if !bitmapBefore.Has(offset) {
+		t.Fatalf("expected %s to be marked allocated before the namespace sweep", svc.Spec.ClusterIP)
+	}
+
+	if err := DeleteNamespaceDependents(ctx, []*ResourceStore{svcStore}, ns); err != nil {
+		t.Fatalf("DeleteNamespaceDependents: %v", err)
+	}
+
+	bitmapAfter, _, err := allocator.load(ctx)
+	if err != nil {
+		t.Fatalf("load (after): %v", err)
+	}
+	if bitmapAfter.Has(offset) {
+		t.Errorf("expected %s to be released by DeleteNamespaceDependents, but it's still marked allocated", svc.Spec.ClusterIP)
 	}
 }
