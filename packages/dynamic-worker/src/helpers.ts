@@ -1,8 +1,8 @@
 import type { Condition } from "./types.ts";
 
-/** Get the Etcd DO stub. */
+/** Get the Cluster DO stub. */
 export function dwStub(env: any): any {
-  return env.ETCD.get(env.ETCD.idFromName("default"));
+  return env.CLUSTER.get(env.CLUSTER.idFromName("default"));
 }
 
 /** Decode a kine value (base64 string or Uint8Array) to a UTF-8 string. */

@@ -110,10 +110,11 @@ function objectMatchesSelectors(
 }
 
 /**
- * Handle a watch request by opening a WebSocket to the Etcd DO and
+ * Handle a watch request by opening a WebSocket to the Cluster DO and
  * streaming Kubernetes WatchEvent JSON lines back to the client.
  *
- * `env` is typed as `any` because the full Env type lives in @k8flare/worker.
+ * `env` is typed as `any` because the full Env type lives in the calling
+ * Worker (workers/gateway).
  */
 export async function handleWatch(
   req: Request,
@@ -159,8 +160,8 @@ export async function handleWatch(
   const labelRequirements = parseLabelSelector(labelSelectorParam);
   const hasSelectors = fieldSelectors.length > 0 || labelRequirements.length > 0;
 
-  // Get Etcd DO stub
-  const ns = env.ETCD;
+  // Get Cluster DO stub
+  const ns = env.CLUSTER;
   const id = ns.idFromName("default");
   const stub = ns.get(id);
 

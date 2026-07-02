@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "paths": {
+      "@k8flare/k8s": ["../../packages/k8s/src"],
+      "@k8flare/crd": ["../../packages/crd/src"],
+      "@k8flare/dynamic-worker": ["../../packages/dynamic-worker/src"]
+    }
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../../packages/k8s" },
+    { "path": "../../packages/crd" },
+    { "path": "../../packages/dynamic-worker" }
+  ]
+}

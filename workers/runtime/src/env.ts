@@ -1,6 +1,5 @@
 export interface Env {
-  ETCD: DurableObjectNamespace;
+  CLUSTER: DurableObjectNamespace;
   LOADER: any;
-  KUBELET_VPC?: Fetcher;
   K3S_TOKEN?: string;
 }

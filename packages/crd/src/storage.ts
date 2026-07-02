@@ -6,9 +6,9 @@ function decodeKineValue(v: string | ArrayLike<number>): string {
   return new TextDecoder().decode(new Uint8Array(v as ArrayLike<number>));
 }
 
-/** Get the Etcd DO stub. */
+/** Get the Cluster DO stub. */
 export function dwStub(env: any): any {
-  return env.ETCD.get(env.ETCD.idFromName("default"));
+  return env.CLUSTER.get(env.CLUSTER.idFromName("default"));
 }
 
 /** Construct a kine storage key for a namespaced resource. */

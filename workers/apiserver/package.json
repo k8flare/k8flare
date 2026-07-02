@@ -1,1 +1,4 @@
-{ "name": "@k8flare/apiserver-worker", "private": true }
+{
+  "name": "@k8flare/apiserver-worker",
+  "private": true
+}
