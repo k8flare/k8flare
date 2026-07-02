@@ -25,7 +25,7 @@ import type { KineRow, KineEvent, KineKV } from "./helpers.ts";
 import { getCurrent, insert, currentRevision } from "./queries.ts";
 import type { SqlExec } from "./queries.ts";
 import { classifyKey, classifyPrefix, namespaceFacet, EVENTS_FACET } from "./keyspace.ts";
-import { getFacet, facetFetch, deleteFacet, type FacetHost } from "./facets.ts";
+import { getFacet, facetFetch, facetJson, type FacetHost } from "./facets.ts";
 
 /** Decode a facet's JSON row (base64 value/old_value) back into a real KineRow. */
 export function facetRawToKineRow(raw: any): KineRow {
@@ -68,7 +68,7 @@ async function facetListRaw(
   const stub = getFacet(host, facetName);
   const qs = includeDeleted ? "?includeDeleted=1" : "";
   const resp = await facetFetch(stub, new Request(`http://facet.internal/list${prefix}${qs}`));
-  const body: any = await resp.json();
+  const body = await facetJson<{ rows?: any[] }>(resp);
   return (body.rows || []).map(facetRawToKineRow);
 }
 
@@ -84,11 +84,9 @@ async function facetList(
   if (limit > 0) qs.set("limit", String(limit));
   if (revision > 0) qs.set("revision", String(revision));
   const q = qs.toString();
-  const resp = await facetFetch(
-    stub,
-    new Request(`http://facet.internal/list${prefix}${q ? "?" + q : ""}`),
-  );
-  const body: any = await resp.json();
+  const reqUrl = `http://facet.internal/list${prefix}${q ? "?" + q : ""}`;
+  const resp = await facetFetch(stub, new Request(reqUrl));
+  const body = await facetJson<{ revision: number; rows?: any[] }>(resp);
   const kvs = (body.rows || []).map((r: any) => rowToEvent(facetRawToKineRow(r)).kv);
   return { revision: body.revision, kvs };
 }
@@ -108,7 +106,7 @@ export async function storeGetCurrent(
     stub,
     new Request(`http://facet.internal/key${key}?includeDeleted=${includeDeleted ? 1 : 0}`),
   );
-  const body: any = await resp.json();
+  const body = await facetJson<{ revision: number; row?: any }>(resp);
   if (!body.row) return { rev: body.revision, event: null };
   return { rev: body.revision, event: rowToEvent(facetRawToKineRow(body.row)) };
 }
@@ -139,7 +137,7 @@ export async function storeInsert(
 
   const id = insert(sql, key, create, del, createRevision, prevRevision, lease, null, null);
   const stub = getFacet(host, cls.facet);
-  await facetFetch(
+  const resp = await facetFetch(
     stub,
     new Request("http://facet.internal/apply", {
       method: "POST",
@@ -157,6 +155,7 @@ export async function storeInsert(
       }),
     }),
   );
+  await facetJson(resp); // throws on facet-side error instead of silently leaving the parent's envelope and the facet's copy out of sync
   return id;
 }
 
@@ -297,7 +296,7 @@ async function replayDelta(
         stub,
         new Request(`http://facet.internal/after/${sinceRevision}`),
       );
-      const body: any = await resp.json();
+      const body = await facetJson<{ rows?: any[] }>(resp);
       const byId = new Map<number, any>();
       for (const raw of body.rows || []) byId.set(raw.theid, raw);
       rowsByFacet.set(facetName, byId);
@@ -313,8 +312,10 @@ async function replayDelta(
   return filled.map(rowToEvent);
 }
 
-/** Namespace deletion cleanup: destroy its facet outright (S1 item 4: delete() on a
- * never-created facet is a harmless no-op, so this is safe to call unconditionally). */
-export function deleteNamespaceFacet(host: FacetHost, namespace: string): void {
-  deleteFacet(host, namespaceFacet(namespace));
-}
+// Namespace deletion deliberately does NOT destroy its facet -- see the long
+// comment on index.ts's handleDelete for the reproduced platform issue this
+// avoids. facets.ts still exports deleteFacet as a primitive for whoever
+// picks this back up (e.g. once facet names are suffixed with the
+// Namespace's own UID, so a reused namespace *name* never reuses a facet
+// *name*): the one-liner needed here would be
+// `deleteFacet(host, namespaceFacet(namespace))`.

@@ -2,7 +2,7 @@ import { AFTER_SQL } from "./schema.ts";
 import { rowToEvent } from "./helpers.ts";
 import type { KineRow } from "./helpers.ts";
 import { classifyKey } from "./keyspace.ts";
-import { getFacet, facetFetch, type FacetHost } from "./facets.ts";
+import { getFacet, facetFetch, facetJson, type FacetHost } from "./facets.ts";
 import { storeReplay, facetRawToKineRow } from "./store.ts";
 import type { SqlExec } from "./queries.ts";
 
@@ -101,7 +101,7 @@ export async function broadcastEvent(
   } else {
     const stub = getFacet(host, cls.facet);
     const resp = await facetFetch(stub, new Request(`http://facet.internal/after/${revision - 1}`));
-    const body: any = await resp.json();
+    const body = await facetJson<{ rows?: any[] }>(resp);
     rows = (body.rows || []).map(facetRawToKineRow);
   }
 

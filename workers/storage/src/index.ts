@@ -8,7 +8,7 @@ import {
   type DurableObjectContext,
   type WatchHost,
 } from "./watch.ts";
-import { storeGetCurrent, storeInsert, storeList, deleteNamespaceFacet } from "./store.ts";
+import { storeGetCurrent, storeInsert, storeList } from "./store.ts";
 import { runScheduler, needsSchedulerAttention } from "./scheduler.ts";
 import { allocateClusterIPs, needsServiceIPAttention } from "./serviceip.ts";
 import { reconcileEndpoints, needsEndpointsAttention } from "./endpoints.ts";
@@ -24,16 +24,6 @@ const SAFETY_NET_INTERVAL_MS = 60_000;
 // How long to wait after a write that needs scheduling before waking the
 // alarm, so a burst of writes coalesces into a single scheduler pass.
 const DEBOUNCE_MS = 1_000;
-
-const NAMESPACES_PREFIX = "/registry/namespaces/";
-
-/** The namespace name if `key` is exactly a Namespace object's own key, else null. */
-function namespaceNameFromKey(key: string): string | null {
-  if (!key.startsWith(NAMESPACES_PREFIX)) return null;
-  const rest = key.slice(NAMESPACES_PREFIX.length);
-  if (rest.length === 0 || rest.includes("/")) return null;
-  return rest;
-}
 
 /** Cheap local existence check -- no facet round trip needed since a key's
  * envelope (including its `deleted` flag) always lives in the parent, even
@@ -247,14 +237,32 @@ export class Cluster {
     await broadcastEvent(this.host, this.sql, key, id);
     if (this.needsControllerAttention(key, oldValue)) await this.wakeSchedulerSoon();
 
-    // Namespace deletion cascade (pkg/apiserver/namespacedelete.go) deletes
-    // every namespaced object individually before finally deleting the
-    // Namespace object itself -- by the time that last delete lands here,
-    // its facet should already be empty. Destroying it outright is a clean,
-    // fast GC rather than leaving tombstone rows to accumulate forever.
-    const namespaceName = namespaceNameFromKey(key);
-    if (namespaceName) deleteNamespaceFacet(this.host, namespaceName);
-
+    // Namespace deletion does NOT call ctx.facets.delete() here, despite the
+    // original plan calling for it as a GC nicety. Empirically reproduced
+    // (2026-07-02, via repeated create/delete/recreate of the same namespace
+    // name against real wrangler dev): deleting and recreating a facet under
+    // the *same name* works for the first few cycles, then every subsequent
+    // create through that facet name permanently returns a false "already
+    // exists" (create sees a live row that a parallel delete-by-key call
+    // reports as already gone -- an internal inconsistency, not a race:
+    // reproduced deterministically at the 4th cycle, unaffected by adding
+    // delays between requests). The same test with a fresh, never-reused
+    // facet name every time never fails. This looks like an undocumented
+    // platform limitation around repeated ctx.facets.delete()+get() cycles
+    // on one name, not a bug in this file's logic -- S1's spike
+    // (spikes/s1-facets/FINDINGS.md) only ever exercised a single
+    // delete-then-recreate, not a repeated cycle.
+    //
+    // Correctness doesn't depend on the facet being destroyed: every
+    // namespaced object is already individually tombstoned by the cascade
+    // delete (pkg/apiserver/namespacedelete.go) before the Namespace object
+    // itself is deleted, so storeGetCurrent's includeDeleted-aware check
+    // already lets a same-named object be recreated correctly. Skipping the
+    // facet-level delete only forgoes the storage-GC nicety, not
+    // correctness -- kine's own log already carries tombstones indefinitely
+    // in the same way. See docs/multi-tenancy-and-hosting.md's honest
+    // correction for the full writeup and the production-verification
+    // follow-up this leaves open.
     return jsonResponse({ revision: id, kv: event.kv, deleted: true });
   }
 

@@ -72,7 +72,7 @@ function getSql(includeDeleted) {
 }
 
 function listSql(extraCondition) {
-  return "SELECT * FROM (SELECT (SELECT MAX(id) FROM kine) AS current_rev, id AS theid, name AS thename, created, deleted, create_revision, prev_revision, lease, value, old_value FROM kine AS kv JOIN (SELECT MAX(mkv.id) AS id FROM kine AS mkv WHERE mkv.name >= ?1 AND mkv.name < ?2 " + extraCondition + " GROUP BY mkv.name) AS maxkv ON maxkv.id = kv.id WHERE kv.deleted = 0 OR ?3) AS lkv ORDER BY lkv.thename ASC";
+  return "SELECT * FROM (SELECT (SELECT MAX(id) FROM kine) AS current_rev, kv.id AS theid, kv.name AS thename, kv.created, kv.deleted, kv.create_revision, kv.prev_revision, kv.lease, kv.value, kv.old_value FROM kine AS kv JOIN (SELECT MAX(mkv.id) AS id FROM kine AS mkv WHERE mkv.name >= ?1 AND mkv.name < ?2 " + extraCondition + " GROUP BY mkv.name) AS maxkv ON maxkv.id = kv.id WHERE kv.deleted = 0 OR ?3) AS lkv ORDER BY lkv.thename ASC";
 }
 
 const AFTER_SQL = "SELECT (SELECT MAX(id) FROM kine) AS current_rev, id AS theid, name AS thename, created, deleted, create_revision, prev_revision, lease, value, old_value FROM kine WHERE id > ?1 ORDER BY id ASC";
@@ -216,6 +216,19 @@ export async function facetFetch(
   throw lastErr;
 }
 
+/**
+ * Parse a facet response's JSON body, throwing if the facet reported an
+ * error (`{ok:false, error}`, always paired with a non-2xx status) instead
+ * of silently treating it as empty/missing data.
+ */
+export async function facetJson<T = any>(resp: Response): Promise<T> {
+  const body: any = await resp.json();
+  if (!resp.ok || body?.ok === false) {
+    throw new Error(`facet error (${resp.status}): ${body?.error || resp.statusText}`);
+  }
+  return body as T;
+}
+
 /** Minimal structural shape this module needs from the DO context/env -- see watch.ts's DurableObjectContext for why this isn't the official workers-types shape (facets predate that package's pinned version; see spikes/s1-facets/FINDINGS.md item 0). */
 export interface FacetHost {
   env: { LOADER: any };
@@ -227,17 +240,24 @@ export interface FacetHost {
   };
 }
 
-let cachedFacetWorkerStub: any = null;
-
+/**
+ * Deliberately NOT cached at module scope. env.LOADER.get(id, factory) is
+ * designed to be called on every request -- the factory only re-runs on a
+ * genuine cache miss (S2, spikes/s2-loader/FINDINGS.md item 4). Caching the
+ * returned stub ourselves across requests instead caused every facet call to
+ * fail after a handful of requests with "Cannot perform I/O on behalf of a
+ * different request" (reproduced empirically: 4th+ create/delete cycle of
+ * the same namespace facet) -- a WorkerStub obtained during one request's
+ * IoContext isn't valid to reuse from a later request's, the same class of
+ * constraint S8 found for WASM isolate reuse.
+ */
 function getFacetClass(host: FacetHost): any {
-  if (!cachedFacetWorkerStub) {
-    cachedFacetWorkerStub = host.env.LOADER.get(FACET_LOADER_KEY, () => ({
-      compatibilityDate: "2026-03-24",
-      mainModule: "facet.js",
-      modules: { "facet.js": FACET_SOURCE },
-    }));
-  }
-  return cachedFacetWorkerStub.getDurableObjectClass("Facet");
+  const stub = host.env.LOADER.get(FACET_LOADER_KEY, () => ({
+    compatibilityDate: "2026-03-24",
+    mainModule: "facet.js",
+    modules: { "facet.js": FACET_SOURCE },
+  }));
+  return stub.getDurableObjectClass("Facet");
 }
 
 /** Get (creating on first use) the facet stub for `name`. */
