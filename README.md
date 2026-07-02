@@ -139,7 +139,7 @@ Two detailed plans drive the work from here:
    on a bare `main` checkout). A Worker-side HTTP path for external Service
    exposure is still ahead too.
 3. ~~**Node lifecycle**~~ — lease staleness → `Unknown` + taints → pod GC
-   (`packages/etcd/src/nodelifecycle.ts`), verified end-to-end by killing a
+   (`workers/storage/src/nodelifecycle.ts`), verified end-to-end by killing a
    real agent process: the node flipped `Unknown`/tainted within 48s and its
    Pod was deleted once staleness passed the 5-minute mark. Pod
    _recreation_ still needs the next item's workload controllers.
@@ -156,7 +156,7 @@ Two detailed plans drive the work from here:
    binary but not yet enabled, pending their own verification pass.
 
    An earlier pass hand-wrote each of these five as a TypeScript reconciler
-   in `packages/etcd/src/*.ts`, individually verified end-to-end and
+   in `workers/storage/src/*.ts`, individually verified end-to-end and
    documented in detail in
    [`docs/general-purpose-k8s-plan.md`](docs/general-purpose-k8s-plan.md#phase-3--workload-controllers--garbage-collection-self-healing-part-2)
    — but each was a simplified subset of real upstream semantics (no Indexed
@@ -292,7 +292,7 @@ To enable `kubectl logs` and `kubectl exec`, set up a Cloudflare Tunnel + VPC Se
 ./scripts/setup-tunnel.sh
 ```
 
-Then add the VPC binding to `packages/worker/wrangler.jsonc`:
+Then add the VPC binding to `workers/gateway/wrangler.jsonc`:
 
 ```jsonc
 "vpc_services": [{ "binding": "KUBELET_VPC", "service_id": "YOUR_SERVICE_ID" }]
