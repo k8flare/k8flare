@@ -591,7 +591,8 @@ Mesh needs to justify itself against.
 - Whether cross-request IoContext errors occur
 - The `WASM_INSTANCE_REUSE` fallback flag
 
-**Status**: not started
+**Status**: partially confirmed. Done as part of S8's spike
+(`spikes/s8-wasm-resident/`, local `wrangler dev` only, not deployed).
 
 **Confirmed facts**
 
@@ -601,14 +602,59 @@ Mesh needs to justify itself against.
   Source: the v2 rewrite plan's analysis of the current state ("key facts
   confirmed during investigation"). This is the motivation for verifying
   singleton-ization in S5.
+- **The doneCh guard is real and necessary, and one line fixes it.**
+  Unpatched `syumai/workers` v0.32.0 closes a package-level `doneCh`
+  unconditionally whenever any request's response body reaches EOF
+  (`appCloser.Close()` in `handler_js.go`) — harmless under the library's
+  assumed one-instance-per-request model, but the *second* request ever
+  dispatched to a reused instance crashes the whole Go runtime with
+  `panic: close of closed channel`, reproduced and logged
+  (`spikes/s8-wasm-resident/vendor/syumai-workers-fork/`, unpatched vs.
+  patched comparison). Fix: guard the close with `sync.Once` — the only
+  line changed in a full fork of the module (confirmed via
+  `diff -rq` against the pristine module cache copy).
+- **Cross-request IoContext errors: only found for one specific case, not
+  as broadly as feared, but for a more fundamental reason than "IoContext
+  errors."** `cloudflare.WaitUntil()` called from a request other than the
+  one that originally instantiated the WASM module did **not** throw or
+  warn in local `wrangler dev` (3 calls, 2 on a stale context, all
+  returned `{"result":"ok"}`, task counters matched) — this was
+  unexpected and is flagged as not fully understood / possibly
+  wrangler-dev-specific, not to be trusted in production without
+  re-testing. What *does* reliably break across a request boundary is
+  more basic than any specific Cloudflare binding: **the Go scheduler's
+  own JS-side timer/resume machinery (`wasm_exec.js`) only makes forward
+  progress for the request whose IoContext hosted the original
+  `go.run()` call.** A handler that needs to block on a *new* timer,
+  dispatched to a reused instance as any request other than the
+  originating one, fails almost immediately
+  (`"The Workers runtime canceled this request because it detected that
+  your Worker's code had hung..."`, resolved in ~2ms — looks structural,
+  not a timeout heuristic) and permanently leaks the stuck goroutines.
+  Plain short-lived, non-blocking request/response handlers (the shape
+  most apiserver endpoints already have) are unaffected and were
+  confirmed working correctly across many reused-instance calls in a
+  row (same instance ID, state — e.g. a request counter — correctly
+  accumulating call after call). Full detail, exact panic traces, and
+  the goroutine-leak evidence: S8 section below and
+  `spikes/s8-wasm-resident/` logs.
+- **`WASM_INSTANCE_REUSE` fallback flag**: not evaluated — no such flag
+  exists in this spike; noting it as still open below.
 
 **Open questions**
 
-- All verification items are still not started. Whether S5 succeeds
-  directly determines apiserver's (Phase 2) latency and stability, and
-  it's continuous with the fork work needed for S8 (controllers WASM
-  residency) — the same fork work is expected to resolve both; see S8
-  for detail.
+- Whether apiserver's actual request handlers (as opposed to this
+  spike's synthetic `/status`) are all short-lived and non-blocking is
+  not verified — anything in apiserver's handler path that ends up
+  blocking on a *new* timer/goroutine-resume (not just reading request
+  state and writing a response) would hit the same wall found in S8.
+  Recommend an explicit audit of the request path before adopting
+  instance reuse for apiserver.
+- The `WASM_INSTANCE_REUSE` fallback flag mentioned in the original
+  verification items was not implemented or evaluated in this pass.
+- Not verified in production `workerd` — only local `wrangler dev`. See
+  S8's "production-only residual items" for the full list; the same
+  caveats apply here (this is the same fork/mechanism).
 
 ---
 
@@ -811,7 +857,116 @@ before the other spikes because it still decides how
 (d) Whether the same "no wall-clock limit" property holds for internal
     calls made via service bindings too
 
-**Status**: not started (in progress)
+**Status**: partially confirmed (local `wrangler dev` only; not deployed
+— (b)'s real CPU-ms measurement explicitly needs production and was not
+attempted). Spike code, raw logs and exact reproduction commands:
+`spikes/s8-wasm-resident/` (throwaway, not part of the build).
+
+**Results for (a)(c)(d)**, each backed by a live local run, not source
+reading alone (CLAUDE.md rule #2):
+
+- **(a) confirmed, and — correcting the note below — no fork is needed
+  for this part.** `GET /stream` on a completely unmodified
+  `github.com/syumai/workers` v0.32.0, with the standard generated glue
+  (one `WebAssembly.Instance` per request, same as this repo's actual
+  `main.go`), stayed open for a full 11-minute `curl -m 660` run: 329
+  heartbeat lines, zero gaps, a background "ticker" goroutine and a
+  separate, independent "informer-like" goroutine both alive and
+  correctly scheduled the entire time (`ticker_count` exactly equal to
+  the running sequence number throughout; informer tick reached 132 at
+  the 5s cadence over 660s). One live instance for the whole run. This
+  works today, with zero library changes, because `Serve()`'s blocking
+  `<-Done()` only waits on *that one request's* own response body — as
+  long as the handler keeps writing and the client keeps reading, the
+  program simply never returns. See the correction log entry below.
+- **(c) confirmed.** 12 concurrent `curl -m 90 .../stream`, launched
+  together and run simultaneously with the (a) and (d) 11-minute soaks
+  (14 long streams open on one isolate at peak): all 12 completed
+  uniformly (same start/end timestamps, 44 heartbeats each, 12 distinct
+  instance IDs proving true per-request isolation, zero dropped
+  heartbeats, no errors in the dev log).
+- **(d) confirmed.** A 2-line TS relay worker
+  (`return env.GOWORKER.fetch(request)`) bound via a service binding to
+  the Go worker, same 11-minute soak run through the binding: 330
+  heartbeats, zero gaps, single instance the whole time. Streaming
+  semantics (headers returned early, body trickles in over minutes)
+  survive the service-binding hop unchanged — directly relevant since
+  `workers/gateway` → `workers/apiserver` and any future
+  `workers/controllers` → `workers/apiserver` call are both modeled as
+  service bindings.
+  Pitfall found along the way: `wrangler dev -c A -c B` only exposes
+  **the first** config's port on localhost; list the worker you want to
+  `curl` directly first.
+- **(b)**: not attempted, as scoped (needs a real deploy + billing
+  dashboard/`wrangler tail`).
+
+**Additional item beyond the original (a)–(d): isolate-level WASM
+instance reuse across *independent* requests (the S5 crossover).** Not
+one of the original four letters, but explicitly requested alongside
+them and directly relevant to whether "start the controller once, let it
+keep running" is achievable at all. Full detail is in the S5 section
+above; summary: **state reuse works** with a one-line fork
+(`sync.Once`-guard a `doneCh` close that upstream closes unconditionally
+and which otherwise panics — `panic: close of closed channel` — on the
+second request dispatched to a reused instance). **Continuous
+goroutine/timer progress across independent requests does not.** With
+zero idle gap, a *second*, different request that needs to block on a
+fresh timer (e.g. a second `/stream` call) fails almost immediately
+(`"...detected that your Worker's code had hung..."`, resolved in ~2ms,
+looks structural rather than timeout-based) and permanently leaks the
+stuck goroutines. A single request that itself stays open the whole time
+(the (a) shape above) does *not* hit this — the deciding factor is
+whether a given request is the one whose IoContext originally hosted
+`go.run()`, not idle duration (tested 9s/12s/31s/57s gaps: a live
+`main()`-started 2s ticker only ever advances **+1 tick per incoming
+request, never proportionally to elapsed time**, when idle). **Practical
+implication: the viable resident shape is "instantiate once, keep one
+long-lived stream open for the whole program's lifetime" (proven by (a)
+above), not "instantiate once, dispatch N independent incoming requests
+over time" (S5's literal ask, not reliable beyond short synchronous
+handlers).** A controller's own outbound watch to the apiserver is the
+natural candidate for that one always-open stream.
+
+**New, unplanned, and currently the single most consequential finding:
+outbound `net/http` calls crash the WASM instance, independent of
+everything above.** While building a realistic informer simulation (a
+goroutine issuing its own outbound `http.Get` to consume a streamed
+response — the *client* side of a watch, which is what
+kube-controller-manager/kube-scheduler's informers actually do, as
+opposed to (a)'s server-side response streaming), the very first request
+to a fresh instance crashed:
+```
+panic: JavaScript error: Illegal invocation: function called with incorrect `this` reference.
+net/http.(*Transport).RoundTrip(...)  roundtrip_js.go:129
+```
+Reproduced independently on the **completely unmodified** library (not
+the S5 fork) with a trivial one-shot `http.Get`, and also with
+`github.com/syumai/workers/cloudflare/fetch`'s own `NewClient()` (the
+library's documented alternative to the stdlib transport) left at its
+default `namespace: js.Global()`. Root cause: `wasm_exec.js` wraps the
+real `globalThis` in a `Proxy` so it can inject the per-request
+`context`; `js.Global()` in Go resolves to that Proxy, and native
+`fetch()` rejects being called with a Proxy as `this` (V8/`workerd`'s
+receiver/brand check) — this is a property of syumai/workers v0.32.0
+itself, present in the current, unmodified `main.go` this repo already
+ships (it hasn't surfaced yet because apiserver's only outbound-shaped
+call, the Durable Object fetch, is binding-shaped, not
+`js.Global()`-based). **Working fix, verified**: route outbound calls
+through a real service binding object instead —
+`cloudflare.GetBinding("NAME")` + `cloudflare/fetch.NewClient(fetch.WithBinding(binding))`
+— tested against a self-binding, returned a clean response, no panic.
+This matches the target architecture (controllers would call the
+apiserver via a service binding anyway) but was only tested against a
+self-binding toy, not the real apiserver Worker, and does not help for
+genuinely arbitrary external URLs (service bindings only target other
+Workers in the same account). **If any upstream k8s/k3s controller code
+pulled in for Phase 5 calls `http.Get`/`http.DefaultClient`/a bare
+`*http.Transport` anywhere in its dependency graph without a binding
+override, it will crash the instance.** Recommend treating an explicit
+audit of client-go's/KCM's outbound call paths as a prerequisite for
+committing to Phase 5, regardless of which WASM-only execution shape
+(stream-resident, DO-hosted event-driven, hibernation re-entry) is
+ultimately chosen — this bug is orthogonal to that choice.
 
 **Branch condition**: if all four of (a)–(d) check out,
 `workers/controllers` is designed as a Go WASM-resident process using
@@ -823,6 +978,13 @@ WebSocket-hibernation re-entry, wake-on-write — not Containers
 described are superseded by user decision, 2026-07-02; see the
 Correction log). Whatever fails gets recorded here with the specifics of
 how it broke, as the basis for choosing an alternative shape.
+**Update given the results above**: (a)(c)(d) all check out locally, so
+the plain stream-resident technique is not ruled out by this round of
+testing — but the outbound-`net/http` crash is a hard blocker for *any*
+WASM-only shape (it isn't specific to the stream-resident technique) and
+must be resolved (at minimum: confirm every outbound call path is
+binding-routed) before treating S8 as a green light. Production-only
+verification (below) is also still outstanding.
 
 **Confirmed facts**
 
@@ -834,32 +996,53 @@ how it broke, as the basis for choosing an alternative shape.
   docs, URL not recorded in this document — to be added when
   referenced). → This is the basis for S8's hypothesis that a workload
   shaped like an informer (holding a watch open, mostly waiting on I/O)
-  could end up nearly free on Workers.
+  could end up nearly free on Workers. Not itself re-verified here (that
+  needs a production deploy, see below); what *was* verified locally is
+  the load-bearing precondition — that the stream and its background
+  goroutines actually keep running for minutes at a time without being
+  killed (see (a) above).
 - **Concurrent connection limits were relaxed on 2026-04-09**: only the
   momentary "awaiting headers" phase is still capped at 6, while
   established long-lived streams became unlimited. Source: the
   Cloudflare changelog, dated 2026-04-09 (the plan records this as
   confirmed; the specific entry URL isn't recorded in this document — to
-  be added when referenced). → Directly relevant to (c), "do ~10–15
-  concurrent long-lived streams stay stable" (they shouldn't run into the
-  momentary 6-connection headers-wait cap, but stability once
-  established is still unverified).
+  be added when referenced). → (c) above is consistent with this (12
+  concurrent established streams were stable), though local `wrangler
+  dev` does not enforce or model production connection limits either
+  way, so this isn't an independent confirmation of the limit itself.
 - The current syumai/workers design is "one request = one execution; the
-  WASM instance ends when the response closes." Keeping a Go program
-  alive as a response stream that's never closed requires a fork
-  (continuous with S5's isolate-reuse fork — likely the same fork work
-  resolves both, per the plan).
+  WASM instance ends when the response closes" **for the standard
+  generated glue's instantiate-per-request pattern** — but (a) above
+  shows that pattern alone already supports keeping *that one request's*
+  Go program alive indefinitely with no fork, as long as the handler
+  never returns and the client keeps reading. A fork is only required
+  for the separate S5 goal of reusing one instance across *multiple,
+  independent* incoming requests (see S5 section and the additional item
+  above).
 
 **Open questions**
 
-- (a)–(d) are all unverified.
+- (b): real production CPU-ms measurement, not attempted here.
+- The outbound-`net/http` crash and its binding-based workaround need
+  re-verification against production `workerd` and the real apiserver
+  Worker, not a local self-binding toy.
 - kube-scheduler/KCM internally run a per-informer goroutine, workqueue
   workers, and periodic resync timers concurrently. Whether this scale of
   concurrent I/O-waiting stays stable for hours to days on a
-  `GOOS=js/wasm` target is unproven.
-- Whether client-go's transport (via syumai's fetch-based RoundTripper)
-  correctly handles reconnection, backoff, and resourceVersion
-  continuity for long-lived watch connections is unproven.
+  `GOOS=js/wasm` target is unproven (this spike ran minutes, not hours;
+  and only 1-2 concurrent goroutines per instance, not the full
+  KCM-scale count).
+- Whether client-go's transport (via syumai's fetch-based RoundTripper,
+  or a binding-routed replacement given the fetch bug above) correctly
+  handles reconnection, backoff, and resourceVersion continuity for
+  long-lived watch connections is unproven.
+- Real connection/subrequest limits and isolate eviction behavior under
+  concurrency, and whether production idle-isolate eviction changes the
+  "one open stream keeps the instance alive" story — `wrangler dev` does
+  not model either.
+- Whether the surprising "`cloudflare.WaitUntil` didn't throw on a stale
+  context" result (S5 section) holds in real `workerd` and isn't a
+  wrangler-dev-only emulation quirk.
 
 ---
 
@@ -900,3 +1083,24 @@ this document before now, so it isn't a correction of prior published
 text — it's recorded here as an example of the "verify, don't trust a
 read" principle (CLAUDE.md inviolable rule #2) catching a wrong
 intermediate answer before it became a documented fact.
+
+**2026-07-02 — S8's "(a) requires a fork" claim was wrong; corrected
+after actually running it.** The S8 section previously stated, under
+"Confirmed facts," that "keeping a Go program alive as a response stream
+that's never closed requires a fork (continuous with S5's isolate-reuse
+fork)." A live local test (`spikes/s8-wasm-resident/stock/`, completely
+unmodified `github.com/syumai/workers` v0.32.0, standard generated glue)
+kept a single request's response stream open for a full 11 minutes with
+background goroutines running the whole time, with **zero library
+changes**. The earlier claim conflated two different things: (1) keeping
+*one already-in-flight request's* Go program alive indefinitely (no fork
+needed — `Serve()`'s blocking `<-Done()` only depends on that one
+request's own response body, so a handler that never returns and a
+client that keeps reading is sufficient), and (2) reusing *one instance
+across multiple, independent* incoming requests (S5's actual goal, which
+does need the `doneCh` fork — confirmed separately). This document's
+prior text was written before either was run; both are now verified
+against real `wrangler dev` output, not just source reading. The S8
+section above has been updated in place to state the distinction
+directly; this entry preserves the original (incorrect) claim and why it
+was wrong, per CLAUDE.md inviolable rule #4.
