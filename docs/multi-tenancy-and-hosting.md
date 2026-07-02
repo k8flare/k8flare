@@ -136,6 +136,79 @@ cluster's write rate ever demands them — see "Scale model" below.
 
 ## Target architecture
 
+> **Honest correction (Phase 4, 2026-07-02):** the "Namespace DO" tier
+> described below -- a top-level, own-thread DO per namespace that
+> follows the cluster DO's ordering -- was **not** what got built.
+> Phase 4 implemented namespace data as **facets of the cluster DO**
+> (`ctx.facets.get("ns/<namespace>", ...)`) instead, per the project's
+> July 2026 decision to facet-split state "as much as possible" (see the
+> v2 rewrite plan). This section is left as-written (not deleted) per
+> the project's correction convention; the paragraphs immediately below
+> explain what changed and why, then the original design continues
+> unedited for the historical record.
+>
+> **What's different in practice:**
+> - Namespace data lives in a facet of the *same* Cluster DO, not a
+>   separate top-level DO. A facet has its own SQLite database (S1,
+>   confirmed empirically) but is reachable **only through its parent's
+>   thread** (S1/S2) -- so "own thread" below is inaccurate for facets;
+>   only "own storage" holds.
+> - The **write path is simpler than described below**, not more
+>   complex: because a facet is reached synchronously, in-process, from
+>   the same request that assigned the revision, "forward {key, rev,
+>   value} after commit" is not a separate async step with its own retry
+>   queue -- the parent inserts its own envelope row (assigning the
+>   revision) and then `await`s one `fetch()` call to the facet, within
+>   the same request. There is no cross-DO availability gap to design
+>   around the way there would be for a genuinely independent top-level
+>   Namespace DO.
+> - **Namespace deletion does NOT call `ctx.facets.delete()`**, contrary
+>   to "namespace deletion = deleteAll() on this DO" below. Reproduced
+>   empirically: repeatedly deleting and recreating a facet under the
+>   *same name* (a realistic scenario -- CI suites and iterative
+>   development both reuse namespace names) works for the first few
+>   cycles, then every following create through that facet name
+>   permanently returns a false "already exists", deterministically at
+>   the 4th cycle, unaffected by adding delays between requests -- an
+>   undocumented platform limitation, not a bug in this codebase (S1's
+>   spike only ever exercised a single delete-then-recreate). Since
+>   every namespaced object is already individually tombstoned by the
+>   cascade delete before the Namespace object itself is removed,
+>   correctness doesn't depend on the facet-level delete -- skipping it
+>   only forgoes a storage-GC nicety. See `workers/storage/src/index.ts`
+>   (`handleDelete`) for the full writeup and the fix this leaves open
+>   (facet names suffixed with the Namespace's own UID, so a reused
+>   *name* never reuses a facet *name*).
+> - **WatchHub does not hold "one WS upstream" to the cluster DO.**
+>   Reproduced empirically: a Durable Object cannot call
+>   `ctx.acceptWebSocket()` on a WebSocket obtained via `resp.webSocket`
+>   from calling `fetch()` on a *different* DO -- hibernatable accept is
+>   only for a WebSocketPair half the same invocation just created, not
+>   for relaying a socket obtained from another DO's response. Instead,
+>   the cluster DO **pushes** each event to WatchHub via a plain `fetch()`
+>   POST immediately after committing it, which WatchHub fans out to its
+>   client sockets. This is a net simplification (no upstream
+>   connect/reconnect bookkeeping) and, unlike a held-open upstream
+>   socket, keeps both DOs hibernation-eligible between events.
+> - The `ca-vault`/`events-log` facets described below as children of
+>   the (non-existent) separate flow are, in the implementation, facets
+>   of the cluster DO directly, exactly as drawn in the diagram below --
+>   that part of the diagram is accurate.
+> - **Known open item**, not resolved this phase: a minimal Go
+>   `net/http` client -- and therefore client-go, kubectl, and every
+>   real Kubernetes controller -- does not receive any bytes from a
+>   long-lived watch response against local `wrangler dev`, while curl
+>   reads the identical bytes immediately (see
+>   `docs/cost-model.md`'s Phase 4 actuals and the WatchHub redesign
+>   commit for the full repro). This needs re-verification against a
+>   real deployment before watch is considered production-ready.
+>
+> Everything below this note describes the **originally planned**
+> Namespace-DO design; treat "Namespace DO" as "namespace facet of the
+> Cluster DO" when reading it, and the "Write path"/"Read path" sections'
+> async-forwarding descriptions as superseded by the synchronous,
+> in-process version above.
+
 Chosen target (decided July 2026): build the namespace-DO tier from the
 start, rather than keeping namespaced data inside the cluster DO.
 
@@ -343,6 +416,19 @@ Each phase keeps the live cluster working and the conformance CI green.
 | 4     | Facets (beta-gated): `ca-vault`, Event churn isolation                                                                                | Facet loss/reset drills; no cross-facet reads from dynamic code                                                  |
 | 5     | Management plane + wildcard `k8flare.com` routing + `k8f cluster create`                                                              | A cluster provisioned end-to-end in one command                                                                  |
 | 6     | Metering → Stripe billing, plans/quotas; managed Container node pools                                                                 | Private beta with real invoices                                                                                  |
+
+> **Correction (2026-07-02):** this table's phase numbers are this
+> document's own original delivery sequence, not the v2 rewrite plan's
+> phase numbers (a separate, later plan that supersedes the delivery
+> order above). What the v2 plan calls "Phase 4 — storage v2" delivered
+> this table's Phase 2 (namespace data isolation -- as facets, not
+> top-level DOs, see the "Target architecture" correction above), Phase
+> 3 (WatchHub, redesigned as push-based fan-out), and part of Phase 4
+> (the `ca-vault`/`events-log` facets, plus `ns/<namespace>`) all
+> together, rather than in this sequence. "Namespace delete =
+> `deleteAll()`" in Phase 2's acceptance criteria did not ship (see the
+> correction above); the rest of each row's acceptance criteria was met
+> or superseded as described inline.
 
 ## Open questions
 
