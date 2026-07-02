@@ -1,0 +1,13 @@
+{
+  // Throwaway spike Worker for S1 (DO Facets remaining verification
+  // questions). Not part of the production build; see FINDINGS.md.
+  "name": "k8flare-verify-facets",
+  "main": "./src/index.ts",
+  "compatibility_date": "2026-03-24",
+  "durable_objects": {
+    "bindings": [{ "name": "SUPERVISOR", "class_name": "Supervisor" }],
+  },
+  "worker_loaders": [{ "binding": "LOADER" }],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Supervisor"] }],
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+}
