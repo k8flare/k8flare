@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
 	"strconv"
 	"strings"
 
@@ -12,38 +11,42 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/apiserver/pkg/storage/names"
 )
 
 // ResourceStore handles CRUD for a single resource type (e.g. configmaps).
 // It bridges between Kubernetes runtime.Object types and the raw byte Storage layer.
 type ResourceStore struct {
-	storage      *Storage
-	resource     string // e.g. "configmaps"
-	namespaced   bool
-	newFunc      func() runtime.Object // creates a new empty object (e.g. &corev1.ConfigMap{})
-	newListFunc  func() runtime.Object // creates a new empty list object (e.g. &corev1.ConfigMapList{})
-	setItemsFunc func(list runtime.Object, items []runtime.Object)
+	storage     *Storage
+	resource    string // e.g. "configmaps"
+	namespaced  bool
+	newFunc     func() runtime.Object // creates a new empty object (e.g. &corev1.ConfigMap{})
+	newListFunc func() runtime.Object // creates a new empty list object (e.g. &corev1.ConfigMapList{})
 }
 
 // NewResourceStore creates a ResourceStore for the given resource type.
+// Item insertion into a listed object is handled generically by
+// k8s.io/apimachinery/pkg/api/meta.SetList (see List below) via reflection
+// on the list's "Items" field -- every k8s API list type has one -- so,
+// unlike the ResourceStore this project had before apidef.Table existed,
+// there is no per-type "append into the right typed slice" callback to
+// supply here.
 func NewResourceStore(
 	storage *Storage,
 	resource string,
 	namespaced bool,
 	newFunc, newListFunc func() runtime.Object,
-	setItemsFunc func(list runtime.Object, items []runtime.Object),
 ) *ResourceStore {
 	return &ResourceStore{
-		storage:      storage,
-		resource:     resource,
-		namespaced:   namespaced,
-		newFunc:      newFunc,
-		newListFunc:  newListFunc,
-		setItemsFunc: setItemsFunc,
+		storage:     storage,
+		resource:    resource,
+		namespaced:  namespaced,
+		newFunc:     newFunc,
+		newListFunc: newListFunc,
 	}
 }
 
@@ -66,18 +69,6 @@ func (rs *ResourceStore) storagePrefix(namespace string) string {
 		return "/" + rs.resource + "/" + namespace + "/"
 	}
 	return "/" + rs.resource + "/"
-}
-
-// generateUID produces a simple UID string. This is not RFC 4122 compliant
-// but is sufficient for this minimal implementation.
-func generateUID() types.UID {
-	return types.UID(fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		rand.Int31(),
-		rand.Int31n(0xffff),
-		rand.Int31n(0xffff),
-		rand.Int31n(0xffff),
-		rand.Int63n(0xffffffffffff),
-	))
 }
 
 // prepareJobForCreate auto-generates spec.selector and injects the
@@ -181,6 +172,18 @@ func immutableFieldStatus(resource, name, field string) *metav1.Status {
 	}
 }
 
+// badRequestStatus returns a metav1.Status indicating the request itself
+// was malformed (e.g. a fieldSelector referencing an unsupported field).
+func badRequestStatus(message string) *metav1.Status {
+	return &metav1.Status{
+		TypeMeta: metav1.TypeMeta{Kind: "Status", APIVersion: "v1"},
+		Status:   metav1.StatusFailure,
+		Message:  message,
+		Reason:   metav1.StatusReasonBadRequest,
+		Code:     400,
+	}
+}
+
 // StatusError wraps a metav1.Status as an error, allowing callers to inspect
 // the structured Kubernetes status response.
 type StatusError struct {
@@ -230,14 +233,19 @@ func (rs *ResourceStore) List(ctx context.Context, namespace string, fieldSelect
 		items = append(items, obj)
 	}
 
-	items = applyFieldSelector(items, fieldSelector)
+	items, err = applyFieldSelector(items, fieldSelector)
+	if err != nil {
+		return nil, fmt.Errorf("store list: %w", err)
+	}
 	items, err = applyLabelSelector(items, labelSelector)
 	if err != nil {
 		return nil, fmt.Errorf("store list: %w", err)
 	}
 
 	listObj := rs.newListFunc()
-	rs.setItemsFunc(listObj, items)
+	if err := meta.SetList(listObj, items); err != nil {
+		return nil, fmt.Errorf("store list: set items: %w", err)
+	}
 
 	// Set list-level resourceVersion for watch continuation
 	if accessor, ok := listObj.(metav1.ListMetaAccessor); ok {
@@ -267,81 +275,74 @@ func applyLabelSelector(items []runtime.Object, labelSelector string) ([]runtime
 	return filtered, nil
 }
 
-// applyFieldSelector filters a list of runtime.Object by the given fieldSelector string.
-// The fieldSelector format is "field1=value1,field2=value2".
-func applyFieldSelector(items []runtime.Object, fieldSelector string) []runtime.Object {
-	if fieldSelector == "" {
-		return items
+// knownSelectableFields is every field path selectableFieldsFor (below)
+// ever populates. applyFieldSelector rejects a selector term naming a field
+// outside this set (400 Bad Request, matching real kube-apiserver's
+// behavior for an unsupported field selector) instead of silently treating
+// it as always-matching. That silent-pass-through used to be this
+// function's actual behavior (an unrecognized field just fell through a
+// switch statement's default case) and caused a real bug: kube-proxy's
+// Service informer filters with "spec.clusterIP!=None" to skip headless
+// Services, and before spec.clusterIP was added here, that term silently
+// matched everything, leaking headless Services into kube-proxy's view
+// (see git history, commit 0180b37).
+var knownSelectableFields = map[string]bool{
+	"metadata.name":      true,
+	"metadata.namespace": true,
+	"spec.nodeName":      true,
+	"status.phase":       true,
+	"spec.clusterIP":     true,
+}
+
+// selectableFieldsFor extracts the fields.Set of field-selector-queryable
+// values for obj. Real kube-apiserver requires this same per-resource-type
+// mapping (each resource registers its own SelectableFields upstream, e.g.
+// pkg/registry/core/pod/strategy.go's PodToSelectableFields) -- only the
+// specific fields real clients embedded in this project actually query are
+// implemented: kube-scheduler's Pod informer ("spec.nodeName",
+// "status.phase!=Succeeded,status.phase!=Failed") and kube-proxy's Service
+// informer ("spec.clusterIP!=None").
+func selectableFieldsFor(obj runtime.Object) fields.Set {
+	set := fields.Set{}
+	if meta := getObjectMeta(obj); meta != nil {
+		set["metadata.name"] = meta.Name
+		set["metadata.namespace"] = meta.Namespace
 	}
-	selectors := strings.Split(fieldSelector, ",")
-	var filtered []runtime.Object
+	switch o := obj.(type) {
+	case *corev1.Pod:
+		set["spec.nodeName"] = o.Spec.NodeName
+		set["status.phase"] = string(o.Status.Phase)
+	case *corev1.Service:
+		set["spec.clusterIP"] = o.Spec.ClusterIP
+	}
+	return set
+}
+
+// applyFieldSelector filters items by fieldSelector (real Kubernetes field
+// selector syntax, e.g. "status.phase!=Succeeded,status.phase!=Failed" or
+// "spec.clusterIP!=None"), using k8s.io/apimachinery/pkg/fields' real
+// parser and matcher rather than a hand-rolled one.
+func applyFieldSelector(items []runtime.Object, fieldSelector string) ([]runtime.Object, error) {
+	if fieldSelector == "" {
+		return items, nil
+	}
+	selector, err := fields.ParseSelector(fieldSelector)
+	if err != nil {
+		return nil, fmt.Errorf("parse field selector %q: %w", fieldSelector, err)
+	}
+	for _, req := range selector.Requirements() {
+		if !knownSelectableFields[req.Field] {
+			return nil, &StatusError{Status: badRequestStatus(fmt.Sprintf("field label not supported: %s", req.Field))}
+		}
+	}
+
+	filtered := make([]runtime.Object, 0, len(items))
 	for _, item := range items {
-		if matchesFieldSelector(item, selectors) {
+		if selector.Matches(selectableFieldsFor(item)) {
 			filtered = append(filtered, item)
 		}
 	}
-	return filtered
-}
-
-// matchesFieldSelector checks whether a single object matches all field selectors.
-// Returns false if any selector does not match. Supports both "field=value" and
-// "field!=value" (not-equal) terms, matching real Kubernetes field selector
-// syntax — real kube-scheduler's Pod informer, for example, filters with
-// "status.phase!=Succeeded,status.phase!=Failed".
-func matchesFieldSelector(obj runtime.Object, selectors []string) bool {
-	meta := getObjectMeta(obj)
-	for _, sel := range selectors {
-		field, value, negate := parseFieldSelectorTerm(sel)
-		if field == "" {
-			continue
-		}
-
-		var actual string
-		switch field {
-		case "metadata.name":
-			if meta != nil {
-				actual = meta.Name
-			}
-		case "metadata.namespace":
-			if meta != nil {
-				actual = meta.Namespace
-			}
-		case "spec.nodeName":
-			if pod, ok := obj.(*corev1.Pod); ok {
-				actual = pod.Spec.NodeName
-			}
-		case "status.phase":
-			if pod, ok := obj.(*corev1.Pod); ok {
-				actual = string(pod.Status.Phase)
-			}
-		case "spec.clusterIP":
-			// Needed by kube-proxy's Service informer, which filters with
-			// "spec.clusterIP!=None" to skip headless Services (proxied by
-			// DNS directly to Pod IPs, not by kube-proxy).
-			if svc, ok := obj.(*corev1.Service); ok {
-				actual = svc.Spec.ClusterIP
-			}
-		default:
-			continue
-		}
-
-		if (actual == value) == negate {
-			return false
-		}
-	}
-	return true
-}
-
-// parseFieldSelectorTerm splits a single "field=value" or "field!=value" term.
-// "!=" is checked before "=" since "=" alone would otherwise match inside it.
-func parseFieldSelectorTerm(sel string) (field, value string, negate bool) {
-	if idx := strings.Index(sel, "!="); idx != -1 {
-		return sel[:idx], sel[idx+2:], true
-	}
-	if idx := strings.Index(sel, "="); idx != -1 {
-		return sel[:idx], sel[idx+1:], false
-	}
-	return "", "", false
+	return filtered, nil
 }
 
 // Create stores a new resource in storage. It sets UID, creation timestamp,
@@ -366,7 +367,7 @@ func (rs *ResourceStore) Create(ctx context.Context, namespace string, obj runti
 	}
 
 	// Set metadata for creation
-	meta.UID = generateUID()
+	meta.UID = uuid.NewUUID()
 	meta.CreationTimestamp = metav1.Now()
 	if rs.namespaced {
 		meta.Namespace = namespace
@@ -532,7 +533,9 @@ func (rs *ResourceStore) DeleteCollection(ctx context.Context, namespace, labelS
 	}
 
 	resultList := rs.newListFunc()
-	rs.setItemsFunc(resultList, deleted)
+	if err := meta.SetList(resultList, deleted); err != nil {
+		return nil, fmt.Errorf("store delete collection: set items: %w", err)
+	}
 	return resultList, nil
 }
 
