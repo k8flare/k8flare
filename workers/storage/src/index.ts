@@ -18,7 +18,7 @@ const SAFETY_NET_INTERVAL_MS = 60_000;
 // alarm, so a burst of writes coalesces into a single scheduler pass.
 const DEBOUNCE_MS = 1_000;
 
-export class Etcd {
+export class Cluster {
   private ctx: DurableObjectContext & {
     storage: { sql: SqlExec; setAlarm(ms: number): void; getAlarm(): Promise<number | null> };
   };
@@ -228,3 +228,24 @@ export class Etcd {
     ws.close(1011, "WebSocket error");
   }
 }
+
+// Scaffold only -- binding + class registration for the multi-tenancy watch
+// fan-out DO described in docs/multi-tenancy-and-hosting.md. Not wired to
+// any request path yet; real implementation (hibernatable WebSocket fan-out
+// across Cluster facets) lands in Phase 4.
+export class WatchHub {
+  constructor(_ctx: DurableObjectContext, _env: unknown) {}
+}
+
+// This Worker is never routed to directly -- gateway/apiserver/runtime reach
+// Cluster/WatchHub via a script_name Durable Object binding instead. A
+// default export is still required so wrangler builds this as a module
+// Worker (Durable Objects cannot be exported from a service-worker-format
+// Worker).
+export default {
+  async fetch(): Promise<Response> {
+    return new Response("k8flare-storage: not directly routable (Durable Objects only)", {
+      status: 404,
+    });
+  },
+};
