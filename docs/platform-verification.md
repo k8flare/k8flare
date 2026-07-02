@@ -31,7 +31,7 @@ documentation or guesswork alone has a proven cost.
 
 | # | What's being verified | Status | Primary dependent phase |
 |---|---|---|---|
-| S1 | Facets (limits, storage accounting, parallelism, alarms, delete) | partially confirmed | Phase 4 (storage v2) |
+| S1 | Facets (limits, storage accounting, parallelism, alarms, delete) | verified (the 10GB shared-vs-independent boundary test alone was intentionally not run — non-blocking) | Phase 4 (storage v2) |
 | S2 | Dynamic Workers Loader (bundling WASM, size limits, env bindings) | verified (local wrangler dev; production limits unconfirmed) | Phase 2 / Phase 4 |
 | S3 | Containers (startup, onActivityExpired, cold start, arbitrary images, UDP, wrangler dev) | not started | Phase 5 route B / Phase 7 |
 | S4 | Cloudflare Mesh (billing scope, flannel prototype, Cluster DNS replacement) | verified (desk research) | Phase 9 |
@@ -54,7 +54,9 @@ documentation or guesswork alone has a proven cost.
   deletion)
 - (Method) reuse the existing KOOFFICE live-verification deployment
 
-**Status**: partially confirmed
+**Status**: verified (the 10GB shared-vs-independent boundary test alone
+was intentionally not run — non-blocking, see the boundary-test entry
+under Open questions below)
 
 **Confirmed facts**
 
@@ -102,6 +104,68 @@ exercised directly (this finding is also already reflected in
    checking whether the other side is constrained — which hasn't been
    run.
 
+Continuation of this verification (`spikes/s1-facets/FINDINGS.md`,
+commit `e19280c`, 2026-07-02) covered the remaining S1 verification
+items empirically, both locally and against a fresh throwaway KOOFFICE
+deployment (`k8flare-verify-facets`, deployed for this spike and deleted
+afterward — deletion double-checked via a 404 and
+`wrangler deployments list` returning code 10007). No secrets were used;
+no alarms were ever successfully armed (facets reject `setAlarm`, and
+the supervisor DO never called it).
+
+5. **Facet count**: no ceiling found up to 1,000, tested both locally
+   and in production via staged growth (100 → 250 → 500 → 1,000, each
+   `/ping` forcing real instantiation). Production was notably faster
+   than local for the final batch (911ms vs. 3,856ms for the last 500
+   creations). 1,000 was the requested target — higher counts are
+   unexplored. → The namespace = facet design (Phase 4) is viable at the
+   scale tested.
+6. **Mass facet creation can hit a rare transient error**:
+   `Internal error in Durable Object storage caused object to be reset`
+   appeared twice across 20+ burst operations (once in an early
+   production batch, once in a parallel n=20 test), with no correlation
+   found to facet count or batch size; an immediate retry with a fresh
+   prefix succeeded both times, and five follow-up bursts all passed
+   cleanly. → **Any production code path that creates multiple facets
+   (e.g. namespace creation) needs a retry wrapper around facet
+   creation.**
+7. **Facet dispatch is not serialized**, confirmed both locally and in
+   production: an I/O-bound workload (`setTimeout`-based
+   `/ping?sleepMs=N`) run via `Promise.all` across N facets showed warm
+   re-runs collapsing to a flat ~230ms for both n=100 and n=300 (vs. a
+   serial-execution floor of ≥4,000ms for n=20 alone); production n=20
+   ×5 runs measured 92–188ms. **This proves non-serialized dispatch for
+   I/O-bound work specifically, not multi-core parallelism for
+   CPU-bound work** — the design's expectation of await-based I/O work
+   inside facets is what this actually needs.
+8. **Alarms inside facets are explicitly and deliberately forbidden**,
+   confirmed in production: `ctx.storage.setAlarm()` inside a facet
+   throws immediately with `Error: Facets currently cannot set alarms.`
+   (a deliberate rejection, not a generic failure — untestable locally,
+   see item 10 below). → Event-armed alarms (controller re-arm,
+   safety-net alarms) must live on top-level DOs only;
+   "namespace-level alarm-driven work inside its own facet" is now a
+   closed option, not just an unverified one.
+9. **`delete()` semantics reconfirmed from a new angle**, identical
+   locally and in production: recreating a facet after `delete()`
+   yields genuinely fresh state (`freshlyConstructed: true`, new
+   `constructedAt`); an in-flight request (mid 3s sleep) rejects at the
+   moment of deletion (~500ms in, not the full 3s) with
+   `Facet was deleted.` — `delete()` itself neither blocks nor throws;
+   and `delete()` on a facet name that was never created is a harmless
+   no-op.
+10. **Local tooling constraints** (both discovered during this pass):
+    the repo-pinned wrangler 4.77.0 (workerd 1.20260317.1) **does not
+    implement facets at all** (`ctx.facets` is `undefined`, predates the
+    Agents Week Apr 2026 facets launch) — `npx wrangler@latest` (4.106.0,
+    used for this spike) is required for any local facets work until the
+    repo pin is bumped. Separately, even on `wrangler@latest`, **alarms
+    on SQLite-backed DOs (facet or not) cannot be tested locally at
+    all** — `ctx.storage.setAlarm()` throws
+    `Error: alarms are not yet implemented for SQLite-backed Durable
+    Objects` — so item 8 above, and any future Phase 4 alarm-parking
+    test, can only be verified against a real deployment.
+
 Based on the above empirical verification, the v2 rewrite plan adopts the
 following as confirmed facts:
 
@@ -117,9 +181,12 @@ following as confirmed facts:
   actually independent throws away real scale at the design stage. The
   downside is asymmetric, so we assume the optimistic side and fix only
   the capacity design if the boundary test proves it wrong).
-- Facet execution parallelism remains unverified. The constraint that all
-  traffic funnels through the parent DO's single thread holds under
-  either assumption, so the design doesn't depend on this.
+- Facet execution parallelism is now confirmed non-serialized for
+  I/O-bound work (item 7 above; not proven for CPU-bound work, which the
+  design doesn't require). The constraint that all traffic funnels
+  through the parent DO's single thread for facet *dispatch* still
+  holds — this finding is about concurrent execution once dispatched,
+  not about removing that single-thread hop.
 
 The general DO/Facets platform numbers (10GB storage per SQLite DO,
 ~1,000 req/s soft ceiling, single-threaded, 2MB max value/row, 32,768
@@ -133,14 +200,17 @@ Verified Cloudflare platform facts table (sources:
 
 **Open questions**
 
-- Practical limit on facet count (unverified — this pass only tested a
-  3-way setup of 2 sibling facets + supervisor).
-- Boundary test for shared vs. independent 10GB (filling one side to
-  ~9GB+, not yet run).
-- Whether alarms work inside a facet (unverified).
-- Facet execution parallelism (unverified; `docs/multi-tenancy-and-hosting.md`
-  also flags this as "undocumented" and deliberately avoids depending on
-  it in its design).
+- **Boundary test for shared vs. independent 10GB** (filling one facet
+  to ~9–9.5GB, then testing whether a sibling facet and the parent DO
+  can still take small writes) is **intentionally deferred, not
+  blocking**: the working assumption (independent-per-facet) only
+  affects capacity headroom if wrong, not correctness, and the
+  procedure is cheap to run later (estimated well under $1, per
+  `spikes/s1-facets/FINDINGS.md` item 5 — the real cost is wall-clock
+  time to write ~9.5GB, not money). Run it before Phase 4 capacity
+  planning leans on the assumption being right.
+- Facet count ceiling beyond 1,000 is unexplored (1,000 was the
+  requested target and passed cleanly; higher counts untested).
 - **The assumption direction conflicts with the existing
   `docs/multi-tenancy-and-hosting.md` text**: that document conservatively
   assumes the 10GB is *shared* (reasoning: the downside of wrongly
@@ -150,6 +220,15 @@ Verified Cloudflare platform facts table (sources:
   undocumented" — and the two docs will remain contradictory until this
   is settled by measurement. Once the boundary test is done, one of them
   needs to be updated as an honest correction.
+- Relatedly, `docs/multi-tenancy-and-hosting.md` also flags facet
+  execution parallelism itself as "undocumented" and deliberately
+  avoids depending on it — that framing is now partly superseded (the
+  I/O-bound case is confirmed non-serialized here, see item 7 above) but
+  the sibling doc hasn't been updated to reflect it. Reconciling that is
+  a follow-up for whoever next touches that file, not done here.
+- Bumping the repo-pinned wrangler version (currently 4.77.0, predates
+  facets) is a prerequisite for any further **local** facets work —
+  `npx wrangler@latest` works today but isn't the repo default.
 
 ---
 
