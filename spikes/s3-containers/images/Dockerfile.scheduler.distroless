@@ -1,0 +1,3 @@
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY k8flare-scheduler-linux-amd64 /k8flare-scheduler
+ENTRYPOINT ["/k8flare-scheduler"]

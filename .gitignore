@@ -10,3 +10,5 @@ bin/
 /k3s-on-cloudflare
 .claude/settings.local.json
 .claude/worktrees/
+spikes/**/*-linux-amd64
+spikes/s3-containers/hoststream/hoststream-server
