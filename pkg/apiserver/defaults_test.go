@@ -117,8 +117,14 @@ func TestApplyDefaults_Pod_ContainerDefaults(t *testing.T) {
 	if c.TerminationMessagePolicy != corev1.TerminationMessageReadFile {
 		t.Errorf("TerminationMessagePolicy = %v, want %v", c.TerminationMessagePolicy, corev1.TerminationMessageReadFile)
 	}
-	if c.ImagePullPolicy != corev1.PullIfNotPresent {
-		t.Errorf("ImagePullPolicy = %v, want %v", c.ImagePullPolicy, corev1.PullIfNotPresent)
+	// Real upstream core/v1 defaulting (ApplyDefaults delegates to it via
+	// Scheme.Default, see defaults.go) defaults ImagePullPolicy to Always
+	// for an untagged image like "nginx" here -- the tag is ambiguous/
+	// mutable, so always checking for a newer image is the correct
+	// default, matching what a real cluster does. Only an explicitly
+	// tagged image (e.g. "nginx:1.25") defaults to IfNotPresent.
+	if c.ImagePullPolicy != corev1.PullAlways {
+		t.Errorf("ImagePullPolicy = %v, want %v", c.ImagePullPolicy, corev1.PullAlways)
 	}
 }
 
@@ -207,8 +213,10 @@ func TestApplyDefaults_Pod_InitContainerDefaults(t *testing.T) {
 	if c.TerminationMessagePolicy != corev1.TerminationMessageReadFile {
 		t.Errorf("TerminationMessagePolicy = %v, want %v", c.TerminationMessagePolicy, corev1.TerminationMessageReadFile)
 	}
-	if c.ImagePullPolicy != corev1.PullIfNotPresent {
-		t.Errorf("ImagePullPolicy = %v, want %v", c.ImagePullPolicy, corev1.PullIfNotPresent)
+	// See TestApplyDefaults_Pod_ContainerDefaults: "busybox" is untagged,
+	// so real upstream defaulting gives it Always, not IfNotPresent.
+	if c.ImagePullPolicy != corev1.PullAlways {
+		t.Errorf("ImagePullPolicy = %v, want %v", c.ImagePullPolicy, corev1.PullAlways)
 	}
 }
 
