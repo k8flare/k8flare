@@ -29,9 +29,10 @@ workers/storage(TS)
    ├─ Cluster DO: リビジョン権威・kine ログ・facet(ns/<name>, events-log, ca-vault)
    └─ WatchHub DO: watch fan-out(hibernation 必須)
 workers/controllers: 実 kube-scheduler / 実 kube-controller-manager
-   (実行方式は docs/platform-verification.md の S8 検証結果に従う。
-    WASM 常駐が使えれば優先、ダメなら Containers demand-start/idle-stop、
-    常時ビジーなクラスタは BYO VM を案内)
+   (Go WASM として Workers / DO 上で動かす — ユーザー決定 2026-07-02:
+    Containers へのフォールバックは廃止。実行形態(ストリーム常駐 /
+    DO 内イベント駆動 / WS hibernation 再入等)は docs/platform-verification.md
+    の S8 検証結果で選定する)
 workers/nodes: Pod-on-Containers ノードバックエンド(任意 OCI 実行が要るため Containers)
 R2: PV/PVC/StorageClass バックエンド
 ```
