@@ -1,0 +1,17 @@
+
+ ⛅️ wrangler 4.77.0 (update available 4.106.0)
+──────────────────────────────────────────────
+Your Worker has access to the following bindings:
+Binding                        Resource      Mode
+env.SELF (s8-spike-stock)      Worker        local [connected]
+
+
+Service bindings, Durable Object bindings, and Tail consumers connect to other Wrangler or Vite dev processes running locally, with their connection status indicated by [connected] or [not connected]. For more details, refer to https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/#local-development
+
+⎔ Starting local server...
+[wrangler:warn] The latest compatibility date supported by the installed Cloudflare Workers Runtime is "2026-03-17",
+but you've requested "2026-03-24". Falling back to "2026-03-17"...
+Features enabled by your requested compatibility date may not be available.
+Upgrade to `wrangler@4.106.0` to remove this warning.
+[wrangler:info] Ready on http://localhost:8791
+[wrangler:info] GET /binding-fetch-test 200 OK (41ms)

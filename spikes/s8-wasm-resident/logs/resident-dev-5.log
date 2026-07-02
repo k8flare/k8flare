@@ -1,0 +1,68 @@
+
+ ⛅️ wrangler 4.77.0 (update available 4.106.0)
+──────────────────────────────────────────────
+⎔ Starting local server...
+[wrangler:warn] The latest compatibility date supported by the installed Cloudflare Workers Runtime is "2026-03-17",
+but you've requested "2026-03-24". Falling back to "2026-03-17"...
+Features enabled by your requested compatibility date may not be available.
+Upgrade to `wrangler@4.106.0` to remove this warning.
+[wrangler:info] Ready on http://localhost:8792
+panic: JavaScript error: Illegal invocation: function called with incorrect `this` reference. See https://developers.cloudflare.com/workers/observability/errors/#illegal-invocation-errors for details.
+
+goroutine 11 [running]:
+syscall/js.Value.Call({{}, 0x7ff8000100000005, 0x0}, {0x9b17b, 0x5}, {0x899820, 0x2, 0x2})
+	/Users/k2wanko/.local/share/mise/installs/go/1.24.13/src/syscall/js/js.go:443 +0x3b
+net/http.(*Transport).RoundTrip(0x4570e0, 0x892280)
+	/Users/k2wanko/.local/share/mise/installs/go/1.24.13/src/net/http/roundtrip_js.go:129 +0x6c
+net/http.send(0x892280, {0x10ddc8, 0x4570e0}, {0x0, 0x0, 0x0})
+	/Users/k2wanko/.local/share/mise/installs/go/1.24.13/src/net/http/client.go:259 +0x80
+net/http.(*Client).send(0x4643e0, 0x892280, {0x0, 0x0, 0x0})
+	/Users/k2wanko/.local/share/mise/installs/go/1.24.13/src/net/http/client.go:180 +0x12
+net/http.(*Client).do(0x4643e0, 0x892280)
+	/Users/k2wanko/.local/share/mise/installs/go/1.24.13/src/net/http/client.go:728 +0xc7
+net/http.(*Client).Do(...)
+	/Users/k2wanko/.local/share/mise/installs/go/1.24.13/src/net/http/client.go:587
+net/http.(*Client).Get(0x4643e0, {0x860140, 0x1c})
+	/Users/k2wanko/.local/share/mise/installs/go/1.24.13/src/net/http/client.go:484 +0xd
+net/http.Get(...)
+	/Users/k2wanko/.local/share/mise/installs/go/1.24.13/src/net/http/client.go:453
+main.watchSimHandler.func1.1()
+	/Users/k2wanko/src/github.com/k2wanko/k3s-on-cloudflare/spikes/s8-wasm-resident/resident/main.go:85 +0x6
+created by main.watchSimHandler.func1 in goroutine 10
+	/Users/k2wanko/src/github.com/k2wanko/k3s-on-cloudflare/spikes/s8-wasm-resident/resident/main.go:84 +0x7
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mexit code: 2[0m
+
+
+[wrangler:error] TypeError: Cannot read properties of undefined (reading 'exports')
+    at syscall/js.valueNew (file:///Users/k2wanko/src/github.com/k2wanko/k3s-on-cloudflare/spikes/s8-wasm-resident/resident/out/wasm_exec.js:409:24)
+    at [object Object]
+    at [object Object]
+    at [object Object]
+    at [object Object]
+    at [object Object]
+    at globalThis.Go._resume (file:///Users/k2wanko/src/github.com/k2wanko/k3s-on-cloudflare/spikes/s8-wasm-resident/resident/out/wasm_exec.js:567:23)
+    at Object.handleRequest (file:///Users/k2wanko/src/github.com/k2wanko/k3s-on-cloudflare/spikes/s8-wasm-resident/resident/out/wasm_exec.js:578:8)
+    at Object.fetch (file:///Users/k2wanko/src/github.com/k2wanko/k3s-on-cloudflare/spikes/s8-wasm-resident/resident/out/worker.mjs:62:18)
+    at async jsonError (file:///Users/k2wanko/src/github.com/k2wanko/k3s-on-cloudflare/node_modules/.pnpm/wrangler@4.77.0_@cloudflare+workers-types@4.20260317.1/node_modules/wrangler/templates/middleware/middleware-miniflare3-json-error.ts:22:10)
+[wrangler:info] GET /watch-sim 500 Internal Server Error (66ms)
+[wrangler:error] Error: Go program has already exited
+    at globalThis.Go._resume (file:///Users/k2wanko/src/github.com/k2wanko/k3s-on-cloudflare/spikes/s8-wasm-resident/resident/out/wasm_exec.js:565:11)
+    at Object.handleRequest (file:///Users/k2wanko/src/github.com/k2wanko/k3s-on-cloudflare/spikes/s8-wasm-resident/resident/out/wasm_exec.js:578:8)
+    at Object.fetch (file:///Users/k2wanko/src/github.com/k2wanko/k3s-on-cloudflare/spikes/s8-wasm-resident/resident/out/worker.mjs:62:18)
+    at async jsonError (file:///Users/k2wanko/src/github.com/k2wanko/k3s-on-cloudflare/node_modules/.pnpm/wrangler@4.77.0_@cloudflare+workers-types@4.20260317.1/node_modules/wrangler/templates/middleware/middleware-miniflare3-json-error.ts:22:10)
+    at async drainBody (file:///Users/k2wanko/src/github.com/k2wanko/k3s-on-cloudflare/node_modules/.pnpm/wrangler@4.77.0_@cloudflare+workers-types@4.20260317.1/node_modules/wrangler/templates/middleware/middleware-ensure-req-body-drained.ts:5:10)
+[wrangler:info] GET /status 500 Internal Server Error (3ms)
+[wrangler:error] Error: Go program has already exited
+    at globalThis.Go._resume (file:///Users/k2wanko/src/github.com/k2wanko/k3s-on-cloudflare/spikes/s8-wasm-resident/resident/out/wasm_exec.js:565:11)
+    at Object.handleRequest (file:///Users/k2wanko/src/github.com/k2wanko/k3s-on-cloudflare/spikes/s8-wasm-resident/resident/out/wasm_exec.js:578:8)
+    at Object.fetch (file:///Users/k2wanko/src/github.com/k2wanko/k3s-on-cloudflare/spikes/s8-wasm-resident/resident/out/worker.mjs:62:18)
+    at async jsonError (file:///Users/k2wanko/src/github.com/k2wanko/k3s-on-cloudflare/node_modules/.pnpm/wrangler@4.77.0_@cloudflare+workers-types@4.20260317.1/node_modules/wrangler/templates/middleware/middleware-miniflare3-json-error.ts:22:10)
+    at async drainBody (file:///Users/k2wanko/src/github.com/k2wanko/k3s-on-cloudflare/node_modules/.pnpm/wrangler@4.77.0_@cloudflare+workers-types@4.20260317.1/node_modules/wrangler/templates/middleware/middleware-ensure-req-body-drained.ts:5:10)
+[wrangler:info] GET /status 500 Internal Server Error (3ms)
+[wrangler:error] Error: Go program has already exited
+    at globalThis.Go._resume (file:///Users/k2wanko/src/github.com/k2wanko/k3s-on-cloudflare/spikes/s8-wasm-resident/resident/out/wasm_exec.js:565:11)
+    at Object.handleRequest (file:///Users/k2wanko/src/github.com/k2wanko/k3s-on-cloudflare/spikes/s8-wasm-resident/resident/out/wasm_exec.js:578:8)
+    at Object.fetch (file:///Users/k2wanko/src/github.com/k2wanko/k3s-on-cloudflare/spikes/s8-wasm-resident/resident/out/worker.mjs:62:18)
+    at async jsonError (file:///Users/k2wanko/src/github.com/k2wanko/k3s-on-cloudflare/node_modules/.pnpm/wrangler@4.77.0_@cloudflare+workers-types@4.20260317.1/node_modules/wrangler/templates/middleware/middleware-miniflare3-json-error.ts:22:10)
+    at async drainBody (file:///Users/k2wanko/src/github.com/k2wanko/k3s-on-cloudflare/node_modules/.pnpm/wrangler@4.77.0_@cloudflare+workers-types@4.20260317.1/node_modules/wrangler/templates/middleware/middleware-ensure-req-body-drained.ts:5:10)
+[wrangler:info] GET /status 500 Internal Server Error (3ms)

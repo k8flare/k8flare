@@ -1,0 +1,28 @@
+
+ ⛅️ wrangler 4.77.0 (update available 4.106.0)
+──────────────────────────────────────────────
+⎔ Starting local server...
+[wrangler:warn] The latest compatibility date supported by the installed Cloudflare Workers Runtime is "2026-03-17",
+but you've requested "2026-03-24". Falling back to "2026-03-17"...
+Features enabled by your requested compatibility date may not be available.
+Upgrade to `wrangler@4.106.0` to remove this warning.
+[wrangler:info] Ready on http://localhost:8791
+[wrangler:info] GET /status 200 OK (40ms)
+[wrangler:info] GET /stream 200 OK (2007ms)
+[wrangler:info] GET /stream 200 OK (2008ms)
+[wrangler:info] GET /status 200 OK (42ms)
+[wrangler:info] GET /stream 200 OK (2011ms)
+[31m✘ [41;31m[[41;97mERROR[41;31m][0m [1mBuild failed with 1 error:[0m
+
+  [31m✘ [41;31m[[41;97mERROR[41;31m][0m [1mCould not resolve "/Users/k2wanko/src/github.com/k2wanko/k3s-on-cloudflare/spikes/s8-wasm-resident/stock/build/worker.mjs"[0m
+  
+      .wrangler/tmp/bundle-oQiBIl/middleware-insertion-facade.js:1:43:
+  [37m      1 │ ...PORTS from [32m"/Users/k2wanko/src/github.com/k2wanko/k3s-on-cloudfl[37m...
+          ╵               [32m~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+  
+  
+
+
+⎔ Reloading local server...
+⎔ Local server updated and ready
+🪵  Logs were written to "/Users/k2wanko/Library/Preferences/.wrangler/logs/wrangler-2026-07-02_09-25-51_400.log"
