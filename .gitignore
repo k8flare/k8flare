@@ -8,3 +8,5 @@ bin/
 .secrets/
 /kubeconfig.yaml
 /k3s-on-cloudflare
+.claude/settings.local.json
+.claude/worktrees/
