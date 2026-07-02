@@ -32,11 +32,11 @@ documentation or guesswork alone has a proven cost.
 | # | What's being verified | Status | Primary dependent phase |
 |---|---|---|---|
 | S1 | Facets (limits, storage accounting, parallelism, alarms, delete) | partially confirmed | Phase 4 (storage v2) |
-| S2 | Dynamic Workers Loader (bundling WASM, size limits, env bindings) | not started | Phase 2 / Phase 4 |
+| S2 | Dynamic Workers Loader (bundling WASM, size limits, env bindings) | verified (local wrangler dev; production limits unconfirmed) | Phase 2 / Phase 4 |
 | S3 | Containers (startup, onActivityExpired, cold start, arbitrary images, UDP, wrangler dev) | not started | Phase 5 route B / Phase 7 |
 | S4 | Cloudflare Mesh (billing scope, flannel prototype, Cluster DNS replacement) | verified (desk research) | Phase 9 |
 | S5 | WASM isolate singleton-ization (syumai fork) | not started | Phase 2 (apiserver) |
-| S6 | R2 (PVC access isolation, S3 access from Containers) | not started | Phase 8 |
+| S6 | R2 (PVC access isolation, S3 access from Containers) | verified (desk research + one read-only check) | Phase 8 |
 | S7 | Re-verifying apiserver residency (double-checking the rejection) | not started | Final confirmation of the rejection decision |
 | S8 | Whether controllers can run WASM-resident | not started (in progress) | ★Highest priority. Decides Phase 5's execution technique (Containers fallback ruled out 2026-07-02 — see Correction log) |
 
@@ -160,30 +160,92 @@ Verified Cloudflare platform facts table (sources:
 - The size limit on loaded code
 - Whether bindings can be passed via `env`
 
-**Status**: not started
+**Status**: verified (local `wrangler dev`; production limits unconfirmed)
 
 **Confirmed facts**
 
-- Dynamic Workers went to open beta in March 2026. Source: the v2 rewrite
-  plan's "key facts confirmed during investigation" (primary source URL
-  not recorded in this document — to be added when referenced).
-- That loading a facet class requires the Dynamic Workers loader was
-  confirmed empirically in S1 (`46df0c0`). However that only confirms "a
-  facet class can be loaded" — the things S2 asks about (bundling a WASM
-  module, the size limit on loaded code, passing `env` bindings) are all
-  still unverified.
+Source: `spikes/s2-loader/FINDINGS.md` (empirical, 2026-07-02), exercised
+with real HTTP requests against a running multi-config `wrangler dev`
+session (wrangler 4.77.0) — not doc-reading. Repro commands are recorded
+in that file.
+
+1. **WASM modules load fine**: `modules[k] = { wasm: ArrayBuffer }` in
+   `WorkerCode`, and the import resolves to an uninstantiated
+   `WebAssembly.Module` (matches
+   `@cloudflare/workers-types@4.20260317.1`'s
+   `WorkerLoaderModule.wasm?: ArrayBuffer` field). Only a raw
+   `ArrayBuffer` is accepted — neither a base64 string nor a precompiled
+   `WebAssembly.Module`. Not tested: WASM as the `mainModule` itself
+   (only "JS main imports wasm" was exercised).
+2. **Size**: no limit was hit locally up to 500MB of loaded JS text;
+   load time grows superlinearly (33s at 500MB), though the test method
+   (one giant string literal the JS engine must parse) may itself be the
+   dominant cost rather than the Loader — the curve shape is indicative
+   only. **Production limits (e.g. whether the ordinary 10MiB gzip
+   script cap applies to loaded code) remain unverified.**
+3. **`env` binding forwarding — the most important finding of this
+   spike**: plain values and `Fetcher` (service bindings) pass through
+   `WorkerCode.env` with a real RPC round-trip confirmed; **both
+   `DurableObjectNamespace` and `DurableObjectStub` fail** with
+   `DataCloneError: Could not serialize object of type
+   "DurableObjectNamespace"/"DurableObject". This type does not support
+   serialization.` — and if any DO-typed key is present, the whole `env`
+   clone fails outright (offending keys aren't silently skipped). →
+   **Any loader-loaded module (facet class, DynamicWorker) that needs to
+   reach a DO must be handed a `Fetcher` to a fronting Worker/RPC
+   entrypoint instead of a DO namespace/stub directly.** KV/R2/D1/Queues/
+   AI/Vectorize/Workflows binding types were not tested.
+4. **`globalOutbound`** has three real modes, verified against actual
+   outbound fetches: `null` blocks outbound entirely (documented error
+   message confirmed), `undefined` allows real internet access (verified
+   against a live external URL), and a genuine `Fetcher` (service
+   binding) proxies **all** outbound fetches through it regardless of
+   target URL. A duck-typed plain object (`{ fetch: async ... }`) is
+   rejected with a `TypeError` — outbound filtering must be a real
+   Worker bound via `services`, not an inline JS object.
+5. **`.get(id, factory)` caching** behaves as the content-hash-key
+   design assumes: the factory runs only on the first `.get()` for a
+   given id (cache miss), module-scope state survives across subsequent
+   requests for that id even though `.get()` is called every request,
+   distinct ids are fully isolated from each other, and loading a new id
+   does not evict existing ones. **Idle-eviction timing was not tested
+   (production-only)** — directly relevant to the cost invariant of
+   never assuming residency.
+6. Two local-dev footguns worth adding to the existing list: the
+   multi-config `wrangler dev` startup banner's `[not connected]` status
+   is unreliable (it stayed `[not connected]` for an entire session
+   during which dozens of RPC calls succeeded — never use it as a
+   readiness signal), and wrangler 4.77.0's workerd silently falls back
+   to its max supported compatibility date (2026-03-17) when a newer
+   date like this repo's `2026-03-24` convention is requested
+   (pre-existing repo-wide quirk, not introduced by this spike).
+
+**Design implications** (from the research): facet-class delivery
+(build-time bundled string + content-hash key) matches the
+`.get(id, …)` id model exactly; the
+`cacheId = ${namespace}/${name}:${uid}:${resourceVersion}` pattern in
+`packages/dynamic-worker/src/run.ts` is validated (spec changes bust the
+cache naturally); no loaded worker's `env` should ever be designed to
+carry a DO namespace/stub — use Fetcher indirection instead;
+`globalOutbound: <Fetcher>` is a proven mechanism for a future
+DynamicWorker `networkAccess: "restricted"` mode.
 
 **Open questions**
 
-- The size limit for loading apiserver (Go WASM, 7.07MiB gzip) via
-  Dynamic Workers (unconfirmed whether it shares the Worker's own 10MiB
-  Paid-plan limit or has a separate budget).
-- Whether `env` bindings (DO namespaces, etc.) can be passed to loaded
-  code.
+- Actual module-bytes limit/quota for the Loader in production (only
+  local, up to 500MB, was tested).
+- Idle-eviction timing of the `.get(id, …)` cache in production.
+- Behavior of non-Fetcher, non-DO binding types in `env` (KV/R2/D1/
+  Queues/AI/Vectorize/Workflows — untested).
+- Untested API surface, not known to be broken: `WorkerLoader.load()`,
+  `allowExperimental`, `compatibilityFlags`, `tails`/`streamingTails`,
+  `getEntrypoint(name, { props })`.
 - If S8 lands on the WASM-resident design for controllers, whether
   controllers also need to go through the Loader (the relationship
   between Cluster DO's service-binding calls and the Loader hasn't been
-  worked out).
+  worked out) — now sharper given finding 3 above: if controllers ever
+  need direct DO access, it would have to go through a `Fetcher`, not a
+  passed-through DO namespace/stub.
 
 ---
 
@@ -393,19 +455,117 @@ Mesh needs to justify itself against.
 - Per-PVC access isolation (bucket/prefix + scoped tokens)
 - S3 API access from Containers
 
-**Status**: not started
+**Status**: verified (desk research + one read-only account check; write
+operations — bucket/token/credential creation — not yet performed)
 
 **Confirmed facts**
 
-(None)
+Source: `spikes/s6-r2/RESEARCH.md` (desk research + one read-only account
+check, 2026-07-02), citing official Cloudflare R2 and Containers
+documentation (full citation list in that file, including page
+`dateModified` timestamps).
+
+1. **PVC isolation mechanism**: Temporary Access Credentials — minted
+   from a parent R2 API token — is the fit-for-purpose primitive. Each
+   credential is bound to exactly one bucket and can be narrowed with
+   `prefixes` / `objects`; R2 itself enforces the boundary by returning
+   403 for anything outside scope (Cloudflare's own worked example
+   demonstrates this: 200 for an in-prefix key, 403 for an out-of-prefix
+   one). Two minting paths: (a) the Temporary Credentials REST API
+   (draws from the account's shared 1,200 req/5min budget), or (b)
+   **local JWT signing** (zero Cloudflare API calls, the only path that
+   supports `actions`-level scoping today, and Cloudflare's own
+   recommended approach for this use case). Long-lived R2 API tokens are
+   bucket-scoped only — no prefix restriction exists for them. Presigned
+   URLs are single-object/single-operation (max 7 days) and don't fit a
+   PV's session-like access pattern.
+2. **Bucket-per-PVC vs. prefix-in-shared-bucket**: prefix-in-shared-bucket
+   is the recommended shape. The bucket cap (1,000,000/account) is
+   generous but bucket-per-PVC spends down a finite, account-wide
+   resource on something (PVC count) with no natural ceiling. Bucket
+   management operations (create/delete/list/config) share a 50/sec
+   limit and the account's 1,200 req/5min REST budget; object read/write
+   and locally-signed credential minting touch neither. Bucket-per-PVC
+   also means a durable, bucket-scoped secret per PVC; prefix-based
+   isolation needs exactly one durable parent secret (e.g. per cluster)
+   and mints disposable, self-expiring credentials on demand.
+3. **Containers → R2 egress works with no special config**: internet
+   access from a Container is on by default. This one required a
+   correction during the research itself, worth recording per the
+   honest-correction principle: an initial LLM-summarized read of
+   `cloudflare/containers`' `docs/egress.md` claimed egress is *blocked*
+   by default, contradicted by a second summarized source claiming the
+   opposite. Going to primary sources resolved it — both the raw
+   markdown of Cloudflare's official outbound-traffic docs and the
+   actual `@cloudflare/containers` SDK source on GitHub
+   (`enableInternet: ... = true`) confirm **internet access is on by
+   default**; the "blocked by default" claim was wrong.
+4. **FUSE mounting an R2 bucket is officially supported**, not a
+   workaround — Cloudflare's own example Dockerfile installs `fuse` and
+   mounts via `tigrisfs` (an S3-compatible FUSE adapter), with no
+   `privileged`/`SYS_ADMIN`/`/dev/fuse` configuration exposed anywhere in
+   the Container class or `wrangler.jsonc` (inference from absence of a
+   config knob — not a documented guarantee, worth confirming against a
+   real deployment). Three caveats: no native prefix-scoped mount exists
+   (every adapter mounts the whole bucket name; whether a prefix-scoped
+   credential can even complete that mount is unverified), whether the
+   adapter honors `AWS_SESSION_TOKEN` end-to-end is unconfirmed, and
+   **FUSE cannot be verified in local `wrangler dev`** — it reportedly
+   needs a real deployment to even attempt (a new local-dev footgun
+   worth adding to CLAUDE.md's list once Phase 8 starts touching
+   Containers).
+5. **A third access pattern exists but isn't recommended for
+   tenant-facing PVs**: an `outboundByHost` binding proxy lets a
+   Container hit a virtual hostname that a Worker resolves via a real R2
+   binding, with zero S3-style credentials ever leaving the Worker/DO
+   trust boundary. Not recommended for the general-purpose PV backend
+   because it's a bespoke HTTP scheme, not real S3 (no SigV4, no
+   `ListObjectsV2`, not FUSE-mountable) — using it would mean
+   reimplementing S3 surface, against this repo's reuse-over-reimplement
+   principle. Worth keeping in mind for k8flare's own internal component
+   storage, where a bespoke protocol is fine.
+6. **Read-only account check**: `wrangler r2 bucket list` succeeded
+   against the current OAuth session (`k2wanko` account, 17 pre-existing
+   buckets unrelated to k8flare) — confirms R2 read access works today.
+   No bucket, R2 API token, or temporary credential was created; write
+   operations remain unverified for this account.
+7. **The one real open problem: credential refresh for long-running
+   Pods.** Temporary credentials are deliberately short-lived by design,
+   but a PVC can be mounted for the life of a long-running workload
+   (days/weeks). Nothing in Cloudflare's docs or the FUSE example
+   refreshes an in-place credential — the FUSE example bakes credentials
+   into env vars once at container start. Phase 8 needs to resolve this
+   before it can rely on short TTLs: either a refresh sidecar (contingent
+   on unverified FUSE-adapter re-read behavior) or a deliberately longer
+   TTL as a pragmatic v1 trade-off against Cloudflare's own "scope
+   narrowly, use short TTLs" guidance.
+
+**Recommendation for Phase 8** (from the research): v1 = prefix-scoped
+Temporary Access Credentials, minted via local JWT signing, on a shared
+bucket (one per cluster or tenant — not one per PVC), delivered to the
+Pod's Container as env vars for direct S3-SDK use. Offer FUSE mounting
+as an opt-in pattern once its two caveats above are verified against a
+real deployment.
 
 **Open questions**
 
-- All verification items are still not started. This is the precondition
-  for Phase 8 (R2 PV/PVC backend).
-- Whether volumes are provided to Pods via a FUSE mount or an
-  S3-compatible endpoint + injected credentials depends on the results of
-  both this spike and S3 (Containers' constraints).
+- The actual `ttlSeconds` minimum/maximum bound for Temporary Access
+  Credentials (undocumented).
+- Whether a prefix-scoped credential can successfully be used to
+  FUSE-mount a whole bucket (root-level list behavior under a
+  prefix-restricted credential is the open question).
+- Whether `tigrisfs` (or another adapter) actually honors
+  `AWS_SESSION_TOKEN` end-to-end.
+- Whether R2 bucket names are globally unique or account-scoped (only
+  matters if bucket-per-PVC is reconsidered later).
+- Whether this OAuth session (or a purpose-built API token) can actually
+  create a bucket / R2 API token / temporary credential — only listing
+  was verified.
+- Whether Cloudflare's FUSE support genuinely needs no privileged-mode
+  config in practice, or the docs are simply silent about a knob that's
+  required and currently missing from the example.
+- Credential refresh for long-running Pod mounts (the core Phase 8
+  blocker — see finding 7 above).
 
 ---
 
@@ -562,3 +722,18 @@ describe what's being tested. The S8 intro and branch-condition text
 have since been updated in place to state the new branching directly;
 this entry preserves the original reasoning, wording, and sources for
 that change.
+
+**2026-07-02 — S6 research-time correction on Containers egress
+defaults.** While researching S3 access from Containers for the S6
+section above, an initial LLM-summarized read of `cloudflare/containers`'
+`docs/egress.md` claimed internet access from a Container is *blocked*
+by default; a second summarized source claimed the opposite. Rather than
+picking one, the research (`spikes/s6-r2/RESEARCH.md` §2) went to
+primary sources: the raw markdown of Cloudflare's official
+outbound-traffic docs, and the actual `@cloudflare/containers` SDK
+source on GitHub (`enableInternet: ... = true`). Both agree: **internet
+access is on by default**. This never appeared as a "confirmed fact" in
+this document before now, so it isn't a correction of prior published
+text — it's recorded here as an example of the "verify, don't trust a
+read" principle (CLAUDE.md inviolable rule #2) catching a wrong
+intermediate answer before it became a documented fact.
