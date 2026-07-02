@@ -49,6 +49,8 @@ importers:
 
   workers/apiserver: {}
 
+  workers/controllers: {}
+
   workers/gateway:
     dependencies:
       '@k8flare/crd':

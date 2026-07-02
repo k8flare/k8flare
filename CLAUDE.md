@@ -33,8 +33,10 @@ workers/controllers: 実 kube-controller-manager(DO-hosted Go WASM 常駐、
    **実 kube-scheduler は GOOS=js で構文コンパイル不可**(k8s 本体フォーク
    禁止と衝突するため断念、判断根拠は docs/platform-verification.md 参照)
    — BYO VM / ホストプロセス専用に固定。KCM も client-go 型付き
-   Clientset+Informers だけで Workers 10MiB 予算の 89% を消費するため、
-   軽量クライアントへの置き換えを調査中(同ドキュメント参照)。
+   Clientset+Informers だけで Workers 10MiB 予算の 89% を消費し、軽量
+   クライアントに置き換えても実コントローラー本体が +6MiB 級を要求する
+   ため 5 コントローラー構成で 15〜16MiB(予算超過)——**KCM も現状 BYO VM /
+   ホストプロセス専用**(判断根拠は docs/platform-verification.md 参照)。
 workers/nodes: Pod-on-Containers ノードバックエンド(任意 OCI 実行が要るため Containers)
 R2: PV/PVC/StorageClass バックエンド
 ```

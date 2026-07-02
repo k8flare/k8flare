@@ -1738,3 +1738,131 @@ Pod test-svc-pod for Service default/test-svc: Node  Not Found"`) —
    finding already settles kube-scheduler, and treat
    `workers/controllers` as not viable for either binary until one of the
    above changes the size math.
+
+**2026-07-03 — Lean client-go client investigated for KCM's size blocker:
+real but small win (1.2 MiB), does not come close to fitting.** Per the
+user's 2026-07-03 decision recorded above ("軽量クライアントを調査"), a narrow
+hand-written client satisfying only what the five in-scope controllers
+(nodeipam, nodelifecycle, taint-eviction-controller, endpoint,
+endpointslice) actually call was designed, built, and measured
+(`spikes/leanclient-kcm/leanclient/` — kept as investigation evidence, not
+wired into `pkg/controllers/controllermanager.go`). Every number below is
+from a real `GOOS=js GOARCH=wasm go build` + `gzip | wc -c` run this same
+session (Go 1.26.2), per CLAUDE.md rule 2.
+
+Before writing any hand client, a code-generation alternative the
+coordinator proposed (re-running `k8s.io/code-generator`'s `client-gen`
+scoped to fewer API groups, on the theory that it's the same generator
+`k8s.io/client-go` itself was built with) was actually tried:
+`go run k8s.io/code-generator/cmd/client-gen --input-base k8s.io/api --input
+discovery/v1 --output-pkg .../gencheck/clientset --clientset-name versioned`
+ran successfully and its output was inspected directly. It does not help:
+the generator's own template
+(`cmd/client-gen/generators/generator_for_clientset.go`) always emits a
+**fresh** `type Interface interface {...}` in the output package, scoped
+only to the groups given via `--input` — confirmed by the real run, whose
+generated `Interface` was `{ Discovery(); DiscoveryV1() }`, a brand-new type
+in a brand-new package. This can never substitute for the specific
+`k8s.io/client-go/kubernetes.Interface` (54 methods) that all five
+controllers' constructors, `k8s.io/component-helpers/node/util.PatchNodeCIDRs`
+(which `nodeipam` calls), and every `informers/<group>/<version>.NewXInformer`
+hardcode as their parameter type — Go requires the concrete type to
+implement all 54 of that exact interface's methods, not a
+structurally-similar smaller one from a different package. The only way to
+make generated code literally *be* `kubernetes.Interface` would be `replace
+k8s.io/client-go => <local fork>` in this repo's single root `go.mod` —
+module-wide, breaking `cmd/agent`'s full k3s embed and
+`cmd/controller-manager`'s host-process 10-controller build (both need far
+more groups), the same class of problem (and against the same "single root
+Go module, no replace duplication" CLAUDE.md rule) that already ruled out
+forking `k8s.io/kubernetes` for `cmd/scheduler` above. Diffing the
+freshly-generated `discovery/v1` typed client against the one already in
+`k8s.io/client-go/kubernetes/typed/discovery/v1` showed them nearly
+identical (the existing one is actually more complete — it has
+`Apply()`/protobuf support the naive regen lacked) — there is no missing
+narrow artifact for `client-gen` to produce; the per-group typed clients
+needed already exist, standalone, in client-go, each independently
+constructible via its own `NewForConfig`.
+
+Client-layer measurements, incremental:
+
+| Build content | gzip |
+|---|---|
+| Empty `main()` + `github.com/syumai/workers` only | 1.39 MiB |
+| `client-go/rest` + `apimachinery/runtime/serializer`, **empty** scheme, no typed client | 4.19 MiB |
+| `typed/core/v1` **alone** (own `NewForConfig`, references the aggregate `kubernetes/scheme` package) | 9.59 MiB |
+| Same, but with its own **narrow** scheme (only core/v1 registered) bypassing `kubernetes/scheme` via the raw `New(rest.Interface)` entrypoint | 9.59 MiB (no difference) |
+| Full aggregate `kubernetes.Clientset` (all ~54 groups) | 9.62 MiB (+0.03 MiB over core/v1 alone) |
+| Aggregate Clientset + real `informers.SharedInformerFactory` | 9.97 MiB |
+| `leanclient.Clientset` (4 real groups + ~50 panic stubs) alone | 9.60 MiB |
+| `leanclient.Clientset` + `leanclient.Informers` (hand-rolled, all 7 needed informers) | 9.94 MiB |
+
+`k8s.io/api/core/v1`'s own type graph (dominated by `Pod`) plus
+`client-go/rest`/`apimachinery/runtime/serializer`'s shared infrastructure is
+already ~9.6 MiB before any other group is added; registering the *other*
+~53 groups in the shared `kubernetes/scheme` package (imported by every
+per-group typed client for content-negotiation, confirmed by reading
+`core_client.go`'s `setConfigDefaults`) costs only **+0.03 MiB** on top —
+essentially free once core/v1's own weight is paid. A hand-built narrower
+scheme bypassing that shared package entirely produces the *same* size.
+**This investigation's core premise — that the generated Clientset's
+breadth across ~54 groups is what costs multiple MiB — is false.**
+
+Controller-layer measurements, the actual blocker:
+
+| Build content | gzip |
+|---|---|
+| `leanclient` (Clientset + Informers), zero controllers | 9.94 MiB |
+| + isolated `k8s.io/kubernetes/pkg/apis/core/helper.Semantic.DeepEqual` only (one of tainteviction's imports; pulls in the internal/unversioned `apis/core` type system parallel to `k8s.io/api/core/v1`) | 10.06 MiB (+0.13) |
+| + isolated `client-go/tools/record` event broadcaster only (every one of the 5 controllers builds one) | 9.98 MiB (+0.04) |
+| + isolated `k8s.io/kubernetes/pkg/features` + `apiserver/pkg/util/feature` only (project-wide feature-gate registry, imported transitively by pod-utility helpers tainteviction calls) | 10.17 MiB (+0.24) |
+| **+ real `pkg/controller/tainteviction` whole** (smallest of the 5 by LOC) | **16.05 MiB (+6.12)** |
+| + real aggregate Clientset/SharedInformerFactory + tainteviction (control run, same toolchain, not leanclient) | 17.29 MiB |
+| **+ all 5 in-scope controllers**, leanclient | **16.26 MiB (+0.20 over tainteviction alone)** |
+| All 5 + `-ldflags="-s -w"` | 15.72 MiB (-0.54, ~3% — consistent with this section's earlier "<5%, nowhere near enough") |
+
+Three plausible culprits among tainteviction's imports were tested in
+isolation and each individually cost under 0.25 MiB — nowhere near the
+observed +6.12 MiB for the whole package. The remaining, not-fully-isolated
+candidates are `k8s.io/kubernetes/pkg/apis/core/v1/helper` (a fuller
+transitive graph than the plain `apis/core/helper` tested),
+`k8s.io/kubernetes/pkg/api/v1/pod`, `k8s.io/kubernetes/pkg/util/pod`, and
+`k8s.io/kubernetes/pkg/controller/util/node` — or, plausibly, no single
+culprit but a cumulative effect across several moderate imports. Not
+root-caused to one line (out of context budget), but conclusively **not**
+in the client layer. More importantly: adding the other four controllers on
+top of tainteviction cost only **+0.20 MiB more** — the same "pay once,
+share across everything that needs it" pattern the client-layer
+measurements showed for the other 53 API groups. This means the whole ~6
+MiB cost of using real upstream KCM controller code is paid essentially
+once, shared across all five, not five separate additive costs — and that
+**Worker-splitting (putting different controllers in different Workers,
+floated as a candidate next step above) would not help either**: a Worker
+hosting even *one* of these five controllers already costs ~16 MiB alone.
+
+Controlled comparison (same session, same toolchain, isolating "did the
+lean client help" from "did dependency/toolchain drift since this section's
+original 15.03 MiB measurement" — a real concern, since this session's own
+empty-`main()` baseline measured 1.39 MiB against the 1.58 MiB recorded
+above): leanclient + tainteviction = 16.05 MiB vs. the real aggregate
+Clientset + SharedInformerFactory + tainteviction, built the same session =
+17.29 MiB. The lean client is real and does help — 1.23 MiB, about 7% — just
+nowhere near enough to close a 6+ MiB gap it was never the cause of.
+
+**Verdict: abandon.** Per CLAUDE.md rule 2 ("実際に動かして検証する") and rule 4
+("訂正は隠さず記録する"), and per this task's own explicit permission to stop
+rather than force a non-viable integration: the lean client does not make
+`workers/controllers` deployable with these five controllers, and no
+further client-layer work would change that, because the client was never
+the dominant cost. `pkg/controllers/controllermanager.go` is unchanged.
+This leaves kube-controller-manager in the same position this section
+already settled for kube-scheduler: host-process/BYO VM only (no code
+changes needed, `cmd/controller-manager` already works unchanged), unless a
+materially larger undertaking (root-causing and forking/patching the
+controllers' own dependency graph to cut the ~6 MiB tax at its source —
+different in kind from a client shim, and not attempted here) is taken on
+later. The taint-eviction-controller functional gap recorded above (eviction
+not observed within that pass's time budget) was not re-investigated in
+this pass: the blocker found here was size, not function, so a functional
+re-test would not have changed the verdict and was not run to conserve
+context. It remains open.
