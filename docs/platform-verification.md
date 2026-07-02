@@ -38,7 +38,7 @@ documentation or guesswork alone has a proven cost.
 | S5 | WASM isolate singleton-ization (syumai fork) | not started | Phase 2 (apiserver) |
 | S6 | R2 (PVC access isolation, S3 access from Containers) | not started | Phase 8 |
 | S7 | Re-verifying apiserver residency (double-checking the rejection) | not started | Final confirmation of the rejection decision |
-| S8 | Whether controllers can run WASM-resident | not started (in progress) | ★Highest priority. Decides Phase 5's execution path |
+| S8 | Whether controllers can run WASM-resident | not started (in progress) | ★Highest priority. Decides Phase 5's execution technique (Containers fallback ruled out 2026-07-02 — see Correction log) |
 
 ---
 
@@ -374,9 +374,16 @@ significantly):
 
 ## S8: Whether controllers can run WASM-resident (★highest priority)
 
+> **Update, 2026-07-02**: the "route A vs. route B" framing below is
+> superseded — Containers is no longer an available fallback for
+> controllers. See the Correction log at the end of this document for
+> what changed and why; the verification items, status, and branch
+> condition below are left as originally written per the honest
+> correction convention.
+
 This determines Phase 5's (controllers implementation) execution path —
-route A (WASM-resident) vs. route B (Containers fallback) — so it's taken
-up before the other spikes.
+route A (WASM-resident) vs. route B (Containers fallback), as originally
+scoped — so it's taken up before the other spikes.
 
 **Verification items**
 
@@ -444,6 +451,21 @@ the basis for adopting route B.
 
 ## Correction log (honest corrections)
 
-No corrections yet. If a decision or a "confirmed fact" later turns out
-to be wrong, don't rewrite the affected section — append a dated entry
-here describing what happened (CLAUDE.md inviolable rule #4).
+**2026-07-02 — S8's "route A vs. route B" branch condition superseded by
+a user decision.** The S8 section above (and the "Route B: Containers"
+framing in `docs/cost-model.md`) originally treated Containers +
+demand-start/idle-stop as the fallback if plain WASM stream-residency
+(verification items (a)–(d)) proved infeasible. Per user decision,
+recorded in commit `62c9c43` ("Record user decision: controllers run as
+WASM on Workers/DO, no Containers fallback") and the v2 rewrite plan's
+"controllers 実行方式(追加指示 2026-07-02)" entry, **that fallback is no
+longer available**: kube-scheduler/KCM must run as WASM on Workers or
+Durable Objects regardless of S8's outcome. S8 therefore no longer
+selects between WASM and Containers — it verifies whether the specific
+technique in (a)–(d) is viable. If it isn't, the plan is to explore
+alternative **WASM-only** designs instead (candidates named in the
+decision: DO-hosted event-driven execution, WebSocket-hibernation
+re-entry, wake-on-write), not to fall back to Containers. The original
+verification items, status, and branch-condition text in S8 are left as
+written — they still describe what's being tested; only the "what
+happens if it fails" outcome has changed.

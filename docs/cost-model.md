@@ -42,8 +42,22 @@ costs.
 
 scheduler/KCM are run in order to use the real upstream controllers —
 under either execution path, wall-clock-billed residency would violate
-the concept (CLAUDE.md). Which one is adopted is decided by the results
-of S8 in `docs/platform-verification.md`.
+the concept (CLAUDE.md).
+
+> **Update, 2026-07-02**: per user decision (commit `62c9c43`; full
+> detail in `docs/platform-verification.md`'s S8 Correction log),
+> Containers is no longer an available fallback for controllers — some
+> form of route A (WASM-resident) is mandatory. Route B below is kept
+> as-written for the historical record of what was originally being
+> compared; it is not a live option going forward. If plain
+> stream-residency (S8 (a)–(d)) turns out to be infeasible, the fallback
+> is an alternative **WASM-only** design (DO-hosted event-driven
+> execution, WebSocket-hibernation re-entry, wake-on-write) whose cost
+> profile still needs to be estimated here once a specific alternative is
+> chosen.
+
+Which technique within route A is adopted is decided by the results of
+S8 in `docs/platform-verification.md`.
 
 ### Route A: WASM-resident (preferred, if S8 succeeds)
 
@@ -66,7 +80,10 @@ against a VPS. This is a design hypothesis, not yet measured.
 **Actual**: not yet done. `docs/platform-verification.md` S8 (b) will
 measure CPU-ms/hour; switch to route B if it diverges from expectations.
 
-### Route B: Containers (demand-start/idle-stop, fallback if S8 fails)
+### Route B: Containers (demand-start/idle-stop) — superseded, kept for historical record
+
+**No longer a live option** (see the Update note above); kept as
+originally written per the honest correction convention.
 
 Estimate assuming 1vCPU+1GiB, within the Containers Paid included
 allowance (375 vCPU-min/month, 25 GiB-hours/month, free) — this is the
