@@ -2,7 +2,8 @@
   "name": "k8flare",
   "private": true,
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "workers/*"
   ],
   "type": "module",
   "scripts": {
@@ -16,7 +17,7 @@
     "@cloudflare/workers-types": "^4.20260317.1",
     "typescript": "^6.0.2",
     "vite-plus": "^0.1.14",
-    "wrangler": "^4.77.0"
+    "wrangler": "^4.106.0"
   },
   "packageManager": "pnpm@10.33.0"
 }
