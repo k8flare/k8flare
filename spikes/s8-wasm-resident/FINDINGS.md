@@ -143,9 +143,13 @@ net/http.(*Transport).RoundTrip(...) roundtrip_js.go:129
 
 ## Fork requirements (concrete)
 
-`vendor/syumai-workers-fork/` = full copy of syumai/workers v0.32.0, module
+`vendor/syumai-workers-fork/` = copy of syumai/workers v0.32.0, module
 path unchanged, `replace` scoped to `resident/go.mod` only (root go.mod
-untouched). Exactly one changed file: `handler_js.go` (`sync.Once` guard).
+untouched). Exactly one changed Go file: `handler_js.go` (`sync.Once`
+guard); later the workers-assets-gen glue asset gained the fetch-bind
+patch. Upstream's `_templates/` scaffolding was pruned from the copy
+(irrelevant to the fork's purpose, and its malformed sample HTML broke
+the repo-wide `vp check` formatting gate).
 That single change is sufficient for the stream-resident shape; the
 wasm_exec.js timer rewrite is NOT needed for it and is not recommended.
 
