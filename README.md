@@ -56,7 +56,7 @@ hit them:
 | **`kubectl logs` / `kubectl exec`**      | Off by default — requires the optional Cloudflare Tunnel + VPC Service setup below.                                                                                                                                                                                                                                                                                                                                                                                                  |
 | **RBAC**                                 | The cluster token is all-or-nothing; there's no per-user/per-namespace authorization.                                                                                                                                                                                                                                                                                                                                                                                                |
 | **Ingress / NetworkPolicy**              | Not implemented — no ingress controller, no network policy enforcement.                                                                                                                                                                                                                                                                                                                                                                                                              |
-| **API compatibility details**            | No server-side apply, no protobuf wire format (JSON only), no OpenAPI schema (`kubectl apply` needs `--validate=false`), no dry-run.                                                                                                                                                                                                                                                                                                                                                 |
+| **API compatibility details**            | No server-side apply, no protobuf wire format (JSON only), no dry-run. OpenAPI schema is served (`kubectl apply` no longer needs `--validate=false`), but there's no server-side strict field validation, so an unknown field is silently accepted rather than rejected the way a real cluster's `fieldValidation=Strict` would.                                                                                                                                                  |
 | **Node self-healing**                    | No node lifecycle controller — if an agent's process dies, its last-reported `Ready` status is never corrected and Pods "on" it are never rescheduled.                                                                                                                                                                                                                                                                                                                               |
 
 None of this is hidden complexity — see
@@ -103,7 +103,7 @@ and serves, not scheduler limitations.
 | Bearer token auth (static cluster token)                | ✅                                                      |
 | RBAC                                                    | ❌ Not implemented — the static token is all-or-nothing |
 | Admission webhooks                                      | ❌ Not implemented                                      |
-| OpenAPI schema (`kubectl apply` client-side validation) | ❌ Use `--validate=false`                               |
+| OpenAPI schema (`kubectl apply` client-side validation) | ✅ Served as Static Assets, verified with a real `kubectl apply` (no `--validate=false`) against a running dev stack |
 
 ## Roadmap
 
@@ -182,7 +182,8 @@ Two detailed plans drive the work from here:
 
 5. **Cluster DNS** — CoreDNS as a Deployment, `kube-dns` Service at
    `10.43.0.10`, then (and only then) advertise `cluster-dns` to kubelets.
-6. **API & auth parity** — OpenAPI discovery (no more `--validate=false`),
+6. **API & auth parity** — ~~OpenAPI discovery (no more `--validate=false`)~~
+   done (see [`docs/k8s-version-bump.md`](docs/k8s-version-bump.md)),
    PriorityClass, TokenRequest/TokenReview, RBAC.
 
 ### Track B — multi-tenancy, scale, and hosted `k8flare.com`

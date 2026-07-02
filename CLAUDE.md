@@ -84,7 +84,7 @@ CI ゲート(`.github/workflows/`): `ci.yml`(vp check / build:wasm / go vet+test
 - `.dev.vars` は wrangler の設定ファイルと同じディレクトリでしか読まれない。repo ルートに置いても無視される。
 - トークン未設定時は開発用トークン `k8flare-dev-token` にフォールバックする(Go/CI はこれに依存しているので「直す」対象ではない)。
 - `wrangler dev` の alarm エミュレーションは、読み取り専用のポーリングだけでは発火しないことがある。「動いていない」と結論する前に書き込みを1件試すこと。
-- `kubectl apply` は今のところ `--validate=false` が必要(OpenAPI 未配信)。
+- `kubectl apply` に `--validate=false` はもう不要(OpenAPI v2/v3 を Static Assets で配信、実 kubectl で確認済み)。ただし plain HTTP(`wrangler dev` そのまま)だと client-go の `clientcmd` が TLS 以外への認証情報送信を拒否するため、kubeconfig 経由の実 kubectl 検証にはローカル TLS 終端(自己署名証明書 + リバースプロキシ)が要る — Go の `rest.Config{BearerToken: ...}` を直接使う `go test` はこの制約を受けない。サーバー側の strict field validation(`fieldValidation=Strict`)は未実装なので、未知フィールドはクライアント側 OpenAPI 検証をすり抜けても現状はサーバーで黙って受理される。
 - `wrangler deploy` / `wrangler secret put` は実アカウントに影響するので、指示なく実行しない(`.claude/settings.json` の deny 設定でもブロックされる)。
 
 ## コード規約
@@ -102,4 +102,5 @@ CI ゲート(`.github/workflows/`): `ci.yml`(vp check / build:wasm / go vet+test
 - `docs/cloudflare-mesh-networking.md` — ノード間ネットワーキングの評価
 - `docs/platform-verification.md` — 2026 Cloudflare 機能の実機検証スパイク結果(S1-S8)
 - `docs/cost-model.md` — コンポーネント毎のアイドル/アクティブ単価の見積もりと実測
+- `docs/k8s-version-bump.md` — go.mod の k8s.io/kubernetes pin 更新手順(regen → build → conformance CI)
 - `README.md` — ユーザー向け API サポート状況・デプロイ手順
