@@ -30,6 +30,11 @@ func TestClusterIPAllocation_SynchronousAndNoDoubleAllocation(t *testing.T) {
 	for _, name := range []string{"svc-a", "svc-b", "svc-headless"} {
 		_ = client.CoreV1().Services(ns).Delete(ctx, name, metav1.DeleteOptions{})
 	}
+	t.Cleanup(func() {
+		for _, name := range []string{"svc-a", "svc-b", "svc-headless"} {
+			_ = client.CoreV1().Services(ns).Delete(context.Background(), name, metav1.DeleteOptions{})
+		}
+	})
 
 	var svcA, svcB *corev1.Service
 
@@ -163,6 +168,11 @@ func TestClusterIPAllocation_ConcurrentCreatesGetDistinctAddresses(t *testing.T)
 		names[i] = fmt.Sprintf("svc-concurrent-%d", i)
 		_ = client.CoreV1().Services(ns).Delete(ctx, names[i], metav1.DeleteOptions{})
 	}
+	t.Cleanup(func() {
+		for _, name := range names {
+			_ = client.CoreV1().Services(ns).Delete(context.Background(), name, metav1.DeleteOptions{})
+		}
+	})
 
 	var wg sync.WaitGroup
 	ips := make([]string, n)

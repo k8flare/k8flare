@@ -32,6 +32,9 @@ func TestSubresourceBindingRejectsNonPodResource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create node: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = client.CoreV1().Nodes().Delete(context.Background(), nodeName, metav1.DeleteOptions{})
+	})
 
 	binding := &corev1.Binding{
 		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
