@@ -139,6 +139,31 @@ Phase 5/7 implementation-time concern.
 - k8flare-provided base images should be distroless-family (CA bundle,
   item 1).
 
+## Addendum (same day): instance sizing is also deploy-time-fixed
+
+Follow-up desk research after the Pod-backend refocus, double-sourced from
+the Limits page and the 2026-01-05 "Custom instance types" changelog entry:
+
+- `instance_type` (`{ vcpu, memory_mib, disk_mb }`, or the six predefined
+  tiers from `lite` 1/16 vCPU · 256 MiB · 2 GB up to `standard-4` 4 vCPU ·
+  12 GiB · 20 GB) is set per `containers[]` entry — per Container class — at
+  deploy time. Custom types opened to all users on 2026-01-05 (previously
+  Enterprise-only).
+- Runtime `startOptions` allow overriding only
+  `envVars`/`entrypoint`/`enableInternet`/`labels`
+  (`ContainerStartConfigOptions` type definition). No size fields; the Limits
+  page likewise mentions no runtime override mechanism.
+- Account-level concurrency caps: 1,500 concurrent vCPU / 6 TiB memory /
+  30 TB disk; image storage 50 GB per account. No documented cap on the
+  number of Container classes (`containers[]` entries).
+
+**Phase 7 consequence: the allowlist is effectively over (image × size-tier)
+pairs**, since honoring Pod `resources.requests/limits` requires a separate
+Container class per size tier. Realistic v1: a small curated set of base
+images × a few size tiers (e.g. small/medium/large), rounding each Pod's
+requests up to the nearest tier. To be settled during Phase 7 detailed
+design.
+
 ## Transcriber's note
 
 The spike report inferred that S8 "succeeded" from the task list title
