@@ -1,0 +1,10 @@
+{
+  "name": "p2-scriptname-owner",
+  "main": "./src/index.ts",
+  "compatibility_date": "2026-03-24",
+  "durable_objects": {
+    "bindings": [{ "name": "PING", "class_name": "Ping" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Ping"] }],
+  "observability": { "enabled": true },
+}

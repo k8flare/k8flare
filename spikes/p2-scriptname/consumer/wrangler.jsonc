@@ -1,0 +1,9 @@
+{
+  "name": "p2-scriptname-consumer",
+  "main": "./src/index.ts",
+  "compatibility_date": "2026-03-24",
+  "durable_objects": {
+    "bindings": [{ "name": "PING", "class_name": "Ping", "script_name": "p2-scriptname-owner" }],
+  },
+  "observability": { "enabled": true },
+}
