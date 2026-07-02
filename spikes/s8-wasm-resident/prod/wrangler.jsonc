@@ -1,0 +1,9 @@
+{
+  "name": "k8flare-verify-s8",
+  "main": "./out/worker.mjs",
+  "compatibility_date": "2026-03-24",
+  "workers_dev": true,
+  "dev": { "port": 8791 },
+  "services": [{ "binding": "SELF", "service": "k8flare-verify-s8" }],
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+}

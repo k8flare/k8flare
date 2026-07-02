@@ -1351,6 +1351,37 @@ secrets used). Code: `spikes/s8-wasm-resident/prod-resident/`; logs:
   durable state; event-driven re-entrant (no residency) remains the
   simpler fallback.
 
+### S8(b): production CPU-ms of an idle open stream (2026-07-02, measured)
+
+Deployed the unmodified `stock` variant as `k8flare-verify-s8` (KOOFFICE
+account; deleted afterwards, deletion double-confirmed via error 10007 and a
+404). Code: `spikes/s8-wasm-resident/prod/`; raw tail JSON:
+`spikes/s8-wasm-resident/logs/prod-cpu/`.
+
+- Measurement channel: `wrangler tail --format json` reports `cpuTime` and
+  `wallTime` per completed request — no GraphQL fallback needed.
+  **Methodology pitfall**: a naive long-lived tail misses the completion
+  event of a long stream. Working pattern (used for both runs): open the
+  tail session BEFORE the request and keep it warm with a lightweight
+  `/status` ping every ~60 s.
+- Baseline `/status` ×5: 67, 83, 12, 10, 23 ms CPU (first two cold; wallTime
+  ≈ cpuTime confirms no I/O wait).
+- **10-minute open stream (2 s heartbeats + 5 s informer-sim goroutine):
+  246 ms CPU over 599,959 ms wall.** → ~1,476 ms CPU/hour → ~1.06M
+  CPU-ms/month.
+- **30-minute open stream: 912 ms CPU over 1,799,964 ms wall.** → ~1,824 ms
+  CPU/hour → ~1.31M CPU-ms/month. Roughly linear with the 10-minute run
+  (0.4–0.5 ms CPU per wall-second); the 24% deviation from a naive 3×
+  extrapolation is within GC/scheduler jitter at these tiny absolute values
+  (only two data points — not claiming a strict law).
+- **Cost conclusion** (Workers Paid: $5/mo incl. 30M CPU-ms, $0.02 per
+  extra 1M CPU-ms): an idle stream-resident controllers session costs
+  **~$0.02–0.03/month per cluster** at overage rates, and the plan's
+  included allotment alone covers **~23–28 idle clusters**. This empirically
+  validates cost invariant #2: CPU-time-billed residency is compatible with
+  the scale-to-zero concept. (The DO-side anchor duration cost remains a
+  separate design consideration — see the Phase 5 recommendation above.)
+
 ---
 
 ## Correction log (honest corrections)
