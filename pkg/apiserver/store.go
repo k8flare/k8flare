@@ -328,7 +328,13 @@ func applyFieldSelector(items []runtime.Object, fieldSelector string) ([]runtime
 	}
 	selector, err := fields.ParseSelector(fieldSelector)
 	if err != nil {
-		return nil, fmt.Errorf("parse field selector %q: %w", fieldSelector, err)
+		// A malformed selector is a client mistake (400), same as the
+		// unsupported-field case just below -- not a server failure.
+		// Found by review: this used to be a plain wrapped error, which
+		// writeResourceError's errors.As can't unwrap to anything but a
+		// generic 500 (handler.go), misreporting a typo in
+		// --field-selector as a server crash.
+		return nil, &StatusError{Status: badRequestStatus(fmt.Sprintf("invalid field selector %q: %v", fieldSelector, err))}
 	}
 	for _, req := range selector.Requirements() {
 		if !knownSelectableFields[req.Field] {

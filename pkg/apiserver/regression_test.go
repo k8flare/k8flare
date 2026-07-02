@@ -163,3 +163,33 @@ func TestStatusSubresourceRejectsUndeclaredResource(t *testing.T) {
 		t.Errorf("expected a NotFound-shaped error, got: %v", err)
 	}
 }
+
+// TestMalformedFieldSelectorIsBadRequestNotInternalError guards against a
+// regression found by review: a syntactically invalid fieldSelector (as
+// opposed to one naming an unsupported-but-well-formed field, which
+// correctly 400s already) used to come back from fields.ParseSelector as a
+// plain wrapped error, which writeResourceError's errors.As can't unwrap to
+// anything but a generic 500 -- misreporting a client typo in
+// --field-selector as a server crash.
+func TestMalformedFieldSelectorIsBadRequestNotInternalError(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+
+	var result corev1.PodList
+	err := client.CoreV1().RESTClient().Get().
+		Resource("pods").
+		Namespace("default").
+		Param("fieldSelector", `metadata.name=foo\q`). // invalid escape sequence -- a genuine parse error, not just an unknown field
+		Do(ctx).
+		Into(&result)
+
+	if err == nil {
+		t.Fatal("expected an error for a malformed field selector, got nil")
+	}
+	if apierrors.IsInternalError(err) {
+		t.Errorf("malformed field selector reported as an internal server error (500), want BadRequest (400): %v", err)
+	}
+	if !apierrors.IsBadRequest(err) {
+		t.Errorf("expected a BadRequest-shaped (400) error, got: %v", err)
+	}
+}
