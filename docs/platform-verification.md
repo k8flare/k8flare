@@ -1384,6 +1384,34 @@ account; deleted afterwards, deletion double-confirmed via error 10007 and a
 
 ---
 
+## Phase 4 implementation findings (2026-07-02, local wrangler dev)
+
+Discovered while implementing storage v2 (facets + WatchHub) — recorded here
+by the coordinating session because the implementing agent's scope excluded
+this file. Reproductions live in the Phase 4 branch's code comments
+(`workers/storage/src/index.ts`) and `docs/multi-tenancy-and-hosting.md`.
+
+1. **A WebSocket obtained from another DO's `fetch()` response cannot be
+   adopted with `ctx.acceptWebSocket()`** — the platform rejects it, so a
+   "WatchHub holds one upstream WS to Cluster" relay design is impossible.
+   WatchHub was redesigned: Cluster POSTs events to WatchHub (`/push`), and
+   WatchHub fans out to clients over hibernatable WebSockets.
+2. **Facet names cannot be safely reused across repeated `delete()` /
+   recreate cycles**: from the 4th cycle the facet deterministically enters
+   a contradictory state (reads 404 while creates 409 "already exists").
+   One delete/recreate cycle works (as S1 verified); repetition breaks.
+   Consequence: namespace deletion tombstones objects via cascade delete but
+   does NOT `delete()` the facet; facet GC needs a different design (e.g.
+   UID-suffixed facet names).
+3. **Open issue (production check required): Go `net/http` clients receive
+   zero bytes from streaming responses under local wrangler dev**, while
+   curl on the same endpoint streams fine. Reproduced with a minimal Go
+   program (not client-go-specific). Until verified against production
+   Workers, kubectl/client-go watch through the new WatchHub path must be
+   treated as unconfirmed. (Untested hypothesis worth trying first:
+   Go's default `Accept-Encoding: gzip` causing a buffering compression
+   layer in the dev proxy — curl sends no such header.)
+
 ## Correction log (honest corrections)
 
 **2026-07-02 — S8's "route A vs. route B" branch condition superseded by
