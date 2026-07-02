@@ -133,7 +133,7 @@ func init() {
 	)
 
 	// Register discovery/v1 types. EndpointSlice is populated for real by the
-	// Endpoints/EndpointSlice controller (packages/etcd/src/endpoints.ts) --
+	// Endpoints/EndpointSlice controller (workers/storage/src/endpoints.ts) --
 	// unlike the stub types above, this one is actually written to.
 	Scheme.AddKnownTypes(discoveryv1.SchemeGroupVersion,
 		&discoveryv1.EndpointSlice{},

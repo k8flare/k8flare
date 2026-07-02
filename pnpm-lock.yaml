@@ -23,9 +23,6 @@ importers:
 
   packages/crd:
     dependencies:
-      '@k8flare/etcd':
-        specifier: workspace:*
-        version: link:../etcd
       '@k8flare/k8s':
         specifier: workspace:*
         version: link:../k8s
@@ -35,52 +32,17 @@ importers:
       '@k8flare/crd':
         specifier: workspace:*
         version: link:../crd
-      '@k8flare/etcd':
-        specifier: workspace:*
-        version: link:../etcd
       '@k8flare/k8s':
         specifier: workspace:*
         version: link:../k8s
-
-  packages/etcd: {}
 
   packages/k8s: {}
-
-  packages/proxy:
-    dependencies:
-      '@k8flare/k8s':
-        specifier: workspace:*
-        version: link:../k8s
-
-  packages/worker:
-    dependencies:
-      '@k8flare/crd':
-        specifier: workspace:*
-        version: link:../crd
-      '@k8flare/dynamic-worker':
-        specifier: workspace:*
-        version: link:../dynamic-worker
-      '@k8flare/etcd':
-        specifier: workspace:*
-        version: link:../etcd
-      '@k8flare/k8s':
-        specifier: workspace:*
-        version: link:../k8s
-      '@k8flare/proxy':
-        specifier: workspace:*
-        version: link:../proxy
-      '@k8flare/worker-trigger':
-        specifier: workspace:*
-        version: link:../worker-trigger
 
   packages/worker-trigger:
     dependencies:
       '@k8flare/crd':
         specifier: workspace:*
         version: link:../crd
-      '@k8flare/etcd':
-        specifier: workspace:*
-        version: link:../etcd
       '@k8flare/k8s':
         specifier: workspace:*
         version: link:../k8s

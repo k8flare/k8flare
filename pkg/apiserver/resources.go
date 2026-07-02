@@ -497,7 +497,7 @@ func NewPolicyStores(s *Storage) map[string]*ResourceStore {
 
 // NewEndpointSliceStore creates a ResourceStore for EndpointSlice resources
 // (namespaced). Populated by the Endpoints/EndpointSlice controller
-// (packages/etcd/src/endpoints.ts), which reconciles Service selectors
+// (workers/storage/src/endpoints.ts), which reconciles Service selectors
 // against ready Pods -- unlike the stub types above, this one is real.
 func NewEndpointSliceStore(s *Storage) *ResourceStore {
 	return NewResourceStore(s, "endpointslices", true,

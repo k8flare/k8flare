@@ -5,10 +5,9 @@
     "outDir": "dist",
     "paths": {
       "@k8flare/crd": ["../crd/src"],
-      "@k8flare/k8s": ["../k8s/src"],
-      "@k8flare/etcd": ["../etcd/src"]
+      "@k8flare/k8s": ["../k8s/src"]
     }
   },
   "include": ["src"],
-  "references": [{ "path": "../crd" }, { "path": "../k8s" }, { "path": "../etcd" }]
+  "references": [{ "path": "../crd" }, { "path": "../k8s" }]
 }

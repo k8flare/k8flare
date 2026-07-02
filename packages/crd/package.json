@@ -4,7 +4,6 @@
   "type": "module",
   "main": "src/index.ts",
   "dependencies": {
-    "@k8flare/etcd": "workspace:*",
     "@k8flare/k8s": "workspace:*"
   }
 }

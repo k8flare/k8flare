@@ -14,7 +14,9 @@
     "deny": [
       "Read(./.secrets/**)",
       "Read(./.dev.vars)",
-      "Read(./packages/worker/.dev.vars)",
+      "Read(./workers/gateway/.dev.vars)",
+      "Read(./workers/apiserver/.dev.vars)",
+      "Read(./workers/runtime/.dev.vars)",
       "Bash(wrangler secret:*)",
       "Bash(npx wrangler secret:*)"
     ]
