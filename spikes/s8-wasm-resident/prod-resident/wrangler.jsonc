@@ -1,0 +1,10 @@
+{
+  "name": "k8flare-verify-s8-resident",
+  "main": "./src/index.ts",
+  "compatibility_date": "2026-03-17",
+  "durable_objects": {
+    "bindings": [{ "name": "WASM_DO", "class_name": "WasmDO" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WasmDO"] }],
+  "observability": { "enabled": true, "head_sampling_rate": 1 }
+}

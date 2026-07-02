@@ -1,0 +1,4 @@
+=== 2026-07-02T10:32:32Z kick off close-then-extend ===
+{"ok":true,"started_at_ms":1782988352832}
+=== immediate status ===
+{"variant":"prod-resident","instance_id":"prod-resident-aaad273b","goroutines":5,"uptime_s":10.180,"requests_served":7,"extend_ticker":0,"extend_started_ms":1782988352832,"now_ms":1782988352900,"outbound_self_ok":1,"outbound_self_err":"","outbound_ext_ok":1,"outbound_ext_err":""}

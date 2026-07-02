@@ -1294,6 +1294,44 @@ Phase 5 design, not a recommendation to pick one yet):
      not independently re-verified here. Also not tested: WebSocket
      hibernation wake-up specifically, or production DO behavior.
 
+### Production verification (2026-07-02 follow-up, real Workers deployment)
+
+Deployed `k8flare-verify-s8-resident` (the DO-hosted variant with the
+fetch-bind glue patch) to the KOOFFICE account, ran the tests, then deleted
+the Worker (delete confirmed via API error 10007 and a 404 on the URL; no
+secrets used). Code: `spikes/s8-wasm-resident/prod-resident/`; logs:
+`spikes/s8-wasm-resident/logs/prod-resident/`.
+
+- **`ctx.waitUntil` in production far exceeds the commonly assumed ~30 s
+  cap.** Two independent trials (separate DO ids): a background goroutine
+  wrapped in `WaitUntil` kept tracking real wall-clock time (±1 s over 26
+  samples polled every 15 s with zero other traffic) out to **332 s
+  (5 m 32 s)** in trial 1 and 117 s in trial 2 — both stopped deliberately
+  by the operator, not by the platform. This is a **confirmed lower bound
+  of ~5.5 minutes, not the actual cap**; neither trial was observed to
+  die. Design takeaway: multi-minute background reconcile work via
+  waitUntil is real in production; the exact ceiling and death mode
+  remain unmeasured.
+- **The wasm_exec.js fetch-bind patch works in production**: plain
+  `http.Get` from Go succeeded against both a self-loopback URL and a
+  genuinely external URL (`https://example.com`, HTTP 200 with real
+  HTML), with no service-binding workaround.
+- **DO-hosted instantiate-once reconfirmed in production**: consistent
+  instance ID and a monotonically increasing request counter across
+  dozens of requests over 5+ minutes.
+- **Unplanned operational finding: redeploying a new script version
+  resets already-running DO instances.** After trial 1 had run >5 minutes,
+  a redeploy changed the DO's instance ID and reset its uptime on the
+  next request. Any resident-controllers design must assume the instance
+  can vanish at any deploy (in addition to panics and eventual eviction):
+  keep critical state in DO storage, make reconcile loops idempotent and
+  resumable, and use an event-armed `alarm()` safety net to self-heal.
+- **Resulting recommendation for Phase 5** (recorded here, decision made
+  at design time): DO-hosted + WaitUntil-resident with an event-armed
+  `alarm()` safety net, built so any wake (fetch, alarm) can resume from
+  durable state; event-driven re-entrant (no residency) remains the
+  simpler fallback.
+
 ---
 
 ## Correction log (honest corrections)
