@@ -31,35 +31,35 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/syumai/workers.svg)](https://pkg.go.dev/github.com/syumai/workers)
 [![Discord Server](https://img.shields.io/discord/1095344956421447741?logo=discord&style=social)](https://discord.gg/tYhtatRqGs)
 
-* `workers` is a package to run an HTTP server written in Go on [Cloudflare Workers](https://workers.cloudflare.com/).
-* This package can easily serve *http.Handler* on Cloudflare Workers.
-* Caution: This is an experimental project.
+- `workers` is a package to run an HTTP server written in Go on [Cloudflare Workers](https://workers.cloudflare.com/).
+- This package can easily serve _http.Handler_ on Cloudflare Workers.
+- Caution: This is an experimental project.
 
 ## Features
 
-* [x] serve http.Handler
-* [ ] R2
+- [x] serve http.Handler
+- [ ] R2
   - [x] Head
   - [x] Get
   - [x] Put
   - [x] Delete
   - [x] List
   - [ ] Options for R2 methods
-* [ ] KV
+- [ ] KV
   - [x] Get
   - [x] List
   - [x] Put
   - [x] Delete
   - [ ] Options for KV methods
-* [x] Cache API
-* [ ] Durable Objects
+- [x] Cache API
+- [ ] Durable Objects
   - [x] Calling stubs
-* [x] D1 (alpha)
-* [x] Environment variables
-* [x] FetchEvent
-* [x] Cron Triggers
-* [x] TCP Sockets
-* [x] Queues
+- [x] D1 (alpha)
+- [x] Environment variables
+- [x] FetchEvent
+- [x] Cron Triggers
+- [x] TCP Sockets
+- [x] Queues
   - [x] Producer
   - [x] Consumer
 
@@ -93,16 +93,16 @@ For concrete examples, see `_examples` directory.
 
 ## Quick Start
 
-* You can easily create and deploy a project from `Deploy to Cloudflare` button.
+- You can easily create and deploy a project from `Deploy to Cloudflare` button.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fsyumai%2Fworker-go-deploy)
 
-* If you want to create a project manually, please follow the guide below.
+- If you want to create a project manually, please follow the guide below.
 
 ### Requirements
 
-* Node.js (and npm)
-* Go 1.24.0 or later
+- Node.js (and npm)
+- Go 1.24.0 or later
 
 ### Create a new Worker project
 
@@ -151,9 +151,9 @@ If you want a more detailed description, please refer to the README.md file in t
 
 To deploy a Worker, the following steps are required.
 
-* Create a worker project using [wrangler](https://developers.cloudflare.com/workers/wrangler/).
-* Build a Wasm binary.
-* Upload a Wasm binary with a JavaScript code to load and instantiate Wasm (for entry point).
+- Create a worker project using [wrangler](https://developers.cloudflare.com/workers/wrangler/).
+- Build a Wasm binary.
+- Upload a Wasm binary with a JavaScript code to load and instantiate Wasm (for entry point).
 
 The [worker-go template](https://github.com/syumai/workers/tree/main/_templates/cloudflare/worker-go) contains all the required files, so I recommend using this template.
 
