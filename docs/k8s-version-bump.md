@@ -69,7 +69,7 @@ process.
   in step 3 (see above) — fix `pkg/apiserver/apidef/table.go`'s entry.
 - **A new stub-type informer requirement appears** (the DRA/ResourceSlice/
   ServiceCIDR pattern — a real scheduler or controller-manager informer
-  that must sync against *some* registered list, even an empty one, or it
+  that must sync against _some_ registered list, even an empty one, or it
   hangs forever in `WaitForCacheSync`): this doesn't fail a build, it hangs
   a live process. `CLAUDE.md` rule 2 applies here directly — run the real
   scheduler/controller-manager against the new pin and watch for a stuck
