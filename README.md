@@ -87,14 +87,14 @@ and serves, not scheduler limitations.
 
 ### Controllers
 
-| Controller                                        | Status                                                                                      |
-| ------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| Namespace cascading deletion                      | ✅                                                                                          |
-| Default `ServiceAccount` auto-provisioning        | ✅ (object only — no token/Secret issuance; nothing in this stack consumes SA tokens today) |
-| Node lifecycle (lease-staleness → `NotReady`)     | ❌ Planned, not yet implemented — a dead agent's last-reported status is never corrected    |
-| Endpoints (from Service + Pod selectors)          | ❌ Not implemented                                                                          |
-| Workload controllers (ReplicaSet/Deployment/etc.) | ❌ Blocked on the missing workload types above                                              |
-| Garbage collection (owner references)             | ❌ Not implemented                                                                          |
+| Controller                                                          | Status                                                                                                                           |
+| ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Namespace cascading deletion                                        | ✅                                                                                                                               |
+| Default `ServiceAccount` auto-provisioning                          | ✅ (object only — no token/Secret issuance; nothing in this stack consumes SA tokens today)                                      |
+| Node lifecycle (lease-staleness → `Unknown` + taint + pod eviction) | ✅ Verified end-to-end: kill a real agent, node flips `Unknown`/tainted within ~48s, its Pods are deleted past the 5-minute mark |
+| Endpoints / EndpointSlice (from Service + Pod selectors)            | ✅ ClusterIP allocation + both object types verified; real traffic routing via kube-proxy not yet proven end-to-end              |
+| Workload controllers (ReplicaSet/Deployment/etc.)                   | ❌ Blocked on the missing workload types above                                                                                   |
+| Garbage collection (owner references)                               | ❌ Not implemented                                                                                                               |
 
 ### Auth & admission
 
@@ -139,9 +139,10 @@ Two detailed plans drive the work from here:
    on a bare `main` checkout). A Worker-side HTTP path for external Service
    exposure is still ahead too.
 3. ~~**Node lifecycle**~~ — lease staleness → `Unknown` + taints → pod GC
-   implemented (`packages/etcd/src/nodelifecycle.ts`), so a dead agent's
-   pods are meant to actually get replaced — not yet end-to-end verified
-   (kill-an-agent-and-watch-it-happen is next).
+   (`packages/etcd/src/nodelifecycle.ts`), verified end-to-end by killing a
+   real agent process: the node flipped `Unknown`/tainted within 48s and its
+   Pod was deleted once staleness passed the 5-minute mark. Pod
+   _recreation_ still needs the next item's workload controllers.
 4. **Workload controllers + GC** — ReplicaSet → Deployment → Job/CronJob →
    DaemonSet, with ownerReference cascading deletion; the largest single
    jump in official conformance coverage.

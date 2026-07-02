@@ -150,7 +150,7 @@ traffic routing) remain unverified pending the watch-delivery follow-up.
   what the entry Worker's watch relay actually forwarded) rather than
   assuming it's connection-level.
 
-## Phase 2 — Node lifecycle (self-healing, part 1) — implemented, not yet end-to-end verified
+## Phase 2 — Node lifecycle (self-healing, part 1) — done, end-to-end verified
 
 A dead agent today stays `Ready` forever and its pods are never rescheduled.
 An alarm-driven controller over `kube-node-lease`
@@ -160,10 +160,11 @@ the alarm loop like the other controllers):
 - ~~Lease staleness past threshold (40s, matching upstream's default
   `--node-monitor-grace-period`) → set every health condition
   (`Ready`/`MemoryPressure`/`DiskPressure`/`PIDPressure`) to `Unknown`, apply
-  `node.kubernetes.io/unreachable` `NoExecute` taint~~ — implemented.
+  `node.kubernetes.io/unreachable` `NoExecute` taint~~ — implemented and
+  verified.
 - ~~Node dead past a longer threshold (5 minutes, matching upstream's
   default `--pod-eviction-timeout`) → delete its Pods (the upstream pod GC
-  role), so schedulable replacements can exist~~ — implemented.
+  role), so schedulable replacements can exist~~ — implemented and verified.
 
 No `needsXAttention` trigger-check exists for this one deliberately:
 staleness is detected by the _absence_ of an expected write, so only the
@@ -174,16 +175,37 @@ accepted gap for this pass, noted in the module's own doc comment).
 
 Note the interplay: eviction alone just kills pods — _recreation_ needs
 Phase 3. Shipping this first is still correct (the scheduler already refuses
-not-Ready nodes; stale state is the bug). Directly confirmed the write logic
-does _not_ misfire on a healthy node (checked mid-Phase-1-testing: an
-actively-renewed node kept `Ready: True`, no taint, throughout a multi-minute
-session) — but the "kill an agent, watch it actually happen" end-to-end
-check below has not been run yet.
+not-Ready nodes; stale state is the bug).
 
-Verify: kill an agent; node goes NotReady/Unknown, gets tainted, and its
-pods are removed within the thresholds. Conformance: node lifecycle tests
-where applicable. **Not yet done** — next session's first step for this
-phase.
+**Verified end-to-end** against a real local `wrangler dev` + real agent:
+confirmed the write logic does _not_ misfire on a healthy node (an
+actively-renewed node kept `Ready: True`, no taint, throughout Phase 1
+testing), then killed a real agent process outright and watched the full
+sequence happen for real: the node's `Ready`/`MemoryPressure`/`DiskPressure`/
+`PIDPressure` conditions all flipped to `Unknown` and the
+`node.kubernetes.io/unreachable` `NoExecute` taint was applied within 48
+seconds of the last Lease renewal (within the expected ~40–100s window given
+the 40s grace period checked on a 60s tick); a Pod bound to that node was
+then correctly deleted (404 on a subsequent `GET`) once staleness passed the
+5-minute eviction threshold.
+
+One local-dev-specific wrinkle surfaced doing this: `wrangler dev`'s local
+Durable Object Alarm emulation did not visibly fire again on its own during
+~7 minutes of pure read-only polling (no writes) — the eviction only
+actually happened once an unrelated write (`wakeSchedulerSoon()`, via
+creating an unrelated ConfigMap) forced the alarm to re-check. This looks
+like a local-dev-only alarm-scheduling quirk (a true wall-clock proactive
+timer vs. one that only gets re-checked when _some_ request nudges the DO
+locally) rather than a logic bug — the eviction fired correctly and
+immediately once re-checked, with the exact right condition
+(`staleMs > POD_EVICTION_MS`) already true. Worth keeping in mind for future
+alarm-dependent verification in local dev: don't conclude "not working" from
+pure-wait polling alone without also trying a forced wake.
+
+Verify: kill an agent; node goes Unknown, gets tainted, and its pods are
+removed within the thresholds — **done**, see above. Conformance: node
+lifecycle tests where applicable — not yet added to CI (blocked on the
+pre-existing CI-environment issue from Phase 1).
 
 ## Phase 3 — Workload controllers + garbage collection (self-healing, part 2)
 
