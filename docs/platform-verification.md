@@ -1414,6 +1414,69 @@ this file. Reproductions live in the Phase 4 branch's code comments
 
 ## Correction log (honest corrections)
 
+**2026-07-03 — Go net/http streaming block against local wrangler dev was
+a client/dev-stack Accept-Encoding interaction, not a platform-wide bug;
+confirmed fixed locally and confirmed absent in production.** The Phase 4
+finding above (item 3, "Open issue: Go net/http clients receive zero bytes")
+left open whether this reproduced in production. It does not.
+
+Root cause, isolated by varying one client setting at a time against local
+wrangler dev: Go's `Transport` sends `Accept-Encoding: gzip` unless the
+caller overrides it, and something in the local wrangler dev stack honors
+that by gzip-compressing the chunked watch response without flushing per
+write — curl doesn't request gzip by default, so it always saw bytes
+immediately, which made this look client-go-specific rather than
+encoding-negotiation-specific. Confirmed both directions: `curl -H
+'Accept-Encoding: gzip'` against local dev reproduces the same indefinite
+hang; `Transport.DisableCompression = true` or an explicit `Accept-Encoding:
+identity` request header both make the default Go client receive the first
+line in single-digit milliseconds. Forcing HTTP/1.1 made no difference,
+ruling out an h2-framing explanation.
+
+Fix (`packages/k8s/src/watch.ts`, Phase 4 branch commit `8040dd1`): send an
+explicit `Content-Encoding: identity` response header on the watch
+endpoint. The existing `Cache-Control: no-cache, no-transform` header (what
+a real apiserver relies on to stop transforming proxies from compressing
+watch responses) is not honored by whatever does this locally, but the
+explicit `Content-Encoding` is. Verified end to end with a real client-go
+`watch.Interface` (`pkg/apiserver/apiserver_test.go`'s new `TestPodWatch`):
+Added/Modified/Deleted all delivered promptly with the default
+client-go/net/http transport; `go test ./pkg/apiserver/...` green.
+
+**Production verification** (real Workers deployment, `k8flare-verify-stream`,
+deleted after use — confirmed via API error 10007 and a 404 on the URL): the
+local-dev hang does not reproduce. A copy of the S8 spike's unmodified
+`/stream` handler (`spikes/watch-stream-verify/`) was deployed to the
+KOOFFICE account and driven with the same Go client varied the same way.
+All variants — default Go client (`Accept-Encoding: gzip` negotiated,
+`resp.Uncompressed=true` confirming the response actually was
+gzip-compressed), `DisableCompression`, and explicit `Accept-Encoding:
+identity` — received the first chunk in ~2.1–2.3s (matching the handler's 2s
+ticker) and continued receiving every subsequent tick over an 11s
+multi-line read with no stalls.
+
+**Conclusion**: this was a local-wrangler-dev-only limitation (its
+compression layer appears not to flush gzip output per chunk on a
+long-lived stream); production's real compressor flushes per chunk, so a
+plain Go `net/http` client — and therefore client-go, kubectl, kubelet,
+every controller — was never actually blocked in production, even before
+this fix. The `Content-Encoding: identity` fix is still worth keeping (it
+matches real apiserver behavior, and local dev usability depends on it),
+but it was not the production-functionality blocker the original finding
+implied.
+
+**Side finding, not pursued** (flagged for whoever next works on
+kubectl-based local dev usability): the system `kubectl` binary does not
+send an `Authorization` header at all against a plain `http://` (non-TLS)
+target — confirmed by pointing it at a throwaway Go server dumping every
+received header, both via kubeconfig `user.token` and via
+`--token`/`--insecure-skip-tls-verify` flags directly. Separate from the
+streaming bug above (fails at the auth step, before any watch/streaming
+logic runs); doesn't affect `apiserver_test.go`'s client-go-based tests,
+which construct `rest.Config{BearerToken: ...}` directly. Real
+kubectl-driven local testing will likely need wrangler dev to terminate TLS
+(`--local-protocol https`).
+
 **2026-07-02 — S8's "route A vs. route B" branch condition superseded by
 a user decision.** The S8 section above (and the "Route B: Containers"
 framing in `docs/cost-model.md`) originally treated Containers +
