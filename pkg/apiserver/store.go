@@ -8,12 +8,14 @@ import (
 	"strconv"
 	"strings"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apiserver/pkg/storage/names"
 )
 
 // ResourceStore handles CRUD for a single resource type (e.g. configmaps).
@@ -78,6 +80,45 @@ func generateUID() types.UID {
 	))
 }
 
+// prepareJobForCreate auto-generates spec.selector and injects the
+// controller-uid/job-name labels into spec.template.metadata.labels when
+// spec.manualSelector isn't true -- matching upstream's
+// pkg/registry/batch/job/strategy.go generateSelectorIfNeeded/
+// generateSelector, which (unlike the type-defaulting registered on Scheme
+// in scheme.go) are unexported and specifically need the object's UID, so
+// they can't be reused directly and must run after Create has assigned one.
+// Without this, the real Job controller's own AdoptOrphan/ReleaseOrphan pod
+// ownership check (comparing each Pod's labels against spec.selector) always
+// fails against a nil selector, so it repeatedly disowns and replaces the
+// Pods it just created.
+func prepareJobForCreate(job *batchv1.Job) {
+	if job.Spec.ManualSelector != nil && *job.Spec.ManualSelector {
+		return
+	}
+	if job.Spec.Template.Labels == nil {
+		job.Spec.Template.Labels = map[string]string{}
+	}
+	for _, key := range []string{"job-name", batchv1.JobNameLabel} {
+		if _, ok := job.Spec.Template.Labels[key]; !ok {
+			job.Spec.Template.Labels[key] = job.Name
+		}
+	}
+	for _, key := range []string{"controller-uid", batchv1.ControllerUidLabel} {
+		if _, ok := job.Spec.Template.Labels[key]; !ok {
+			job.Spec.Template.Labels[key] = string(job.UID)
+		}
+	}
+	if job.Spec.Selector == nil {
+		job.Spec.Selector = &metav1.LabelSelector{}
+	}
+	if job.Spec.Selector.MatchLabels == nil {
+		job.Spec.Selector.MatchLabels = map[string]string{}
+	}
+	if _, ok := job.Spec.Selector.MatchLabels[batchv1.ControllerUidLabel]; !ok {
+		job.Spec.Selector.MatchLabels[batchv1.ControllerUidLabel] = string(job.UID)
+	}
+}
+
 // getObjectMeta extracts the ObjectMeta from a runtime.Object via the ObjectMetaAccessor interface.
 func getObjectMeta(obj runtime.Object) *metav1.ObjectMeta {
 	accessor, ok := obj.(metav1.ObjectMetaAccessor)
@@ -125,6 +166,18 @@ func alreadyExistsStatus(resource, name string) *metav1.Status {
 		Message:  fmt.Sprintf("%s %q already exists", resource, name),
 		Reason:   metav1.StatusReasonAlreadyExists,
 		Code:     409,
+	}
+}
+
+// immutableFieldStatus returns a metav1.Status indicating a client tried to
+// change a server-assigned, immutable metadata field on update.
+func immutableFieldStatus(resource, name, field string) *metav1.Status {
+	return &metav1.Status{
+		TypeMeta: metav1.TypeMeta{Kind: "Status", APIVersion: "v1"},
+		Status:   metav1.StatusFailure,
+		Message:  fmt.Sprintf("%s %q is invalid: metadata.%s: field is immutable", resource, name, field),
+		Reason:   metav1.StatusReasonInvalid,
+		Code:     422,
 	}
 }
 
@@ -301,7 +354,15 @@ func (rs *ResourceStore) Create(ctx context.Context, namespace string, obj runti
 
 	name := meta.Name
 	if name == "" {
-		return nil, fmt.Errorf("store create: name is required")
+		if meta.GenerateName == "" {
+			return nil, fmt.Errorf("store create: name is required")
+		}
+		// Real controllers (ReplicaSet, Deployment, DaemonSet, Job, ...)
+		// create Pods this way rather than picking an explicit name
+		// themselves. names.SimpleNameGenerator is the exact upstream
+		// apiserver behavior: base + 5 random alphanumerics.
+		name = names.SimpleNameGenerator.GenerateName(meta.GenerateName)
+		meta.Name = name
 	}
 
 	// Set metadata for creation
@@ -312,6 +373,10 @@ func (rs *ResourceStore) Create(ctx context.Context, namespace string, obj runti
 	}
 	// Clear resource version before encoding for storage
 	meta.ResourceVersion = ""
+
+	if job, ok := obj.(*batchv1.Job); ok {
+		prepareJobForCreate(job)
+	}
 
 	data, err := EncodeToStorage(obj)
 	if err != nil {
@@ -344,19 +409,42 @@ func (rs *ResourceStore) Update(ctx context.Context, namespace, name string, obj
 
 	key := rs.storageKey(namespace, name)
 
+	stored, err := rs.storage.Get(ctx, key)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, &StatusError{Status: notFoundStatus(rs.resource, name)}
+		}
+		return nil, fmt.Errorf("store update: get current: %w", err)
+	}
+
+	oldObj := rs.newFunc()
+	if err := DecodeFromStorage(stored.Value, oldObj); err != nil {
+		return nil, fmt.Errorf("store update: decode current: %w", err)
+	}
+	oldMeta := getObjectMeta(oldObj)
+
+	// UID and CreationTimestamp are server-assigned on Create (see above) and
+	// immutable afterward. A client that omits one gets the existing value
+	// filled in; a client that sends a different value is rejected. Without
+	// this, a client PUT that drops these fields would silently overwrite
+	// them, breaking anything that compares against the original UID (e.g.
+	// ownerReferences).
+	if meta.UID == "" {
+		meta.UID = oldMeta.UID
+	} else if meta.UID != oldMeta.UID {
+		return nil, &StatusError{Status: immutableFieldStatus(rs.resource, name, "uid")}
+	}
+	if meta.CreationTimestamp.IsZero() {
+		meta.CreationTimestamp = oldMeta.CreationTimestamp
+	} else if !meta.CreationTimestamp.Equal(&oldMeta.CreationTimestamp) {
+		return nil, &StatusError{Status: immutableFieldStatus(rs.resource, name, "creationTimestamp")}
+	}
+
 	var currentRevision int64
 	if meta.ResourceVersion == "" {
-		stored, err := rs.storage.Get(ctx, key)
-		if err != nil {
-			if errors.Is(err, ErrNotFound) {
-				return nil, &StatusError{Status: notFoundStatus(rs.resource, name)}
-			}
-			return nil, fmt.Errorf("store update: get current: %w", err)
-		}
 		currentRevision = stored.ModRevision
 	} else {
 		// Parse the resource version from the incoming object for CAS
-		var err error
 		currentRevision, err = strconv.ParseInt(meta.ResourceVersion, 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("store update: invalid resource version %q: %w", meta.ResourceVersion, err)

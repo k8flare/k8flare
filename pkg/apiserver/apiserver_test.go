@@ -19,9 +19,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
@@ -55,6 +58,11 @@ func setupWranglerDev(t *testing.T) *kubernetes.Clientset {
 		devNull, _ := os.Open(os.DevNull)
 		devCmd.Stdout = devNull
 		devCmd.Stderr = devNull
+		// wrangler dev's actual workerd process is a grandchild, not a direct
+		// child of devCmd -- signaling devCmd.Process alone leaves it running.
+		// Put the whole tree in its own process group so cleanup can signal
+		// all of it at once.
+		devCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 		if err := devCmd.Start(); err != nil {
 			t.Fatalf("Failed to start wrangler dev: %v", err)
@@ -93,7 +101,8 @@ func setupWranglerDev(t *testing.T) *kubernetes.Clientset {
 func TestMain(m *testing.M) {
 	code := m.Run()
 	if devCmd != nil && devCmd.Process != nil {
-		devCmd.Process.Signal(os.Interrupt)
+		pgid := devCmd.Process.Pid
+		syscall.Kill(-pgid, syscall.SIGINT)
 		done := make(chan struct{})
 		go func() {
 			devCmd.Wait()
@@ -102,7 +111,7 @@ func TestMain(m *testing.M) {
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
-			devCmd.Process.Kill()
+			syscall.Kill(-pgid, syscall.SIGKILL)
 		}
 	}
 	os.Exit(code)
@@ -474,6 +483,36 @@ func TestConfigMapCRUD(t *testing.T) {
 		_, err = client.CoreV1().ConfigMaps(ns).Update(ctx, cm, metav1.UpdateOptions{})
 		if !errors.IsConflict(err) {
 			t.Errorf("Expected Conflict, got: %v", err)
+		}
+	})
+
+	t.Run("UpdateOmitsUID", func(t *testing.T) {
+		cm, _ := client.CoreV1().ConfigMaps(ns).Get(ctx, name, metav1.GetOptions{})
+		originalUID := cm.UID
+		if originalUID == "" {
+			t.Fatalf("original UID is empty, test is meaningless")
+		}
+		// A raw PUT that omits uid/creationTimestamp (as a minimal hand-built
+		// body would) must not clobber them -- the store should fill in the
+		// existing values, matching upstream ObjectMeta update semantics.
+		cm.UID = ""
+		cm.CreationTimestamp = metav1.Time{}
+		cm.Data["uidtest"] = "1"
+		updated, err := client.CoreV1().ConfigMaps(ns).Update(ctx, cm, metav1.UpdateOptions{})
+		if err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+		if updated.UID != originalUID {
+			t.Errorf("UID: got %q, want preserved %q", updated.UID, originalUID)
+		}
+	})
+
+	t.Run("UpdateMismatchedUID", func(t *testing.T) {
+		cm, _ := client.CoreV1().ConfigMaps(ns).Get(ctx, name, metav1.GetOptions{})
+		cm.UID = types.UID("wrong-uid-should-be-rejected")
+		_, err := client.CoreV1().ConfigMaps(ns).Update(ctx, cm, metav1.UpdateOptions{})
+		if !errors.IsInvalid(err) {
+			t.Errorf("Expected Invalid, got: %v", err)
 		}
 	})
 
@@ -895,6 +934,151 @@ func TestNodeCRUD(t *testing.T) {
 		err := client.CoreV1().Nodes().Delete(ctx, name, metav1.DeleteOptions{})
 		if err != nil {
 			t.Fatalf("Delete: %v", err)
+		}
+	})
+}
+
+// TestWorkloadStatusSubresources covers the /status subresource added for
+// ReplicaSet, Deployment, DaemonSet, Job, and CronJob -- prerequisite work
+// for embedding the real kube-controller-manager, whose typed clients call
+// UpdateStatus() (hitting these exact subresources) rather than a
+// whole-object Update().
+func TestWorkloadStatusSubresources(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+	ns := "default"
+
+	client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: ns},
+	}, metav1.CreateOptions{})
+
+	podTemplate := corev1.PodTemplateSpec{
+		ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "status-sub-test"}},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "c", Image: "busybox"}},
+		},
+	}
+
+	t.Run("ReplicaSet", func(t *testing.T) {
+		name := "status-sub-rs"
+		_ = client.AppsV1().ReplicaSets(ns).Delete(ctx, name, metav1.DeleteOptions{})
+		rs, err := client.AppsV1().ReplicaSets(ns).Create(ctx, &appsv1.ReplicaSet{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: appsv1.ReplicaSetSpec{
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "status-sub-test"}},
+				Template: podTemplate,
+			},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		rs.Status.Replicas = 5
+		rs.Status.ReadyReplicas = 3
+		updated, err := client.AppsV1().ReplicaSets(ns).UpdateStatus(ctx, rs, metav1.UpdateOptions{})
+		if err != nil {
+			t.Fatalf("UpdateStatus: %v", err)
+		}
+		if updated.Status.Replicas != 5 || updated.Status.ReadyReplicas != 3 {
+			t.Errorf("Status: got %+v", updated.Status)
+		}
+	})
+
+	t.Run("Deployment", func(t *testing.T) {
+		name := "status-sub-dep"
+		_ = client.AppsV1().Deployments(ns).Delete(ctx, name, metav1.DeleteOptions{})
+		dep, err := client.AppsV1().Deployments(ns).Create(ctx, &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: appsv1.DeploymentSpec{
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "status-sub-test"}},
+				Template: podTemplate,
+			},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		dep.Status.Replicas = 3
+		dep.Status.AvailableReplicas = 2
+		updated, err := client.AppsV1().Deployments(ns).UpdateStatus(ctx, dep, metav1.UpdateOptions{})
+		if err != nil {
+			t.Fatalf("UpdateStatus: %v", err)
+		}
+		if updated.Status.Replicas != 3 || updated.Status.AvailableReplicas != 2 {
+			t.Errorf("Status: got %+v", updated.Status)
+		}
+	})
+
+	t.Run("DaemonSet", func(t *testing.T) {
+		name := "status-sub-ds"
+		_ = client.AppsV1().DaemonSets(ns).Delete(ctx, name, metav1.DeleteOptions{})
+		ds, err := client.AppsV1().DaemonSets(ns).Create(ctx, &appsv1.DaemonSet{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: appsv1.DaemonSetSpec{
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "status-sub-test"}},
+				Template: podTemplate,
+			},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		ds.Status.DesiredNumberScheduled = 3
+		ds.Status.NumberReady = 1
+		updated, err := client.AppsV1().DaemonSets(ns).UpdateStatus(ctx, ds, metav1.UpdateOptions{})
+		if err != nil {
+			t.Fatalf("UpdateStatus: %v", err)
+		}
+		if updated.Status.DesiredNumberScheduled != 3 || updated.Status.NumberReady != 1 {
+			t.Errorf("Status: got %+v", updated.Status)
+		}
+	})
+
+	t.Run("Job", func(t *testing.T) {
+		name := "status-sub-job"
+		_ = client.BatchV1().Jobs(ns).Delete(ctx, name, metav1.DeleteOptions{})
+		jobPodTemplate := podTemplate
+		jobPodTemplate.Spec.RestartPolicy = corev1.RestartPolicyNever
+		job, err := client.BatchV1().Jobs(ns).Create(ctx, &batchv1.Job{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec:       batchv1.JobSpec{Template: jobPodTemplate},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		job.Status.Active = 2
+		job.Status.Succeeded = 1
+		updated, err := client.BatchV1().Jobs(ns).UpdateStatus(ctx, job, metav1.UpdateOptions{})
+		if err != nil {
+			t.Fatalf("UpdateStatus: %v", err)
+		}
+		if updated.Status.Active != 2 || updated.Status.Succeeded != 1 {
+			t.Errorf("Status: got %+v", updated.Status)
+		}
+	})
+
+	t.Run("CronJob", func(t *testing.T) {
+		name := "status-sub-cj"
+		_ = client.BatchV1().CronJobs(ns).Delete(ctx, name, metav1.DeleteOptions{})
+		jobPodTemplate := podTemplate
+		jobPodTemplate.Spec.RestartPolicy = corev1.RestartPolicyNever
+		cj, err := client.BatchV1().CronJobs(ns).Create(ctx, &batchv1.CronJob{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: batchv1.CronJobSpec{
+				// Never actually due -- this test only exercises the status
+				// subresource, not scheduling.
+				Schedule:    "0 0 30 2 *",
+				JobTemplate: batchv1.JobTemplateSpec{Spec: batchv1.JobSpec{Template: jobPodTemplate}},
+			},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		now := metav1.Now()
+		cj.Status.LastScheduleTime = &now
+		updated, err := client.BatchV1().CronJobs(ns).UpdateStatus(ctx, cj, metav1.UpdateOptions{})
+		if err != nil {
+			t.Fatalf("UpdateStatus: %v", err)
+		}
+		if updated.Status.LastScheduleTime == nil {
+			t.Errorf("Status.LastScheduleTime: got nil")
 		}
 	})
 }

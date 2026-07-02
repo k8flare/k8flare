@@ -149,6 +149,21 @@ traffic routing) remain unverified pending the watch-delivery follow-up.
   message-delivery gap (compare kine revision numbers the DO broadcast vs.
   what the entry Worker's watch relay actually forwarded) rather than
   assuming it's connection-level.
+- **The same class of instability now also shows up locally in
+  `go test ./pkg/apiserver/...`** (not just CI), simply because the suite
+  has grown: 6 new test files/functions were added across Phase 3, so a full
+  run now takes long enough (~70-90s, up from ~20s) to occasionally hit
+  whatever the underlying limit is. Confirmed this isn't a regression in any
+  specific new code: an isolated run of just the new tests
+  (`-run 'TestWorkloadStatusSubresources|TestResourceAPIGroup|TestSupervisor|TestBasicAuth'`)
+  passes cleanly and quickly every time, and the full suite's pass/fail
+  outcome was inconsistent across repeated runs with zero code changes in
+  between (4 clean passes, then a failure, then clean again) — this is
+  capacity-related flakiness in the shared local `wrangler dev` instance
+  under sustained load, not a deterministic bug. If it gets bad enough to
+  block routine development, consider splitting `apiserver_test.go` into
+  per-domain test binaries (each getting its own fresh `wrangler dev`
+  instance) rather than one ever-growing shared one.
 
 ## Phase 2 — Node lifecycle (self-healing, part 1) — done, end-to-end verified
 
@@ -211,21 +226,111 @@ pre-existing CI-environment issue from Phase 1).
 
 The single biggest "feels like normal Kubernetes" gap. Order matters:
 
-1. **ReplicaSet** — the primitive reconciler: template hash, create/delete
-   pods toward `spec.replicas`. The apps/v1 type is already registered (as a
-   scheduler-informer stub) — this upgrades it to a real, controlled
-   resource.
-2. **Deployment** — a rollout state machine layered on ReplicaSets, not a
-   separate pod-management loop.
-3. **Job / CronJob** — run-to-completion semantics; CronJob's tick maps
-   naturally onto DO alarms.
-4. **DaemonSet** — after node lifecycle, since it reconciles against node
-   membership.
-5. **StatefulSet** — deliberately last; honest StatefulSet support needs the
-   storage story (below).
-6. **OwnerReference GC** — cascading deletion (delete a Deployment, its
-   ReplicaSets and Pods go too). Required from step 1 onward; implemented as
-   a background sweep in the same alarm loop.
+1. **ReplicaSet / Deployment / Job / CronJob / DaemonSet** — done, end-to-end
+   verified, via the **real, unmodified `kube-controller-manager` binary**
+   (`cmd/controller-manager`), not hand-written TypeScript.
+
+   The first pass through this phase hand-wrote a TypeScript reconciler for
+   each of these five in `packages/etcd/src/*.ts`, run from the cluster DO's
+   alarm loop. Each was implemented and individually verified end-to-end
+   against a real local deployment, and each surfaced real bugs along the
+   way — a `store.go` `Update()` that didn't preserve `metadata.uid`/
+   `creationTimestamp` (breaking `ownerReferences`-based ownership checks
+   generally, not just for one controller), the same UID/timestamp gap
+   reproduced in the hand-written controllers' own direct-to-storage object
+   creation, and a kine store revision-chaining collision on deterministic
+   ReplicaSet/Job naming. All of this worked, but was a from-scratch
+   reimplementation of non-trivial upstream semantics (rollout math, cron
+   parsing, taint/toleration eligibility, run-to-completion bookkeeping) —
+   exactly the kind of thing `cmd/scheduler` had already shown could instead
+   be solved by embedding the real component. Once that was confirmed
+   feasible for the controller-manager too (see below), all five `.ts` files
+   were deleted outright in favor of it.
+
+   **How the embed works**: identical pattern to `cmd/scheduler` — the real
+   k3s codebase already runs `kube-controller-manager` this exact way
+   (`pkg/executor/embed/embed.go`'s `ControllerManager` method):
+   `cmapp.NewControllerManagerCommand()` → `command.SetArgs([...])` →
+   `command.ExecuteContext(ctx)`, no subprocess exec, no new go.mod
+   dependencies (`k8s.io/kube-controller-manager`/`k8s.io/controller-manager`
+   were already transitive requires). `--controllers=` cleanly enables only
+   the five named controllers, `--leader-elect=false` and a bearer-token
+   kubeconfig match the scheduler's already-proven simplicity, and
+   `--secure-port=0` disables the controller-manager's own healthz/metrics
+   server (which would otherwise need delegated authentication/authorization
+   against a real apiserver this project doesn't have).
+
+   **What the apiserver needed before the embed would actually work** —
+   found by running the real binary against it, not by reading its source
+   first:
+   - **`/status` subresources** for `replicasets`, `deployments`,
+     `daemonsets`, `jobs`, `cronjobs` (`pkg/apiserver/subresource.go`,
+     mirroring the pre-existing `pods/status`/`nodes/status` cases exactly).
+     Real controllers call `UpdateStatus()`, which hits this subresource
+     unconditionally — without it, every status update 404s silently.
+   - **A `ControllerRevision` (apps/v1) stub type**, registered the same way
+     as the DRA/ReplicaSet stub types were for the scheduler migration —
+     without it, the DaemonSet informer's `WaitForCacheSync` blocks forever
+     at startup and no controller in the process ever starts working.
+   - **A `RESOURCE_KINDS` entry** (`packages/k8s/src/url-mapping.ts`) for
+     `deployments`, `daemonsets`, `jobs`, `cronjobs`, and
+     `controllerrevisions` — missing exactly like the EndpointSlice gap
+     found during the kube-proxy migration: without the resolved Kind, watch
+     bookmark synthesis can't fire `initial-events-end`, so these five
+     types' informers never receive it and their reflectors log "event
+     bookmark expired" and effectively never finish their initial sync —
+     `deployment`/`daemonset`/`job`/`cronjob` controllers all silently never
+     started processing anything until this was fixed.
+   - **Real upstream apps/v1 and batch/v1 admission defaulting**, via
+     `appsv1defaults.RegisterDefaults(Scheme)` /
+     `batchv1defaults.RegisterDefaults(Scheme)` (the actual
+     `k8s.io/kubernetes/pkg/apis/{apps,batch}/v1` packages, already a
+     transitive dependency) plus a new `Scheme.Default(obj)` call in
+     `ApplyDefaults` — not hand-reimplemented. Without this, a Deployment
+     created with `spec.strategy.type` unset (the normal case) made the real
+     deployment controller hard-error forever with `"unexpected deployment
+strategy type: "`, since real clients rely on apiserver-side admission
+     to fill in `RollingUpdate` before the object is ever stored.
+   - **`metadata.generateName` support** in `store.go`'s `Create()` (using
+     the real `k8s.io/apiserver/pkg/storage/names.SimpleNameGenerator`, not
+     a hand-rolled equivalent) — real controllers create Pods this way
+     rather than picking an explicit name themselves; without it every Pod
+     create from a real controller failed with `"name is required"`.
+   - **Job's `spec.selector`/`controller-uid` label auto-generation**
+     (`store.go`, a small targeted port of upstream's unexported
+     `pkg/registry/batch/job/strategy.go` `generateSelectorIfNeeded` —
+     unexported, and needs the object's UID, so it couldn't be reused
+     directly and has to run after `Create` assigns one). Without it, a
+     Job's `spec.selector` stayed nil forever, so the real Job controller's
+     own ownership check against each Pod it created always failed, and it
+     repeatedly disowned and replaced the Pods it had just made.
+
+   **Verified against a real local deployment**, with the real binary
+   itself, after each fix: ReplicaSet create/scale up/scale down; Deployment
+   create (auto-generates its ReplicaSet, upstream's real hash-based naming
+   convention) and scale; Job `completions`/`parallelism`-bounded Pod
+   creation with correct `ownerReferences` retained; CronJob scheduling a
+   Job every real minute tick with correct naming and status tracking;
+   DaemonSet placing one Pod per Node via `nodeAffinity`
+   (`matchFields: metadata.name`) — which also required running the real
+   `cmd/scheduler` alongside the controller-manager, since (unlike the old
+   hand-written version) DaemonSet pods aren't pre-bound with
+   `spec.nodeName` directly, they rely on the real scheduler to bind them
+   via that affinity, exactly like any other Pod.
+
+2. **StatefulSet** — deliberately last; honest StatefulSet support needs the
+   storage story (below). Likely the same real-binary approach once
+   reached — `statefulset` is already one of the controllers the real
+   `kube-controller-manager` registers, just not yet added to
+   `--controllers=`.
+3. **OwnerReference GC** — cascading deletion (delete a Deployment, its
+   ReplicaSets and Pods go too). The real `kube-controller-manager` has a
+   `garbagecollector` controller that does exactly this generically for any
+   type; not yet added to `--controllers=` here since it needs its own
+   verification pass (discovery + a metadata-only client instead of a typed
+   one — Get/List have a documented, likely-compatible fallback path in
+   client-go for older-style apiservers like this one, but Watch is
+   unverified) rather than assuming it works.
 
 Verify: conformance `[sig-apps]` ReplicaSet/Deployment basics move into the
 required set — these are Conformance-tagged upstream, so this phase is the

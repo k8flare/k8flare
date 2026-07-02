@@ -2,6 +2,7 @@ package apiserver
 
 import (
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -365,9 +366,9 @@ func NewResourceAPIStores(s *Storage) map[string]*ResourceStore {
 	}
 }
 
-// NewReplicaSetStore creates a ResourceStore for ReplicaSet resources (namespaced).
-// Never populated with real data — see the comment on the apps/v1 and
-// policy/v1 scheme registration in scheme.go for why this exists.
+// NewReplicaSetStore creates a ResourceStore for ReplicaSet resources
+// (namespaced). Real, controller-backed resource — see
+// packages/etcd/src/replicaset.ts.
 func NewReplicaSetStore(s *Storage) *ResourceStore {
 	return NewResourceStore(s, "replicasets", true,
 		func() runtime.Object { return &appsv1.ReplicaSet{} },
@@ -378,6 +379,24 @@ func NewReplicaSetStore(s *Storage) *ResourceStore {
 			rsList := list.(*appsv1.ReplicaSetList)
 			for _, item := range items {
 				rsList.Items = append(rsList.Items, *item.(*appsv1.ReplicaSet))
+			}
+		},
+	)
+}
+
+// NewDeploymentStore creates a ResourceStore for Deployment resources
+// (namespaced). Real, controller-backed resource — see
+// packages/etcd/src/deployment.ts.
+func NewDeploymentStore(s *Storage) *ResourceStore {
+	return NewResourceStore(s, "deployments", true,
+		func() runtime.Object { return &appsv1.Deployment{} },
+		func() runtime.Object {
+			return &appsv1.DeploymentList{TypeMeta: metav1.TypeMeta{Kind: "DeploymentList", APIVersion: "apps/v1"}}
+		},
+		func(list runtime.Object, items []runtime.Object) {
+			dList := list.(*appsv1.DeploymentList)
+			for _, item := range items {
+				dList.Items = append(dList.Items, *item.(*appsv1.Deployment))
 			}
 		},
 	)
@@ -405,9 +424,48 @@ func NewStatefulSetStore(s *Storage) *ResourceStore {
 // returns them as a map keyed by resource name.
 func NewAppsStores(s *Storage) map[string]*ResourceStore {
 	return map[string]*ResourceStore{
-		"replicasets":  NewReplicaSetStore(s),
-		"statefulsets": NewStatefulSetStore(s),
+		"replicasets":         NewReplicaSetStore(s),
+		"deployments":         NewDeploymentStore(s),
+		"daemonsets":          NewDaemonSetStore(s),
+		"statefulsets":        NewStatefulSetStore(s),
+		"controllerrevisions": NewControllerRevisionStore(s),
 	}
+}
+
+// NewControllerRevisionStore creates a ResourceStore for ControllerRevision
+// resources (namespaced). Never populated with real data — see the comment
+// on the apps/v1 scheme registration in scheme.go for why this exists.
+func NewControllerRevisionStore(s *Storage) *ResourceStore {
+	return NewResourceStore(s, "controllerrevisions", true,
+		func() runtime.Object { return &appsv1.ControllerRevision{} },
+		func() runtime.Object {
+			return &appsv1.ControllerRevisionList{TypeMeta: metav1.TypeMeta{Kind: "ControllerRevisionList", APIVersion: "apps/v1"}}
+		},
+		func(list runtime.Object, items []runtime.Object) {
+			crList := list.(*appsv1.ControllerRevisionList)
+			for _, item := range items {
+				crList.Items = append(crList.Items, *item.(*appsv1.ControllerRevision))
+			}
+		},
+	)
+}
+
+// NewDaemonSetStore creates a ResourceStore for DaemonSet resources
+// (namespaced). Real, controller-backed resource — see
+// packages/etcd/src/daemonset.ts.
+func NewDaemonSetStore(s *Storage) *ResourceStore {
+	return NewResourceStore(s, "daemonsets", true,
+		func() runtime.Object { return &appsv1.DaemonSet{} },
+		func() runtime.Object {
+			return &appsv1.DaemonSetList{TypeMeta: metav1.TypeMeta{Kind: "DaemonSetList", APIVersion: "apps/v1"}}
+		},
+		func(list runtime.Object, items []runtime.Object) {
+			dsList := list.(*appsv1.DaemonSetList)
+			for _, item := range items {
+				dsList.Items = append(dsList.Items, *item.(*appsv1.DaemonSet))
+			}
+		},
+	)
 }
 
 // NewPodDisruptionBudgetStore creates a ResourceStore for PodDisruptionBudget
@@ -488,6 +546,49 @@ func NewServiceCIDRStore(s *Storage) *ResourceStore {
 func NewNetworkingStores(s *Storage) map[string]*ResourceStore {
 	return map[string]*ResourceStore{
 		"servicecidrs": NewServiceCIDRStore(s),
+	}
+}
+
+// NewJobStore creates a ResourceStore for Job resources (namespaced). Real,
+// controller-backed resource -- see packages/etcd/src/job.ts.
+func NewJobStore(s *Storage) *ResourceStore {
+	return NewResourceStore(s, "jobs", true,
+		func() runtime.Object { return &batchv1.Job{} },
+		func() runtime.Object {
+			return &batchv1.JobList{TypeMeta: metav1.TypeMeta{Kind: "JobList", APIVersion: "batch/v1"}}
+		},
+		func(list runtime.Object, items []runtime.Object) {
+			jList := list.(*batchv1.JobList)
+			for _, item := range items {
+				jList.Items = append(jList.Items, *item.(*batchv1.Job))
+			}
+		},
+	)
+}
+
+// NewCronJobStore creates a ResourceStore for CronJob resources (namespaced).
+// Real, controller-backed resource -- see packages/etcd/src/cronjob.ts.
+func NewCronJobStore(s *Storage) *ResourceStore {
+	return NewResourceStore(s, "cronjobs", true,
+		func() runtime.Object { return &batchv1.CronJob{} },
+		func() runtime.Object {
+			return &batchv1.CronJobList{TypeMeta: metav1.TypeMeta{Kind: "CronJobList", APIVersion: "batch/v1"}}
+		},
+		func(list runtime.Object, items []runtime.Object) {
+			cjList := list.(*batchv1.CronJobList)
+			for _, item := range items {
+				cjList.Items = append(cjList.Items, *item.(*batchv1.CronJob))
+			}
+		},
+	)
+}
+
+// NewBatchStores creates ResourceStore instances for batch/v1 resources and
+// returns them as a map keyed by resource name.
+func NewBatchStores(s *Storage) map[string]*ResourceStore {
+	return map[string]*ResourceStore{
+		"jobs":     NewJobStore(s),
+		"cronjobs": NewCronJobStore(s),
 	}
 }
 

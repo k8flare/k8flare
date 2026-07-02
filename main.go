@@ -52,7 +52,8 @@ func main() {
 	policyStores := apiserver.NewPolicyStores(storage)
 	discoveryStores := apiserver.NewDiscoveryStores(storage)
 	networkingStores := apiserver.NewNetworkingStores(storage)
-	namespacedStores := apiserver.NamespacedResourceStores(stores, leaseStores, storageStores, nodeAPIStores, resourceAPIStores, appsStores, policyStores, discoveryStores, networkingStores)
+	batchStores := apiserver.NewBatchStores(storage)
+	namespacedStores := apiserver.NamespacedResourceStores(stores, leaseStores, storageStores, nodeAPIStores, resourceAPIStores, appsStores, policyStores, discoveryStores, networkingStores, batchStores)
 
 	// CA Manager for supervisor protocol
 	cam := apiserver.NewCAManager(storage)
@@ -108,6 +109,11 @@ func main() {
 	// networking.k8s.io/v1 (with auth)
 	mux.Handle("/apis/networking.k8s.io/v1/", apiserver.AuthMiddleware(getToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apiserver.HandleGroupAPI(w, r, networkingStores)
+	})))
+
+	// batch/v1 (with auth)
+	mux.Handle("/apis/batch/v1/", apiserver.AuthMiddleware(getToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiserver.HandleGroupAPI(w, r, batchStores)
 	})))
 
 	workers.Serve(mux)

@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 
+	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
@@ -152,6 +154,331 @@ func HandleSubresource(w http.ResponseWriter, r *http.Request, stores map[string
 			currentNode.Status = incoming.Status
 
 			obj, err := store.Update(ctx, namespace, name, currentNode)
+			if err != nil {
+				writeResourceError(w, err, resource, name)
+				return
+			}
+			writeRuntimeObject(w, http.StatusOK, obj)
+
+		case http.MethodPatch:
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to read request body")
+				return
+			}
+			defer r.Body.Close()
+
+			currentObj, err := store.Get(ctx, namespace, name)
+			if err != nil {
+				writeResourceError(w, err, resource, name)
+				return
+			}
+
+			ct := r.Header.Get("Content-Type")
+			patchedObj, err := applyPatch(currentObj, body, ct)
+			if err != nil {
+				writeStatusError(w, http.StatusBadRequest, "BadRequest", "patch failed: "+err.Error())
+				return
+			}
+
+			obj, err := store.Update(ctx, namespace, name, patchedObj)
+			if err != nil {
+				writeResourceError(w, err, resource, name)
+				return
+			}
+			writeRuntimeObject(w, http.StatusOK, obj)
+
+		default:
+			writeStatusError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method "+r.Method+" is not supported for "+resource+"/"+subresource)
+		}
+
+	case "replicasets/status":
+		switch r.Method {
+		case http.MethodPut:
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to read request body")
+				return
+			}
+			defer r.Body.Close()
+
+			incomingObj, err := decodeBody(body)
+			if err != nil {
+				writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to decode request body: "+err.Error())
+				return
+			}
+			incoming := incomingObj.(*appsv1.ReplicaSet)
+
+			currentObj, err := store.Get(ctx, namespace, name)
+			if err != nil {
+				writeResourceError(w, err, resource, name)
+				return
+			}
+			currentRS := currentObj.(*appsv1.ReplicaSet)
+
+			currentRS.Status = incoming.Status
+
+			obj, err := store.Update(ctx, namespace, name, currentRS)
+			if err != nil {
+				writeResourceError(w, err, resource, name)
+				return
+			}
+			writeRuntimeObject(w, http.StatusOK, obj)
+
+		case http.MethodPatch:
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to read request body")
+				return
+			}
+			defer r.Body.Close()
+
+			currentObj, err := store.Get(ctx, namespace, name)
+			if err != nil {
+				writeResourceError(w, err, resource, name)
+				return
+			}
+
+			ct := r.Header.Get("Content-Type")
+			patchedObj, err := applyPatch(currentObj, body, ct)
+			if err != nil {
+				writeStatusError(w, http.StatusBadRequest, "BadRequest", "patch failed: "+err.Error())
+				return
+			}
+
+			obj, err := store.Update(ctx, namespace, name, patchedObj)
+			if err != nil {
+				writeResourceError(w, err, resource, name)
+				return
+			}
+			writeRuntimeObject(w, http.StatusOK, obj)
+
+		default:
+			writeStatusError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method "+r.Method+" is not supported for "+resource+"/"+subresource)
+		}
+
+	case "deployments/status":
+		switch r.Method {
+		case http.MethodPut:
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to read request body")
+				return
+			}
+			defer r.Body.Close()
+
+			incomingObj, err := decodeBody(body)
+			if err != nil {
+				writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to decode request body: "+err.Error())
+				return
+			}
+			incoming := incomingObj.(*appsv1.Deployment)
+
+			currentObj, err := store.Get(ctx, namespace, name)
+			if err != nil {
+				writeResourceError(w, err, resource, name)
+				return
+			}
+			currentDep := currentObj.(*appsv1.Deployment)
+
+			currentDep.Status = incoming.Status
+
+			obj, err := store.Update(ctx, namespace, name, currentDep)
+			if err != nil {
+				writeResourceError(w, err, resource, name)
+				return
+			}
+			writeRuntimeObject(w, http.StatusOK, obj)
+
+		case http.MethodPatch:
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to read request body")
+				return
+			}
+			defer r.Body.Close()
+
+			currentObj, err := store.Get(ctx, namespace, name)
+			if err != nil {
+				writeResourceError(w, err, resource, name)
+				return
+			}
+
+			ct := r.Header.Get("Content-Type")
+			patchedObj, err := applyPatch(currentObj, body, ct)
+			if err != nil {
+				writeStatusError(w, http.StatusBadRequest, "BadRequest", "patch failed: "+err.Error())
+				return
+			}
+
+			obj, err := store.Update(ctx, namespace, name, patchedObj)
+			if err != nil {
+				writeResourceError(w, err, resource, name)
+				return
+			}
+			writeRuntimeObject(w, http.StatusOK, obj)
+
+		default:
+			writeStatusError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method "+r.Method+" is not supported for "+resource+"/"+subresource)
+		}
+
+	case "daemonsets/status":
+		switch r.Method {
+		case http.MethodPut:
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to read request body")
+				return
+			}
+			defer r.Body.Close()
+
+			incomingObj, err := decodeBody(body)
+			if err != nil {
+				writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to decode request body: "+err.Error())
+				return
+			}
+			incoming := incomingObj.(*appsv1.DaemonSet)
+
+			currentObj, err := store.Get(ctx, namespace, name)
+			if err != nil {
+				writeResourceError(w, err, resource, name)
+				return
+			}
+			currentDS := currentObj.(*appsv1.DaemonSet)
+
+			currentDS.Status = incoming.Status
+
+			obj, err := store.Update(ctx, namespace, name, currentDS)
+			if err != nil {
+				writeResourceError(w, err, resource, name)
+				return
+			}
+			writeRuntimeObject(w, http.StatusOK, obj)
+
+		case http.MethodPatch:
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to read request body")
+				return
+			}
+			defer r.Body.Close()
+
+			currentObj, err := store.Get(ctx, namespace, name)
+			if err != nil {
+				writeResourceError(w, err, resource, name)
+				return
+			}
+
+			ct := r.Header.Get("Content-Type")
+			patchedObj, err := applyPatch(currentObj, body, ct)
+			if err != nil {
+				writeStatusError(w, http.StatusBadRequest, "BadRequest", "patch failed: "+err.Error())
+				return
+			}
+
+			obj, err := store.Update(ctx, namespace, name, patchedObj)
+			if err != nil {
+				writeResourceError(w, err, resource, name)
+				return
+			}
+			writeRuntimeObject(w, http.StatusOK, obj)
+
+		default:
+			writeStatusError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method "+r.Method+" is not supported for "+resource+"/"+subresource)
+		}
+
+	case "jobs/status":
+		switch r.Method {
+		case http.MethodPut:
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to read request body")
+				return
+			}
+			defer r.Body.Close()
+
+			incomingObj, err := decodeBody(body)
+			if err != nil {
+				writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to decode request body: "+err.Error())
+				return
+			}
+			incoming := incomingObj.(*batchv1.Job)
+
+			currentObj, err := store.Get(ctx, namespace, name)
+			if err != nil {
+				writeResourceError(w, err, resource, name)
+				return
+			}
+			currentJob := currentObj.(*batchv1.Job)
+
+			currentJob.Status = incoming.Status
+
+			obj, err := store.Update(ctx, namespace, name, currentJob)
+			if err != nil {
+				writeResourceError(w, err, resource, name)
+				return
+			}
+			writeRuntimeObject(w, http.StatusOK, obj)
+
+		case http.MethodPatch:
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to read request body")
+				return
+			}
+			defer r.Body.Close()
+
+			currentObj, err := store.Get(ctx, namespace, name)
+			if err != nil {
+				writeResourceError(w, err, resource, name)
+				return
+			}
+
+			ct := r.Header.Get("Content-Type")
+			patchedObj, err := applyPatch(currentObj, body, ct)
+			if err != nil {
+				writeStatusError(w, http.StatusBadRequest, "BadRequest", "patch failed: "+err.Error())
+				return
+			}
+
+			obj, err := store.Update(ctx, namespace, name, patchedObj)
+			if err != nil {
+				writeResourceError(w, err, resource, name)
+				return
+			}
+			writeRuntimeObject(w, http.StatusOK, obj)
+
+		default:
+			writeStatusError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method "+r.Method+" is not supported for "+resource+"/"+subresource)
+		}
+
+	case "cronjobs/status":
+		switch r.Method {
+		case http.MethodPut:
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to read request body")
+				return
+			}
+			defer r.Body.Close()
+
+			incomingObj, err := decodeBody(body)
+			if err != nil {
+				writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to decode request body: "+err.Error())
+				return
+			}
+			incoming := incomingObj.(*batchv1.CronJob)
+
+			currentObj, err := store.Get(ctx, namespace, name)
+			if err != nil {
+				writeResourceError(w, err, resource, name)
+				return
+			}
+			currentCJ := currentObj.(*batchv1.CronJob)
+
+			currentCJ.Status = incoming.Status
+
+			obj, err := store.Update(ctx, namespace, name, currentCJ)
 			if err != nil {
 				writeResourceError(w, err, resource, name)
 				return

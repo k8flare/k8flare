@@ -10,7 +10,8 @@ import (
 // ApplyDefaults sets standard Kubernetes default values on an object.
 // In a full K8s API server this is done by admission controllers, but our
 // simplified control plane needs to set the critical defaults manually so
-// that kubelet/containerd can process the objects correctly.
+// that kubelet/containerd (and real controllers like kube-controller-manager)
+// can process the objects correctly.
 func ApplyDefaults(obj runtime.Object) {
 	switch o := obj.(type) {
 	case *corev1.Pod:
@@ -19,6 +20,12 @@ func ApplyDefaults(obj runtime.Object) {
 			o.Status.Phase = corev1.PodPending
 		}
 	}
+
+	// Real upstream apps/v1 and batch/v1 defaulters registered on Scheme
+	// (scheme.go) -- e.g. Deployment/DaemonSet's spec.strategy.type, which
+	// the real deployment/daemonset controllers hard-require to be
+	// non-empty rather than defaulting it themselves.
+	Scheme.Default(obj)
 }
 
 func defaultPodSpec(spec *corev1.PodSpec) {

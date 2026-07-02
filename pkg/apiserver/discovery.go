@@ -309,11 +309,19 @@ func RegisterGroupDiscovery(mux *http.ServeMux) {
 		PreferredVersion: groupVersion{GroupVersion: "networking.k8s.io/v1", Version: "v1"},
 	}
 
+	batchGroup := apiGroup{
+		Name: "batch",
+		Versions: []groupVersion{
+			{GroupVersion: "batch/v1", Version: "v1"},
+		},
+		PreferredVersion: groupVersion{GroupVersion: "batch/v1", Version: "v1"},
+	}
+
 	mux.HandleFunc("GET /apis", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, apiGroupList{
 			Kind:       "APIGroupList",
 			APIVersion: "v1",
-			Groups:     []interface{}{coordinationGroup, storageGroup, nodeGroup, resourceGroup, appsGroup, policyGroup, discoveryGroup, networkingGroup},
+			Groups:     []interface{}{coordinationGroup, storageGroup, nodeGroup, resourceGroup, appsGroup, policyGroup, discoveryGroup, networkingGroup, batchGroup},
 		})
 	})
 
@@ -436,11 +444,34 @@ func RegisterGroupDiscovery(mux *http.ServeMux) {
 					Verbs:        []string{"create", "delete", "get", "list", "patch", "update", "watch"},
 				},
 				{
+					Name:         "deployments",
+					SingularName: "deployment",
+					Namespaced:   true,
+					Kind:         "Deployment",
+					ShortNames:   []string{"deploy"},
+					Verbs:        []string{"create", "delete", "get", "list", "patch", "update", "watch"},
+				},
+				{
+					Name:         "daemonsets",
+					SingularName: "daemonset",
+					Namespaced:   true,
+					Kind:         "DaemonSet",
+					ShortNames:   []string{"ds"},
+					Verbs:        []string{"create", "delete", "get", "list", "patch", "update", "watch"},
+				},
+				{
 					Name:         "statefulsets",
 					SingularName: "statefulset",
 					Namespaced:   true,
 					Kind:         "StatefulSet",
 					ShortNames:   []string{"sts"},
+					Verbs:        []string{"create", "delete", "get", "list", "patch", "update", "watch"},
+				},
+				{
+					Name:         "controllerrevisions",
+					SingularName: "controllerrevision",
+					Namespaced:   true,
+					Kind:         "ControllerRevision",
 					Verbs:        []string{"create", "delete", "get", "list", "patch", "update", "watch"},
 				},
 			},
@@ -502,6 +533,34 @@ func RegisterGroupDiscovery(mux *http.ServeMux) {
 					SingularName: "servicecidr",
 					Namespaced:   false,
 					Kind:         "ServiceCIDR",
+					Verbs:        []string{"create", "delete", "get", "list", "patch", "update", "watch"},
+				},
+			},
+		})
+	})
+
+	mux.HandleFunc("GET /apis/batch", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, batchGroup)
+	})
+
+	mux.HandleFunc("GET /apis/batch/v1", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, apiResourceList{
+			Kind:         "APIResourceList",
+			GroupVersion: "batch/v1",
+			Resources: []APIResource{
+				{
+					Name:         "jobs",
+					SingularName: "job",
+					Namespaced:   true,
+					Kind:         "Job",
+					Verbs:        []string{"create", "delete", "get", "list", "patch", "update", "watch"},
+				},
+				{
+					Name:         "cronjobs",
+					SingularName: "cronjob",
+					Namespaced:   true,
+					Kind:         "CronJob",
+					ShortNames:   []string{"cj"},
 					Verbs:        []string{"create", "delete", "get", "list", "patch", "update", "watch"},
 				},
 			},

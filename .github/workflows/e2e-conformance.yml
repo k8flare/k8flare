@@ -1,9 +1,9 @@
 # Runs the official Kubernetes e2e conformance suite against a fully real,
 # ephemeral instance of this stack: a real `wrangler dev` Worker (Go/WASM
 # apiserver + Durable Object), a real k3s agent (kubelet + containerd + CNI),
-# and the real embedded kube-scheduler (cmd/scheduler). Everything runs
-# local-only on the runner (127.0.0.1) — this never touches the deployed
-# Cloudflare Worker.
+# and the real embedded kube-scheduler and kube-controller-manager
+# (cmd/scheduler, cmd/controller-manager). Everything runs local-only on the
+# runner (127.0.0.1) — this never touches the deployed Cloudflare Worker.
 name: E2E Conformance
 
 on:
@@ -11,6 +11,7 @@ on:
     paths:
       - "pkg/apiserver/**"
       - "cmd/scheduler/**"
+      - "cmd/controller-manager/**"
       - "cmd/agent/**"
       - "packages/etcd/**"
       - "main.go"
@@ -47,6 +48,9 @@ jobs:
 
       - name: Build Scheduler (linux/amd64)
         run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/k8flare-scheduler ./cmd/scheduler/
+
+      - name: Build Controller Manager (linux/amd64)
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/k8flare-controller-manager ./cmd/controller-manager/
 
       # The CNI `portmap` plugin (exercised by the hostPort conformance test in
       # the baseline group below) shells out to the `iptables` binary. Not
@@ -226,6 +230,28 @@ jobs:
             exit 1
           }
 
+      # Same rationale as the scheduler step above: no sudo, own kubeconfig,
+      # runner-writable --data-dir. --controllers= enables exactly the five
+      # workload controllers this project's apiserver has been verified
+      # against (see docs/general-purpose-k8s-plan.md, Phase 3) --
+      # garbagecollector and statefulset are registered by the same real
+      # binary but not enabled here pending their own verification pass.
+      - name: Start controller-manager (real kube-controller-manager)
+        run: |
+          nohup ./bin/k8flare-controller-manager \
+            --server=https://127.0.0.1:8787 \
+            --token=k8flare-dev-token \
+            --data-dir="$RUNNER_TEMP/k8flare-controller-manager" \
+            --insecure-skip-tls-verify \
+            > "$RUNNER_TEMP/controller-manager.log" 2>&1 &
+
+          sleep 5
+          pgrep -f k8flare-controller-manager > /dev/null || {
+            echo "::error::k8flare-controller-manager exited immediately; see uploaded controller-manager.log"
+            cat "$RUNNER_TEMP/controller-manager.log"
+            exit 1
+          }
+
       # Baseline group: 11 Conformance tests (2 NodeSelector + 1 resource-limits
       # + 1 hostPort + 2 LimitRange + 5 Watchers) already fully validated this
       # session against this exact apiserver. Required check.
@@ -253,12 +279,42 @@ jobs:
         run: |
           echo "=== EXPERIMENTAL (advisory, not yet individually confirmed) conformance group ==="
           # Note: "Services should serve a basic endpoint from pods" is deliberately
-          # excluded -- it requires actual ClusterIP packet routing, which needs
-          # kube-proxy running. kube-proxy is currently DISABLED (see
-          # supervisor.go's DisableKubeProxy and docs/general-purpose-k8s-plan.md)
-          # because enabling it reproducibly hangs the Worker/DO; only the
-          # EndpointSlice/Endpoints *object computation* is verified here.
-          EXPERIMENTAL_FOCUS='\[sig-node\] ConfigMap .*\[Conformance\]|\[sig-node\] Secrets .*\[Conformance\]|\[sig-api-machinery\] Namespaces \[Serial\] should (ensure that all (pods|services) are removed when a namespace is deleted|patch a Namespace|apply an update to a Namespace) \[Conformance\]|\[sig-network\] EndpointSlice should create Endpoints and EndpointSlices for Pods matching a Service \[Conformance\]|\[sig-network\] EndpointSlice should create and delete EndpointSlices for a Service with a selector that matches no pods \[Conformance\]|\[sig-network\] EndpointsController should create Endpoints for Pods matching a Service \[Conformance\]|\[sig-network\] EndpointsController should create and delete Endpoints for a Service with a selector that matches no pods \[Conformance\]'
+          # excluded -- it requires actual ClusterIP packet routing via kube-proxy,
+          # which is enabled (supervisor.go's DisableKubeProxy: false) and joins
+          # successfully, but real traffic routing end-to-end isn't proven yet (see
+          # docs/general-purpose-k8s-plan.md, Phase 1). Only EndpointSlice/Endpoints
+          # object computation is verified here.
+          #
+          # ReplicaSet/Deployment/Job tests below are exact codenames verified
+          # against the downloaded e2e.test binary's embedded conformance
+          # metadata. ReplicaSet/Deployment/Job/CronJob/DaemonSet are now backed
+          # by the real, unmodified kube-controller-manager (cmd/controller-manager,
+          # started above) rather than a hand-written reimplementation, so most of
+          # the tests previously excluded here for implementation gaps (Pod
+          # adoption, proportional scaling, Indexed Jobs, podFailurePolicy,
+          # successPolicy, spec.suspend) are included now -- the real controller
+          # code handles all of this identically to any other real cluster; this
+          # apiserver just needs to store/serve the fields correctly, which is the
+          # same generic JSON path every other type already goes through. Still
+          # excluded because they exercise a genuine, still-true apiserver gap:
+          # ReplicaSet/Deployment's "should have a working scale subresource"
+          # (no /scale subresource, only whole-object PUT -- unlike /status,
+          # which now exists). Still excluded for reasons unrelated to which
+          # controller manages the Job: "should run a job to completion when
+          # tasks sometimes fail and are locally restarted" (uncertain whether
+          # this needs kubelet-level container restart semantics this stack
+          # hasn't specifically verified).
+          #
+          # CronJob is thoroughly verified this session (schedule parsing,
+          # Job/Pod creation, concurrencyPolicy: Allow/Forbid/Replace, suspend,
+          # successful/failedJobsHistoryLimit GC -- see
+          # docs/general-purpose-k8s-plan.md) but deliberately not added here:
+          # its conformance tests need to observe real schedule ticks (two are
+          # explicitly [Slow]-tagged upstream), and this job's fixed 30-minute
+          # timeout is a hard ceiling regardless of continue-on-error -- not
+          # worth risking for an advisory-only signal. Same reasoning applies
+          # regardless of which controller (hand-written or real) runs it.
+          EXPERIMENTAL_FOCUS='\[sig-node\] ConfigMap .*\[Conformance\]|\[sig-node\] Secrets .*\[Conformance\]|\[sig-api-machinery\] Namespaces \[Serial\] should (ensure that all (pods|services) are removed when a namespace is deleted|patch a Namespace|apply an update to a Namespace) \[Conformance\]|\[sig-network\] EndpointSlice should create Endpoints and EndpointSlices for Pods matching a Service \[Conformance\]|\[sig-network\] EndpointSlice should create and delete EndpointSlices for a Service with a selector that matches no pods \[Conformance\]|\[sig-network\] EndpointsController should create Endpoints for Pods matching a Service \[Conformance\]|\[sig-network\] EndpointsController should create and delete Endpoints for a Service with a selector that matches no pods \[Conformance\]|\[sig-apps\] ReplicaSet Replace and Patch tests \[Conformance\]|\[sig-apps\] ReplicaSet should list and delete a collection of ReplicaSets \[Conformance\]|\[sig-apps\] ReplicaSet should serve a basic image on each replica with a public image \[Conformance\]|\[sig-apps\] ReplicaSet should adopt matching pods on creation and release no longer matching pods \[Conformance\]|\[sig-apps\] ReplicaSet should validate Replicaset Status endpoints \[Conformance\]|\[sig-apps\] Deployment RecreateDeployment should delete old pods and create new ones \[Conformance\]|\[sig-apps\] Deployment RollingUpdateDeployment should delete old pods and create new ones \[Conformance\]|\[sig-apps\] Deployment deployment should delete old replica sets \[Conformance\]|\[sig-apps\] Deployment deployment should support rollover \[Conformance\]|\[sig-apps\] Deployment deployment should support proportional scaling \[Conformance\]|\[sig-apps\] Deployment should run the lifecycle of a Deployment \[Conformance\]|\[sig-apps\] Deployment should validate Deployment Status endpoints \[Conformance\]|\[sig-apps\] Job should delete a job \[Conformance\]|\[sig-apps\] Job should adopt matching orphans and release non-matching pods \[Conformance\]|\[sig-apps\] Job should apply changes to a job status \[Conformance\]|\[sig-apps\] Job should manage the lifecycle of a job \[Conformance\]|\[sig-apps\] Job should create pods for an Indexed job with completion indexes and specified hostname \[Conformance\]|\[sig-apps\] Job should execute all indexes despite some failing when using backoffLimitPerIndex \[Conformance\]|\[sig-apps\] Job should terminate job execution when the number of failed indexes exceeds maxFailedIndexes \[Conformance\]|\[sig-apps\] Job should mark indexes as failed when the FailIndex action is matched in podFailurePolicy \[Conformance\]|\[sig-apps\] Job should allow to use the pod failure policy on exit code to fail the job early \[Conformance\]|\[sig-apps\] Job should allow to use a pod failure policy to ignore failure matching on DisruptionTarget condition \[Conformance\]|\[sig-apps\] Job with successPolicy should succeeded when all indexes succeeded \[Conformance\]|\[sig-apps\] Job with successPolicy succeededCount rule should succeeded even when some indexes remain pending \[Conformance\]|\[sig-apps\] Job with successPolicy succeededIndexes rule should succeeded even when some indexes remain pending \[Conformance\]'
 
           "$RUNNER_TEMP/kubernetes/test/bin/e2e.test" \
             --kubeconfig="$RUNNER_TEMP/kubeconfig.yaml" \
@@ -273,6 +329,7 @@ jobs:
         run: |
           sudo pkill -f k8flare-agent || true
           pkill -f k8flare-scheduler || true
+          pkill -f k8flare-controller-manager || true
           pkill -f "wrangler dev" || true
 
       - name: Upload logs
@@ -284,4 +341,5 @@ jobs:
             ${{ runner.temp }}/wrangler.log
             ${{ runner.temp }}/agent.log
             ${{ runner.temp }}/scheduler.log
+            ${{ runner.temp }}/controller-manager.log
           if-no-files-found: ignore

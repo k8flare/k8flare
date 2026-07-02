@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -18,6 +19,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	kjson "k8s.io/apimachinery/pkg/runtime/serializer/json"
+	appsv1defaults "k8s.io/kubernetes/pkg/apis/apps/v1"
+	batchv1defaults "k8s.io/kubernetes/pkg/apis/batch/v1"
 )
 
 // Scheme is the runtime.Scheme that registers core Kubernetes types
@@ -96,20 +99,33 @@ func init() {
 		&resourcev1.DeviceClassList{},
 	)
 
-	// Register apps/v1 and policy/v1 types. Like the resource.k8s.io/v1 types
-	// above, ReplicaSet/StatefulSet/PodDisruptionBudget (and
-	// ReplicationController, registered in the core/v1 block above) are
-	// never populated with real data — confirmed empirically by running the
-	// real scheduler: its default InterPodAffinity/PodTopologySpread
-	// (owning-controller lookups) and DefaultPreemption (PDB checks) plugins
-	// start informers for these types unconditionally, the same way DRA's
-	// plugin does for ResourceClaim/ResourceSlice/DeviceClass, even when no
-	// pod in the cluster uses any of the corresponding features.
+	// Register apps/v1 and policy/v1 types. ReplicaSet, Deployment, and
+	// DaemonSet are real, controller-backed resources
+	// (packages/etcd/src/replicaset.ts, deployment.ts, daemonset.ts).
+	// StatefulSet/PodDisruptionBudget (and ReplicationController, registered
+	// in the core/v1 block above) are still never populated with real data —
+	// confirmed empirically by running the real scheduler: its default
+	// InterPodAffinity/PodTopologySpread (owning-controller lookups) and
+	// DefaultPreemption (PDB checks) plugins start informers for these types
+	// unconditionally, the same way DRA's plugin does for
+	// ResourceClaim/ResourceSlice/DeviceClass, even when no pod in the
+	// cluster uses any of the corresponding features.
 	Scheme.AddKnownTypes(appsv1.SchemeGroupVersion,
 		&appsv1.ReplicaSet{},
 		&appsv1.ReplicaSetList{},
+		&appsv1.Deployment{},
+		&appsv1.DeploymentList{},
+		&appsv1.DaemonSet{},
+		&appsv1.DaemonSetList{},
 		&appsv1.StatefulSet{},
 		&appsv1.StatefulSetList{},
+		// Never populated with real data -- exists only so
+		// DaemonSet/StatefulSet controllers (real or, in the future, the
+		// real kube-controller-manager) can complete WaitForCacheSync on
+		// their ControllerRevision informer. Same stub-type pattern as the
+		// DRA/ReplicaSet types above.
+		&appsv1.ControllerRevision{},
+		&appsv1.ControllerRevisionList{},
 	)
 	Scheme.AddKnownTypes(policyv1.SchemeGroupVersion,
 		&policyv1.PodDisruptionBudget{},
@@ -136,6 +152,15 @@ func init() {
 		&networkingv1.ServiceCIDRList{},
 	)
 
+	// Register batch/v1 types. Real, controller-backed resources -- see
+	// packages/etcd/src/job.ts and cronjob.ts.
+	Scheme.AddKnownTypes(batchv1.SchemeGroupVersion,
+		&batchv1.Job{},
+		&batchv1.JobList{},
+		&batchv1.CronJob{},
+		&batchv1.CronJobList{},
+	)
+
 	// Register metav1 types (Status, ListMeta, etc.)
 	metav1.AddToGroupVersion(Scheme, corev1.SchemeGroupVersion)
 	metav1.AddToGroupVersion(Scheme, coordinationv1.SchemeGroupVersion)
@@ -146,6 +171,25 @@ func init() {
 	metav1.AddToGroupVersion(Scheme, policyv1.SchemeGroupVersion)
 	metav1.AddToGroupVersion(Scheme, discoveryv1.SchemeGroupVersion)
 	metav1.AddToGroupVersion(Scheme, networkingv1.SchemeGroupVersion)
+	metav1.AddToGroupVersion(Scheme, batchv1.SchemeGroupVersion)
+
+	// Register the real upstream apps/v1 and batch/v1 defaulting functions
+	// (Deployment/DaemonSet/ReplicaSet's strategy defaults, Job/CronJob's
+	// completionMode etc.) onto Scheme, rather than hand-reimplementing them.
+	// Scheme.Default(obj) (called from ApplyDefaults) then applies whichever
+	// of these is registered for obj's concrete type. Discovered necessary
+	// when embedding the real kube-controller-manager: its deployment
+	// controller hard-errors ("unexpected deployment strategy type") on a
+	// Deployment whose spec.strategy.type is empty, since real clients rely
+	// on apiserver-side admission defaulting to fill it in before it's ever
+	// stored -- this apiserver has no admission chain, so ApplyDefaults is
+	// the only place left to do it.
+	if err := appsv1defaults.RegisterDefaults(Scheme); err != nil {
+		panic(fmt.Sprintf("register apps/v1 defaults: %v", err))
+	}
+	if err := batchv1defaults.RegisterDefaults(Scheme); err != nil {
+		panic(fmt.Sprintf("register batch/v1 defaults: %v", err))
+	}
 
 	Codecs = serializer.NewCodecFactory(Scheme)
 

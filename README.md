@@ -29,15 +29,15 @@ as of this writing, plus direct inspection of the registered API scheme.
 
 ### Core resources
 
-| Resource                                                                                                       | Status                                                                                                                                    |
-| -------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| Namespace, ConfigMap, Secret, Pod, Node, ServiceAccount, Endpoints, Service, Event, Lease, LimitRange          | ✅ CRUD, watch, label/field selectors                                                                                                     |
-| CSIDriver, CSINode, RuntimeClass                                                                               | ✅ CRUD, watch                                                                                                                            |
-| `DynamicWorker`, `WorkerTrigger` (custom resources)                                                            | ✅ CRUD, watch                                                                                                                            |
-| ReplicaSet, StatefulSet, ReplicationController, PodDisruptionBudget, ResourceClaim, ResourceSlice, DeviceClass | ⚠️ Registered but always empty — exist only so the real kube-scheduler's informers for these types can sync; not backed by any controller |
-| Deployment, DaemonSet, Job, CronJob                                                                            | ❌ Not registered — no workload controllers exist yet                                                                                     |
-| PersistentVolume, PersistentVolumeClaim, StorageClass                                                          | ❌ Not implemented                                                                                                                        |
-| Generic `CustomResourceDefinition` (dynamic CRDs)                                                              | ❌ Only the two built-in custom resources above; no generic CRD registration mechanism                                                    |
+| Resource                                                                                                               | Status                                                                                                                                                              |
+| ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Namespace, ConfigMap, Secret, Pod, Node, ServiceAccount, Endpoints, Service, Event, Lease, LimitRange                  | ✅ CRUD, watch, label/field selectors                                                                                                                               |
+| CSIDriver, CSINode, RuntimeClass                                                                                       | ✅ CRUD, watch                                                                                                                                                      |
+| `DynamicWorker`, `WorkerTrigger` (custom resources)                                                                    | ✅ CRUD, watch                                                                                                                                                      |
+| ReplicaSet, Deployment, Job, CronJob, DaemonSet                                                                        | ✅ Backed by the real, unmodified `kube-controller-manager` binary (`cmd/controller-manager`, same embed pattern as `cmd/scheduler`), verified end-to-end           |
+| StatefulSet, ReplicationController, PodDisruptionBudget, ResourceClaim, ResourceSlice, DeviceClass, ControllerRevision | ⚠️ Registered but always empty — exist only so the real kube-scheduler's/kube-controller-manager's informers for these types can sync; not backed by any controller |
+| PersistentVolume, PersistentVolumeClaim, StorageClass                                                                  | ❌ Not implemented                                                                                                                                                  |
+| Generic `CustomResourceDefinition` (dynamic CRDs)                                                                      | ❌ Only the two built-in custom resources above; no generic CRD registration mechanism                                                                              |
 
 ### What's missing for general-purpose use
 
@@ -46,18 +46,18 @@ workload actually _runs_ the way it would on a normal cluster. These are the
 gaps that matter most for everyday use, roughly in the order most users would
 hit them:
 
-| Area                                     | Gap                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Deploying anything beyond a bare Pod** | No Deployment/ReplicaSet/DaemonSet/Job/CronJob — every Pod has to be created directly and re-created by hand if it dies. This is the single biggest gap to "feels like normal Kubernetes."                                                                                                                                                                                                                                                                      |
-| **Service networking**                   | `Service` objects get a real `ClusterIP` and correct `EndpointSlice`/`Endpoints` objects now, and kube-proxy is enabled and joins successfully, but actual traffic routing (`curl` a `ClusterIP` and reach the backing Pod) isn't proven end-to-end yet — see [`docs/general-purpose-k8s-plan.md`](docs/general-purpose-k8s-plan.md#phase-1--service-networking-object-model-done--verified-kube-proxy-enabled-real-traffic-routing-not-yet-proven-end-to-end). |
-| **DNS**                                  | No CoreDNS/ClusterDNS. Confirmed via real kubelet logs during testing (`MissingClusterDNS: kubelet does not have ClusterDNS IP configured`) — Pods fall back to the node's own DNS policy, so Service/Pod name resolution inside the cluster doesn't work.                                                                                                                                                                                                      |
-| **Storage**                              | No PersistentVolume/PersistentVolumeClaim/StorageClass, no dynamic provisioning. Only `emptyDir`-style ephemeral storage works.                                                                                                                                                                                                                                                                                                                                 |
-| **Autoscaling**                          | No Metrics API (`metrics.k8s.io`), so no HorizontalPodAutoscaler/VerticalPodAutoscaler, and no Cluster Autoscaler equivalent.                                                                                                                                                                                                                                                                                                                                   |
-| **`kubectl logs` / `kubectl exec`**      | Off by default — requires the optional Cloudflare Tunnel + VPC Service setup below.                                                                                                                                                                                                                                                                                                                                                                             |
-| **RBAC**                                 | The cluster token is all-or-nothing; there's no per-user/per-namespace authorization.                                                                                                                                                                                                                                                                                                                                                                           |
-| **Ingress / NetworkPolicy**              | Not implemented — no ingress controller, no network policy enforcement.                                                                                                                                                                                                                                                                                                                                                                                         |
-| **API compatibility details**            | No server-side apply, no protobuf wire format (JSON only), no OpenAPI schema (`kubectl apply` needs `--validate=false`), no dry-run.                                                                                                                                                                                                                                                                                                                            |
-| **Node self-healing**                    | No node lifecycle controller — if an agent's process dies, its last-reported `Ready` status is never corrected and Pods "on" it are never rescheduled.                                                                                                                                                                                                                                                                                                          |
+| Area                                     | Gap                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Deploying anything beyond a bare Pod** | ReplicaSet, Deployment, Job, CronJob, and DaemonSet all work, backed by the real `kube-controller-manager` (`cmd/controller-manager`) rather than a reimplementation — verified end-to-end (create, rolling update, scale, run-to-completion, scheduling, per-node placement). No OwnerReference cascading deletion yet (deleting a Deployment doesn't delete its ReplicaSets/Pods) — the real controller-manager's `garbagecollector` controller would cover this, not yet enabled. |
+| **Service networking**                   | `Service` objects get a real `ClusterIP` and correct `EndpointSlice`/`Endpoints` objects now, and kube-proxy is enabled and joins successfully, but actual traffic routing (`curl` a `ClusterIP` and reach the backing Pod) isn't proven end-to-end yet — see [`docs/general-purpose-k8s-plan.md`](docs/general-purpose-k8s-plan.md#phase-1--service-networking-object-model-done--verified-kube-proxy-enabled-real-traffic-routing-not-yet-proven-end-to-end).                      |
+| **DNS**                                  | No CoreDNS/ClusterDNS. Confirmed via real kubelet logs during testing (`MissingClusterDNS: kubelet does not have ClusterDNS IP configured`) — Pods fall back to the node's own DNS policy, so Service/Pod name resolution inside the cluster doesn't work.                                                                                                                                                                                                                           |
+| **Storage**                              | No PersistentVolume/PersistentVolumeClaim/StorageClass, no dynamic provisioning. Only `emptyDir`-style ephemeral storage works.                                                                                                                                                                                                                                                                                                                                                      |
+| **Autoscaling**                          | No Metrics API (`metrics.k8s.io`), so no HorizontalPodAutoscaler/VerticalPodAutoscaler, and no Cluster Autoscaler equivalent.                                                                                                                                                                                                                                                                                                                                                        |
+| **`kubectl logs` / `kubectl exec`**      | Off by default — requires the optional Cloudflare Tunnel + VPC Service setup below.                                                                                                                                                                                                                                                                                                                                                                                                  |
+| **RBAC**                                 | The cluster token is all-or-nothing; there's no per-user/per-namespace authorization.                                                                                                                                                                                                                                                                                                                                                                                                |
+| **Ingress / NetworkPolicy**              | Not implemented — no ingress controller, no network policy enforcement.                                                                                                                                                                                                                                                                                                                                                                                                              |
+| **API compatibility details**            | No server-side apply, no protobuf wire format (JSON only), no OpenAPI schema (`kubectl apply` needs `--validate=false`), no dry-run.                                                                                                                                                                                                                                                                                                                                                 |
+| **Node self-healing**                    | No node lifecycle controller — if an agent's process dies, its last-reported `Ready` status is never corrected and Pods "on" it are never rescheduled.                                                                                                                                                                                                                                                                                                                               |
 
 None of this is hidden complexity — see
 [`docs/general-purpose-k8s-plan.md`](docs/general-purpose-k8s-plan.md) for the
@@ -87,14 +87,14 @@ and serves, not scheduler limitations.
 
 ### Controllers
 
-| Controller                                                          | Status                                                                                                                           |
-| ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Namespace cascading deletion                                        | ✅                                                                                                                               |
-| Default `ServiceAccount` auto-provisioning                          | ✅ (object only — no token/Secret issuance; nothing in this stack consumes SA tokens today)                                      |
-| Node lifecycle (lease-staleness → `Unknown` + taint + pod eviction) | ✅ Verified end-to-end: kill a real agent, node flips `Unknown`/tainted within ~48s, its Pods are deleted past the 5-minute mark |
-| Endpoints / EndpointSlice (from Service + Pod selectors)            | ✅ ClusterIP allocation + both object types verified; real traffic routing via kube-proxy not yet proven end-to-end              |
-| Workload controllers (ReplicaSet/Deployment/etc.)                   | ❌ Blocked on the missing workload types above                                                                                   |
-| Garbage collection (owner references)                               | ❌ Not implemented                                                                                                               |
+| Controller                                                          | Status                                                                                                                             |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Namespace cascading deletion                                        | ✅                                                                                                                                 |
+| Default `ServiceAccount` auto-provisioning                          | ✅ (object only — no token/Secret issuance; nothing in this stack consumes SA tokens today)                                        |
+| Node lifecycle (lease-staleness → `Unknown` + taint + pod eviction) | ✅ Verified end-to-end: kill a real agent, node flips `Unknown`/tainted within ~48s, its Pods are deleted past the 5-minute mark   |
+| Endpoints / EndpointSlice (from Service + Pod selectors)            | ✅ ClusterIP allocation + both object types verified; real traffic routing via kube-proxy not yet proven end-to-end                |
+| ReplicaSet / Deployment / Job / CronJob / DaemonSet                 | ✅ The real `kube-controller-manager` binary (`cmd/controller-manager`), not a hand-written reimplementation — verified end-to-end |
+| Garbage collection (owner references)                               | ❌ Not implemented — the real controller-manager has a generic `garbagecollector` controller for this, not yet enabled             |
 
 ### Auth & admission
 
@@ -143,9 +143,43 @@ Two detailed plans drive the work from here:
    real agent process: the node flipped `Unknown`/tainted within 48s and its
    Pod was deleted once staleness passed the 5-minute mark. Pod
    _recreation_ still needs the next item's workload controllers.
-4. **Workload controllers + GC** — ReplicaSet → Deployment → Job/CronJob →
-   DaemonSet, with ownerReference cascading deletion; the largest single
-   jump in official conformance coverage.
+4. **Workload controllers + GC** — ~~ReplicaSet~~ → ~~Deployment~~ →
+   ~~Job/CronJob~~ → ~~DaemonSet~~ → ownerReference cascading deletion; the
+   largest single jump in official conformance coverage. ReplicaSet,
+   Deployment, Job, CronJob, and DaemonSet are all done and verified
+   end-to-end — backed by the **real, unmodified `kube-controller-manager`
+   binary** (`cmd/controller-manager`), the same embed pattern as
+   `cmd/scheduler`'s real kube-scheduler, not a hand-written
+   reimplementation. `--controllers=replicaset,deployment,daemonset,job,cronjob`
+   enables exactly this subset; `garbagecollector` (generic OwnerReference
+   cascading deletion) and `statefulset` are already registered by the same
+   binary but not yet enabled, pending their own verification pass.
+
+   An earlier pass hand-wrote each of these five as a TypeScript reconciler
+   in `packages/etcd/src/*.ts`, individually verified end-to-end and
+   documented in detail in
+   [`docs/general-purpose-k8s-plan.md`](docs/general-purpose-k8s-plan.md#phase-3--workload-controllers--garbage-collection-self-healing-part-2)
+   — but each was a simplified subset of real upstream semantics (no Indexed
+   Jobs, no `PodFailurePolicy`, no Pod adoption, no `/scale`/`/status`
+   subresources, no true proportional scaling, no generic
+   OwnerReference GC). Once embedding the real controller-manager was
+   confirmed feasible the same way the scheduler was, all five `.ts` files
+   were deleted in favor of it. Getting the real binary working against this
+   apiserver required real, concrete fixes — found by actually running it,
+   not by reading its source first: `/status` subresources for all five
+   types (real controllers call `UpdateStatus()`, which 404s without them);
+   a `ControllerRevision` stub type (its absence hung DaemonSet's informer
+   `WaitForCacheSync` forever, blocking every controller in the process);
+   a missing `RESOURCE_KINDS` entry for five types, breaking their watch
+   bookmarks exactly like the earlier EndpointSlice gap; the real upstream
+   `apps/v1`/`batch/v1` admission defaulters registered onto `Scheme` (a
+   Deployment with unset `spec.strategy.type` made the real controller
+   hard-error forever, since real clients rely on apiserver-side defaulting
+   to fill it in); `metadata.generateName` support in `Create()`; and Job's
+   `spec.selector`/`controller-uid` label auto-generation (without it, the
+   real Job controller endlessly disowned and replaced the Pods it had just
+   created). Full trace of each in the plan doc.
+
 5. **Cluster DNS** — CoreDNS as a Deployment, `kube-dns` Service at
    `10.43.0.10`, then (and only then) advertise `cluster-dns` to kubelets.
 6. **API & auth parity** — OpenAPI discovery (no more `--validate=false`),
