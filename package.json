@@ -15,7 +15,9 @@
     "deploy:gateway": "wrangler deploy --config workers/gateway/wrangler.jsonc",
     "check": "vp check",
     "test": "vitest",
-    "build:wasm": "go run github.com/syumai/workers/cmd/workers-assets-gen -mode=go -o workers/apiserver/build && GOOS=js GOARCH=wasm go build -o ./workers/apiserver/build/app.wasm ./workers/apiserver"
+    "build:wasm": "npm run build:wasm:apiserver && npm run build:wasm:controllers",
+    "build:wasm:apiserver": "go run github.com/syumai/workers/cmd/workers-assets-gen -mode=go -o workers/apiserver/build && GOOS=js GOARCH=wasm go build -o ./workers/apiserver/build/app.wasm ./workers/apiserver",
+    "build:wasm:controllers": "go run github.com/syumai/workers/cmd/workers-assets-gen -mode=go -o workers/controllers/build && GOOS=js GOARCH=wasm go build -o ./workers/controllers/build/app.wasm ./workers/controllers"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260317.1",

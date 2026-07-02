@@ -3,21 +3,57 @@ import { prefixEnd, base64ToArrayBuffer, jsonResponse } from "./helpers.ts";
 import { currentRevision, type SqlExec } from "./queries.ts";
 import { handleReplay, broadcastEvent, type WatchHost } from "./watch.ts";
 import { storeGetCurrent, storeInsert, storeList } from "./store.ts";
-import { runScheduler, needsSchedulerAttention } from "./scheduler.ts";
 import { allocateClusterIPs, needsServiceIPAttention } from "./serviceip.ts";
-import { reconcileEndpoints, needsEndpointsAttention } from "./endpoints.ts";
-import { reconcileNodeLifecycle } from "./nodelifecycle.ts";
 export { WatchHub } from "./watchhub.ts";
 
-// The scheduler wakes on-demand (see wakeSchedulerSoon) whenever a write
-// needs its attention, so this is only a safety net for a missed trigger
-// (e.g. a pod that only becomes schedulable once a node's Ready condition
-// flips, without any further pod/node write of its own) — not the primary
-// mechanism. Keeping it long keeps idle clusters cheap.
+// serviceip.ts's ClusterIP allocation wakes on-demand (see
+// armSafetyNetSoon) whenever a write needs its attention, so this is only
+// a safety net for a missed trigger — not the primary mechanism. Keeping
+// it long keeps idle clusters cheap.
+//
+// Phase 5: this alarm loop used to also run scheduler.ts (PodCIDR
+// allocation), endpoints.ts (Endpoints/EndpointSlice from Service+Pod),
+// and nodelifecycle.ts (Lease-staleness -> Unknown+taint+evict) -- all
+// three are deleted, replaced by the real kube-controller-manager's
+// nodeipam/endpoint/endpointslice/nodelifecycle/taint-eviction-controller
+// controllers running in workers/controllers (see pingControllers below
+// and docs/platform-verification.md's S8 section). Those controllers
+// watch continuously via their own client-go informers once running and
+// no longer depend on this DO's alarm at all -- only serviceip.ts still
+// does, since ClusterIP allocation stayed here (Phase 3 planned moving it
+// into apiserver's synchronous Service-create path instead; that never
+// happened, and doing so is out of Phase 5's scope).
 const SAFETY_NET_INTERVAL_MS = 60_000;
-// How long to wait after a write that needs scheduling before waking the
-// alarm, so a burst of writes coalesces into a single scheduler pass.
+// How long to wait after a write that needs ClusterIP allocation before
+// waking the alarm, so a burst of writes coalesces into a single pass.
 const DEBOUNCE_MS = 1_000;
+
+// Coarse (prefix-only, no value inspection -- like the old
+// needsEndpointsAttention) trigger for pinging workers/controllers: any
+// write under one of these resource types is potentially relevant to the
+// real kube-controller-manager's enabled controllers (see
+// cmd/controller-manager/main.go's --controllers default). The real
+// controllers watch continuously once running, so this ping only matters
+// for first-ever startup and resurrection after a redeploy/panic/eviction
+// reset the workers/controllers DO instance -- it does not need to be
+// precise the way the old per-value needsSchedulerAttention checks were.
+const CONTROLLER_RELEVANT_PREFIXES = [
+  "/registry/nodes/",
+  "/registry/pods/",
+  "/registry/services/",
+  "/registry/endpoints/",
+  "/registry/endpointslices/",
+  "/registry/leases/",
+  "/registry/replicasets/",
+  "/registry/deployments/",
+  "/registry/daemonsets/",
+  "/registry/jobs/",
+  "/registry/cronjobs/",
+];
+
+function needsControllersPing(key: string): boolean {
+  return CONTROLLER_RELEVANT_PREFIXES.some((prefix) => key.startsWith(prefix));
+}
 
 /** Cheap local existence check -- no facet round trip needed since a key's
  * envelope (including its `deleted` flag) always lives in the parent, even
@@ -29,19 +65,17 @@ function hasLiveKeyUnderPrefix(sql: SqlExec, prefix: string): boolean {
 }
 
 /**
- * Whether the safety-net alarm should stay armed. Node lease staleness
- * (nodelifecycle.ts) can only be detected by the ABSENCE of a write, so it
- * needs a periodic check for as long as any Node is registered; Service/
- * Endpoint reconciliation is event-triggered via wakeSchedulerSoon but keeps
- * this as a safety net for missed triggers for as long as any Service
- * exists. A cluster with neither has nothing left for the safety net to do
- * -- it parks (cost invariants #1/#3: no alarm chain on an idle cluster).
+ * Whether the safety-net alarm should stay armed. Only serviceip.ts's
+ * ClusterIP allocation depends on it now (event-triggered via
+ * armSafetyNetSoon; this is the backstop for a missed trigger) -- node
+ * lease staleness and Endpoints/EndpointSlice/PodCIDR reconciliation moved
+ * to the real kube-controller-manager (Phase 5), which no longer needs
+ * this DO's alarm at all. A cluster with no Services has nothing left for
+ * the safety net to do -- it parks (cost invariants #1/#3: no alarm chain
+ * on an idle cluster).
  */
 function hasPendingSafetyNetWork(sql: SqlExec): boolean {
-  return (
-    hasLiveKeyUnderPrefix(sql, "/registry/nodes/") ||
-    hasLiveKeyUnderPrefix(sql, "/registry/services/")
-  );
+  return hasLiveKeyUnderPrefix(sql, "/registry/services/");
 }
 
 /** Minimal ctx shape Cluster needs: facets (FacetHost) plus DO storage/alarm access. */
@@ -84,11 +118,12 @@ export class Cluster {
   }
 
   /**
-   * Pull the alarm in to fire soon if it isn't already due sooner, so a
-   * write that needs scheduling gets handled promptly instead of waiting
-   * for the next safety-net resync. Never pushes the alarm further out.
+   * Pull the safety-net alarm in to fire soon if it isn't already due
+   * sooner, so a Service needing a ClusterIP gets handled promptly instead
+   * of waiting for the next safety-net resync. Never pushes the alarm
+   * further out.
    */
-  private async wakeSchedulerSoon(): Promise<void> {
+  private async armSafetyNetSoon(): Promise<void> {
     const target = Date.now() + DEBOUNCE_MS;
     const current = await this.ctx.storage.getAlarm();
     if (current === null || current > target) {
@@ -96,13 +131,23 @@ export class Cluster {
     }
   }
 
-  /** Whether any alarm-driven controller needs to react to this write. */
-  private needsControllerAttention(key: string, value: ArrayBuffer | string | null): boolean {
-    return (
-      needsSchedulerAttention(key, value) ||
-      needsServiceIPAttention(key, value) ||
-      needsEndpointsAttention(key, value)
-    );
+  /**
+   * Fire-and-forget ping to workers/controllers (see
+   * CONTROLLER_RELEVANT_PREFIXES/needsControllersPing above), ensuring the
+   * real kube-controller-manager it hosts is instantiated and its resident
+   * reconcile loop running. Best-effort: a failure here must not fail the
+   * write that triggered it -- the real controllers' own client-go
+   * informers and this same ping firing again on the next relevant write
+   * are both still there to catch a missed wake.
+   */
+  private async pingControllers(): Promise<void> {
+    const controllers = this.env.CONTROLLERS;
+    if (!controllers) return; // not bound in some dev/test configs
+    try {
+      await controllers.fetch("http://controllers.internal/");
+    } catch {
+      // best-effort; see doc comment above
+    }
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -179,7 +224,8 @@ export class Cluster {
         null,
       );
       await broadcastEvent(this.host, this.sql, key, id);
-      if (this.needsControllerAttention(key, value)) await this.wakeSchedulerSoon();
+      if (needsServiceIPAttention(key, value)) await this.armSafetyNetSoon();
+      if (needsControllersPing(key)) await this.pingControllers();
       return jsonResponse({ revision: id }, 201);
     } else {
       const { rev, event } = await storeGetCurrent(this.sql, this.host, key, false);
@@ -207,7 +253,8 @@ export class Cluster {
         lease,
       };
       await broadcastEvent(this.host, this.sql, key, id);
-      if (this.needsControllerAttention(key, value)) await this.wakeSchedulerSoon();
+      if (needsServiceIPAttention(key, value)) await this.armSafetyNetSoon();
+      if (needsControllersPing(key)) await this.pingControllers();
       return jsonResponse({ revision: id, kv, updated: true });
     }
   }
@@ -232,7 +279,8 @@ export class Cluster {
       oldValue,
     );
     await broadcastEvent(this.host, this.sql, key, id);
-    if (this.needsControllerAttention(key, oldValue)) await this.wakeSchedulerSoon();
+    if (needsServiceIPAttention(key, oldValue)) await this.armSafetyNetSoon();
+    if (needsControllersPing(key)) await this.pingControllers();
 
     // Namespace deletion does NOT call ctx.facets.delete() here, despite the
     // original plan calling for it as a GC nicety. Empirically reproduced
@@ -274,14 +322,12 @@ export class Cluster {
 
   async alarm(): Promise<void> {
     this.initialize();
-    await runScheduler(this.host, this.sql, this.env);
     await allocateClusterIPs(this.host, this.sql);
-    await reconcileEndpoints(this.host, this.sql);
-    await reconcileNodeLifecycle(this.host, this.sql);
-    // Re-arm the safety net only if there's still live Nodes/Services that
-    // need ongoing monitoring; otherwise park (no alarm chain on an idle
-    // cluster -- cost invariants #1/#3). A write needing sooner attention
-    // than the next safety-net tick pulls this in via wakeSchedulerSoon.
+    // Re-arm the safety net only if there's still a live Service that needs
+    // ongoing ClusterIP-allocation monitoring; otherwise park (no alarm
+    // chain on an idle cluster -- cost invariants #1/#3). A write needing
+    // sooner attention than the next safety-net tick pulls this in via
+    // armSafetyNetSoon.
     if (hasPendingSafetyNetWork(this.sql)) {
       this.ctx.storage.setAlarm(Date.now() + SAFETY_NET_INTERVAL_MS);
     }
