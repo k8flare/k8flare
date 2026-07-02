@@ -6,61 +6,22 @@ import { getFacet, facetFetch, facetJson, type FacetHost } from "./facets.ts";
 import { storeReplay, facetRawToKineRow } from "./store.ts";
 import type { SqlExec } from "./queries.ts";
 
-export interface DurableObjectContext {
-  acceptWebSocket(ws: WebSocket, tags?: string[]): void;
-  getWebSockets(tag?: string): WebSocket[];
-  getTags(ws: WebSocket): string[];
-  facets: {
-    get(name: string, factory: () => { class: any }): { fetch(req: Request): Promise<Response> };
-    delete(name: string): void;
-  };
+interface DurableObjectNamespaceLike {
+  idFromName(name: string): unknown;
+  get(id: unknown): { fetch(req: Request): Promise<Response> };
 }
 
-/** Host shape watch.ts needs: facet access (FacetHost) plus the WebSocket-specific ctx methods. */
+/** Host shape watch.ts needs: facet access (FacetHost) plus a WATCHHUB binding to push events to. */
 export interface WatchHost extends FacetHost {
-  ctx: DurableObjectContext;
+  env: FacetHost["env"] & { WATCHHUB?: DurableObjectNamespaceLike };
 }
 
 /**
- * Handle a WebSocket watch connection. This is Cluster's own /watch
- * endpoint -- WatchHub's single upstream firehose connection (see
- * watchhub.ts) is the only caller now that gateway talks to WatchHub
- * directly, but the contract is unchanged so anything else that connects
- * here (e.g. local debugging) keeps working the same way.
- */
-export async function handleWebSocket(
-  host: WatchHost,
-  sql: SqlExec,
-  request: Request,
-): Promise<Response> {
-  const url = new URL(request.url);
-  const prefix = url.searchParams.get("prefix") || "/";
-  const revision = parseInt(url.searchParams.get("revision") || "0");
-
-  const pair = new WebSocketPair();
-  const [client, server] = Object.values(pair);
-
-  host.ctx.acceptWebSocket(server, [prefix]);
-  (server as any).serializeAttachment({ prefix, revision });
-
-  const { events, bookmark } = await storeReplay(sql, host, prefix, revision);
-  for (const event of events) {
-    server.send(JSON.stringify({ events: [event] }));
-  }
-  // Mark the end of the initial replay so the client's watch reflector can
-  // consider its cache synced (Kubernetes watch bookmark semantics) —
-  // without this, informers built on client-go's reflector never converge.
-  server.send(JSON.stringify({ bookmark }));
-
-  return new Response(null, { status: 101, webSocket: client });
-}
-
-/**
- * Plain-HTTP counterpart of handleWebSocket's initial replay/snapshot, with
- * no WebSocket upgrade. WatchHub calls this once per newly-subscribed client
- * to seed it (see docs/multi-tenancy-and-hosting.md's WatchHub section) --
- * the client then receives live events from WatchHub's own single upstream
- * firehose, so this never needs to be a long-lived connection itself.
+ * Plain-HTTP initial replay/snapshot for a watch subscriber (no WebSocket
+ * upgrade). WatchHub calls this once per newly-subscribed client to seed it
+ * (see docs/multi-tenancy-and-hosting.md's WatchHub section) -- the client
+ * then receives live events pushed from broadcastEvent below, so this never
+ * needs to be a long-lived connection itself.
  */
 export async function handleReplay(
   host: WatchHost,
@@ -75,15 +36,23 @@ export async function handleReplay(
 }
 
 /**
- * Broadcast the event at `revision` for `key` to matching WebSocket
- * listeners. Called immediately after a write with the revision that write
- * was just assigned; the row is looked up from wherever it actually lives
- * (the parent's own log for cluster-scoped keys, the owning facet for
- * namespaced/events/ca-vault keys) and then defensively filtered down to
- * exactly `revision` -- with facet calls now async, an unrelated write can
- * in principle interleave between this write's insert and its broadcast, so
- * a plain range query alone (as the pre-facet version of this function
- * used) is no longer guaranteed to return only this one row.
+ * Push the event at `revision` for `key` to WatchHub, which fans it out to
+ * matching client WebSockets. Called immediately after a write, awaited
+ * before that write's own HTTP response returns, so at most one push is
+ * ever in flight -- this is what keeps WatchHub's fan-out in the same order
+ * Cluster committed the writes.
+ *
+ * The row is looked up from wherever it actually lives (the parent's own
+ * log for cluster-scoped keys, the owning facet for namespaced/events/
+ * ca-vault keys) and defensively filtered down to exactly `revision` --
+ * with facet calls now async, an unrelated write can in principle
+ * interleave between this write's insert and its broadcast, so a plain
+ * range query alone is not guaranteed to return only this one row.
+ *
+ * There is deliberately no WebSocket between Cluster and WatchHub (see
+ * watchhub.ts's module comment for why: a DO cannot ctx.acceptWebSocket() a
+ * socket obtained from another DO's fetch() response). A plain fetch() push
+ * is simpler and keeps both DOs hibernation-eligible between events.
  */
 export async function broadcastEvent(
   host: WatchHost,
@@ -91,9 +60,6 @@ export async function broadcastEvent(
   key: string,
   revision: number,
 ): Promise<void> {
-  const sockets = host.ctx.getWebSockets();
-  if (sockets.length === 0) return;
-
   const cls = classifyKey(key);
   let rows: KineRow[];
   if (cls.kind === "cluster") {
@@ -109,16 +75,29 @@ export async function broadcastEvent(
   if (rows.length === 0) return;
 
   const events = rows.map(rowToEvent);
-  const msg = JSON.stringify({ events });
+  const watchhub = host.env.WATCHHUB;
+  if (!watchhub) return; // defensive: hosts without a WATCHHUB binding just skip fan-out
 
-  for (const ws of sockets) {
-    const tags = host.ctx.getTags(ws);
-    const prefix = tags[0] || "/";
-    const matches = prefix.endsWith("/") ? key.startsWith(prefix) : key === prefix;
-    if (matches) {
-      try {
-        ws.send(msg);
-      } catch (_) {}
+  try {
+    const stub = watchhub.get(watchhub.idFromName("default"));
+    const pushResp = await stub.fetch(
+      new Request("http://watchhub.internal/push", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ events, bookmark: revision }),
+      }),
+    );
+    if (!pushResp.ok) {
+      console.error(
+        "broadcastEvent: push to WatchHub failed:",
+        pushResp.status,
+        await pushResp.text(),
+      );
     }
+  } catch (err) {
+    // Watch delivery is best-effort -- a push failure must not fail the
+    // write that produced it. A client that misses this event still
+    // recovers via its own replay/resume on reconnect.
+    console.error("broadcastEvent: push to WatchHub failed:", err);
   }
 }

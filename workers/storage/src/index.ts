@@ -1,13 +1,7 @@
 import { SCHEMA, LIST_SQL } from "./schema.ts";
 import { prefixEnd, base64ToArrayBuffer, jsonResponse } from "./helpers.ts";
 import { currentRevision, type SqlExec } from "./queries.ts";
-import {
-  handleWebSocket,
-  handleReplay,
-  broadcastEvent,
-  type DurableObjectContext,
-  type WatchHost,
-} from "./watch.ts";
+import { handleReplay, broadcastEvent, type WatchHost } from "./watch.ts";
 import { storeGetCurrent, storeInsert, storeList } from "./store.ts";
 import { runScheduler, needsSchedulerAttention } from "./scheduler.ts";
 import { allocateClusterIPs, needsServiceIPAttention } from "./serviceip.ts";
@@ -50,10 +44,17 @@ function hasPendingSafetyNetWork(sql: SqlExec): boolean {
   );
 }
 
-export class Cluster {
-  private ctx: DurableObjectContext & {
-    storage: { sql: SqlExec; setAlarm(ms: number): void; getAlarm(): Promise<number | null> };
+/** Minimal ctx shape Cluster needs: facets (FacetHost) plus DO storage/alarm access. */
+interface ClusterContext {
+  facets: {
+    get(name: string, factory: () => { class: any }): { fetch(req: Request): Promise<Response> };
+    delete(name: string): void;
   };
+  storage: { sql: SqlExec; setAlarm(ms: number): void; getAlarm(): Promise<number | null> };
+}
+
+export class Cluster {
+  private ctx: ClusterContext;
   private env: any;
   private sql: SqlExec;
   private host: WatchHost;
@@ -108,10 +109,6 @@ export class Cluster {
     this.initialize();
     const url = new URL(request.url);
     const path = url.pathname;
-
-    if (request.headers.get("Upgrade") === "websocket" || path === "/watch") {
-      return handleWebSocket(this.host, this.sql, request);
-    }
 
     try {
       if (path === "/revision" && request.method === "GET") {
@@ -288,23 +285,6 @@ export class Cluster {
     if (hasPendingSafetyNetWork(this.sql)) {
       this.ctx.storage.setAlarm(Date.now() + SAFETY_NET_INTERVAL_MS);
     }
-  }
-
-  async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-    if (message === "ping") ws.send("pong");
-  }
-
-  async webSocketClose(
-    ws: WebSocket,
-    code: number,
-    reason: string,
-    wasClean: boolean,
-  ): Promise<void> {
-    ws.close(code, reason);
-  }
-
-  async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
-    ws.close(1011, "WebSocket error");
   }
 }
 
