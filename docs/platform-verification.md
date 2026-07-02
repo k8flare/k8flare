@@ -374,16 +374,13 @@ significantly):
 
 ## S8: Whether controllers can run WASM-resident (★highest priority)
 
-> **Update, 2026-07-02**: the "route A vs. route B" framing below is
-> superseded — Containers is no longer an available fallback for
-> controllers. See the Correction log at the end of this document for
-> what changed and why; the verification items, status, and branch
-> condition below are left as originally written per the honest
-> correction convention.
-
-This determines Phase 5's (controllers implementation) execution path —
-route A (WASM-resident) vs. route B (Containers fallback), as originally
-scoped — so it's taken up before the other spikes.
+This determines Phase 5's (controllers implementation) execution
+technique. **S8 determines which WASM execution shape is adopted for
+`workers/controllers` — not whether to fall back to Containers**
+(superseded by user decision, 2026-07-02; see the Correction log at the
+end of this document for the full record and sources). This is taken up
+before the other spikes because it still decides how
+`workers/controllers` is built.
 
 **Verification items**
 
@@ -400,15 +397,16 @@ scoped — so it's taken up before the other spikes.
 
 **Status**: not started (in progress)
 
-**Branch condition**: if all four of (a)–(d) check out, `workers/controllers`
-is designed as a Go WASM-resident process instead of Containers (route
-A). If any one of them fails badly, fall back to Containers +
-demand-start/idle-stop (route B), and point continuously-busy usage
-patterns at BYO VM as an alternative deployment target (since
-`cmd/scheduler` / `cmd/controller-manager` are already unmodified
-binaries that run anywhere, this requires no extra implementation).
-Whatever fails gets recorded here with the specifics of how it broke, as
-the basis for adopting route B.
+**Branch condition**: if all four of (a)–(d) check out,
+`workers/controllers` is designed as a Go WASM-resident process using
+the plain stream-resident technique tested here. If any one of them
+fails badly, the fallback is a different **WASM-only** execution
+shape — candidates: DO-hosted event-driven execution,
+WebSocket-hibernation re-entry, wake-on-write — not Containers
+(the Containers fallback and BYO VM framing this paragraph originally
+described are superseded by user decision, 2026-07-02; see the
+Correction log). Whatever fails gets recorded here with the specifics of
+how it broke, as the basis for choosing an alternative shape.
 
 **Confirmed facts**
 
@@ -465,7 +463,9 @@ selects between WASM and Containers — it verifies whether the specific
 technique in (a)–(d) is viable. If it isn't, the plan is to explore
 alternative **WASM-only** designs instead (candidates named in the
 decision: DO-hosted event-driven execution, WebSocket-hibernation
-re-entry, wake-on-write), not to fall back to Containers. The original
-verification items, status, and branch-condition text in S8 are left as
-written — they still describe what's being tested; only the "what
-happens if it fails" outcome has changed.
+re-entry, wake-on-write), not to fall back to Containers. The
+verification items (a)–(d) and status above are unchanged — they still
+describe what's being tested. The S8 intro and branch-condition text
+have since been updated in place to state the new branching directly;
+this entry preserves the original reasoning, wording, and sources for
+that change.

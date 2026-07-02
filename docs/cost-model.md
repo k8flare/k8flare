@@ -80,10 +80,7 @@ against a VPS. This is a design hypothesis, not yet measured.
 **Actual**: not yet done. `docs/platform-verification.md` S8 (b) will
 measure CPU-ms/hour; switch to route B if it diverges from expectations.
 
-### Route B: Containers (demand-start/idle-stop) — superseded, kept for historical record
-
-**No longer a live option** (see the Update note above); kept as
-originally written per the honest correction convention.
+### Route B: Containers (demand-start/idle-stop) — superseded (kept for the record, user decision 2026-07-02)
 
 Estimate assuming 1vCPU+1GiB, within the Containers Paid included
 allowance (375 vCPU-min/month, 25 GiB-hours/month, free) — this is the
