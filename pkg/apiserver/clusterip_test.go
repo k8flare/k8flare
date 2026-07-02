@@ -2,6 +2,8 @@ package apiserver_test
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -134,4 +136,68 @@ func TestClusterIPAllocation_SynchronousAndNoDoubleAllocation(t *testing.T) {
 			t.Errorf("svc-b ClusterIP changed after an alarm pass: got %s, want %s (double-allocation / clobber)", gotB.Spec.ClusterIP, svcB.Spec.ClusterIP)
 		}
 	})
+}
+
+// TestClusterIPAllocation_ConcurrentCreatesGetDistinctAddresses exercises
+// ClusterIPAllocator's actual reason for existing: concurrent Create
+// requests race to CAS-update the same persisted bitmap
+// (clusterip.go's save, keyed on clusterIPRangeKey), and AllocateNext must
+// retry-from-reload on a losing race rather than silently handing out a
+// duplicate or corrupting the bitmap. The sequential creates in
+// TestClusterIPAllocation_SynchronousAndNoDoubleAllocation can't exercise
+// this path -- by the time the second Create runs, the first's write has
+// already landed, so there's never an actual conflict to retry from. This
+// test fires N Creates from concurrent goroutines instead.
+func TestClusterIPAllocation_ConcurrentCreatesGetDistinctAddresses(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+	ns := "default"
+
+	client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: ns},
+	}, metav1.CreateOptions{})
+
+	const n = 8
+	names := make([]string, n)
+	for i := range names {
+		names[i] = fmt.Sprintf("svc-concurrent-%d", i)
+		_ = client.CoreV1().Services(ns).Delete(ctx, names[i], metav1.DeleteOptions{})
+	}
+
+	var wg sync.WaitGroup
+	ips := make([]string, n)
+	errs := make([]error, n)
+	for i, name := range names {
+		wg.Add(1)
+		go func(i int, name string) {
+			defer wg.Done()
+			svc, err := client.CoreV1().Services(ns).Create(ctx, &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: name},
+				Spec:       corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 80}}},
+			}, metav1.CreateOptions{})
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			ips[i] = svc.Spec.ClusterIP
+		}(i, name)
+	}
+	wg.Wait()
+
+	seen := make(map[string]string, n) // ip -> first service name that got it
+	for i, name := range names {
+		if errs[i] != nil {
+			t.Errorf("Create %s: %v", name, errs[i])
+			continue
+		}
+		if ips[i] == "" || ips[i] == "None" {
+			t.Errorf("%s: ClusterIP = %q, want a real allocated address", name, ips[i])
+			continue
+		}
+		if owner, dup := seen[ips[i]]; dup {
+			t.Errorf("%s and %s both got ClusterIP %s -- concurrent allocation collided", name, owner, ips[i])
+			continue
+		}
+		seen[ips[i]] = name
+	}
 }
