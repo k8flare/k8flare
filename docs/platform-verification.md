@@ -1533,3 +1533,208 @@ against real `wrangler dev` output, not just source reading. The S8
 section above has been updated in place to state the distinction
 directly; this entry preserves the original (incorrect) claim and why it
 was wrong, per CLAUDE.md inviolable rule #4.
+
+**2026-07-03 — Phase 5 implementation: two hard blockers S8's toy spike
+could not have caught, found only by actually building the real
+kube-scheduler/kube-controller-manager for GOOS=js/wasm.** S8 (above)
+verified the _execution shape_ (stream/DO-hosted residency, WaitUntil,
+outbound fetch) using minimal, hand-written Go programs — it never
+imported the real `k8s.io/kubernetes/cmd/kube-scheduler` or
+`cmd/kube-controller-manager` package trees. Phase 5's implementation
+attempt did, and found two blockers the shape-level spike had no way to
+surface. Per CLAUDE.md rule #2, both are backed by actual `GOOS=js
+GOARCH=wasm go build` runs, not source reading alone; per rule #4, this
+is recorded rather than silently narrowing Phase 5's scope.
+
+1. **kube-scheduler cannot compile for GOOS=js/wasm at all — not a
+   library-level issue, unfixable without vendoring a patched fork of all
+   of k8s.io/kubernetes.** `k8s.io/kubernetes/pkg/scheduler/scheduler.go`
+   unconditionally imports
+   `pkg/scheduler/backend/cache/debugger`(`cachedebugger.New(...)` /
+   `debugger.ListenForSignal(ctx)`, used for a SIGUSR2-triggered cache
+   debug dump). That package's `signal.go` is `//go:build !windows` and
+   references `syscall.SIGUSR2`, which does not exist for GOOS=js;
+   `signal_windows.go` shows the fix is trivial in isolation (`var
+compareSignal = os.Interrupt`, a portable `os.Signal`) but there is no
+   GOOS=js variant anywhere in the tree. Because this is a plain
+   subpackage of the `k8s.io/kubernetes` main module (not a separately
+   replaceable staging module like `k8s.io/mount-utils`), fixing it would
+   require `replace k8s.io/kubernetes => <local fork>` pointing at a
+   _complete_ local copy of the module (Go module replace has no
+   file-level overlay mechanism) — concretely, `du -sh` on this repo's
+   pinned `github.com/k3s-io/kubernetes@v1.36.2-k3s1` module cache entry
+   is **107MB across 5,231 `.go` files**. Vendoring that into this
+   repository to patch one `var` declaration is a different order of
+   commitment than `third_party/syumai-workers-fork/` (a few hundred KB,
+   one small upstream library, two changed files, see the fork-adoption
+   commit) and was not attempted here; it would also need re-syncing by
+   hand on every future k8s version bump (`docs/k8s-version-bump.md`
+   currently assumes a version-pin-only process). **Consequence: `cmd/scheduler`
+   is not, and cannot currently be, part of `workers/controllers`.** It
+   remains exactly as it was — an unmodified binary that only runs as a
+   host process (BYO VM, or as `.github/workflows/e2e-conformance.yml`
+   already does today).
+
+2. **kube-controller-manager's individual controller packages _do_
+   compile for GOOS=js/wasm (verified, see below) — but `k8s.io/client-go`'s
+   generated typed clientset + informers alone already exceed Cloudflare
+   Workers' 10MiB gzip deployment limit, before any controller logic is
+   added.** Isolated, incremental `GOOS=js GOARCH=wasm go build` +
+   `gzip | wc -c` measurements (`workers/apiserver/build/app.wasm`, this
+   repo's only other real data point, is 7.07MiB gzip for comparison):
+
+   | Build content                                                                                              | gzip size                              |
+   | ---------------------------------------------------------------------------------------------------------- | -------------------------------------- |
+   | Empty `main()` + `github.com/syumai/workers` only                                                          | 1.58 MiB                               |
+   | `k8s.io/client-go/kubernetes` (typed Clientset) + `k8s.io/client-go/informers` only, zero controller logic | 8.87 MiB                               |
+   | + one controller (`pkg/controller/tainteviction`, the smallest of the ten)                                 | 15.03 MiB                              |
+   | + all 5 controllers this phase adds (endpoint, endpointslice, nodeipam, nodelifecycle, tainteviction)      | 15.06 MiB                              |
+   | + all 10 controllers (`cmd/controller-manager`'s full `--controllers` list)                                | **18.98 MiB raw (126MB uncompressed)** |
+
+   The jump is almost entirely in the client-go baseline (1.58→8.87MiB),
+   not per-controller cost (8.87→15.06MiB for five real controllers,
+   →18.98MiB for all ten) — this is a property of needing _any_ typed,
+   generated Kubernetes client at all, not of how many controllers use it.
+   Every real upstream controller constructor in this codebase requires a
+   `clientset.Interface` and typed `SomeKindInformer` parameters, so there
+   is no way to use the real controllers without paying this cost.
+   `-ldflags="-s -w"` (strip debug info) saves under 5% (18.98→18.29MiB) —
+   nowhere near enough. **Consequence: `workers/controllers`, as currently
+   scoped (all ten controllers in one Go WASM binary), cannot pass
+   `wrangler deploy`'s size check.** This was not attempted against a real
+   deploy in this pass (out of context budget) — the gzip byte count
+   against the same 10MiB ceiling `workers/apiserver` is already measured
+   against is conclusive enough on its own not to need that confirmation
+   to act on.
+
+   **What _is_ confirmed working, mechanically and functionally, despite
+   the deploy-time size blocker**: individually, every one of the ten
+   controller packages (`pkg/controller/{replicaset,deployment,daemon,job,
+cronjob,endpoint,endpointslice,nodeipam,nodelifecycle,tainteviction}`)
+   _compiles cleanly_ for GOOS=js/wasm — confirmed by isolating each
+   failure from the naive first attempt (importing the top-level
+   `cmd/kube-controller-manager/app` package, which unconditionally
+   references _every_ controller including ones this repo never enables,
+   several of which pull in `k8s.io/mount-utils`,
+   `k8s.io/kubernetes/pkg/probe`, `pkg/securitycontext`, and
+   `pkg/util/filesystem` — all Linux/Windows-only, no GOOS=js variant,
+   same class of problem as the scheduler's debugger package, just in
+   controllers this repo doesn't use) down to importing each of the ten
+   real controller packages directly, bypassing `app`'s
+   `NewControllerDescriptors()`/`ControllerContext`/`Run()` orchestration
+   entirely. `pkg/controllers/controllermanager.go`
+   (`RunControllerManager`) hand-wires all ten against a plain
+   `k8s.io/client-go/informers.SharedInformerFactory` (the same type
+   `ControllerContext.InformerFactory` is itself declared as) and a
+   `*rest.Config` built in-memory with a `Transport` routed through a
+   Cloudflare service binding (`pkg/controllers/restconfig.go`,
+   `cloudflare.GetBinding` + `cloudflare/fetch.NewClient(WithBinding(...))`
+   — the S8-verified binding-routed outbound pattern) instead of a file-
+   based kubeconfig (client-go's `BuildConfigFromFlags`, read directly:
+   even with a bare master-URL override that avoids the filesystem, it
+   never attaches a Bearer token — confirmed by reading
+   `client-go/tools/clientcmd/client_config.go`, not assumed).
+
+   Deployed via `wrangler dev` (does not enforce the production size
+   cap) with the DO-hosted pattern (`workers/controllers/src/index.ts`,
+   same instantiate-once-per-DO-instance shape as
+   `spikes/s8-wasm-resident/do-hosted`), against the real
+   `workers/gateway`→`workers/apiserver`→`workers/storage` stack, all
+   five local, over a `services` binding named `GATEWAY` (not `APISERVER`
+   directly — `workers/gateway`'s own `index.ts` intercepts `?watch=true`
+   requests and serves them from `@k8flare/k8s`'s `handleWatch` in TS,
+   never forwarding them to the Go apiserver Worker at all, so a client
+   that needs working watches — which client-go's informers absolutely
+   do — has to go through gateway, not around it):
+   - All ten controllers logged `"Starting ..."` and
+     `"Caches are synced"` within ~130ms of the resident program starting.
+   - **nodeipam: real end-to-end PodCIDR allocation.** Creating a Node
+     produced a log line from the actual upstream
+     `range_allocator.go:433 "Set node PodCIDR" node="test-node-1"
+podCIDRs=["10.42.0.0/24"]` and the Node object was correctly patched
+     — not a simulation, the genuine `pkg/controller/nodeipam` allocator
+     logic running against this repo's storage through the full
+     gateway→apiserver→Cluster DO chain.
+   - **nodelifecycle + taint-eviction-controller: real end-to-end
+     staleness detection**, re-verified in the same shape as the original
+     kill-the-agent check (`8a9d92c`, done against the old TS
+     `nodelifecycle.ts`) but via API-level Lease-staleness simulation
+     instead of an actual killed agent process (this session's sandbox is
+     macOS; `cmd/agent` cannot run natively — `pkg/cgroups` build
+     constraints exclude non-Linux — so a real k3s agent could not be
+     started to kill, unlike the original check's environment). A Node
+     with a Lease last renewed at t+0, never renewed again: Ready flipped
+     True→Unknown and the `node.kubernetes.io/unreachable` NoExecute taint
+     was applied between **t+31s and t+36s** (task success bar: ≤100s —
+     comfortably inside it, and via the real upstream
+     `node_lifecycle_controller.go`, not the deleted TS version's
+     hand-rolled 40s-grace-period check — the real default
+     `--node-monitor-grace-period` measured directly off a running
+     `cmd/controller-manager -v=2` is **50s**, not the 40s the old
+     `nodelifecycle.ts` comment claimed matched "upstream's default"; this
+     was never corrected before because the TS version hardcoded its own
+     40s rather than reading the real default). **Eviction did not
+     reproduce**: a Pod bound to that node was still present (HTTP 200 on
+     a direct GET) at **t+434s (~7.2 minutes)**, well past the ≥5m
+     success bar the deleted TS version's hand-rolled eviction met, when
+     observation was stopped (context budget, not a deliberate cutoff).
+     `taint_eviction.go` logged `"Starting"` and `"Sending events to API
+server"` at controller startup and nothing else for the rest of the
+     run — no sync/eviction-attempt log lines at all around t+36s when the
+     taint was actually applied, despite `pkg/controller/nodelifecycle`
+     (sharing the exact same `informers.SharedInformerFactory`-provided
+     Node informer instance) correctly observing and reacting to the same
+     Node object. Not root-caused in this pass: plausible causes include a
+     `tainteviction.New` wiring gap specific to this hand-wired
+     (non-`ControllerContext`) construction path, an event-handler
+     registration ordering issue, or something specific to running two
+     controllers that both watch Nodes against one shared informer in this
+     environment — genuinely unknown, not guessed at further here per
+     CLAUDE.md rule #2. **This is a confirmed, currently-unresolved
+     functional gap** in `pkg/controllers/controllermanager.go`'s
+     taint-eviction wiring, on top of (independent from) the size blocker
+     above — flagged for whoever picks this up next, before relying on
+     automatic Pod eviction from this execution path.
+   - **endpoint/endpointslice: controllers confirmed running and reacting
+     to real writes**, partially verified. The real
+     `endpoints_controller.go`/`endpointslice_controller.go` create
+     placeholder `Endpoints`/`EndpointSlice` objects immediately on Service
+     creation (labels `endpoints.kubernetes.io/managed-by:
+endpoint-controller` / `endpointslice.kubernetes.io/managed-by:
+endpointslice-controller.k8s.io` confirm this is the real controller,
+     not a stub), and correctly _rejected_ a malformed test Pod lacking
+     `spec.nodeName` with a genuine upstream validation error (`"skipping
+Pod test-svc-pod for Service default/test-svc: Node  Not Found"`) —
+     proving the real controller logic is executing, not a no-op. Getting
+     the addresses to actually populate after fixing the test Pod's
+     `nodeName` was not achieved within this pass's remaining time (the
+     manual test sequence involved several overlapping PUTs and
+     resourceVersion churn that likely raced with the informer's resync,
+     rather than a defect in the controller wiring itself, but this was
+     not root-caused) — worth a clean re-test (create Service, then create
+     an already-fully-formed Pod with `nodeName` + `status.podIP` +
+     `status.conditions` in one shot, rather than this session's
+     incremental PUT sequence) before relying on this path.
+
+   **Net position for Phase 5**: the DO-hosted + WaitUntil-resident +
+   event-armed-alarm execution shape S8 recommended is confirmed correct
+   and working end-to-end for kube-controller-manager specifically (real
+   upstream controller code, real client-go informers over a real
+   Cloudflare service binding, real reconciliation against real storage)
+   — the remaining blocker is purely the compiled artifact's _deployed_
+   size, not the execution model. `workers/controllers` as implemented in
+   this pass is verified-correct-but-not-yet-deployable. Candidate next
+   steps (not attempted, listed for whoever picks this up): split the ten
+   controllers across two or more separate WASM Workers, each under
+   budget (mirrors this project's existing per-component Worker-splitting
+   strategy for exactly this kind of size pressure — see the v2 rewrite
+   plan's "デプロイサイズ制限からの脱出"); investigate whether a
+   hand-written, narrower REST client (satisfying just the specific
+   `clientset.Interface` methods each controller actually calls, instead
+   of the fully generated `k8s.io/client-go/kubernetes.Clientset`) can
+   shrink the ~8.87MiB baseline meaningfully — unexplored, and a
+   significant undertaking; or accept kube-controller-manager as
+   host-process/BYO-VM-only alongside kube-scheduler, the same way this
+   finding already settles kube-scheduler, and treat
+   `workers/controllers` as not viable for either binary until one of the
+   above changes the size math.
