@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -136,17 +137,16 @@ var OpenAPIV3Discovery = []byte(%s)
 	return writeGoFile(root+"/pkg/apiserver/zz_generated_openapi.go", []byte(src))
 }
 
-// goRawOrQuoted renders data as a Go string literal: a raw `...` literal if
-// data contains neither a backtick nor a non-printable byte outside
-// whitespace (true for compact JSON), otherwise a quoted "..." literal via
-// %q as a safe fallback.
+// goRawOrQuoted renders data as a Go string literal: a raw `...` literal
+// when strconv.CanBackquote says it's safe (true for compact JSON, which
+// is what this is always actually called with -- json.Marshal, not
+// MarshalIndent), otherwise a quoted "..." literal via %q as a fallback.
 func goRawOrQuoted(data []byte) string {
-	for _, b := range data {
-		if b == '`' || (b < 0x20 && b != '\n' && b != '\t' && b != '\r') {
-			return fmt.Sprintf("%q", data)
-		}
+	s := string(data)
+	if strconv.CanBackquote(s) {
+		return "`" + s + "`"
 	}
-	return "`" + string(data) + "`"
+	return fmt.Sprintf("%q", s)
 }
 
 func v3UpstreamFileName(gv schema.GroupVersion) string {

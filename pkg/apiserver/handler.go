@@ -173,10 +173,44 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 	case http.MethodDelete:
 		if name == "" {
 			labelSelector := r.URL.Query().Get("labelSelector")
+
+			if resource == "namespaces" && namespacedStores != nil {
+				// A collection-delete of Namespaces needs the same
+				// dependents sweep as a single named delete below, or
+				// DELETE /api/v1/namespaces would silently orphan every
+				// namespaced resource in every namespace it removes.
+				// List first, before anything is actually deleted, so the
+				// sweep runs against exactly the Namespaces this request
+				// is about to remove -- same idempotent-retry reasoning as
+				// the single-delete case: nothing is deleted until every
+				// sweep has succeeded.
+				listObj, err := store.List(ctx, namespace, "", labelSelector)
+				if err != nil {
+					writeInternalError(w, err)
+					return
+				}
+				nsList, ok := listObj.(*corev1.NamespaceList)
+				if !ok {
+					writeInternalError(w, fmt.Errorf("unexpected list type %T for namespaces collection delete", listObj))
+					return
+				}
+				for _, ns := range nsList.Items {
+					if err := DeleteNamespaceDependents(ctx, namespacedStores, ns.Name); err != nil {
+						writeInternalError(w, err)
+						return
+					}
+				}
+			}
+
 			obj, err := store.DeleteCollection(ctx, namespace, labelSelector)
 			if err != nil {
 				writeInternalError(w, err)
 				return
+			}
+			if svcList, ok := obj.(*corev1.ServiceList); ok {
+				for i := range svcList.Items {
+					ReleaseClusterIP(ctx, store.storage, &svcList.Items[i])
+				}
 			}
 			writeRuntimeObject(w, http.StatusOK, obj)
 			return
@@ -204,6 +238,9 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		if err != nil {
 			writeResourceError(w, err, resource, name)
 			return
+		}
+		if svc, ok := obj.(*corev1.Service); ok {
+			ReleaseClusterIP(ctx, store.storage, svc)
 		}
 		writeRuntimeObject(w, http.StatusOK, obj)
 

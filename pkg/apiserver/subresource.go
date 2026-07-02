@@ -16,17 +16,23 @@ import (
 // pods/binding, nodes/status) to the appropriate handler based on resource,
 // subresource, and HTTP method.
 //
-// Dispatch is by subresource name alone, not by (resource, subresource)
-// pair: every resource in apidef.Table that has a "status" subresource
-// (pods, nodes, replicasets, deployments, daemonsets, jobs, cronjobs) uses
-// the exact same GET-whole-object / PUT-replaces-.Status /
+// "status" is dispatched by subresource name alone, not by (resource,
+// subresource) pair: every resource in apidef.Table that has a "status"
+// subresource (pods, nodes, replicasets, deployments, daemonsets, jobs,
+// cronjobs) uses the exact same GET-whole-object / PUT-replaces-.Status /
 // PATCH-whole-object semantics (see handleStatusSubresource), so one
 // generic handler covers all of them -- replacing what used to be 7
 // hand-copied ~55-line blocks, one per resource, that had already drifted
 // from each other (apps/v1 and batch/v1's copies existed here but were
 // never advertised in discovery.go; see apidef.Table's doc comment).
-// "binding" and the log/exec/attach stubs are still resource-specific (only
-// Pod has them), so they stay as their own small cases below.
+//
+// binding/log/exec/attach are still Pod-specific (apidef.Table only ever
+// declares them under "pods") and are explicitly rejected for any other
+// resource before reaching their handlers below -- handleBindingSubresource
+// in particular assumes it was only ever called for a Pod (it type-asserts
+// the fetched object straight to *corev1.Pod), and pkg/apiserver has no
+// recover() anywhere, so a resource mismatch reaching it would panic the
+// whole request instead of cleanly 404ing.
 func HandleSubresource(w http.ResponseWriter, r *http.Request, stores map[string]*ResourceStore, resource, namespace, name, subresource string) {
 	store, exists := stores[resource]
 	if !exists {
@@ -38,6 +44,22 @@ func HandleSubresource(w http.ResponseWriter, r *http.Request, stores map[string
 	case "status":
 		handleStatusSubresource(w, r, store, namespace, name)
 
+	case "binding", "log", "exec", "attach":
+		if resource != "pods" {
+			writeStatusError(w, http.StatusNotFound, "NotFound", "the server does not support the subresource \""+subresource+"\" for resource \""+resource+"\"")
+			return
+		}
+		handlePodOnlySubresource(w, r, store, namespace, name, subresource)
+
+	default:
+		writeStatusError(w, http.StatusNotFound, "NotFound", "the server does not support the subresource \""+subresource+"\" for resource \""+resource+"\"")
+	}
+}
+
+// handlePodOnlySubresource dispatches the subresources only Pod has.
+// Callers must have already confirmed resource == "pods".
+func handlePodOnlySubresource(w http.ResponseWriter, r *http.Request, store *ResourceStore, namespace, name, subresource string) {
+	switch subresource {
 	case "binding":
 		handleBindingSubresource(w, r, store, namespace, name)
 
@@ -57,9 +79,6 @@ func HandleSubresource(w http.ResponseWriter, r *http.Request, stores map[string
 		// This fallback is hit when the JS layer is bypassed (e.g. integration tests).
 		writeStatusError(w, http.StatusNotImplemented, "NotImplemented",
 			fmt.Sprintf("%s requires WebSocket proxy (handled by JS layer in production)", subresource))
-
-	default:
-		writeStatusError(w, http.StatusNotFound, "NotFound", "the server does not support the subresource \""+subresource+"\" for resource \""+resource+"\"")
 	}
 }
 
@@ -182,7 +201,13 @@ func copyStatus(dst, src runtime.Object) error {
 // kube-scheduler's bind path, which sets spec.nodeName by creating a
 // Binding object rather than PATCHing the Pod directly. Pod-specific (no
 // other resource in apidef.Table has a "binding" subresource), so it stays
-// its own small case rather than a generic table-driven handler.
+// its own small case rather than a generic table-driven handler. Callers
+// (HandleSubresource) must have already confirmed store's resource is
+// "pods" -- the type assertions below still use the comma-ok form instead
+// of trusting that, since pkg/apiserver has no recover() anywhere and a
+// client-supplied body that doesn't actually decode to a Binding (e.g. a
+// Pod manifest POSTed to .../binding by mistake) is squarely
+// attacker/caller-controlled input, not just an internal invariant.
 func handleBindingSubresource(w http.ResponseWriter, r *http.Request, store *ResourceStore, namespace, name string) {
 	if r.Method != http.MethodPost {
 		writeStatusError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method "+r.Method+" is not supported for "+store.resource+"/binding")
@@ -203,14 +228,22 @@ func handleBindingSubresource(w http.ResponseWriter, r *http.Request, store *Res
 		writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to decode binding: "+err.Error())
 		return
 	}
-	binding := bindingObj.(*corev1.Binding)
+	binding, ok := bindingObj.(*corev1.Binding)
+	if !ok {
+		writeStatusError(w, http.StatusBadRequest, "BadRequest", fmt.Sprintf("request body is %T, expected Binding", bindingObj))
+		return
+	}
 
 	currentObj, err := store.Get(ctx, namespace, name)
 	if err != nil {
 		writeResourceError(w, err, store.resource, name)
 		return
 	}
-	pod := currentObj.(*corev1.Pod)
+	pod, ok := currentObj.(*corev1.Pod)
+	if !ok {
+		writeInternalError(w, fmt.Errorf("%s store returned %T, expected *corev1.Pod", store.resource, currentObj))
+		return
+	}
 
 	pod.Spec.NodeName = binding.Target.Name
 
