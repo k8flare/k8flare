@@ -34,7 +34,7 @@ documentation or guesswork alone has a proven cost.
 | S1 | Facets (limits, storage accounting, parallelism, alarms, delete) | partially confirmed | Phase 4 (storage v2) |
 | S2 | Dynamic Workers Loader (bundling WASM, size limits, env bindings) | not started | Phase 2 / Phase 4 |
 | S3 | Containers (startup, onActivityExpired, cold start, arbitrary images, UDP, wrangler dev) | not started | Phase 5 route B / Phase 7 |
-| S4 | Cloudflare Mesh (billing scope, flannel prototype, Cluster DNS replacement) | not started | Phase 9 |
+| S4 | Cloudflare Mesh (billing scope, flannel prototype, Cluster DNS replacement) | verified (desk research) | Phase 9 |
 | S5 | WASM isolate singleton-ization (syumai fork) | not started | Phase 2 (apiserver) |
 | S6 | R2 (PVC access isolation, S3 access from Containers) | not started | Phase 8 |
 | S7 | Re-verifying apiserver residency (double-checking the rejection) | not started | Final confirmation of the rejection decision |
@@ -247,21 +247,114 @@ Verified Cloudflare platform facts table (sources:
 - Whether it can replace Cluster DNS (can Mesh/Gateway name resolution
   return `*.svc.cluster.local`? If not, keep the CoreDNS plan)
 
-**Status**: not started
+**Status**: verified (desk research — no live 2-node prototype was run;
+see the recommendation below on redesigning that prototype before
+building it)
 
 **Confirmed facts**
 
-(None yet. `docs/cloudflare-mesh-networking.md` has a general survey of
-Mesh itself, but none of what this spike asks — billing scope, prototype
-behavior, DNS-replacement viability — has been verified empirically.)
+Source: `spikes/s4-mesh/RESEARCH.md` (desk research, 2026-07-02),
+cross-checked against official Cloudflare and k3s/flannel documentation
+(full citation list in that file). This pass answers S4's three
+verification items from documentation rather than a live deployment —
+see "Open questions" for what still needs a real test.
+
+1. **Billing**: Cloudflare's blog states Mesh includes "50 nodes and 50
+   users free... included with every Cloudflare account"
+   ([Introducing Cloudflare Mesh](https://blog.cloudflare.com/mesh/)).
+   Mesh lives under Zero Trust / Cloudflare One, a separate product
+   surface from Workers, and Zero Trust has its own always-available
+   Free plan (50 seats, $0). The working inference is that Mesh's
+   50-node/user allowance draws from that same Zero Trust Free seat
+   pool, so a Workers Paid account can likely enable Mesh at no extra
+   cost by separately turning on Zero Trust Free — but no official
+   source states it's bundled automatically with Workers Paid, and
+   pricing beyond 50 nodes/users isn't published anywhere (confidence:
+   medium — involves inference, not a direct statement).
+2. **Connection model**: confirms and extends
+   `docs/cloudflare-mesh-networking.md` — true L3, CIDR route
+   advertisement, scriptable enrollment (confidence: high, multiple
+   official docs). New finding: the default transport is MASQUE (QUIC
+   over UDP, HTTP/3, TLS 1.3), with WireGuard as an alternative
+   ([Zero Trust WARP: tunneling with a MASQUE](https://blog.cloudflare.com/zero-trust-warp-with-a-masque/)).
+   This reframes the existing doc's "~14% UDP loss" concern: since
+   Mesh's own transport is UDP, that loss characteristic is a
+   structural property of everything crossing Mesh (including TCP
+   payloads), not something specific to UDP-based applications like
+   CoreDNS. Also new: MTU mishandling is a real failure mode, not just
+   a tuning recommendation — the official Tips page states that packets
+   near 1,460 bytes get pushed over 1,500 bytes by the double
+   encapsulation and are silently dropped
+   ([Tips and best practices](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-mesh/tips/)).
+3. **flannel-over-Mesh viability** (desk judgment, not run): splits by
+   backend. `host-gw` requires direct L2 connectivity per flannel's own
+   docs ([flannel backends.md](https://github.com/flannel-io/flannel/blob/master/Documentation/backends.md)),
+   which Mesh's virtual `100.96.0.0/12` address space doesn't provide —
+   judged **not viable**, backed by precedent of the same failure mode
+   on Tailscale+host-gw
+   ([k3s-io/k3s#8372](https://github.com/k3s-io/k3s/issues/8372)).
+   `vxlan` only needs L3 UDP reachability, which Mesh does provide, so
+   it's viable in principle but means double UDP encapsulation (vxlan
+   inside Mesh's own MASQUE/QUIC tunnel), tightening the MTU budget
+   further. Separately, **k3s already ships an official alternative
+   that doesn't need Mesh at all**: `--flannel-backend=wireguard-native`
+   plus `--node-external-ip`
+   ([K3s: Distributed hybrid or multicloud cluster](https://docs.k3s.io/networking/distributed-multicloud)).
+   This changes what S4 is actually asking: not "can flannel run over
+   Mesh" but "what does Mesh add on top of wireguard-native" — the
+   leading (untested) hypothesis is NAT traversal, letting BYO VMs join
+   without opening any inbound port, since wireguard-native requires
+   each node to accept inbound UDP/51820 directly.
+4. **Cluster DNS replacement**: judged **not viable**, confidence high.
+   Mesh's own hostname routing hasn't shipped yet (officially announced
+   for "this summer" 2026,
+   [Connect and secure any private or public app by hostname, not IP](https://blog.cloudflare.com/tunnel-hostname-routing/));
+   the only programmatically-accessible DNS product, Cloudflare Internal
+   DNS, is Enterprise-only
+   ([Internal DNS: Get started](https://developers.cloudflare.com/dns/internal-dns/get-started/),
+   explicitly requires "an Enterprise account with access to Gateway
+   resolver policies"); and Gateway's DNS features (resolver policies,
+   Local Domain Fallback) only forward queries to an existing DNS server
+   rather than acting as an authoritative source, so they don't remove
+   the need to run something CoreDNS-shaped anyway. → The CoreDNS
+   Deployment + `kube-dns` Service fallback already named below (and
+   detailed in `docs/general-purpose-k8s-plan.md` Phase 4) should be
+   treated as the primary plan, not a fallback.
+5. **Maturity**: Mesh GA'd 2026-04-14
+   ([changelog](https://developers.cloudflare.com/changelog/post/2026-04-14-cloudflare-mesh/)),
+   raising the node cap from 10 to 50 at launch. But the Linux client
+   that Mesh server nodes actually depend on only reached its own GA on
+   2026-06-29
+   ([changelog](https://developers.cloudflare.com/changelog/post/2026-06-29-warp-linux-ga/))
+   — three days before this research pass. Container/Docker support
+   remains "later this year," unchanged from the existing doc. No
+   Kubernetes/CNI integration examples were found anywhere.
+
+**Recommendation on the originally-scoped prototype**: if a live 2-node
+prototype is still run, it should target `vxlan` (not `host-gw`, now
+judged structurally incompatible) and be framed as a comparison against
+k3s's own `wireguard-native` backend, since that's the real alternative
+Mesh needs to justify itself against.
 
 **Open questions**
 
-- All verification items are still not started.
+- Mesh's pricing beyond 50 nodes/users (per-node or bandwidth-based
+  charges) — not published anywhere; would need to ask Cloudflare
+  directly.
+- Real-world MTU / throughput / UDP loss under vxlan-over-Mesh
+  specifically (double encapsulation) — no first-party measurement
+  exists; third-party competitor benchmarks (NetBird) exist but
+  shouldn't be used as design numbers.
+- Whether Mesh's NAT-traversal advantage over wireguard-native (no
+  inbound port needed) actually holds up — the core hypothesis for why
+  Mesh would be worth using at all, and it's untested.
+- Whether Mesh's hostname routing (once shipped this summer) becomes
+  programmatically controllable — if so, the Cluster DNS judgment above
+  may be worth revisiting.
 - The fallback if this isn't adopted (a CoreDNS Deployment + `kube-dns`
   Service) is already designed as the Phase 4 procedure in
-  `docs/general-purpose-k8s-plan.md` (treat that as authoritative if S4
-  fails).
+  `docs/general-purpose-k8s-plan.md` — per finding 4 above, treat that
+  as the primary plan already, not a fallback contingent on S4 failing.
 
 ---
 
