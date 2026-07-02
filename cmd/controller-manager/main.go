@@ -22,7 +22,18 @@ func main() {
 	dataDir := flag.String("data-dir", "/var/lib/rancher/k8flare-controller-manager", "Directory for the generated kubeconfig")
 	verbosity := flag.String("v", "0", "klog verbosity level, forwarded to the underlying kube-controller-manager")
 	insecureSkipTLSVerify := flag.Bool("insecure-skip-tls-verify", false, "Skip TLS certificate verification (for local/self-signed dev servers only)")
-	controllers := flag.String("controllers", "replicaset,deployment,daemonset,job,cronjob", "Comma-separated controllers to enable, forwarded to --controllers")
+	// endpoint,endpointslice replace workers/storage/src/endpoints.ts; nodeipam
+	// replaces workers/storage/src/scheduler.ts's PodCIDR allocation;
+	// nodelifecycle,taint-eviction-controller replace
+	// workers/storage/src/nodelifecycle.ts (Phase 5, "TS reconcilers -> real
+	// kube-controller-manager"). Names verified against the vendored
+	// k8s.io/kubernetes source, not assumed: IsControllerEnabled
+	// (k8s.io/controller-manager's app/helper.go) supports only an exact
+	// name, "-name", or "*" -- there is no "+name" syntax. node-lifecycle's
+	// alias is "nodelifecycle" (no hyphen); taint-eviction has no alias, only
+	// the literal canonical name "taint-eviction-controller"
+	// (newTaintEvictionControllerDescriptor, cmd/kube-controller-manager/app/core.go).
+	controllers := flag.String("controllers", "replicaset,deployment,daemonset,job,cronjob,endpoint,endpointslice,nodeipam,nodelifecycle,taint-eviction-controller", "Comma-separated controllers to enable, forwarded to --controllers")
 	flag.Parse()
 
 	if *serverURL == "" {
@@ -65,6 +76,12 @@ func main() {
 		"--leader-elect=false",
 		"--controllers=" + *controllers,
 		"--secure-port=0",
+		// Required for the nodeipam controller to allocate anything (it's a
+		// silent no-op otherwise); /24-per-node from this /16 matches the
+		// k3s default cluster CIDR cmd/agent's embedded flannel expects, and
+		// the /24s the deleted scheduler.ts used to hand out by hand.
+		"--allocate-node-cidrs=true",
+		"--cluster-cidr=10.42.0.0/16",
 		"--v=" + *verbosity,
 	})
 

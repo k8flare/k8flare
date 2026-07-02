@@ -1,7 +1,8 @@
 // ClusterStore: facet-aware replacements for queries.ts's synchronous
 // getCurrent()/insert() plus list/replay helpers, used by index.ts and the
-// alarm-driven reconcilers (endpoints.ts, serviceip.ts, scheduler.ts,
-// nodelifecycle.ts).
+// remaining alarm-driven reconciler (serviceip.ts). endpoints.ts,
+// scheduler.ts, and nodelifecycle.ts were deleted in Phase 5, replaced by
+// the real kube-controller-manager running in workers/controllers.
 //
 // Design (see docs/multi-tenancy-and-hosting.md's honest-correction addendum
 // for the full writeup): the parent Cluster DO's own kine table stays the

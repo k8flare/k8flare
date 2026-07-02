@@ -9,6 +9,7 @@
     ],
   },
   "worker_loaders": [{ "binding": "LOADER" }],
+  "services": [{ "binding": "CONTROLLERS", "service": "k8flare-controllers" }],
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Cluster", "WatchHub"] }],
   "observability": { "enabled": true, "head_sampling_rate": 1 },
 }

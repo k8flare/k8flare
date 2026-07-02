@@ -98,15 +98,27 @@ func TestClusterIPAllocation_SynchronousAndNoDoubleAllocation(t *testing.T) {
 	})
 
 	t.Run("SurvivesAlarmPass", func(t *testing.T) {
-		// Force the Cluster DO's alarm to fire: a Pod write reliably wakes
-		// it (needsSchedulerAttention in workers/storage/src/scheduler.ts).
-		// The DO's alarm() handler unconditionally runs
-		// allocateClusterIPs on every firing (not just when
-		// needsServiceIPAttention triggered the wake) -- see
-		// workers/storage/src/index.ts -- so this exercises the exact
-		// "TS pass runs again after Go already allocated" race the
-		// boundary condition is about, whether or not the Service write
-		// itself was what triggered this particular firing.
+		// Attempt to force the Cluster DO's alarm to fire promptly: this
+		// Pod write used to reliably wake it (needsSchedulerAttention in
+		// the now-deleted workers/storage/src/scheduler.ts, Phase 5 --
+		// real kube-controller-manager replaces it, see
+		// pkg/controllers/controllermanager.go). Left in place as a
+		// harmless setup action and because a synchronously-allocated
+		// Service (svcA/svcB below) generally no longer trips
+		// needsServiceIPAttention itself (it already has a ClusterIP by
+		// write time), so there is currently no fast, reliable local
+		// trigger left for this subtest -- it now mostly exercises
+		// whatever the DO's safety-net alarm was already armed for from
+		// earlier in this test run. The DO's alarm() handler
+		// unconditionally runs allocateClusterIPs on every firing (not
+		// just when needsServiceIPAttention triggered the wake) -- see
+		// workers/storage/src/index.ts -- so IF it fires during this
+		// sleep, this exercises the exact "TS pass runs again after Go
+		// already allocated" race the boundary condition is about.
+		// Known gap (Phase 5): this subtest can silently stop exercising
+		// that race if the alarm doesn't happen to be armed already; a
+		// proper fix belongs with serviceip.ts/clusterip.go, out of
+		// Phase 5's scope.
 		_, err := client.CoreV1().Pods(ns).Create(ctx, &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{Name: "clusterip-test-alarm-wake"},
 			Spec: corev1.PodSpec{
