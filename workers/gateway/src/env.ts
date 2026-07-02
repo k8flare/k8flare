@@ -1,5 +1,5 @@
 export interface Env {
-  CLUSTER: DurableObjectNamespace;
+  WATCHHUB: DurableObjectNamespace;
   APISERVER: Fetcher;
   RUNTIME: Fetcher;
   KUBELET_VPC?: Fetcher;

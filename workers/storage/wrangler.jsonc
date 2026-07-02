@@ -8,6 +8,7 @@
       { "name": "WATCHHUB", "class_name": "WatchHub" },
     ],
   },
+  "worker_loaders": [{ "binding": "LOADER" }],
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Cluster", "WatchHub"] }],
   "observability": { "enabled": true, "head_sampling_rate": 1 },
 }
