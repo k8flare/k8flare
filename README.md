@@ -457,16 +457,21 @@ single-writer shape as etcd itself), and every namespace gets its own Facet
   first one, alongside EC2/GCE/on-prem BYO VMs, mix-and-match per cluster;
   broadening its image allowlist and closing its networking gaps (Pod IP,
   `logs`/`exec`) remain open.
-- **Cloudflare Mesh for cross-cloud node networking** — technically capable
-  of replacing "all nodes in one VPC" for flannel's `host-gw` backend (true
-  L3 routing, CIDR route advertisement, scriptable enrollment), but not a
-  clean drop-in: every packet detours through a Cloudflare PoP (no direct
-  peer-to-peer path), with real throughput cost and UDP-loss tradeoffs, and
-  no existing Kubernetes integration or case study. See
+- **Cross-cloud node networking: use k3s's own `wireguard-native` backend,
+  not Cloudflare Mesh.** Evaluated and **not adopted** (Phase 9,
+  `spikes/p9-mesh/RESEARCH.md`): flannel's `host-gw` backend needs true L2
+  adjacency, which Mesh (a relayed-through-a-PoP L3 network, no direct
+  peer-to-peer path, real throughput/UDP-loss tradeoffs, no Kubernetes/CNI
+  integration precedent) can't provide either, and Mesh's one hypothesized
+  advantage over k3s's own alternative — NAT traversal — couldn't be
+  verified (it requires Cloudflare dashboard/Zero Trust access outside this
+  evaluation's scope). For nodes that don't share a subnet, use k3s's
+  built-in `--flannel-backend=wireguard-native` plus `--node-external-ip`
+  instead — live-verified end-to-end through this project's own control
+  plane in Phase 9 (`cmd/agent --node-external-ip` and the apiserver's
+  `FlannelExternalIP` config field). See
   [`docs/cloudflare-mesh-networking.md`](docs/cloudflare-mesh-networking.md)
-  for the full evaluation — recommended as a lower-throughput/dev-test/
-  geographically-dispersed option, not the default for performance-sensitive
-  clusters.
+  for the full evaluation and history.
 - **`k8f` CLI** — standalone OAuth 2.0 PKCE login (independent of
   Cloudflare's `cf` CLI): log in, provision, get a kubeconfig in one
   command.
@@ -539,6 +544,15 @@ chmod +x k8flare-agent-linux-* k8flare-scheduler-linux-* k8flare-controller-mana
 ```
 
 See [scripts/ec2-user-data.sh](scripts/ec2-user-data.sh) for automated EC2 bootstrap (currently automates the agent only).
+
+Nodes are expected to share one VPC/subnet by default (flannel's `host-gw`
+backend). If your agents span clouds or accounts that don't share a subnet,
+pass `--node-external-ip YOUR_NODE_PUBLIC_IP` to `k8flare-agent` on every
+node — this is k3s's own built-in
+[multicloud networking](https://docs.k3s.io/networking/distributed-multicloud)
+support (`wireguard-native` flannel backend), evaluated and recommended over
+Cloudflare Mesh for this purpose; see
+[`docs/cloudflare-mesh-networking.md`](docs/cloudflare-mesh-networking.md).
 
 ## Configuration
 
