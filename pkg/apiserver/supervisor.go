@@ -26,6 +26,7 @@ type clusterConfig struct {
 	DisableKubeProxy   bool      `json:"DisableKubeProxy,omitempty"`
 	DisableServiceLB   bool      `json:"DisableServiceLB,omitempty"`
 	FlannelBackend     string    `json:"FlannelBackend,omitempty"`
+	FlannelExternalIP  bool      `json:"FlannelExternalIP,omitempty"`
 	EgressSelectorMode string    `json:"EgressSelectorMode,omitempty"`
 	NoFlannel          bool      `json:"NoFlannel,omitempty"`
 }
@@ -54,16 +55,23 @@ func mustParseCIDR(s string) *net.IPNet {
 // automatically using the PodCIDR allocated by the control plane.
 func defaultClusterConfig() clusterConfig {
 	return clusterConfig{
-		ClusterDomain:      "cluster.local",
-		ClusterIPRange:     *PodCIDR,
-		ServiceIPRange:     *ServiceCIDR,
-		HTTPSPort:          6443,
-		SupervisorPort:     6443,
-		DisableCCM:         true,
-		DisableNPC:         true,
-		DisableKubeProxy:   false,
-		DisableServiceLB:   true,
+		ClusterDomain:    "cluster.local",
+		ClusterIPRange:   *PodCIDR,
+		ServiceIPRange:   *ServiceCIDR,
+		HTTPSPort:        6443,
+		SupervisorPort:   6443,
+		DisableCCM:       true,
+		DisableNPC:       true,
+		DisableKubeProxy: false,
+		DisableServiceLB: true,
+		// host-gw stays the default: all EC2 agents share one VPC subnet.
+		// wireguard-native + FlannelExternalIP were live-verified as the
+		// recommended option for nodes that don't share a subnet (Phase 9,
+		// spikes/p9-mesh/RESEARCH.md) but choosing that per-cluster is a
+		// separate, not-yet-built feature -- this field exists so that work
+		// has something to set.
 		FlannelBackend:     "host-gw",
+		FlannelExternalIP:  false,
 		EgressSelectorMode: "disabled",
 	}
 }

@@ -149,6 +149,18 @@ traffic routing) remain unverified pending the watch-delivery follow-up.
   message-delivery gap (compare kine revision numbers the DO broadcast vs.
   what the entry Worker's watch relay actually forwarded) rather than
   assuming it's connection-level.
+  **Likely the same root cause as a second, more concrete data point found
+  during Phase 9's Cloudflare Mesh evaluation** (`spikes/p9-mesh/RESEARCH.md`):
+  a real 2-node flannel setup (either `host-gw` or `wireguard-native` — both
+  reproduced identically) never completed cross-node route/tunnel
+  convergence within a ~7-minute window, because flannel's own Node informer
+  (a plain, unfiltered List+Watch, not the field-selector bug class found
+  elsewhere) never finished its initial sync. This is very likely the actual
+  mechanism behind this row and behind the "Service networking" gap in
+  `README.md`'s table ("actual traffic routing... isn't proven end-to-end
+  yet") — i.e. this is not just a Service/EndpointSlice-specific issue, it
+  blocks multi-node pod networking generally, regardless of CNI backend.
+  Worth prioritizing given it now blocks two independent things.
 - **The same class of instability now also shows up locally in
   `go test ./pkg/apiserver/...`** (not just CI), simply because the suite
   has grown: 6 new test files/functions were added across Phase 3, so a full

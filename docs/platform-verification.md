@@ -34,7 +34,7 @@ documentation or guesswork alone has a proven cost.
 | S1  | Facets (limits, storage accounting, parallelism, alarms, delete)                                                                                                            | verified (the 10GB shared-vs-independent boundary test alone was intentionally not run — non-blocking)                                                                                                                                                                                                                                                                                                                                                                | Phase 4 (storage v2)                                                  |
 | S2  | Dynamic Workers Loader (bundling WASM, size limits, env bindings)                                                                                                           | verified (local wrangler dev; production limits unconfirmed)                                                                                                                                                                                                                                                                                                                                                                                                          | Phase 2 / Phase 4                                                     |
 | S3  | Containers (startup, onActivityExpired, cold start, arbitrary images, UDP, wrangler dev)                                                                                    | verified (local + desk research; production confirmation of egress-policy enforcement and UDP blocking still open)                                                                                                                                                                                                                                                                                                                                                    | Phase 7 (controllers motivation dropped — WASM-only by user decision) |
-| S4  | Cloudflare Mesh (billing scope, flannel prototype, Cluster DNS replacement)                                                                                                 | verified (desk research)                                                                                                                                                                                                                                                                                                                                                                                                                                              | Phase 9                                                               |
+| S4  | Cloudflare Mesh (billing scope, flannel prototype, Cluster DNS replacement)                                                                                                 | verified (desk research 2026-07-02 + live verification 2026-07-03, Phase 9) — **Mesh not adopted**; wireguard-native live-tested and recommended instead; Mesh enablement itself stayed unverifiable (dashboard-gated)                                                                                                                                                                                                                                                | Phase 9 — done                                                        |
 | S5  | WASM isolate singleton-ization (syumai fork)                                                                                                                                | partially confirmed (doneCh reuse fork verified; state persists across reused-instance requests; a _new_ timer wait fails only when nothing else is concurrently active — an open stream, a blocked outbound read, or a `ctx.waitUntil` task all keep the whole scheduler pumped for every goroutine — see S8)                                                                                                                                                        | Phase 2 (apiserver)                                                   |
 | S6  | R2 (PVC access isolation, S3 access from Containers)                                                                                                                        | verified (desk research + one read-only check)                                                                                                                                                                                                                                                                                                                                                                                                                        | Phase 8                                                               |
 | S7  | Re-verifying apiserver residency (double-checking the rejection)                                                                                                            | not started                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Final confirmation of the rejection decision                          |
@@ -584,6 +584,55 @@ Mesh needs to justify itself against.
   Service) is already designed as the Phase 4 procedure in
   `docs/general-purpose-k8s-plan.md` — per finding 4 above, treat that
   as the primary plan already, not a fallback contingent on S4 failing.
+
+**Phase 9 update (2026-07-03) — live verification, decision: not adopted.**
+Full detail in `spikes/p9-mesh/RESEARCH.md`; summary:
+
+1. **Mesh itself stayed unverifiable.** `npx wrangler whoami` confirmed this
+   session is authenticated to the correct account (KOOFFICE,
+   `ed17c5c18eb6052e70234ec181709fba`) with a token that includes
+   `connectivity (admin)`, but Mesh lives under Zero Trust/Cloudflare One, a
+   separate product surface `wrangler` doesn't reach. Checking or enabling it
+   needs the Cloudflare dashboard or a Zero-Trust-scoped API token, neither
+   available here — reported honestly rather than guessed at, per this
+   task's own pre-authorized fallback for exactly this situation.
+2. **wireguard-native was live-tested instead, successfully, for the parts
+   this project's control plane owns.** Two real `cmd/agent` processes, on
+   genuinely separate Docker networks bridged only by a shared "public"
+   network (standing in for two clouds), were driven to
+   `--flannel-backend=wireguard-native` + `--node-external-ip` purely
+   through this project's existing `/v1-k3s/config` supervisor path (a new
+   `FlannelExternalIP` field was added to mirror k3s's own
+   `--flannel-external-ip`). Both nodes registered `Ready` with distinct
+   PodCIDRs, and — the part that actually needed proving — `status.addresses`
+   correctly kept the node's _internal_ per-network IP while the
+   `flannel.alpha.coreos.com/public-ip-overwrite` annotation correctly took
+   the _external_ one, exactly matching
+   [k3s's documented multicloud pattern](https://docs.k3s.io/networking/distributed-multicloud).
+3. **Full cross-node route/tunnel convergence didn't complete in a ~7-minute
+   (422s) window** — no `flannel-wg` interface, no
+   `flannel.alpha.coreos.com/backend-data` annotation on either node. An A/B
+   control (same 2-node setup, reverted to the shipped `host-gw` default)
+   reproduced the **identical** symptom, proving this is a pre-existing,
+   backend-agnostic gap in this project's control plane — not something
+   specific to wireguard-native, and not something Mesh would have sidestepped
+   either. It's the same family of issue as this doc's own S-series and
+   `docs/general-purpose-k8s-plan.md` Phase 1's already-recorded open
+   follow-ups (informer/watch delivery not reliably completing under this
+   control plane) and matches `README.md`'s own long-standing "Service
+   networking... not yet proven end-to-end" gap row — recorded here as an
+   honest correction/connection, not chased further (out of this phase's
+   scope).
+4. **Decision**: Cloudflare Mesh is **not adopted**. Its one hypothesized
+   advantage over wireguard-native (NAT traversal without an open inbound
+   port) remains unverified and unverifiable within this task's access, while
+   wireguard-native's control-plane integration is now confirmed correct and
+   costs nothing extra. `cmd/agent --node-external-ip` (opt-in flag, wired to
+   the already-vendored `cmds.Agent.NodeExternalIP`) is the one permanent code
+   change kept from this phase; `defaultClusterConfig()`'s `FlannelBackend`
+   default remains `"host-gw"` (unchanged) since choosing wireguard-native
+   per-cluster is a separate, not-yet-built feature. `docs/cloudflare-mesh-
+networking.md` and `README.md` updated accordingly.
 
 ---
 

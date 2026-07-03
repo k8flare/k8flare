@@ -14,11 +14,11 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/k8flare/k8flare/pkg/cacert"
 	"github.com/k3s-io/k3s/pkg/agent"
 	"github.com/k3s-io/k3s/pkg/cli/cmds"
 	"github.com/k3s-io/k3s/pkg/daemons/executor"
 	"github.com/k3s-io/k3s/pkg/executor/embed"
+	"github.com/k8flare/k8flare/pkg/cacert"
 )
 
 // prepareK3sDataDir ensures k3s data directory is extracted and adds its
@@ -63,6 +63,7 @@ func main() {
 	nodeName := flag.String("node-name", "", "Node name (default: hostname)")
 	dataDir := flag.String("data-dir", "/var/lib/rancher/k3s", "Data directory")
 	tunnelToken := flag.String("tunnel-token", os.Getenv("TUNNEL_TOKEN"), "Cloudflare tunnel token")
+	nodeExternalIP := flag.String("node-external-ip", "", "Node external IP to advertise (needed for flannel wireguard-native across networks that don't share L2; see docs/cloudflare-mesh-networking.md)")
 	flag.Parse()
 
 	if *serverURL == "" {
@@ -95,6 +96,9 @@ func main() {
 	agentConfig.DataDir = *dataDir
 	agentConfig.DisableLoadBalancer = true
 	agentConfig.WithNodeID = true
+	if *nodeExternalIP != "" {
+		agentConfig.NodeExternalIP.Set(*nodeExternalIP)
+	}
 
 	log.Printf("Starting k3s-cf-agent: server=%s node=%s", *serverURL, *nodeName)
 
