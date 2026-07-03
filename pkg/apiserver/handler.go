@@ -134,6 +134,15 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			}
 		}
 
+		// Nodes that don't specify a PodCIDR get one allocated here,
+		// synchronously, before the first write -- see nodecidr.go.
+		if node, ok := rObj.(*corev1.Node); ok {
+			if err := AssignPodCIDR(ctx, store.storage, node); err != nil {
+				writeInternalError(w, fmt.Errorf("allocate PodCIDR: %w", err))
+				return
+			}
+		}
+
 		obj, err := store.Create(ctx, namespace, rObj)
 		if err != nil {
 			writeResourceError(w, err, resource, name)
@@ -212,6 +221,11 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 					ReleaseClusterIP(ctx, store.storage, &svcList.Items[i])
 				}
 			}
+			if nodeList, ok := obj.(*corev1.NodeList); ok {
+				for i := range nodeList.Items {
+					ReleasePodCIDR(ctx, store.storage, &nodeList.Items[i])
+				}
+			}
 			writeRuntimeObject(w, http.StatusOK, obj)
 			return
 		}
@@ -241,6 +255,9 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		}
 		if svc, ok := obj.(*corev1.Service); ok {
 			ReleaseClusterIP(ctx, store.storage, svc)
+		}
+		if node, ok := obj.(*corev1.Node); ok {
+			ReleasePodCIDR(ctx, store.storage, node)
 		}
 		writeRuntimeObject(w, http.StatusOK, obj)
 
