@@ -7,6 +7,22 @@ state as of the scheduling-conformance pass (node-selector/capacity/hostPort
 predicates, scheduling Events, LimitRange enforcement, ServiceAccount
 auto-provisioning, namespace cascading deletion).
 
+> **Phase 6 note (2026-07-03):** the "What exists today" section below is a
+> point-in-time snapshot from before the v2 rearchitecture (single `Etcd`
+> Durable Object, hand-written TypeScript scheduler) and is kept as a
+> historical record, not a current description — everything in it has since
+> been superseded: the DO is now `Cluster` (`workers/storage`, with
+> per-namespace Durable Object Facets, see
+> [`docs/multi-tenancy-and-hosting.md`](multi-tenancy-and-hosting.md)), and
+> real `kube-scheduler`/`kube-controller-manager` binaries replaced the
+> hand-written scheduler/reconcilers (both now BYO-VM/host-process-only —
+> see [`docs/platform-verification.md`](platform-verification.md)'s S8
+> section for why, and the top of `README.md` for the current architecture
+> diagram). The "Migrating to the real `kube-scheduler`" investigation below
+> retains its historical/reference value (real bugs found by actually
+> running it) even though the surrounding architecture description doesn't
+> match today's layout.
+
 ## What exists today
 
 - **One Durable Object (`Etcd`)** backs the entire cluster: kine-style KV
