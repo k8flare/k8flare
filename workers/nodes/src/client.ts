@@ -68,6 +68,22 @@ export interface PodObject {
       name: string;
       image: string;
       resources?: { requests?: Record<string, string> };
+      // Phase 8 (R2 PV/PVC backend): only volumeMounts[].name is needed, to
+      // cross-reference against spec.volumes[].name below and find which
+      // (if any) of this Pod's volumes is actually mounted by its one
+      // supported container -- mountPath itself is unused (R2 access is
+      // injected as env vars for direct S3-SDK use, not a real filesystem
+      // mount -- see README.md's "Volumes (R2 PV/PVC)" section).
+      volumeMounts?: Array<{ name: string; mountPath: string }>;
+    }>;
+    // Phase 8 (R2 PV/PVC backend). Only the persistentVolumeClaim volume
+    // source is understood; any other volume type (emptyDir, configMap,
+    // etc.) is simply not matched by podPersistentVolumeClaimRef (client.ts)
+    // and has no effect here -- workers/nodes v1 does not provide real
+    // filesystem-mounted volumes of any kind (see README.md).
+    volumes?: Array<{
+      name: string;
+      persistentVolumeClaim?: { claimName: string };
     }>;
   };
   status?: {
@@ -234,4 +250,71 @@ export async function deletePod(env: Env, namespace: string, name: string): Prom
   if (!resp.ok && resp.status !== 404) {
     throw new Error(`deletePod ${namespace}/${name}: ${resp.status} ${await resp.text()}`);
   }
+}
+
+// ---- Phase 8: R2 PV/PVC backend ----
+//
+// workers/nodes never talks to pkg/apiserver/pvcbind.go's
+// PersistentVolume/StorageClass logic directly, and never parses a PV's
+// spec.csi.volumeAttributes itself -- it only needs to know "does this Pod
+// reference a PVC, and if so, by what claim name," then hands that name to
+// /internal/mint-r2-credentials (pkg/apiserver/r2handlers.go), which alone
+// owns the PVC -> PV -> bucket/prefix lookup. This keeps the CSI attribute
+// schema a private contract between pvcbind.go and r2handlers.go.
+
+/** A Pod's PersistentVolumeClaim reference, if it has one mounted by its (one supported) container. */
+export interface PodPVCRef {
+  volumeName: string;
+  claimName: string;
+}
+
+/**
+ * Finds the (at most one, per workers/nodes v1's single-container support)
+ * persistentVolumeClaim-backed volume actually mounted by pod's container,
+ * cross-referencing spec.containers[0].volumeMounts against spec.volumes by
+ * name -- a volume merely listed in spec.volumes but never mounted is not
+ * returned, matching how a real kubelet only wires up volumes a container
+ * actually references.
+ */
+export function podPersistentVolumeClaimRef(pod: PodObject): PodPVCRef | undefined {
+  const mountedNames = new Set((pod.spec?.containers?.[0]?.volumeMounts ?? []).map((m) => m.name));
+  for (const vol of pod.spec?.volumes ?? []) {
+    if (vol.persistentVolumeClaim && mountedNames.has(vol.name)) {
+      return { volumeName: vol.name, claimName: vol.persistentVolumeClaim.claimName };
+    }
+  }
+  return undefined;
+}
+
+/** Response shape of POST /internal/mint-r2-credentials (pkg/apiserver/r2handlers.go's mintR2CredentialsResponse). */
+export interface R2Credential {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken: string;
+  bucket: string;
+  endpoint: string;
+  prefix: string;
+  expiresAt: string; // RFC3339, from Go's encoding/json marshaling of time.Time
+}
+
+/**
+ * POST /internal/mint-r2-credentials: mints a fresh, prefix-scoped R2
+ * Temporary Access Credential for claimName in namespace. Returns undefined
+ * (rather than throwing) on any non-2xx response -- the claim not existing,
+ * not yet bound, or R2 not being configured are all routine "this Pod can't
+ * get R2 access right now" outcomes the caller (virtualnode.ts) turns into
+ * a failed Pod with a clear reason, not an unhandled exception.
+ */
+export async function mintR2Credentials(
+  env: Env,
+  namespace: string,
+  claimName: string,
+  ttlSeconds?: number,
+): Promise<R2Credential | undefined> {
+  const resp = await apiFetch(env, "/internal/mint-r2-credentials", {
+    method: "POST",
+    body: JSON.stringify({ namespace, claimName, ttlSeconds }),
+  });
+  if (!resp.ok) return undefined;
+  return resp.json();
 }
