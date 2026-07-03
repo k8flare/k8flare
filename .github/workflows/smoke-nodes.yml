@@ -1,0 +1,309 @@
+# Smoke e2e for workers/nodes (Phase 7's Pod-on-Containers backend) against
+# real wrangler dev + real Docker containers -- not conformance (this
+# backend's known limits, e.g. no routable Pod IP, no logs/exec, rule that
+# out -- see README.md's "Node backends" section), but the concrete gate
+# this task asked for: kubectl-equivalent create -> Running, delete ->
+# container actually stops, and restartPolicy's three modes.
+#
+# Multi-config `wrangler dev` only exposes the FIRST-listed config's port
+# (verified empirically -- a later config's own "dev.port" is silently
+# ignored). workers/apiserver needs to be directly reachable to create/read
+# Pods, but workers/nodes also needs to be reachable once (to bootstrap
+# VirtualNode's alarm loop, see workers/nodes/src/virtualnode.ts's fetch()
+# doc comment). Rather than restart wrangler dev to swap which config is
+# first, this job starts a tiny inline proxy Worker (not part of the
+# k8flare repo/release -- generated into $RUNNER_TEMP, same spirit as this
+# repo's other CI-only generated fixtures) that forwards /nodes/* to
+# workers/nodes and everything else to workers/apiserver, so one wrangler
+# dev process can reach both.
+name: Smoke Test workers/nodes
+
+on:
+  pull_request:
+    paths:
+      - "workers/nodes/**"
+      - "pkg/apiserver/nodecidr.go"
+  workflow_dispatch:
+
+jobs:
+  smoke-nodes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version: "24"
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build WASM
+        run: npm run build:wasm:apiserver
+
+      # See this file's header comment for why this exists.
+      - name: Generate the debug proxy Worker
+        run: |
+          mkdir -p "$RUNNER_TEMP/debug-proxy/src"
+          cat > "$RUNNER_TEMP/debug-proxy/wrangler.jsonc" <<'EOF'
+          {
+            "name": "debug-proxy",
+            "main": "./src/index.ts",
+            "compatibility_date": "2026-07-01",
+            "services": [
+              { "binding": "APISERVER", "service": "k8flare-apiserver" },
+              { "binding": "NODES", "service": "k8flare-nodes" }
+            ]
+          }
+          EOF
+          cat > "$RUNNER_TEMP/debug-proxy/src/index.ts" <<'EOF'
+          export interface Env {
+            APISERVER: Fetcher;
+            NODES: Fetcher;
+          }
+          export default {
+            async fetch(request: Request, env: Env): Promise<Response> {
+              const url = new URL(request.url);
+              if (url.pathname.startsWith("/nodes")) {
+                const inner = new URL(request.url);
+                inner.pathname = inner.pathname.replace(/^\/nodes/, "") || "/";
+                return env.NODES.fetch(new Request(inner, request));
+              }
+              return env.APISERVER.fetch(request);
+            },
+          };
+          EOF
+
+      - name: Start wrangler dev (apiserver + storage + nodes, via debug proxy)
+        run: |
+          nohup npx wrangler dev \
+            -c "$RUNNER_TEMP/debug-proxy/wrangler.jsonc" \
+            -c workers/apiserver/wrangler.jsonc \
+            -c workers/storage/wrangler.jsonc \
+            -c workers/nodes/wrangler.jsonc \
+            --port 8930 \
+            --persist-to .wrangler/state \
+            --log-level info \
+            > "$RUNNER_TEMP/wrangler.log" 2>&1 &
+
+          echo "Waiting for wrangler dev on 127.0.0.1:8930..."
+          for _ in $(seq 1 60); do
+            if curl -sf -o /dev/null "http://127.0.0.1:8930/api/v1/namespaces" \
+              -H "Authorization: Bearer k8flare-dev-token"; then
+              break
+            fi
+            sleep 1
+          done
+
+          curl -skf -o /dev/null "http://127.0.0.1:8930/api/v1/namespaces" \
+            -H "Authorization: Bearer k8flare-dev-token" || {
+            echo "::error::wrangler dev did not come up cleanly"
+            cat "$RUNNER_TEMP/wrangler.log"
+            exit 1
+          }
+
+      # Any request to workers/nodes bootstraps VirtualNode's alarm loop
+      # (see virtualnode.ts's fetch() doc comment) -- this is that one-time
+      # wake, mirroring the "Deploying workers/nodes" section of README.md.
+      - name: Bootstrap the virtual node
+        run: |
+          curl -sf "http://127.0.0.1:8930/nodes/healthz" | tee /dev/stderr
+          echo
+
+      # Node registration + first Lease renewal happen on VirtualNode's
+      # first alarm tick (~NODE_LEASE_RENEW_INTERVAL_MS after the bootstrap
+      # above, see client.ts) -- poll rather than a fixed sleep.
+      - name: Wait for the virtual Node to register
+        run: |
+          for _ in $(seq 1 20); do
+            NODE=$(curl -sf "http://127.0.0.1:8930/api/v1/nodes/cf-containers-default" \
+              -H "Authorization: Bearer k8flare-dev-token" 2>/dev/null) && break
+            sleep 2
+          done
+          echo "$NODE" | python3 -m json.tool
+          PODCIDR=$(echo "$NODE" | python3 -c "import json,sys; print(json.load(sys.stdin)['spec'].get('podCIDR',''))")
+          [ -n "$PODCIDR" ] || { echo "::error::cf-containers-default has no allocated podCIDR"; exit 1; }
+          echo "Node registered with podCIDR=$PODCIDR"
+
+      - name: Create a Pod bound to the virtual node
+        run: |
+          curl -sf -X POST "http://127.0.0.1:8930/api/v1/namespaces/default/pods" \
+            -H "Authorization: Bearer k8flare-dev-token" -H "Content-Type: application/json" \
+            -d '{
+              "apiVersion": "v1", "kind": "Pod",
+              "metadata": {"name": "smoke-pod"},
+              "spec": {
+                "nodeName": "cf-containers-default",
+                "restartPolicy": "Always",
+                "containers": [{"name": "demo", "image": "k8flare/demo:latest"}]
+              }
+            }' -o /dev/null
+
+      - name: Wait for the Pod to become Running (kubectl run -> Running)
+        run: |
+          for _ in $(seq 1 20); do
+            PHASE=$(curl -sf "http://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod" \
+              -H "Authorization: Bearer k8flare-dev-token" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',{}).get('phase',''))")
+            [ "$PHASE" = "Running" ] && break
+            sleep 2
+          done
+          [ "$PHASE" = "Running" ] || {
+            echo "::error::smoke-pod did not reach Running (last phase: $PHASE)"
+            cat "$RUNNER_TEMP/wrangler.log"
+            exit 1
+          }
+          echo "smoke-pod is Running."
+          docker ps --format '{{.Names}}' | grep -q PodContainer || {
+            echo "::error::no PodContainer* Docker container found for a Running Pod"
+            exit 1
+          }
+
+      - name: restartPolicy=Always -- container is restarted after being killed
+        run: |
+          CID=$(docker ps --format '{{.Names}}' | grep PodContainerSmall | grep -v -- -proxy | head -1)
+          docker stop "$CID"
+          for _ in $(seq 1 20); do
+            docker ps --format '{{.Names}}' | grep -qx "$CID" && break
+            sleep 2
+          done
+          docker ps --format '{{.Names}}' | grep -qx "$CID" || {
+            echo "::error::Always-restartPolicy container was not restarted after being stopped"
+            exit 1
+          }
+          echo "Always: container restarted as expected."
+
+      - name: Delete the Pod (kubectl delete -> container actually stops)
+        run: |
+          curl -sf -X DELETE "http://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod" \
+            -H "Authorization: Bearer k8flare-dev-token" -o /dev/null
+          for _ in $(seq 1 20); do
+            docker ps --format '{{.Names}}' | grep -q PodContainer || break
+            sleep 2
+          done
+          docker ps --format '{{.Names}}' | grep -q PodContainer && {
+            echo "::error::Pod container(s) still running >40s after Pod delete"
+            docker ps
+            exit 1
+          }
+          echo "Pod delete stopped its container."
+
+      - name: restartPolicy=Never -- killed container is NOT restarted, Pod goes Failed
+        run: |
+          curl -sf -X POST "http://127.0.0.1:8930/api/v1/namespaces/default/pods" \
+            -H "Authorization: Bearer k8flare-dev-token" -H "Content-Type: application/json" \
+            -d '{
+              "apiVersion": "v1", "kind": "Pod",
+              "metadata": {"name": "smoke-pod-never"},
+              "spec": {
+                "nodeName": "cf-containers-default", "restartPolicy": "Never",
+                "containers": [{"name": "demo", "image": "k8flare/demo:latest"}]
+              }
+            }' -o /dev/null
+
+          for _ in $(seq 1 20); do
+            docker ps --format '{{.Names}}' | grep -q PodContainerSmall && break
+            sleep 2
+          done
+          CID=$(docker ps --format '{{.Names}}' | grep PodContainerSmall | grep -v -- -proxy | head -1)
+          [ -n "$CID" ] || { echo "::error::smoke-pod-never's container never started"; exit 1; }
+          docker stop "$CID"
+
+          for _ in $(seq 1 20); do
+            PHASE=$(curl -sf "http://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod-never" \
+              -H "Authorization: Bearer k8flare-dev-token" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',{}).get('phase',''))")
+            if [ "$PHASE" = "Failed" ] || [ "$PHASE" = "Succeeded" ]; then break; fi
+            sleep 2
+          done
+          [ "$PHASE" = "Failed" ] || {
+            echo "::error::Never-restartPolicy Pod did not reach a terminal Failed phase (got: $PHASE)"
+            exit 1
+          }
+          docker ps --format '{{.Names}}' | grep -qx "$CID" && {
+            echo "::error::Never-restartPolicy container was restarted after being stopped"
+            exit 1
+          }
+          echo "Never: container left stopped, Pod marked Failed, as expected."
+          curl -sf -X DELETE "http://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod-never" \
+            -H "Authorization: Bearer k8flare-dev-token" -o /dev/null
+
+      - name: restartPolicy=OnFailure -- killed (nonzero-exit) container IS restarted
+        run: |
+          curl -sf -X POST "http://127.0.0.1:8930/api/v1/namespaces/default/pods" \
+            -H "Authorization: Bearer k8flare-dev-token" -H "Content-Type: application/json" \
+            -d '{
+              "apiVersion": "v1", "kind": "Pod",
+              "metadata": {"name": "smoke-pod-onfailure"},
+              "spec": {
+                "nodeName": "cf-containers-default", "restartPolicy": "OnFailure",
+                "containers": [{"name": "demo", "image": "k8flare/demo:latest"}]
+              }
+            }' -o /dev/null
+
+          for _ in $(seq 1 20); do
+            docker ps --format '{{.Names}}' | grep -q PodContainerSmall && break
+            sleep 2
+          done
+          CID=$(docker ps --format '{{.Names}}' | grep PodContainerSmall | grep -v -- -proxy | head -1)
+          [ -n "$CID" ] || { echo "::error::smoke-pod-onfailure's container never started"; exit 1; }
+          docker stop "$CID"
+
+          for _ in $(seq 1 20); do
+            docker ps --format '{{.Names}}' | grep -qx "$CID" && break
+            sleep 2
+          done
+          docker ps --format '{{.Names}}' | grep -qx "$CID" || {
+            echo "::error::OnFailure-restartPolicy container was not restarted after a nonzero exit"
+            exit 1
+          }
+          echo "OnFailure: container restarted after nonzero exit, as expected."
+          curl -sf -X DELETE "http://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod-onfailure" \
+            -H "Authorization: Bearer k8flare-dev-token" -o /dev/null
+
+      - name: Image allowlist -- a non-allowlisted image is rejected, not silently run
+        run: |
+          curl -sf -X POST "http://127.0.0.1:8930/api/v1/namespaces/default/pods" \
+            -H "Authorization: Bearer k8flare-dev-token" -H "Content-Type: application/json" \
+            -d '{
+              "apiVersion": "v1", "kind": "Pod",
+              "metadata": {"name": "smoke-pod-badimage"},
+              "spec": {
+                "nodeName": "cf-containers-default", "restartPolicy": "Always",
+                "containers": [{"name": "demo", "image": "nginx:latest"}]
+              }
+            }' -o /dev/null
+
+          for _ in $(seq 1 20); do
+            PHASE=$(curl -sf "http://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod-badimage" \
+              -H "Authorization: Bearer k8flare-dev-token" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',{}).get('phase',''))")
+            [ "$PHASE" = "Failed" ] && break
+            sleep 2
+          done
+          [ "$PHASE" = "Failed" ] || {
+            echo "::error::a Pod naming a non-allowlisted image did not end up Failed (got: $PHASE)"
+            exit 1
+          }
+          echo "Non-allowlisted image correctly rejected."
+
+      - name: Tear down
+        if: always()
+        run: |
+          curl -sf -X DELETE "http://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod-badimage" \
+            -H "Authorization: Bearer k8flare-dev-token" -o /dev/null || true
+          pkill -f "wrangler dev" || true
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-nodes-logs
+          path: |
+            ${{ runner.temp }}/wrangler.log
+          if-no-files-found: ignore
