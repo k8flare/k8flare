@@ -320,10 +320,11 @@ FINDINGS.md`'s "image x size-tier" allowlist unit -- see
    push from Cluster DO (the lower-latency alternative) was not built: it
    would require editing `workers/storage`'s existing `handlePut`/
    `handleDelete` (mirroring `needsControllersPing`), which is out of scope
-   for this task. Net effect: with zero Pods, each 10s tick costs 3 Worker
-   requests to `workers/apiserver` (`getNode` existence check,
-   `getLease`+`renewLease`, `listPodsForNode`) and no Container activity —
-   **≈259,200 apiserver requests/month per registered virtual node**,
+   for this task. Net effect: with zero Pods, each 10s tick costs 4 Worker
+   requests to `workers/apiserver` (`getNode` existence check, `getLease`,
+   `renewLease` or `createLease`, `listPodsForNode`) and no Container
+   activity — 8,640 alarm firings/day (259,200/month) × 4 requests/tick ≈
+   **1,036,800 apiserver requests/month per registered virtual node**,
    whether or not it ever runs a Pod. This is the "target ~0 plus one
    mandatory cost" row in the table above; not literally zero, but bounded
    and independent of workload. $ rate for Workers requests is not yet
@@ -340,7 +341,7 @@ FINDINGS.md`'s "image x size-tier" allowlist unit -- see
 **Estimate, not yet measured**: no `wrangler deploy` of `workers/nodes` has
 been performed this phase (implementation + local `wrangler dev` +
 Docker-based smoke verification only, per this task's verification gate) — the
-259,200 requests/month figure above is a request-_count_ estimate from the
+~1,036,800 requests/month figure above is a request-_count_ estimate from the
 code's own design, not a production measurement. Following cost invariant #5,
 this row should be updated with real `wrangler tail`/billing numbers the first
 time `workers/nodes` is actually deployed.
