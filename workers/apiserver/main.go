@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/k8flare/k8flare/pkg/apiserver"
@@ -28,6 +29,61 @@ func getToken() string {
 	}
 	cachedToken = t
 	return t
+}
+
+// r2DevBucket/r2DevAccountID/r2DevAccessKeyID/r2DevSecretAccessKey are dev
+// fallbacks for R2_BUCKET/R2_ACCOUNT_ID/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY,
+// mirroring getToken's k8flare-dev-token fallback: local `wrangler dev`
+// exercises the full PVC-bind -> mint-credential -> JWT-signing mechanism
+// end to end without a real R2 bucket or R2 API token configured. A
+// credential minted from these values will not authenticate against real
+// R2 (the "secret" isn't a real R2 API token's secret) -- see
+// docs/cost-model.md's R2 section and CLAUDE.md's local-dev-pitfalls list.
+const (
+	r2DevAccountID       = "dev-account-id"
+	r2DevAccessKeyID     = "dev-access-key-id"
+	r2DevSecretAccessKey = "dev-secret-access-key"
+	r2DevBucket          = "k8flare-dev-bucket"
+)
+
+// cachedR2Config memoizes getR2Config's result the same way cachedToken
+// does for getToken, and for the same reason (Workers env bindings are
+// only reachable once a request has actually arrived).
+var (
+	cachedR2Config   apiserver.R2Config
+	cachedR2Resolved bool
+)
+
+// getR2Config returns this cluster's R2Config, falling back to the r2Dev*
+// constants above for any field left unset, so local `wrangler dev`
+// exercises the same code path a real deployment does. Passed to
+// pkg/apiserver via SetR2ConfigFunc rather than called directly there --
+// see r2.go's currentR2Config doc comment for why.
+func getR2Config() apiserver.R2Config {
+	if cachedR2Resolved {
+		return cachedR2Config
+	}
+	cfg := apiserver.R2Config{
+		AccountID:       cloudflare.Getenv("R2_ACCOUNT_ID"),
+		AccessKeyID:     cloudflare.Getenv("R2_ACCESS_KEY_ID"),
+		SecretAccessKey: cloudflare.Getenv("R2_SECRET_ACCESS_KEY"),
+		Bucket:          cloudflare.Getenv("R2_BUCKET"),
+	}
+	if cfg.AccountID == "" {
+		cfg.AccountID = r2DevAccountID
+	}
+	if cfg.AccessKeyID == "" {
+		cfg.AccessKeyID = r2DevAccessKeyID
+	}
+	if cfg.SecretAccessKey == "" {
+		cfg.SecretAccessKey = r2DevSecretAccessKey
+	}
+	if cfg.Bucket == "" {
+		cfg.Bucket = r2DevBucket
+	}
+	cachedR2Config = cfg
+	cachedR2Resolved = true
+	return cfg
 }
 
 func main() {
@@ -64,6 +120,11 @@ func main() {
 	// CA Manager for supervisor protocol
 	cam := apiserver.NewCAManager(storage)
 
+	// R2Config (Phase 8): resolved lazily, same reason as getToken -- see
+	// r2.go's currentR2Config doc comment for why this is a settable
+	// func-var rather than a parameter threaded through HandleResource.
+	apiserver.SetR2ConfigFunc(getR2Config)
+
 	// Discovery (no auth)
 	apiserver.RegisterDiscovery(mux)
 	apiserver.RegisterGroupDiscovery(mux)
@@ -74,6 +135,11 @@ func main() {
 
 	// Internal endpoints, service-binding-only (/internal/*)
 	apiserver.RegisterInternalHandlers(mux, storage)
+	// /internal/mint-r2-credentials, called by workers/nodes over its own
+	// APISERVER service binding (Phase 8) -- corev1's store map has both
+	// persistentvolumeclaims and persistentvolumes, which is all this
+	// handler needs.
+	apiserver.RegisterR2Handlers(mux, storesByGV[corev1.SchemeGroupVersion])
 
 	// One auth-wrapped route per GroupVersion in apidef.Table. core/v1
 	// additionally bootstraps the cluster's baseline namespaces/
@@ -82,17 +148,22 @@ func main() {
 	// "namespaces" never exists as a key in a non-core stores map --
 	// HandleResource's doc comment in pkg/apiserver/handler.go explains why
 	// that alone is enough to make the cascading-delete branch a no-op
-	// there).
+	// there). storage.k8s.io/v1 similarly bootstraps the "r2" StorageClass
+	// on first request (Phase 8).
 	for _, gv := range apidef.GroupVersions() {
 		prefix := apidef.APIPrefix(gv)
 		stores := storesByGV[gv]
 		isCore := gv == corev1.SchemeGroupVersion
+		isStorage := gv == storagev1.SchemeGroupVersion
 
 		mux.Handle(prefix, apiserver.AuthMiddleware(getToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if isCore {
 				apiserver.BootstrapCluster(r.Context(), stores)
 				apiserver.HandleResource(w, r, prefix, stores, namespacedStores)
 				return
+			}
+			if isStorage {
+				apiserver.BootstrapStorageClasses(r.Context(), stores)
 			}
 			apiserver.HandleResource(w, r, prefix, stores, nil)
 		})))

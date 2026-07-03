@@ -57,6 +57,46 @@ type R2Config struct {
 	Bucket          string
 }
 
+// currentR2Config, set once via SetR2ConfigFunc, is how pvcbind.go's
+// bindPersistentVolumeClaim (called transitively from handler.go's generic
+// per-resource POST dispatch, several call frames away from main.go) gets
+// at this cluster's R2Config without pkg/apiserver importing
+// "github.com/syumai/workers/cloudflare" itself -- that import would break
+// `go test ./pkg/apiserver/...`, which runs as a normal host binary, not a
+// GOOS=js/wasm one. Defaults to a zero R2Config so every existing test in
+// this package (none of which call SetR2ConfigFunc) gets harmless empty
+// strings rather than a nil-pointer panic.
+//
+// This is the same "resolve Workers environment bindings during request
+// handling, not at Go init/main time" constraint workers/apiserver/main.go's
+// getToken() already works around for K3S_TOKEN (env bindings aren't
+// reachable before the first request reaches the WASM instance) --
+// generalized to a settable func-var since, unlike getToken (owned directly
+// by main.go and passed as a plain parameter to the handlers that need it),
+// R2Config is needed from inside ApplyPostCreateEffects's generic dispatch,
+// too many call frames removed from main.go to thread a new parameter
+// through without widening handler.go's shared HandleResource signature for
+// every resource type, not just PersistentVolumeClaim.
+//
+// No "is R2 actually configured" boolean, deliberately: main.go's
+// getR2Config falls back to fixed dev placeholder values for any unset
+// field, the same unconditional-fallback shape getToken() already uses for
+// K3S_TOKEN ("k8flare-dev-token") -- see CLAUDE.md's local-dev-pitfalls
+// list, which explicitly documents that fallback as intentional, not a bug
+// to fix. A cluster that never configures real R2 secrets still binds PVCs
+// and mints syntactically valid credentials; they simply fail loudly (401/
+// 403 from R2 on first real use) rather than the PVC staying Pending --
+// consistent with this project's existing risk tolerance for this exact
+// class of dev-convenience fallback.
+var currentR2Config func() R2Config = func() R2Config { return R2Config{} }
+
+// SetR2ConfigFunc installs fn as the source of truth for currentR2Config().
+// Called exactly once, from workers/apiserver/main.go's main(), before
+// workers.Serve(mux).
+func SetR2ConfigFunc(fn func() R2Config) {
+	currentR2Config = fn
+}
+
 // Endpoint returns this account's R2 S3-compatible endpoint URL, in the
 // form every S3 client (aws4fetch, boto3, aws-sdk-*, s3fs/tigrisfs FUSE
 // adapters) expects as its `endpoint`/`endpoint_url` configuration.
