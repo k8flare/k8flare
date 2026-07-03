@@ -184,7 +184,7 @@ export class VirtualNode extends DurableObject<Env> {
   }
 
   private async renewNodeLease(): Promise<void> {
-    const now = new Date().toISOString();
+    const now = new Date();
     const existing = await getLease(this.env, this.nodeName);
     if (existing) {
       await renewLease(this.env, this.nodeName, now);
@@ -278,8 +278,15 @@ export class VirtualNode extends DurableObject<Env> {
       // the Pod terminal.
       const state = await stub.currentState();
       if (state.status === "stopped" || state.status === "stopped_with_code") {
+        // @cloudflare/containers' State type only carries an exitCode
+        // for status "stopped_with_code" -- plain "stopped" (observed, by
+        // actually running this, for a container killed externally via
+        // `docker stop`/SIGTERM rather than exiting its own process) has no
+        // exitCode at all. Treat "can't prove it exited 0" as failed rather
+        // than defaulting to Succeeded -- a real cluster doesn't treat an
+        // externally-killed container as having completed successfully.
         const exitCode = "exitCode" in state ? state.exitCode : undefined;
-        const failed = exitCode !== undefined && exitCode !== 0;
+        const failed = exitCode !== 0;
         if (restartPolicy === "Always" || (restartPolicy === "OnFailure" && failed)) {
           await stub.ensureRunning();
           await this.markRunning(pod, tier);

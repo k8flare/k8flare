@@ -121,6 +121,21 @@ export async function updateNodeStatus(env: Env, node: NodeObject): Promise<void
 
 const LEASE_NS = "kube-node-lease";
 
+// coordinationv1.LeaseSpec.RenewTime is a *metav1.MicroTime, whose
+// UnmarshalJSON requires exactly microsecond (6-digit) fractional-second
+// precision (Go's fixed-width time.RFC3339Micro layout) -- unlike
+// metav1.Time (used for every other timestamp this file sends, e.g. Node/Pod
+// .status.conditions), which parses any valid RFC3339 string regardless of
+// fractional digit count. JavaScript's `Date.toISOString()` only produces
+// millisecond (3-digit) precision, so passing it straight through fails
+// server-side with "cannot parse \".839Z\" as \".000000\"" -- found by
+// actually running this against wrangler dev (CLAUDE.md rule 2: this was NOT
+// caught by reading either side's code first), not a hypothetical. Padding
+// with 3 zeros produces a valid 6-digit fraction.
+function toMicroTime(date: Date): string {
+  return date.toISOString().replace("Z", "000Z");
+}
+
 /** GET .../namespaces/kube-node-lease/leases/{name}. Returns null on 404. */
 export async function getLease(env: Env, name: string): Promise<LeaseObject | null> {
   const resp = await apiFetch(
@@ -133,12 +148,16 @@ export async function getLease(env: Env, name: string): Promise<LeaseObject | nu
 }
 
 /** POST .../leases (create). Ignores 409 -- caller falls back to renewLease. */
-export async function createLease(env: Env, name: string, renewTime: string): Promise<void> {
+export async function createLease(env: Env, name: string, renewTime: Date): Promise<void> {
   const lease: LeaseObject = {
     apiVersion: "coordination.k8s.io/v1",
     kind: "Lease",
     metadata: { name },
-    spec: { holderIdentity: name, leaseDurationSeconds: NODE_LEASE_DURATION_SECONDS, renewTime },
+    spec: {
+      holderIdentity: name,
+      leaseDurationSeconds: NODE_LEASE_DURATION_SECONDS,
+      renewTime: toMicroTime(renewTime),
+    },
   };
   const resp = await apiFetch(env, `/apis/coordination.k8s.io/v1/namespaces/${LEASE_NS}/leases`, {
     method: "POST",
@@ -150,12 +169,16 @@ export async function createLease(env: Env, name: string, renewTime: string): Pr
 }
 
 /** PUT .../leases/{name}: whole-object renew (matches nodelifecycle_test.go's mustCreateLease shape). */
-export async function renewLease(env: Env, name: string, renewTime: string): Promise<void> {
+export async function renewLease(env: Env, name: string, renewTime: Date): Promise<void> {
   const lease: LeaseObject = {
     apiVersion: "coordination.k8s.io/v1",
     kind: "Lease",
     metadata: { name },
-    spec: { holderIdentity: name, leaseDurationSeconds: NODE_LEASE_DURATION_SECONDS, renewTime },
+    spec: {
+      holderIdentity: name,
+      leaseDurationSeconds: NODE_LEASE_DURATION_SECONDS,
+      renewTime: toMicroTime(renewTime),
+    },
   };
   const resp = await apiFetch(
     env,

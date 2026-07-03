@@ -2,6 +2,15 @@
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "k8flare-nodes",
   "main": "./src/index.ts",
+  // Explicit dev port (unlike sibling workers/*, which rely on wrangler's
+  // default): only takes effect when this config is the FIRST "-c" in a
+  // multi-config `wrangler dev` invocation -- verified empirically that a
+  // non-first config's "dev.port" is silently ignored, so this alone does
+  // not make workers/nodes independently reachable in the repo's normal
+  // 4-config dev flow (gateway first). Useful for standalone smoke-testing
+  // this Worker directly, e.g. `wrangler dev -c workers/nodes/wrangler.jsonc
+  // -c workers/apiserver/wrangler.jsonc -c workers/storage/wrangler.jsonc`.
+  "dev": { "port": 8931 },
   // Matches spikes/s3-containers' verified-working Containers compatibility
   // date (docs/platform-verification.md's S3 section) -- newer than the
   // other workers/* configs (2026-03-24) because only this Worker uses
