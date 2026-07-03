@@ -7,18 +7,44 @@ Runs a minimal K8s API server as a Cloudflare Worker with Durable Objects (SQLit
 ## Architecture
 
 ```
-kubectl → Cloudflare Worker (Go WASM + TypeScript)
-              ↓
-         Durable Object (Etcd) — SQLite-backed K8s state store
-              ↓
-         k3s Agent (EC2) — kubelet + containerd + flannel
+kubectl / kubelet (BYO VM: cmd/agent, an unmodified k3s agent embed)
+   │ HTTPS + token
+   ▼
+gateway (TypeScript Worker — the only public one)
+   │ auth, watch streaming, kubelet proxy (VPC)
+   ├──► apiserver (Go, compiled to WASM)
+   ├──► runtime (TypeScript: CRDs, DynamicWorker/WorkerTrigger)
+   ▼ Durable Object binding
+storage (TypeScript)
+   ├─ Cluster DO — revision authority, kine-compatible log, per-namespace Facets
+   └─ WatchHub DO — watch fan-out over hibernating WebSockets
 ```
 
-**Components:**
+**Components** — 4 Cloudflare Workers, each its own deploy unit with its own
+`wrangler.jsonc` (`workers/gateway`, `workers/apiserver`, `workers/storage`,
+`workers/runtime`):
 
-- **Worker** — TypeScript routing layer + Go WASM K8s API server
-- **Etcd** — Durable Object with SQLite, implements kine-compatible storage
-- **Agent** — k3s agent binary with Cloudflare-specific adaptations (CA replacement, token auth, flannel bypass)
+- **gateway** — the only public Worker: authentication, watch streaming, kubelet proxying
+- **apiserver** — Go compiled to WASM; a table-driven API server built from real `k8s.io/kubernetes` types, not a hand-rolled subset of the wire format
+- **storage** — the `Cluster` Durable Object (kine-compatible revision log, per-namespace storage via Durable Object Facets) and the `WatchHub` Durable Object (watch fan-out, hibernating WebSockets)
+- **runtime** — CRDs, `DynamicWorker`/`WorkerTrigger` custom resources
+
+**`cmd/agent`** is an unmodified k3s agent (kubelet + containerd + flannel) you run yourself (EC2 or any Linux host) — see Agent Setup below.
+
+**Pod scheduling and workload controllers need `cmd/scheduler` and
+`cmd/controller-manager` running too**, alongside the agent — the real,
+unmodified upstream `kube-scheduler`/`kube-controller-manager` binaries.
+These currently run as host processes, not inside a Worker:
+`kube-scheduler` doesn't compile for Cloudflare's Go/WASM target at all,
+and real `kube-controller-manager` code doesn't fit a Worker's 10MiB
+deploy budget once linked against `client-go`. See
+[`docs/platform-verification.md`](docs/platform-verification.md)'s S8
+section for the full investigation. (A `workers/controllers` Worker
+exists in the repo and runs correctly end-to-end against local
+`wrangler dev`, but isn't part of the release for exactly that size
+reason — Endpoints/EndpointSlice generation and Node lifecycle don't need
+it, though: those run as synchronous Go inside `apiserver` itself, not as
+a controller-manager controller. See the Controllers table below.)
 
 ## Kubernetes API Support
 
@@ -87,14 +113,14 @@ and serves, not scheduler limitations.
 
 ### Controllers
 
-| Controller                                                          | Status                                                                                                                             |
-| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| Namespace cascading deletion                                        | ✅                                                                                                                                 |
-| Default `ServiceAccount` auto-provisioning                          | ✅ (object only — no token/Secret issuance; nothing in this stack consumes SA tokens today)                                        |
-| Node lifecycle (lease-staleness → `Unknown` + taint + pod eviction) | ✅ Verified end-to-end: kill a real agent, node flips `Unknown`/tainted within ~48s, its Pods are deleted past the 5-minute mark   |
-| Endpoints / EndpointSlice (from Service + Pod selectors)            | ✅ ClusterIP allocation + both object types verified; real traffic routing via kube-proxy not yet proven end-to-end                |
-| ReplicaSet / Deployment / Job / CronJob / DaemonSet                 | ✅ The real `kube-controller-manager` binary (`cmd/controller-manager`), not a hand-written reimplementation — verified end-to-end |
-| Garbage collection (owner references)                               | ❌ Not implemented — the real controller-manager has a generic `garbagecollector` controller for this, not yet enabled             |
+| Controller                                                          | Status                                                                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Namespace cascading deletion                                        | ✅                                                                                                                                                                                                                                                                            |
+| Default `ServiceAccount` auto-provisioning                          | ✅ (object only — no token/Secret issuance; nothing in this stack consumes SA tokens today)                                                                                                                                                                                   |
+| Node lifecycle (lease-staleness → `Unknown` + taint + pod eviction) | ✅ Synchronous Go inside `apiserver` (`pkg/apiserver/nodelifecycle.go`), not `kube-controller-manager` — no BYO VM process needed for this one. Verified end-to-end: kill a real agent, node flips `Unknown`/tainted within ~48s, its Pods are deleted past the 5-minute mark |
+| Endpoints / EndpointSlice (from Service + Pod selectors)            | ✅ Synchronous Go inside `apiserver` (`pkg/apiserver/endpoints.go`), not `kube-controller-manager` — no BYO VM process needed for this one either. ClusterIP allocation + both object types verified; real traffic routing via kube-proxy not yet proven end-to-end           |
+| ReplicaSet / Deployment / Job / CronJob / DaemonSet                 | ✅ The real `kube-controller-manager` binary (`cmd/controller-manager`), not a hand-written reimplementation — verified end-to-end                                                                                                                                            |
+| Garbage collection (owner references)                               | ❌ Not implemented — the real controller-manager has a generic `garbagecollector` controller for this, not yet enabled                                                                                                                                                        |
 
 ### Auth & admission
 
@@ -188,19 +214,36 @@ Two detailed plans drive the work from here:
 
 ### Track B — multi-tenancy, scale, and hosted `k8flare.com`
 
-Target architecture (decided July 2026, detailed in
+Target architecture (detailed in
 [`docs/multi-tenancy-and-hosting.md`](docs/multi-tenancy-and-hosting.md)):
-**one ordering Durable Object per cluster, one follower Durable Object per
-namespace, Facets for churn/CA isolation, WatchHub DOs for fan-out** —
-writes serialize per cluster (the same single-writer shape as etcd itself),
-reads/watchers/storage scale horizontally, and every namespace gets its own
-10 GB.
+**one `Cluster` Durable Object per cluster (revision authority,
+kine-compatible log), Durable Object Facets for per-namespace storage
+isolation (`ns/<name>`, plus `events-log`/`ca-vault`), a `WatchHub` Durable
+Object for watch fan-out** — writes serialize per cluster (the same
+single-writer shape as etcd itself), and every namespace gets its own Facet
+(its own SQLite DB, its own 10 GB).
+
+> **Correction:** the original design here was "one follower Durable Object
+> per namespace, applying writes forwarded from an ordering DO" (items 2-3
+> below, as originally written). Durable Object Facets — opened to Open Beta
+> after this plan was first written — replaced that with per-namespace
+> storage inside the _same_ `Cluster` DO instead of a separate DO per
+> namespace: simpler (no forward/apply/value-trimming machinery to write
+> and maintain), at the cost of namespace reads also funneling through the
+> parent DO's single dispatch thread rather than scaling out independently.
+> See [`docs/multi-tenancy-and-hosting.md`](docs/multi-tenancy-and-hosting.md)
+> for the full reasoning and trade-off. Items 2 and 3 are done, not
+> upcoming — left in this numbered list so the roadmap's overall shape and
+> history stay legible.
 
 1. Cluster resolution + per-cluster tokens (retire the single hardcoded
    `"default"` cluster; zero-config single-cluster mode stays).
-2. Namespace follower DOs + value trimming (per-namespace 10 GB) and
-   WatchHub fan-out.
-3. Durable Object Facets (open beta) for Event churn and CA-vault isolation.
+2. ~~Namespace follower DOs + value trimming~~ — superseded by Durable
+   Object Facets (see correction above). Done: per-namespace storage
+   (`ns/<name>` Facets) and `WatchHub` fan-out are both live.
+3. ~~Durable Object Facets (open beta) for Event churn and CA-vault
+   isolation~~ — done: `events-log` and `ca-vault` Facets are both live
+   alongside the per-namespace ones.
 4. `k8flare.com`: wildcard routing, provisioning API, metering → billing —
    a hosted control plane that costs ~nothing while idle because it scales
    to zero.
@@ -234,16 +277,20 @@ reads/watchers/storage scale horizontally, and every namespace gets its own
 ### From Release
 
 ```bash
-# Download the latest release
-gh release download -R k8flare/k8flare -p 'k8flare-worker-*.tar.gz'
-tar xzf k8flare-worker-*.tar.gz
-cd k8flare-worker
+# Download and extract the Workers bundle (gateway/apiserver/storage/runtime --
+# workers/controllers isn't included, see Architecture above)
+gh release download -R k8flare/k8flare -p 'k8flare-workers-*.tar.gz'
+tar xzf k8flare-workers-*.tar.gz
+cd k8flare-workers
+pnpm install
 
-# Set your cluster token
-npx wrangler secret put K3S_TOKEN
+# Set your cluster token on every Worker that checks it (apiserver, gateway, runtime)
+for w in apiserver gateway runtime; do
+  npx wrangler secret put K3S_TOKEN --config "workers/$w/wrangler.jsonc"
+done
 
-# Deploy
-npx wrangler deploy
+# Deploy all 4 (order matters -- see package.json's "deploy" script)
+npm run deploy
 ```
 
 ### From Source
@@ -251,31 +298,44 @@ npx wrangler deploy
 ```bash
 git clone https://github.com/k8flare/k8flare.git
 cd k8flare
-npm install
+pnpm install  # plain `npm install` fails here -- package.json uses pnpm workspace:* deps
 
-# Build Go WASM
-npm run build:wasm
+# Build Go WASM (needs a local Go toolchain; skip this and use the release
+# tarball above if you'd rather not install one)
+npm run build:wasm:apiserver
 
 # Deploy
 npm run deploy
 ```
 
-### Agent Setup
+### Agent, Scheduler, and Controller Manager Setup
 
-Deploy the k3s agent on an EC2 instance (or any Linux server):
+A cluster needs three things running outside the Workers above, on your own
+VM (EC2 or any Linux host) — the agent for kubelet/containerd, and the real
+upstream scheduler/controller-manager binaries for Pod placement and
+workload controllers (ReplicaSet/Deployment/Job/CronJob/DaemonSet). See
+Architecture above for why these aren't Workers.
 
 ```bash
-# Download agent binary
-gh release download -R k8flare/k8flare -p 'k8flare-agent-*'
-chmod +x k8flare-agent-linux-*
+# Download the binaries
+gh release download -R k8flare/k8flare -p 'k8flare-agent-*' -p 'k8flare-scheduler-*' -p 'k8flare-controller-manager-*'
+chmod +x k8flare-agent-linux-* k8flare-scheduler-linux-* k8flare-controller-manager-linux-*
 
-# Run agent
+# Run all three against the same Worker deployment and token
 ./k8flare-agent-linux-arm64 \
-  --server https://your-k8flare.workers.dev \
-  --token YOUR_K3S_TOKEN
+  --server https://your-k8flare-gateway.workers.dev \
+  --token YOUR_K3S_TOKEN &
+
+./k8flare-scheduler-linux-arm64 \
+  --server https://your-k8flare-gateway.workers.dev \
+  --token YOUR_K3S_TOKEN &
+
+./k8flare-controller-manager-linux-arm64 \
+  --server https://your-k8flare-gateway.workers.dev \
+  --token YOUR_K3S_TOKEN &
 ```
 
-See [scripts/ec2-user-data.sh](scripts/ec2-user-data.sh) for automated EC2 bootstrap.
+See [scripts/ec2-user-data.sh](scripts/ec2-user-data.sh) for automated EC2 bootstrap (currently automates the agent only).
 
 ## Configuration
 
@@ -302,9 +362,9 @@ Then add the VPC binding to `workers/gateway/wrangler.jsonc`:
 ## Development
 
 ```bash
-npm install
-npm run build:wasm    # Build Go WASM binary
-npm run dev           # Start local dev server
+pnpm install           # plain `npm install` fails -- package.json uses pnpm workspace:* deps
+npm run build:wasm    # Build Go WASM binaries (apiserver + controllers)
+npm run dev           # Start local dev server (all 4 deployable Workers, multi-config)
 npm run check         # Lint + format + typecheck (vp)
 npm run test          # Run tests
 go test ./pkg/...     # Run Go tests
