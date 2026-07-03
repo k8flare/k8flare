@@ -37,6 +37,7 @@
 // own cold start is already 1-3s+ (see spikes/s3-containers/FINDINGS.md).
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./env.ts";
+import type { PodContainerBase } from "./podcontainer.ts";
 import {
   createLease,
   createNode,
@@ -66,7 +67,10 @@ function podKey(namespace: string, name: string): string {
   return `${namespace}/${name}`;
 }
 
-function containerBindingForTier(env: Env, tier: SizeTier): DurableObjectNamespace {
+function containerBindingForTier(
+  env: Env,
+  tier: SizeTier,
+): DurableObjectNamespace<PodContainerBase> {
   switch (tier) {
     case "small":
       return env.POD_CONTAINER_SMALL;

@@ -17,7 +17,7 @@
 import { Container } from "@cloudflare/containers";
 import type { Env } from "./env.ts";
 
-abstract class PodContainerBase extends Container<Env> {
+export abstract class PodContainerBase extends Container<Env> {
   defaultPort = 8080; // matches images/demo's hardcoded PORT default
 
   // sleepAfter is irrelevant in practice (onActivityExpired below never

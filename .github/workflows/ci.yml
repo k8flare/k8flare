@@ -51,6 +51,22 @@ jobs:
       - name: TypeScript check
         run: vp check
 
+      # workers/nodes was found (2026-07-03, after merging Phase 7) to be
+      # invisible to `vp check`'s type-check pass -- its tsconfig.json is
+      # structurally identical to workers/storage's (which IS checked), but
+      # `vp check` reports the same file count whether workers/nodes exists
+      # or not. Root cause not fully understood (vp check's type-aware pass
+      # is powered by an internal "tsgolint" tool -- see
+      # node_modules/vite-plus/dist/init-config.js -- whose project
+      # discovery this wasn't worth fully reverse-engineering under time
+      # pressure); `tsc --noEmit` directly against its tsconfig.json is a
+      # direct, verified-working check that doesn't depend on understanding
+      # why. Real errors were caught this way that `vp check` missed (a
+      # bare `DurableObjectNamespace` return type erasing the RPC method
+      # types on the stub it returns).
+      - name: TypeScript check (workers/nodes, uncovered by vp check)
+        run: npx tsc --noEmit -p workers/nodes/tsconfig.json
+
       - name: Build WASM
         run: npm run build:wasm
 
