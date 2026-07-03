@@ -22,7 +22,7 @@ on:
 jobs:
   e2e-conformance:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 55
     steps:
       - name: Free disk space (remove unused preinstalled toolchains)
         run: |
