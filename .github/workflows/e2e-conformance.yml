@@ -209,16 +209,20 @@ jobs:
 
       - name: Wait for node to register as Ready
         run: |
+          # cmd/agent sets WithNodeID=true (k3s appends a short random suffix
+          # to the configured --node-name to avoid collisions), so the actual
+          # registered name is "e2e-runner-<random>", not the bare
+          # "e2e-runner" passed on the command line. Match by prefix.
           for _ in $(seq 1 60); do
-            READY=$(curl -sk https://127.0.0.1:8787/api/v1/nodes/e2e-runner \
+            READY=$(curl -sk https://127.0.0.1:8787/api/v1/nodes \
               -H "Authorization: Bearer k8flare-dev-token" \
-              | jq -r '.status.conditions[]? | select(.type=="Ready") | .status' 2>/dev/null) || true
+              | jq -r '.items[]? | select(.metadata.name | startswith("e2e-runner")) | .status.conditions[]? | select(.type=="Ready") | .status' 2>/dev/null) || true
             [ "$READY" = "True" ] && break
             sleep 5
           done
 
           if [ "$READY" != "True" ]; then
-            echo "::error::node e2e-runner did not become Ready in time; see uploaded agent.log"
+            echo "::error::node e2e-runner-* did not become Ready in time; see uploaded agent.log"
             cat "$RUNNER_TEMP/agent.log"
             exit 1
           fi
