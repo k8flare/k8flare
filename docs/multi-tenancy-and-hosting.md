@@ -195,14 +195,22 @@ cluster's write rate ever demands them — see "Scale model" below.
 >   the (non-existent) separate flow are, in the implementation, facets
 >   of the cluster DO directly, exactly as drawn in the diagram below --
 >   that part of the diagram is accurate.
-> - **Known open item**, not resolved this phase: a minimal Go
->   `net/http` client -- and therefore client-go, kubectl, and every
->   real Kubernetes controller -- does not receive any bytes from a
->   long-lived watch response against local `wrangler dev`, while curl
->   reads the identical bytes immediately (see
+> - **Known open item, resolved 2026-07-03** (was open when this note was
+>   first written): a minimal Go `net/http` client -- and therefore
+>   client-go, kubectl, and every real Kubernetes controller -- did not
+>   receive any bytes from a long-lived watch response against local
+>   `wrangler dev`, while curl read the identical bytes immediately (see
 >   `docs/cost-model.md`'s Phase 4 actuals and the WatchHub redesign
->   commit for the full repro). This needs re-verification against a
->   real deployment before watch is considered production-ready.
+>   commit for the full repro). Root cause turned out to be a local
+>   `wrangler dev`-only gzip-buffering interaction with Go's default
+>   `Accept-Encoding: gzip`, fixed by an explicit `Content-Encoding:
+identity` response header, and confirmed **absent in production**
+>   (a real client-go `watch.Interface` receives every event promptly
+>   both locally after the fix and against a real deployed Worker) --
+>   see `docs/platform-verification.md`'s Correction log ("Go net/http
+>   streaming block against local wrangler dev was a client/dev-stack
+>   Accept-Encoding interaction, not a platform-wide bug") for the full
+>   writeup.
 >
 > Everything below this note describes the **originally planned**
 > Namespace-DO design; treat "Namespace DO" as "namespace facet of the

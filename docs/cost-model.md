@@ -297,20 +297,35 @@ measurements.
 ## Idle-cluster verification checklist
 
 A checklist for mechanically confirming cost invariant #1, "nothing is
-allowed to run while idle." Turning this into a CI cost gate is planned
-for Phase 6 (see the v2 rewrite plan's "add a cost gate" section).
+allowed to run while idle."
 
-- [ ] Container instance count is 0 (if route B is adopted; for route A,
-      confirm via `wrangler tail` etc. that the controllers Worker's
-      actual consumed CPU time is effectively zero)
+- [x] Controllers Worker's actual consumed CPU time is effectively zero
+      while idle -- **automated in CI as of Phase 6**
+      (`.github/workflows/cost-gate.yml`), but only as a local proxy: a
+      sustained idle window (30s, zero requests) after settling produces
+      zero new wrangler-dev-logged activity for `workers/controllers`.
+      This is not the same measurement as S8(b)'s production
+      `wrangler tail` CPU-ms (below), which remains the manual/production
+      procedure -- there is no production deployment to measure against
+      in CI, and `workers/controllers` in its current ~19MiB-gzip shape
+      can't be deployed at all (S8 section) to produce one. Route
+      B/Containers is not applicable: superseded, see "controllers
+      execution path" below.
 - [x] No DO alarm is scheduled (parked state — only re-armed on waiting
       events, with no fixed-interval polling left running) -- **verified
       2026-07-02 against real `wrangler dev`** for the Cluster DO's
-      safety-net alarm: idle (no Nodes/Services) parks to `alarm: null`
-      and stays there; a single write resumes it; deleting the last
-      live Node/Service lets the next scheduled fire park it again
-      rather than re-arming forever. See "Phase 4 (storage v2) actuals"
-      above for the full sequence.
+      safety-net alarm (manual check, "Phase 4 (storage v2) actuals"
+      above), and **automated in CI as of Phase 6**
+      (`.github/workflows/cost-gate.yml`) for both the Cluster and
+      Controllers DOs: idle (no Nodes/Services) parks to no scheduled
+      alarm and stays there; a single write resumes it; deleting the
+      last live Node/Service lets the next scheduled fire park it again
+      rather than re-arming forever. The CI job reads Miniflare's
+      on-disk alarm store directly rather than adding a debug endpoint --
+      see `docs/platform-verification.md`'s Phase 6 correction log entry
+      for why this is possible locally despite S1's item 10 originally
+      saying otherwise (that finding turned out to be facet-specific,
+      not true of top-level DOs).
 - [ ] WebSocket connections are hibernating (WatchHub DO) -- client-facing
       sockets use `ctx.acceptWebSocket` as designed, but end-to-end watch
       consumption by a real Kubernetes client (client-go/kubectl) could
@@ -318,15 +333,19 @@ for Phase 6 (see the v2 rewrite plan's "add a cost gate" section).
       `ctx.waitUntil` keep-alive this line originally referred to no
       longer exists in gateway's watch relay in the same shape after
       Phase 4 -- worth re-auditing once the client-go gap is resolved.
-- [ ] No billable DO operations (alarm firing, facet access, etc.) occur
-      over a sustained period -- alarm firing is now verified (above);
-      facet access under sustained idle (i.e. confirming a namespace
-      with no activity causes zero facet fetch() calls) was not
-      separately measured this phase.
+      Out of Phase 6's cost-gate scope (not exercised by that job).
+- [x] No billable DO operations (alarm firing, facet access, etc.) occur
+      over a sustained period -- alarm firing is verified directly
+      (above). Facet access isn't measured directly, but is covered by
+      construction: a Durable Object only ever executes in response to
+      `fetch()`/`alarm()`/a WebSocket message, so "no alarm scheduled"
+      plus "zero incoming requests over the idle window" (both asserted
+      by `.github/workflows/cost-gate.yml`) together leave no code path
+      that could reach a facet either.
 
-As of Phase 4 (storage v2, 2026-07-02): the alarm-parking item is
-verified against real `wrangler dev`, the strongest evidence available
-without a production deployment. The other items remain open --
-WebSocket hibernation specifically is blocked on the client-go
-transport gap documented above and in the WatchHub redesign commit.
-Container/controllers items remain for Phase 5/6.
+As of Phase 6 (2026-07-03): alarm-parking and the "nothing runs while
+idle" invariant are both enforced automatically in CI on every PR that
+touches the relevant paths (`.github/workflows/cost-gate.yml`), not just
+verified once by hand. WebSocket hibernation remains the one open item,
+blocked on the client-go transport gap documented above and in the
+WatchHub redesign commit -- unrelated to what Phase 6 added.

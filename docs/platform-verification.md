@@ -1866,3 +1866,51 @@ not observed within that pass's time budget) was not re-investigated in
 this pass: the blocker found here was size, not function, so a functional
 re-test would not have changed the verdict and was not run to conserve
 context. It remains open.
+
+**2026-07-03 — Phase 6: S1's "alarms on SQLite-backed DOs cannot be
+tested locally at all" does not hold for top-level (non-facet) DOs;
+corrected after actually running it, twice.** S1's item 10 (this
+document's S1 section above) states, unqualified, that "even on
+`wrangler@latest`, alarms on SQLite-backed DOs (facet or not) cannot be
+tested locally at all — `ctx.storage.setAlarm()` throws `Error: alarms
+are not yet implemented for SQLite-backed Durable Objects`." This was
+taken at face value into `docs/cost-model.md`'s Idle-cluster
+verification checklist ("Turning this into a CI cost gate is planned
+for Phase 6") as an open question. It is wrong for top-level DOs, on
+the exact same wrangler version (4.106.0) S1 itself used.
+
+Two independent checks, both against real `wrangler dev`, per CLAUDE.md
+rule 2:
+
+1. A minimal throwaway Worker + single SQLite-backed DO (`new_sqlite_classes`,
+   no facets involved at all) exposing `/set` and `/get` for
+   `ctx.storage.{set,get}Alarm()`: `setAlarm(+5s)` returned normally (no
+   throw), `getAlarm()` correctly reported the scheduled timestamp, and
+   the `alarm()` handler fired exactly on schedule, logged.
+2. The real `workers/storage` Cluster DO (also `new_sqlite_classes`),
+   driven the same way `docs/cost-model.md`'s Phase 4 actuals section
+   describes (Node/Service create → delete → wait past the safety-net
+   interval): `ctx.storage.setAlarm()`/`getAlarm()` calls inside
+   `armSafetyNetSoon()`/`initialize()` (`workers/storage/src/index.ts`)
+   ran without error the whole time, and the arm → fire → re-arm → park
+   cycle completed exactly as that section originally reported.
+
+Likely explanation, not fully root-caused: S1's item 8 (confirmed in
+production, not locally) is that a **facet** throws immediately on
+`setAlarm()` — a real, deliberate platform restriction. Item 10 appears
+to have over-generalized that facet-specific finding to "SQLite-backed,
+facet or not" without a from-scratch local re-test isolating a
+top-level DO from a facet; this correction only re-verifies the
+top-level-DO half now that a concrete use (the cost gate) depends on
+knowing which half is actually true. The narrower, facet-specific claim
+(item 8) is untouched by this correction and still stands as
+production-confirmed.
+
+Consequence: `.github/workflows/cost-gate.yml` reads
+`ctx.storage.getAlarm()`'s persisted state directly from Miniflare's
+on-disk store (`.wrangler/state/v3/do/<worker>-<Class>/metadata.sqlite`'s
+`_cf_ALARM` table, `SELECT count(*)`) as an automated, non-invasive CI
+assertion — no debug HTTP endpoint added to either Worker, and no
+production deployment required for this specific check. See that
+workflow's header comment for the full mechanism and what it does and
+doesn't prove.

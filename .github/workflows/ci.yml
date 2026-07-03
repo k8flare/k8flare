@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   check:
@@ -26,6 +27,19 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
+      # cmd/k8flare-gen's OpenAPI generator (cmd/k8flare-gen/openapi.go)
+      # reads api/openapi-spec/swagger.json straight off disk from
+      # k8s.io/kubernetes's module cache directory (found via `go list -m`)
+      # rather than through a normal Go import -- `go list -m` resolves the
+      # path without necessarily extracting the module there first, and
+      # nothing before this step in this job otherwise builds a package
+      # that would force that extraction as a side effect. Without this,
+      # the read fails with a bare "no such file or directory" on a fresh
+      # runner (caught by actually running this job, not just reading the
+      # source -- CLAUDE.md rule 2).
+      - name: Download Go modules
+        run: go mod download
+
       - name: Verify generated code is up to date
         run: |
           go run ./cmd/k8flare-gen
@@ -39,6 +53,25 @@ jobs:
 
       - name: Build WASM
         run: npm run build:wasm
+
+      # workers/apiserver is the only Worker with a deploy-time size risk
+      # (Go/WASM + client-go-adjacent deps); the other 3 deployable Workers
+      # (gateway/storage/runtime) are plain TypeScript, nowhere near
+      # Cloudflare's 10MiB gzip limit. workers/controllers is excluded on
+      # purpose: it's already known (docs/platform-verification.md's S8
+      # section, Phase 5 finding) to be ~19MiB gzip and not deployable at
+      # all, kept in-repo as verified-but-undeployable reference code, not
+      # part of the release artifact -- gating its size here would just
+      # fail CI on a known, already-documented condition.
+      - name: Check apiserver WASM gzip size budget
+        run: |
+          SIZE=$(gzip -c workers/apiserver/build/app.wasm | wc -c)
+          LIMIT=9961472 # 9.5 MiB (9.5 * 1024 * 1024). Actual as of Phase 6: ~7.85MB / 78.8% -- see docs/cost-model.md.
+          echo "workers/apiserver/build/app.wasm gzip size: $SIZE bytes (limit: $LIMIT bytes / 9.5MiB)"
+          if [ "$SIZE" -gt "$LIMIT" ]; then
+            echo "::error::workers/apiserver/build/app.wasm gzip size ($SIZE bytes) exceeds the 9.5MiB CI budget ($LIMIT bytes). See docs/cost-model.md and docs/platform-verification.md's S8 section for size history and precedent." >&2
+            exit 1
+          fi
 
       - name: Go vet
         run: go vet ./pkg/apiserver/...
