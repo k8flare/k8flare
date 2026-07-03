@@ -18,16 +18,21 @@ gateway (TypeScript Worker — the only public one)
 storage (TypeScript)
    ├─ Cluster DO — revision authority, kine-compatible log, per-namespace Facets
    └─ WatchHub DO — watch fan-out over hibernating WebSockets
+
+nodes (TypeScript + Cloudflare Containers, optional, talks to apiserver directly)
+   └─ VirtualNode DO — registers cf-containers-<pool>, renews its Lease,
+      reconciles Pods onto PodContainerSmall/Medium/Large DOs
 ```
 
-**Components** — 4 Cloudflare Workers, each its own deploy unit with its own
+**Components** — 5 Cloudflare Workers, each its own deploy unit with its own
 `wrangler.jsonc` (`workers/gateway`, `workers/apiserver`, `workers/storage`,
-`workers/runtime`):
+`workers/runtime`, `workers/nodes`):
 
 - **gateway** — the only public Worker: authentication, watch streaming, kubelet proxying
 - **apiserver** — Go compiled to WASM; a table-driven API server built from real `k8s.io/kubernetes` types, not a hand-rolled subset of the wire format
 - **storage** — the `Cluster` Durable Object (kine-compatible revision log, per-namespace storage via Durable Object Facets) and the `WatchHub` Durable Object (watch fan-out, hibernating WebSockets)
 - **runtime** — CRDs, `DynamicWorker`/`WorkerTrigger` custom resources
+- **nodes** — optional virtual-kubelet-style Pod backend on Cloudflare Containers, for clusters that don't want to run a BYO VM agent just to try a Pod. See "Node backends" below for its allowlist and networking limitations.
 
 **`cmd/agent`** is an unmodified k3s agent (kubelet + containerd + flannel) you run yourself (EC2 or any Linux host) — see Agent Setup below.
 
@@ -130,6 +135,87 @@ and serves, not scheduler limitations.
 | RBAC                                                    | ❌ Not implemented — the static token is all-or-nothing                                                              |
 | Admission webhooks                                      | ❌ Not implemented                                                                                                   |
 | OpenAPI schema (`kubectl apply` client-side validation) | ✅ Served as Static Assets, verified with a real `kubectl apply` (no `--validate=false`) against a running dev stack |
+
+## Node backends
+
+Two ways to get Pods actually running, mix-and-match per cluster:
+
+| Backend                                                        | Setup                                                                 | Image                                                              | Networking                                                                 |
+| -------------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------- |
+| **BYO VM** (`cmd/agent`)                                       | Run the real, unmodified k3s agent yourself (EC2 or any Linux host)   | Any OCI image, pulled by containerd like any other Kubernetes node | Full — flannel/kube-proxy, `kubectl logs`/`exec` via the VPC kubelet proxy |
+| **`workers/nodes`** (Pod-on-Containers, virtual-kubelet-style) | `wrangler deploy --config workers/nodes/wrangler.jsonc`, no VM to run | **Allowlisted only** — see below                                   | Limited — see below                                                        |
+
+### `workers/nodes`: what it is and its hard limits
+
+`workers/nodes` registers a virtual Node (`cf-containers-<pool>`), renews its
+Lease, and runs each Pod scheduled to it as its own Cloudflare Containers
+instance. It exists for clusters that want to try a Pod without standing up a
+VM — it is not a general-purpose node backend, and the limits below are
+platform constraints (`spikes/s3-containers/FINDINGS.md`), not gaps this
+project intends to close later:
+
+- **Image allowlist only, no arbitrary `kubectl run --image=...`.** Cloudflare
+  Containers fixes a container's image (and its instance size) at Worker
+  deploy time (`wrangler.jsonc`'s `containers[]`), not at Pod-run time — there
+  is no API for a Worker to pick an arbitrary image at runtime. A Pod's
+  `spec.containers[0].image` must exactly match one of `workers/nodes/src/
+images.ts`'s `ALLOWED_IMAGES` (one demo image in v1,
+  `workers/nodes/images/demo`); anything else is rejected (`status.phase =
+Failed`). Adding a base image to the allowlist means adding a Dockerfile,
+  a `containers[]`/`durable_objects` entry per size tier it should support,
+  and a matching `PodContainer*` class — see `images.ts`'s header comment.
+- **Size is rounded to one of three fixed tiers, not requested freely.** For
+  the same deploy-time-fixed-instance-size reason, a Pod's
+  `resources.requests` (summed across containers) is rounded up to the
+  nearest of `small`/`medium`/`large` (Cloudflare Containers' `lite`/`basic`/
+  `standard-1` named instance types: 1/16, 1/4, and 1/2 vCPU respectively). A
+  Pod that asks for more than `large` provides, or that has anything other
+  than exactly one container, is rejected the same way.
+- **No UDP, inbound or outbound, at all** (official Cloudflare Containers
+  limit, confirmed empirically not enforceable/observable in local `wrangler
+dev` — see `spikes/s3-containers/FINDINGS.md` item 5). A Pod that needs UDP
+  (DNS clients, QUIC, etc.) will not work on this backend. This also means
+  **CoreDNS cannot be placed on a `workers/nodes`-backed node** — cluster DNS
+  needs a UDP:53 listener, so CoreDNS deployments should target a BYO VM node
+  (tracked as an open design question for clusters with no BYO VM node at
+  all, see `docs/platform-verification.md`'s Phase 9 section).
+- **No routable Pod IP, no `kubectl logs`/`exec`/`attach`.** A Pod's `status`
+  reports `Running` with container statuses once its container starts, but
+  does not get a real cluster-routable IP (Cloudflare Containers doesn't
+  expose one to the hosting Durable Object) — Service traffic to a Pod on
+  this backend is not proven end-to-end. `logs`/`exec`/`attach` are handled by
+  `workers/gateway`'s kubelet proxy today, which dials a real kubelet over a
+  VPC service binding (port 10255) — it has no branch for a virtual node, so
+  these subresources don't work against a `workers/nodes`-backed Pod in v1.
+- **Pod scheduling/deletion latency is ~10s, not sub-second.** `workers/nodes`
+  discovers Pods bound to its node by listing them on its own Lease-renewal
+  alarm (every ~10s) rather than via a push/watch — see `virtualnode.ts`'s
+  header comment for why, and `docs/cost-model.md`'s "Phase 7 (nodes)
+  implementation" section for the cost reasoning. Acceptable given
+  Containers' own cold start is already 1–3s+.
+- **`restartPolicy` is supported** (`Always`/`OnFailure`/`Never`), evaluated
+  the same ~10s tick: a container that exited is restarted, left stopped, or
+  marked `Succeeded`/`Failed` accordingly.
+
+### Deploying `workers/nodes`
+
+Separate from the 4-Worker `npm run deploy` above (it needs Docker/Containers
+support, so it isn't bundled into the default dev/deploy flow):
+
+```bash
+npx wrangler secret put K3S_TOKEN --config workers/nodes/wrangler.jsonc
+npx wrangler deploy --config workers/nodes/wrangler.jsonc
+
+# One-time bootstrap: any request wakes VirtualNode's alarm loop for the
+# first time (see workers/nodes/src/virtualnode.ts), registering the Node
+# and starting its Lease-renewal/Pod-reconcile cycle.
+curl https://k8flare-nodes.<your-subdomain>.workers.dev/healthz
+```
+
+`NODE_POOL` (defaults to `"default"`, registering `cf-containers-default`) can
+be set as a Worker variable in `workers/nodes/wrangler.jsonc` to run more than
+one pool — deploy a second copy of the Worker with a different `name` and
+`NODE_POOL` for each.
 
 ## Roadmap
 
@@ -247,13 +333,17 @@ single-writer shape as etcd itself), and every namespace gets its own Facet
 4. `k8flare.com`: wildcard routing, provisioning API, metering → billing —
    a hosted control plane that costs ~nothing while idle because it scales
    to zero.
-5. Managed node pools on Cloudflare Containers (4 vCPU / 12 GiB per node,
-   scale-to-zero), alongside BYO agents.
+5. ~~Managed node pools on Cloudflare Containers~~ — done (v1): `workers/nodes`,
+   a virtual-kubelet-style Pod backend, alongside BYO agents. See "Node
+   backends" above for its image/size allowlist and networking limits (no
+   UDP, no routable Pod IP, no `logs`/`exec` yet).
 
 ### Track C — Cloudflare-native surface
 
-- **More compute backends** — Cloudflare Containers as an additional node
-  backend alongside EC2/GCE/on-prem, mix-and-match per cluster.
+- **More compute backends** — `workers/nodes` (Cloudflare Containers) is the
+  first one, alongside EC2/GCE/on-prem BYO VMs, mix-and-match per cluster;
+  broadening its image allowlist and closing its networking gaps (Pod IP,
+  `logs`/`exec`) remain open.
 - **Cloudflare Mesh for cross-cloud node networking** — technically capable
   of replacing "all nodes in one VPC" for flannel's `host-gw` backend (true
   L3 routing, CIDR route advertisement, scriptable enrollment), but not a
