@@ -292,6 +292,7 @@ var knownSelectableFields = map[string]bool{
 	"spec.nodeName":      true,
 	"status.phase":       true,
 	"spec.clusterIP":     true,
+	"spec.unschedulable": true,
 }
 
 // selectableFieldsFor extracts the fields.Set of field-selector-queryable
@@ -300,8 +301,12 @@ var knownSelectableFields = map[string]bool{
 // pkg/registry/core/pod/strategy.go's PodToSelectableFields) -- only the
 // specific fields real clients embedded in this project actually query are
 // implemented: kube-scheduler's Pod informer ("spec.nodeName",
-// "status.phase!=Succeeded,status.phase!=Failed") and kube-proxy's Service
-// informer ("spec.clusterIP!=None").
+// "status.phase!=Succeeded,status.phase!=Failed"), kube-proxy's Service
+// informer ("spec.clusterIP!=None"), and the upstream e2e conformance
+// framework's own SynchronizedBeforeSuite, which lists Nodes with
+// "spec.unschedulable" in its global (pre-every-test) setup
+// (k8s.io/kubernetes/test/e2e/framework/node, NodeToSelectableFields'
+// fmt.Sprint(node.Spec.Unschedulable) convention matched exactly below).
 func selectableFieldsFor(obj runtime.Object) fields.Set {
 	set := fields.Set{}
 	if meta := getObjectMeta(obj); meta != nil {
@@ -314,6 +319,8 @@ func selectableFieldsFor(obj runtime.Object) fields.Set {
 		set["status.phase"] = string(o.Status.Phase)
 	case *corev1.Service:
 		set["spec.clusterIP"] = o.Spec.ClusterIP
+	case *corev1.Node:
+		set["spec.unschedulable"] = fmt.Sprint(o.Spec.Unschedulable)
 	}
 	return set
 }
