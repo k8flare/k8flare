@@ -1769,7 +1769,7 @@ controllers' constructors, `k8s.io/component-helpers/node/util.PatchNodeCIDRs`
 hardcode as their parameter type — Go requires the concrete type to
 implement all 54 of that exact interface's methods, not a
 structurally-similar smaller one from a different package. The only way to
-make generated code literally *be* `kubernetes.Interface` would be `replace
+make generated code literally _be_ `kubernetes.Interface` would be `replace
 k8s.io/client-go => <local fork>` in this repo's single root `go.mod` —
 module-wide, breaking `cmd/agent`'s full k3s embed and
 `cmd/controller-manager`'s host-process 10-controller build (both need far
@@ -1786,40 +1786,40 @@ constructible via its own `NewForConfig`.
 
 Client-layer measurements, incremental:
 
-| Build content | gzip |
-|---|---|
-| Empty `main()` + `github.com/syumai/workers` only | 1.39 MiB |
-| `client-go/rest` + `apimachinery/runtime/serializer`, **empty** scheme, no typed client | 4.19 MiB |
-| `typed/core/v1` **alone** (own `NewForConfig`, references the aggregate `kubernetes/scheme` package) | 9.59 MiB |
-| Same, but with its own **narrow** scheme (only core/v1 registered) bypassing `kubernetes/scheme` via the raw `New(rest.Interface)` entrypoint | 9.59 MiB (no difference) |
-| Full aggregate `kubernetes.Clientset` (all ~54 groups) | 9.62 MiB (+0.03 MiB over core/v1 alone) |
-| Aggregate Clientset + real `informers.SharedInformerFactory` | 9.97 MiB |
-| `leanclient.Clientset` (4 real groups + ~50 panic stubs) alone | 9.60 MiB |
-| `leanclient.Clientset` + `leanclient.Informers` (hand-rolled, all 7 needed informers) | 9.94 MiB |
+| Build content                                                                                                                                 | gzip                                    |
+| --------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| Empty `main()` + `github.com/syumai/workers` only                                                                                             | 1.39 MiB                                |
+| `client-go/rest` + `apimachinery/runtime/serializer`, **empty** scheme, no typed client                                                       | 4.19 MiB                                |
+| `typed/core/v1` **alone** (own `NewForConfig`, references the aggregate `kubernetes/scheme` package)                                          | 9.59 MiB                                |
+| Same, but with its own **narrow** scheme (only core/v1 registered) bypassing `kubernetes/scheme` via the raw `New(rest.Interface)` entrypoint | 9.59 MiB (no difference)                |
+| Full aggregate `kubernetes.Clientset` (all ~54 groups)                                                                                        | 9.62 MiB (+0.03 MiB over core/v1 alone) |
+| Aggregate Clientset + real `informers.SharedInformerFactory`                                                                                  | 9.97 MiB                                |
+| `leanclient.Clientset` (4 real groups + ~50 panic stubs) alone                                                                                | 9.60 MiB                                |
+| `leanclient.Clientset` + `leanclient.Informers` (hand-rolled, all 7 needed informers)                                                         | 9.94 MiB                                |
 
 `k8s.io/api/core/v1`'s own type graph (dominated by `Pod`) plus
 `client-go/rest`/`apimachinery/runtime/serializer`'s shared infrastructure is
-already ~9.6 MiB before any other group is added; registering the *other*
+already ~9.6 MiB before any other group is added; registering the _other_
 ~53 groups in the shared `kubernetes/scheme` package (imported by every
 per-group typed client for content-negotiation, confirmed by reading
 `core_client.go`'s `setConfigDefaults`) costs only **+0.03 MiB** on top —
 essentially free once core/v1's own weight is paid. A hand-built narrower
-scheme bypassing that shared package entirely produces the *same* size.
+scheme bypassing that shared package entirely produces the _same_ size.
 **This investigation's core premise — that the generated Clientset's
 breadth across ~54 groups is what costs multiple MiB — is false.**
 
 Controller-layer measurements, the actual blocker:
 
-| Build content | gzip |
-|---|---|
-| `leanclient` (Clientset + Informers), zero controllers | 9.94 MiB |
-| + isolated `k8s.io/kubernetes/pkg/apis/core/helper.Semantic.DeepEqual` only (one of tainteviction's imports; pulls in the internal/unversioned `apis/core` type system parallel to `k8s.io/api/core/v1`) | 10.06 MiB (+0.13) |
-| + isolated `client-go/tools/record` event broadcaster only (every one of the 5 controllers builds one) | 9.98 MiB (+0.04) |
-| + isolated `k8s.io/kubernetes/pkg/features` + `apiserver/pkg/util/feature` only (project-wide feature-gate registry, imported transitively by pod-utility helpers tainteviction calls) | 10.17 MiB (+0.24) |
-| **+ real `pkg/controller/tainteviction` whole** (smallest of the 5 by LOC) | **16.05 MiB (+6.12)** |
-| + real aggregate Clientset/SharedInformerFactory + tainteviction (control run, same toolchain, not leanclient) | 17.29 MiB |
-| **+ all 5 in-scope controllers**, leanclient | **16.26 MiB (+0.20 over tainteviction alone)** |
-| All 5 + `-ldflags="-s -w"` | 15.72 MiB (-0.54, ~3% — consistent with this section's earlier "<5%, nowhere near enough") |
+| Build content                                                                                                                                                                                            | gzip                                                                                       |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `leanclient` (Clientset + Informers), zero controllers                                                                                                                                                   | 9.94 MiB                                                                                   |
+| + isolated `k8s.io/kubernetes/pkg/apis/core/helper.Semantic.DeepEqual` only (one of tainteviction's imports; pulls in the internal/unversioned `apis/core` type system parallel to `k8s.io/api/core/v1`) | 10.06 MiB (+0.13)                                                                          |
+| + isolated `client-go/tools/record` event broadcaster only (every one of the 5 controllers builds one)                                                                                                   | 9.98 MiB (+0.04)                                                                           |
+| + isolated `k8s.io/kubernetes/pkg/features` + `apiserver/pkg/util/feature` only (project-wide feature-gate registry, imported transitively by pod-utility helpers tainteviction calls)                   | 10.17 MiB (+0.24)                                                                          |
+| **+ real `pkg/controller/tainteviction` whole** (smallest of the 5 by LOC)                                                                                                                               | **16.05 MiB (+6.12)**                                                                      |
+| + real aggregate Clientset/SharedInformerFactory + tainteviction (control run, same toolchain, not leanclient)                                                                                           | 17.29 MiB                                                                                  |
+| **+ all 5 in-scope controllers**, leanclient                                                                                                                                                             | **16.26 MiB (+0.20 over tainteviction alone)**                                             |
+| All 5 + `-ldflags="-s -w"`                                                                                                                                                                               | 15.72 MiB (-0.54, ~3% — consistent with this section's earlier "<5%, nowhere near enough") |
 
 Three plausible culprits among tainteviction's imports were tested in
 isolation and each individually cost under 0.25 MiB — nowhere near the
@@ -1838,7 +1838,7 @@ MiB cost of using real upstream KCM controller code is paid essentially
 once, shared across all five, not five separate additive costs — and that
 **Worker-splitting (putting different controllers in different Workers,
 floated as a candidate next step above) would not help either**: a Worker
-hosting even *one* of these five controllers already costs ~16 MiB alone.
+hosting even _one_ of these five controllers already costs ~16 MiB alone.
 
 Controlled comparison (same session, same toolchain, isolating "did the
 lean client help" from "did dependency/toolchain drift since this section's
