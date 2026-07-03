@@ -184,6 +184,35 @@ var Table = []ResourceDef{
 		},
 	},
 	{
+		// Phase 8 (R2 PV/PVC backend). Cluster-scoped, like Node -- upstream
+		// PersistentVolume is never namespaced even though the claims that
+		// bind to it are. Bound synchronously by pkg/apiserver/pvcbind.go
+		// when a PersistentVolumeClaim naming (or defaulting to) the "r2"
+		// StorageClass is created, mirroring AssignClusterIP/AssignPodCIDR's
+		// "allocate before the first write" shape (clusterip.go/nodecidr.go)
+		// as closely as PV/PVC's two-object relationship allows -- see
+		// pvcbind.go's doc comment for exactly where this deviates from
+		// that pattern and why.
+		GroupVersion: corev1.SchemeGroupVersion, Kind: "PersistentVolume", Resource: "persistentvolumes",
+		Singular: "persistentvolume", ShortNames: []string{"pv"}, Namespaced: false,
+		Subresources: []Subresource{statusSubresource()},
+		New:          func() runtime.Object { return &corev1.PersistentVolume{} },
+		NewList: func() runtime.Object {
+			return &corev1.PersistentVolumeList{TypeMeta: metav1.TypeMeta{Kind: "PersistentVolumeList", APIVersion: "v1"}}
+		},
+	},
+	{
+		// Phase 8 (R2 PV/PVC backend). Namespaced -- see the PersistentVolume
+		// entry above for the bind mechanism.
+		GroupVersion: corev1.SchemeGroupVersion, Kind: "PersistentVolumeClaim", Resource: "persistentvolumeclaims",
+		Singular: "persistentvolumeclaim", ShortNames: []string{"pvc"}, Namespaced: true,
+		Subresources: []Subresource{statusSubresource()},
+		New:          func() runtime.Object { return &corev1.PersistentVolumeClaim{} },
+		NewList: func() runtime.Object {
+			return &corev1.PersistentVolumeClaimList{TypeMeta: metav1.TypeMeta{Kind: "PersistentVolumeClaimList", APIVersion: "v1"}}
+		},
+	},
+	{
 		GroupVersion: corev1.SchemeGroupVersion, Kind: "ServiceAccount", Resource: "serviceaccounts",
 		Singular: "serviceaccount", ShortNames: []string{"sa"}, Namespaced: true,
 		New: func() runtime.Object { return &corev1.ServiceAccount{} },
@@ -245,6 +274,23 @@ var Table = []ResourceDef{
 	},
 
 	// ---- storage.k8s.io/v1 ----
+	{
+		// Phase 8 (R2 PV/PVC backend). Bootstrapped once, as this cluster's
+		// default class (BootstrapStorageClasses, pvcbind.go), the same
+		// bootstrap-on-first-request shape BootstrapCluster (bootstrap.go)
+		// uses for baseline namespaces -- kubectl and any PVC that omits
+		// spec.storageClassName both see a real object, not just an implied
+		// name. Provisioner is a synthetic name (no real external
+		// provisioner/CSI sidecar runs anywhere in this project -- binding
+		// happens synchronously in pvcbind.go instead), but a real,
+		// discoverable value, not an empty string.
+		GroupVersion: storagev1.SchemeGroupVersion, Kind: "StorageClass", Resource: "storageclasses",
+		Singular: "storageclass", ShortNames: []string{"sc"}, Namespaced: false,
+		New: func() runtime.Object { return &storagev1.StorageClass{} },
+		NewList: func() runtime.Object {
+			return &storagev1.StorageClassList{TypeMeta: metav1.TypeMeta{Kind: "StorageClassList", APIVersion: "storage.k8s.io/v1"}}
+		},
+	},
 	{
 		GroupVersion: storagev1.SchemeGroupVersion, Kind: "CSIDriver", Resource: "csidrivers",
 		Singular: "csidriver", Namespaced: false,
