@@ -143,6 +143,10 @@ func handleStatusSubresource(w http.ResponseWriter, r *http.Request, store *Reso
 			writeResourceError(w, err, store.resource, name)
 			return
 		}
+		// A Pod's status is the real trigger for most Endpoints/EndpointSlice
+		// changes (podIP/readiness populate here, via kubelet's UpdateStatus
+		// call) -- see endpoints.go's TriggerEndpointsReconcile.
+		TriggerEndpointsReconcile(ctx, store.storage, namespace, obj)
 		writeRuntimeObject(w, http.StatusOK, obj)
 
 	case http.MethodPatch:
@@ -171,6 +175,7 @@ func handleStatusSubresource(w http.ResponseWriter, r *http.Request, store *Reso
 			writeResourceError(w, err, store.resource, name)
 			return
 		}
+		TriggerEndpointsReconcile(ctx, store.storage, namespace, obj)
 		writeRuntimeObject(w, http.StatusOK, obj)
 
 	default:
