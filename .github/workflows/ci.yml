@@ -40,6 +40,25 @@ jobs:
       - name: Build WASM
         run: npm run build:wasm
 
+      # workers/apiserver is the only Worker with a deploy-time size risk
+      # (Go/WASM + client-go-adjacent deps); the other 3 deployable Workers
+      # (gateway/storage/runtime) are plain TypeScript, nowhere near
+      # Cloudflare's 10MiB gzip limit. workers/controllers is excluded on
+      # purpose: it's already known (docs/platform-verification.md's S8
+      # section, Phase 5 finding) to be ~19MiB gzip and not deployable at
+      # all, kept in-repo as verified-but-undeployable reference code, not
+      # part of the release artifact -- gating its size here would just
+      # fail CI on a known, already-documented condition.
+      - name: Check apiserver WASM gzip size budget
+        run: |
+          SIZE=$(gzip -c workers/apiserver/build/app.wasm | wc -c)
+          LIMIT=9961472 # 9.5 MiB (9.5 * 1024 * 1024). Actual as of Phase 6: ~7.85MB / 78.8% -- see docs/cost-model.md.
+          echo "workers/apiserver/build/app.wasm gzip size: $SIZE bytes (limit: $LIMIT bytes / 9.5MiB)"
+          if [ "$SIZE" -gt "$LIMIT" ]; then
+            echo "::error::workers/apiserver/build/app.wasm gzip size ($SIZE bytes) exceeds the 9.5MiB CI budget ($LIMIT bytes). See docs/cost-model.md and docs/platform-verification.md's S8 section for size history and precedent." >&2
+            exit 1
+          fi
+
       - name: Go vet
         run: go vet ./pkg/apiserver/...
 
