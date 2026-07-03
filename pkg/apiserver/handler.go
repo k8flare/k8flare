@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
@@ -134,6 +135,15 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			}
 		}
 
+		// Nodes that don't specify a PodCIDR get one allocated here,
+		// synchronously, before the first write -- see nodecidr.go.
+		if node, ok := rObj.(*corev1.Node); ok {
+			if err := AssignPodCIDR(ctx, store.storage, node); err != nil {
+				writeInternalError(w, fmt.Errorf("allocate PodCIDR: %w", err))
+				return
+			}
+		}
+
 		obj, err := store.Create(ctx, namespace, rObj)
 		if err != nil {
 			writeResourceError(w, err, resource, name)
@@ -141,6 +151,7 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		}
 
 		ApplyPostCreateEffects(ctx, stores, obj)
+		TriggerEndpointsReconcile(ctx, store.storage, namespace, obj)
 
 		writeRuntimeObject(w, http.StatusCreated, obj)
 
@@ -168,6 +179,7 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			writeResourceError(w, err, resource, name)
 			return
 		}
+		TriggerEndpointsReconcile(ctx, store.storage, namespace, obj)
 		writeRuntimeObject(w, http.StatusOK, obj)
 
 	case http.MethodDelete:
@@ -210,6 +222,21 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			if svcList, ok := obj.(*corev1.ServiceList); ok {
 				for i := range svcList.Items {
 					ReleaseClusterIP(ctx, store.storage, &svcList.Items[i])
+					DeleteServiceEndpoints(ctx, store.storage, namespace, svcList.Items[i].Name)
+				}
+			}
+			if nodeList, ok := obj.(*corev1.NodeList); ok {
+				for i := range nodeList.Items {
+					ReleasePodCIDR(ctx, store.storage, &nodeList.Items[i])
+				}
+			}
+			if _, ok := obj.(*corev1.PodList); ok {
+				// Every matching Pod in this namespace is gone -- one
+				// reconcile pass recomputes every affected Service's
+				// Endpoints/EndpointSlice, same as a single Pod delete
+				// below, without needing to iterate per-Pod.
+				if err := ReconcileNamespaceEndpoints(ctx, store.storage, namespace); err != nil {
+					log.Printf("endpoints reconciliation error for namespace %s: %v", namespace, err)
 				}
 			}
 			writeRuntimeObject(w, http.StatusOK, obj)
@@ -241,7 +268,12 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		}
 		if svc, ok := obj.(*corev1.Service); ok {
 			ReleaseClusterIP(ctx, store.storage, svc)
+			DeleteServiceEndpoints(ctx, store.storage, namespace, svc.Name)
 		}
+		if node, ok := obj.(*corev1.Node); ok {
+			ReleasePodCIDR(ctx, store.storage, node)
+		}
+		TriggerEndpointsReconcile(ctx, store.storage, namespace, obj)
 		writeRuntimeObject(w, http.StatusOK, obj)
 
 	case http.MethodPatch:
@@ -274,6 +306,7 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			writeResourceError(w, err, resource, name)
 			return
 		}
+		TriggerEndpointsReconcile(ctx, store.storage, namespace, obj)
 		writeRuntimeObject(w, http.StatusOK, obj)
 
 	default:

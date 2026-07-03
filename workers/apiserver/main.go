@@ -72,6 +72,9 @@ func main() {
 	// Supervisor endpoints (/cacerts, /v1-k3s/*)
 	apiserver.RegisterSupervisorHandlers(mux, cam, storage, getToken)
 
+	// Internal endpoints, service-binding-only (/internal/*)
+	apiserver.RegisterInternalHandlers(mux, storage)
+
 	// One auth-wrapped route per GroupVersion in apidef.Table. core/v1
 	// additionally bootstraps the cluster's baseline namespaces/
 	// ServiceAccounts on first request and sweeps dependents on Namespace

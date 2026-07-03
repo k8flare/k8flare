@@ -11,18 +11,42 @@ export { WatchHub } from "./watchhub.ts";
 // a safety net for a missed trigger — not the primary mechanism. Keeping
 // it long keeps idle clusters cheap.
 //
-// Phase 5: this alarm loop used to also run scheduler.ts (PodCIDR
-// allocation), endpoints.ts (Endpoints/EndpointSlice from Service+Pod),
-// and nodelifecycle.ts (Lease-staleness -> Unknown+taint+evict) -- all
-// three are deleted, replaced by the real kube-controller-manager's
+// Phase 5 deleted this alarm loop's other three passes -- scheduler.ts
+// (PodCIDR allocation), endpoints.ts (Endpoints/EndpointSlice from
+// Service+Pod), and nodelifecycle.ts (Lease-staleness -> Unknown+taint+evict)
+// -- on the premise that the real kube-controller-manager's
 // nodeipam/endpoint/endpointslice/nodelifecycle/taint-eviction-controller
-// controllers running in workers/controllers (see pingControllers below
-// and docs/platform-verification.md's S8 section). Those controllers
-// watch continuously via their own client-go informers once running and
-// no longer depend on this DO's alarm at all -- only serviceip.ts still
-// does, since ClusterIP allocation stayed here (Phase 3 planned moving it
-// into apiserver's synchronous Service-create path instead; that never
-// happened, and doing so is out of Phase 5's scope).
+// controllers, WASM-resident in workers/controllers, would replace them.
+// docs/platform-verification.md's Phase 5 findings later established that
+// premise was wrong: kube-scheduler can't compile for GOOS=js/wasm at all,
+// and KCM's real controller packages -- even without scheduler -- blow this
+// project's WASM size budget by far more than the available margin (any one
+// real controller costs +6MiB+ beyond an already-near-budget client-go
+// base). Both remain host-process/BYO-VM-only; workers/controllers cannot
+// currently host either for a deployed (non-BYO-VM) cluster.
+//
+// PodCIDR allocation (pkg/apiserver/nodecidr.go) and Endpoints/EndpointSlice
+// (pkg/apiserver/endpoints.go) were restored as synchronous reconciles
+// inside apiserver's Go WASM binary instead -- the same design ClusterIP
+// allocation below already used (Phase 3), so this alarm loop doesn't gain
+// any new work for either. ClusterIP allocation itself *did* eventually
+// move to apiserver too (pkg/apiserver/clusterip.go, Phase 3, despite this
+// comment previously and incorrectly claiming otherwise -- honest
+// correction, CLAUDE.md rule 4): allocateClusterIPs below is now dead code
+// on any path that goes through the Go create path, kept rather than
+// deleted (Phase 3's "concurrent agent owns workers/storage" boundary), and
+// this safety net is genuinely just a backstop for the -- currently
+// unreachable in practice -- case where a Service's ClusterIP was somehow
+// never assigned synchronously.
+//
+// Node lifecycle (Lease staleness -> Unknown+taint+evict,
+// pkg/apiserver/nodelifecycle.go) could not move the same way: staleness is
+// detected by the ABSENCE of an expected Lease renewal, so there's no write
+// to hook a synchronous call to. It runs from this alarm instead, via a
+// fire-and-forget ping to apiserver's
+// POST /internal/reconcile-node-lifecycle (see reconcileNodeLifecycle
+// below) -- the same event-armed-safety-net shape ClusterIP allocation
+// already uses here, not a new polling mechanism.
 const SAFETY_NET_INTERVAL_MS = 60_000;
 // How long to wait after a write that needs ClusterIP allocation before
 // waking the alarm, so a burst of writes coalesces into a single pass.
@@ -55,6 +79,22 @@ function needsControllersPing(key: string): boolean {
   return CONTROLLER_RELEVANT_PREFIXES.some((prefix) => key.startsWith(prefix));
 }
 
+/**
+ * Whether writing this key means the node-lifecycle safety net (see
+ * reconcileNodeLifecycle) should be pulled in to run soon, mirroring
+ * needsServiceIPAttention's role for ClusterIP allocation. Coarse (any
+ * write under nodes/, not just a brand-new Node): a freshly-registered Node
+ * won't be stale for at least pkg/apiserver/nodelifecycle.go's
+ * nodeMonitorGracePeriod, so in practice this mostly just guarantees the
+ * safety net is armed at all once a cluster has its first Node -- without
+ * this, a cluster with zero Services (nothing else arms the safety net) and
+ * one freshly created Node would stay parked forever and never notice that
+ * Node's Lease going stale later.
+ */
+function needsNodeLifecycleAttention(key: string): boolean {
+  return key.startsWith("/registry/nodes/");
+}
+
 /** Cheap local existence check -- no facet round trip needed since a key's
  * envelope (including its `deleted` flag) always lives in the parent, even
  * for namespaced keys whose value lives in a facet (see store.ts). */
@@ -65,17 +105,19 @@ function hasLiveKeyUnderPrefix(sql: SqlExec, prefix: string): boolean {
 }
 
 /**
- * Whether the safety-net alarm should stay armed. Only serviceip.ts's
- * ClusterIP allocation depends on it now (event-triggered via
- * armSafetyNetSoon; this is the backstop for a missed trigger) -- node
- * lease staleness and Endpoints/EndpointSlice/PodCIDR reconciliation moved
- * to the real kube-controller-manager (Phase 5), which no longer needs
- * this DO's alarm at all. A cluster with no Services has nothing left for
- * the safety net to do -- it parks (cost invariants #1/#3: no alarm chain
- * on an idle cluster).
+ * Whether the safety-net alarm should stay armed: serviceip.ts's ClusterIP
+ * allocation backstop needs a live Service, and pkg/apiserver/
+ * nodelifecycle.go's Lease-staleness reconcile needs a live Node to ever
+ * have anything to check (see reconcileNodeLifecycle below -- it has no
+ * event to wake it otherwise, so it rides this same alarm). A cluster with
+ * neither has nothing left for the safety net to do -- it parks (cost
+ * invariants #1/#3: no alarm chain on an idle cluster).
  */
 function hasPendingSafetyNetWork(sql: SqlExec): boolean {
-  return hasLiveKeyUnderPrefix(sql, "/registry/services/");
+  return (
+    hasLiveKeyUnderPrefix(sql, "/registry/services/") ||
+    hasLiveKeyUnderPrefix(sql, "/registry/nodes/")
+  );
 }
 
 /** Minimal ctx shape Cluster needs: facets (FacetHost) plus DO storage/alarm access. */
@@ -225,6 +267,7 @@ export class Cluster {
       );
       await broadcastEvent(this.host, this.sql, key, id);
       if (needsServiceIPAttention(key, value)) await this.armSafetyNetSoon();
+      if (needsNodeLifecycleAttention(key)) await this.armSafetyNetSoon();
       if (needsControllersPing(key)) await this.pingControllers();
       return jsonResponse({ revision: id }, 201);
     } else {
@@ -254,6 +297,7 @@ export class Cluster {
       };
       await broadcastEvent(this.host, this.sql, key, id);
       if (needsServiceIPAttention(key, value)) await this.armSafetyNetSoon();
+      if (needsNodeLifecycleAttention(key)) await this.armSafetyNetSoon();
       if (needsControllersPing(key)) await this.pingControllers();
       return jsonResponse({ revision: id, kv, updated: true });
     }
@@ -280,6 +324,7 @@ export class Cluster {
     );
     await broadcastEvent(this.host, this.sql, key, id);
     if (needsServiceIPAttention(key, oldValue)) await this.armSafetyNetSoon();
+    if (needsNodeLifecycleAttention(key)) await this.armSafetyNetSoon();
     if (needsControllersPing(key)) await this.pingControllers();
 
     // Namespace deletion does NOT call ctx.facets.delete() here, despite the
@@ -323,13 +368,40 @@ export class Cluster {
   async alarm(): Promise<void> {
     this.initialize();
     await allocateClusterIPs(this.host, this.sql);
-    // Re-arm the safety net only if there's still a live Service that needs
-    // ongoing ClusterIP-allocation monitoring; otherwise park (no alarm
-    // chain on an idle cluster -- cost invariants #1/#3). A write needing
-    // sooner attention than the next safety-net tick pulls this in via
-    // armSafetyNetSoon.
+    await this.reconcileNodeLifecycle();
+    // Re-arm the safety net only if there's still a live Service or Node
+    // that needs ongoing monitoring (ClusterIP allocation, Lease-staleness
+    // detection); otherwise park (no alarm chain on an idle cluster -- cost
+    // invariants #1/#3). A write needing sooner attention than the next
+    // safety-net tick pulls this in via armSafetyNetSoon.
     if (hasPendingSafetyNetWork(this.sql)) {
       this.ctx.storage.setAlarm(Date.now() + SAFETY_NET_INTERVAL_MS);
+    }
+  }
+
+  /**
+   * Fire-and-forget ping to apiserver's
+   * POST /internal/reconcile-node-lifecycle (pkg/apiserver/
+   * nodelifecycle.go's RegisterInternalHandlers), which detects Nodes whose
+   * Lease has gone stale, marks them Unknown + taints them unreachable, and
+   * evicts their Pods once stale for long enough. Runs on every safety-net
+   * tick (like allocateClusterIPs above) rather than being event-triggered:
+   * staleness is detected by the ABSENCE of an expected Lease renewal, so
+   * there is no write to arm this from the way armSafetyNetSoon arms
+   * ClusterIP allocation. Best-effort, same reasoning as pingControllers:
+   * a failure here must not fail whatever write happened to trigger this
+   * alarm tick, and the next tick (while hasPendingSafetyNetWork stays
+   * true) retries.
+   */
+  private async reconcileNodeLifecycle(): Promise<void> {
+    const apiserver = this.env.APISERVER;
+    if (!apiserver) return; // not bound in some dev/test configs
+    try {
+      await apiserver.fetch("http://apiserver.internal/internal/reconcile-node-lifecycle", {
+        method: "POST",
+      });
+    } catch {
+      // best-effort; see doc comment above
     }
   }
 }

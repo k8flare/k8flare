@@ -189,6 +189,59 @@ one controller pushes past 15MiB; all ten reach ~19MiB. This is an
 artifact of using real upstream controller code (every constructor needs
 a full `clientset.Interface`), not of controller count.
 
+### Phase 5 follow-up (2026-07-03): PodCIDR/Endpoints/Node lifecycle restored
+
+Restored as synchronous apiserver reconciles; actual cost measured.
+
+The three hand-written TS reconcilers deleted the same day as the
+size-blocker findings above (`endpoints.ts`, `nodelifecycle.ts`,
+`scheduler.ts`'s PodCIDR half) on the premise that the WASM-resident KCM
+above would replace them turned out to need restoring once that premise
+was confirmed wrong: none of the ten controllers deployed above, so
+these three pieces of functionality were unavailable in any non-BYO-VM
+deployment. Restored using the same pattern Phase 3 already established
+for ClusterIP allocation (`pkg/apiserver/clusterip.go`): call the real
+upstream **algorithm**, not the whole informer-based controller,
+synchronously from apiserver's Go WASM binary — zero new Workers, zero new
+Containers, zero new alarm polling beyond what already existed.
+
+| Feature                                                | Mechanism                                                                                                                  | Real upstream reuse                                                                                                                                                                             | Measured incremental gzip cost                                          |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| Node PodCIDR allocation                                | Synchronous, apiserver's Node-create path (`pkg/apiserver/nodecidr.go`)                                                    | `k8s.io/kubernetes/pkg/controller/nodeipam/ipam/cidrset.CidrSet` (leaf package, no client-go)                                                                                                   | +11KB (isolated); +35KB (real feature, incl. CAS persistence glue)      |
+| Endpoints/EndpointSlice                                | Synchronous, on every Service/Pod write incl. the `/status` subresource (`pkg/apiserver/endpoints.go`)                     | `k8s.io/endpointslice/util` (`IsPodReady`/`ShouldSetHostname`, separate lightweight package); `labels.SelectorFromValidatedSet`; small hand-ported functions where the real ones are unexported | +34KB (isolated util import); +97KB (real feature)                      |
+| Node lifecycle (Lease staleness → Unknown+taint+evict) | Cluster DO's existing event-armed safety-net alarm pings a new internal apiserver route (`pkg/apiserver/nodelifecycle.go`) | Real grace-period defaults (`nodelifecycle/config/v1alpha1`), real taint ops (`pkg/util/taints`), real toleration matching (`corev1.Toleration.ToleratesTaint`)                                 | +53KB (full feature, incl. the two lightweight upstream packages above) |
+| **All three combined**                                 | —                                                                                                                          | —                                                                                                                                                                                               | **+150,104 bytes (146.6KB), 7,699,133 → 7,849,237 bytes gzip**          |
+
+**What was _not_ reusable, and why (the negative-space finding this phase
+adds)**: `k8s.io/endpointslice`'s root package exports exactly the one
+function needed (`FindPort`) but is the same package as
+`reconciler.go`'s `NewReconciler`, which requires a full
+`k8s.io/client-go/kubernetes.Interface` — Go compiles a package as a
+whole, so importing it costs the same ~2.6MiB `client-go` tax the whole-
+controller approach above already ran into, confirmed by actually adding
+the import and rebuilding (7,699,133 → 10,469,635 bytes). Similarly,
+`node_lifecycle_controller.go`'s taint templates live in the same package
+as the full, client-go-entangled `nodelifecycle` controller. Both were
+hand-ported (not reimplemented from scratch — copied with exact upstream
+citations) rather than imported. This is a real, load-bearing distinction
+this phase learned the hard way: Go's package-is-the-compilation-unit
+property means "is this function exported" is not sufficient to know
+whether importing it is cheap — the whole package's import graph is what
+counts, and a single heavy sibling file (a `clientset.Interface`-typed
+constructor, in every case found so far) can make an otherwise-tiny,
+genuinely pure function unreachable without paying for the whole package.
+
+Cumulative apiserver size after this phase: **7,849,237 bytes gzip, 78.8%
+of the 9.5MiB CI budget** — ~2.1MiB of headroom remains. No new alarm
+polling was introduced: Node writes now also call the existing
+`armSafetyNetSoon` (1s debounce), and the existing 60s safety-net tick
+now also covers "is there a live Node" in addition to "is there a live
+Service", but the alarm chain still parks (cost invariants #1/#3) once
+neither exists — verified against real `wrangler dev`, not asserted (see
+the commit implementing this for the exact repro: Node create → taint
+applied within ~2s via a real end-to-end DO-alarm→service-binding→
+apiserver round trip, not a direct call).
+
 ### Route B: Containers (demand-start/idle-stop) — superseded (kept for the record, user decision 2026-07-02)
 
 Estimate assuming 1vCPU+1GiB, within the Containers Paid included
