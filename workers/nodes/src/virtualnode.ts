@@ -79,7 +79,7 @@ interface KnownPod {
  * this project's own R2_ENDPOINT/R2_BUCKET/R2_PREFIX -- app-level
  * configuration (which endpoint, which bucket, which key prefix to use)
  * that isn't part of any AWS credential convention, so it has to be handed
- * over some other way. See workers/nodes/README.md's "Volumes (R2 PV/PVC)"
+ * over some other way. See the repo root README.md's "Volumes (R2 PV/PVC)"
  * section for the full contract an image needs to follow.
  */
 function r2CredentialEnvVars(cred: R2Credential): Record<string, string> {
