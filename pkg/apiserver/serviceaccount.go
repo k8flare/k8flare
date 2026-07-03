@@ -75,11 +75,17 @@ func ensureRootCAConfigMap(ctx context.Context, cmStore *ResourceStore, namespac
 // and the kube-root-ca.crt ConfigMap when a Namespace is created, the same duty
 // real Kubernetes' controller-manager performs — implemented synchronously here
 // because our apiserver already has direct, in-process access to these stores
-// at Namespace-create time.
+// at Namespace-create time. Also (Phase 8): provisioning and binding a
+// PersistentVolume when a PersistentVolumeClaim is created — see
+// pvcbind.go's package doc comment for why PV/PVC binding is implemented as
+// a post-create effect rather than following AssignClusterIP/AssignPodCIDR's
+// pre-create mutation shape.
 func ApplyPostCreateEffects(ctx context.Context, stores map[string]*ResourceStore, obj runtime.Object) {
 	switch o := obj.(type) {
 	case *corev1.Namespace:
 		ensureDefaultServiceAccount(ctx, stores["serviceaccounts"], o.Name)
 		ensureRootCAConfigMap(ctx, stores["configmaps"], o.Name)
+	case *corev1.PersistentVolumeClaim:
+		bindPersistentVolumeClaim(ctx, stores, o)
 	}
 }

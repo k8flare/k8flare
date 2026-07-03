@@ -782,6 +782,72 @@ real deployment.
 - Credential refresh for long-running Pod mounts (the core Phase 8
   blocker — see finding 7 above).
 
+**Phase 8 implementation update (2026-07-03)**: the recommendation above
+was implemented as designed and verified end-to-end against real
+`wrangler dev` + real Docker (not just unit-level) — see
+`docs/cost-model.md`'s "Phase 8 (R2 PV/PVC backend) implementation"
+section for the full cost/verification writeup and `pkg/apiserver/r2.go`,
+`pkg/apiserver/pvcbind.go`, `pkg/apiserver/r2handlers.go`, and
+`workers/nodes/src/virtualnode.ts` for the implementation. Notes against
+this section's specific open items, per the honest-correction convention
+(append, don't delete):
+
+- **Exact JWT shape confirmed against primary sources**, not the
+  AI-summarized reads this spike used for the egress question: fetched the
+  raw markdown of both
+  `developers.cloudflare.com/r2/api/s3/temporary-credentials/` and
+  `developers.cloudflare.com/r2/examples/authenticate-r2-temp-credentials/`
+  directly (`curl`, not a summarizing fetch tool) to get the exact JWT
+  claim names or the local-signing implementation would have been
+  guesswork. The header/payload shape, HS256 signing key, and
+  secretAccessKey/sessionToken derivation formulas are all exactly as
+  quoted in that page's worked TypeScript example — reproduced in Go with
+  zero new dependencies (stdlib `crypto/hmac`+`crypto/sha256` only) and
+  cross-checked against an independent Node.js reference implementation
+  plus a from-scratch Python HMAC verification during development
+  (`pkg/apiserver/r2_test.go`).
+- **`ttlSeconds` min/max bound: still unconfirmed.** Neither concept page
+  states one; this remains a real account test item (see the manual
+  completion path in `docs/cost-model.md`'s Phase 8 section).
+- **Credential refresh for long-running Pods: resolved with a working
+  mitigation, not left as an open problem.** Rather than choosing between
+  "long TTL" and "refresh sidecar" as originally framed, Phase 8 does
+  both: a 1-hour default TTL (matching Cloudflare's own local-signing
+  helper's default) as the baseline, plus a proactive stop+restart of the
+  Pod's container once its credential is past expiry — for
+  `restartPolicy: Always` Pods only — which re-mints a fresh credential as
+  a side effect of the same container-start path every other restart
+  already goes through. This needed no new Cloudflare primitive and no new
+  alarm source (it rides `workers/nodes`' existing ~10s reconcile tick).
+  See `workers/nodes/src/virtualnode.ts`'s "Credential refresh" doc
+  comment for the full reasoning, including why this deliberately isn't
+  zero-downtime and doesn't apply to `OnFailure`/`Never` Pods.
+- **FUSE mounting remains unverified** — still cannot be tested in
+  `wrangler dev` (confirmed again this phase: local Docker would need
+  `--cap-add SYS_ADMIN --device /dev/fuse`, not something `wrangler dev`'s
+  Containers emulation exposes), so v1 ships direct S3-SDK access via
+  injected env vars only, exactly as recommended, with FUSE documented in
+  `README.md` as future work pending a real-deployment test.
+- **New residual item, found while trying to complete this spike's own
+  "write operations ... not yet performed" gap**: this project's
+  established pattern for real-account verification is to use `wrangler`'s
+  existing OAuth session directly (as this spike's `wrangler r2 bucket
+list` did) — but `wrangler` has no subcommand to create an R2 API token
+  (the parent credential Temporary Access Credentials are derived from).
+  R2 API tokens are dashboard- or Cloudflare-REST-API-created
+  (`developers.cloudflare.com/r2/api/tokens/`), and creating one via the
+  raw Cloudflare API would require either extracting wrangler's stored
+  OAuth token to call an unrelated API with it (judged out of bounds — a
+  materially different, more sensitive action than the read-only/
+  Workers-deploy operations this project's standing production-verification
+  authorization was established for) or a fresh dashboard-created token
+  neither available nor requested for this task. Net effect: the bind ->
+  mint -> inject _mechanism_ is fully verified against a real running
+  Worker/DO/Container stack; an actual authenticated S3 call against
+  production R2 is not, and needs someone with dashboard access to close
+  (exact steps in `docs/cost-model.md`'s Phase 8 section). Recorded rather
+  than silently skipped, matching CLAUDE.md rule 4.
+
 ---
 
 ## S7: Re-verifying apiserver residency (double-checking the rejection)

@@ -67,7 +67,7 @@ as of this writing, plus direct inspection of the registered API scheme.
 | `DynamicWorker`, `WorkerTrigger` (custom resources)                                                                    | ✅ CRUD, watch                                                                                                                                                      |
 | ReplicaSet, Deployment, Job, CronJob, DaemonSet                                                                        | ✅ Backed by the real, unmodified `kube-controller-manager` binary (`cmd/controller-manager`, same embed pattern as `cmd/scheduler`), verified end-to-end           |
 | StatefulSet, ReplicationController, PodDisruptionBudget, ResourceClaim, ResourceSlice, DeviceClass, ControllerRevision | ⚠️ Registered but always empty — exist only so the real kube-scheduler's/kube-controller-manager's informers for these types can sync; not backed by any controller |
-| PersistentVolume, PersistentVolumeClaim, StorageClass                                                                  | ❌ Not implemented                                                                                                                                                  |
+| PersistentVolume, PersistentVolumeClaim, StorageClass                                                                  | ✅ CRUD, watch. R2-backed dynamic provisioning (single `r2` `StorageClass`) — see [Volumes (R2 PV/PVC)](#volumes-r2-pvpvc) below for what's actually provided       |
 | Generic `CustomResourceDefinition` (dynamic CRDs)                                                                      | ❌ Only the two built-in custom resources above; no generic CRD registration mechanism                                                                              |
 
 ### What's missing for general-purpose use
@@ -82,7 +82,7 @@ hit them:
 | **Deploying anything beyond a bare Pod** | ReplicaSet, Deployment, Job, CronJob, and DaemonSet all work, backed by the real `kube-controller-manager` (`cmd/controller-manager`) rather than a reimplementation — verified end-to-end (create, rolling update, scale, run-to-completion, scheduling, per-node placement). No OwnerReference cascading deletion yet (deleting a Deployment doesn't delete its ReplicaSets/Pods) — the real controller-manager's `garbagecollector` controller would cover this, not yet enabled. |
 | **Service networking**                   | `Service` objects get a real `ClusterIP` and correct `EndpointSlice`/`Endpoints` objects now, and kube-proxy is enabled and joins successfully, but actual traffic routing (`curl` a `ClusterIP` and reach the backing Pod) isn't proven end-to-end yet — see [`docs/general-purpose-k8s-plan.md`](docs/general-purpose-k8s-plan.md#phase-1--service-networking-object-model-done--verified-kube-proxy-enabled-real-traffic-routing-not-yet-proven-end-to-end).                      |
 | **DNS**                                  | No CoreDNS/ClusterDNS. Confirmed via real kubelet logs during testing (`MissingClusterDNS: kubelet does not have ClusterDNS IP configured`) — Pods fall back to the node's own DNS policy, so Service/Pod name resolution inside the cluster doesn't work.                                                                                                                                                                                                                           |
-| **Storage**                              | No PersistentVolume/PersistentVolumeClaim/StorageClass, no dynamic provisioning. Only `emptyDir`-style ephemeral storage works.                                                                                                                                                                                                                                                                                                                                                      |
+| **Storage**                              | R2-backed dynamic provisioning exists (single `r2` `StorageClass`, see [Volumes (R2 PV/PVC)](#volumes-r2-pvpvc)), but it's S3-API access via injected env vars, not a real mounted filesystem — an app expecting a POSIX path at its `volumeMounts[].mountPath` won't find one on `workers/nodes` in v1. `emptyDir`-style ephemeral storage also works.                                                                                                                              |
 | **Autoscaling**                          | No Metrics API (`metrics.k8s.io`), so no HorizontalPodAutoscaler/VerticalPodAutoscaler, and no Cluster Autoscaler equivalent.                                                                                                                                                                                                                                                                                                                                                        |
 | **`kubectl logs` / `kubectl exec`**      | Off by default — requires the optional Cloudflare Tunnel + VPC Service setup below.                                                                                                                                                                                                                                                                                                                                                                                                  |
 | **RBAC**                                 | The cluster token is all-or-nothing; there's no per-user/per-namespace authorization.                                                                                                                                                                                                                                                                                                                                                                                                |
@@ -216,6 +216,119 @@ curl https://k8flare-nodes.<your-subdomain>.workers.dev/healthz
 be set as a Worker variable in `workers/nodes/wrangler.jsonc` to run more than
 one pool — deploy a second copy of the Worker with a different `name` and
 `NODE_POOL` for each.
+
+## Volumes (R2 PV/PVC)
+
+k8flare provisions `PersistentVolumeClaim`s dynamically against R2, backed
+by [Temporary Access Credentials](https://developers.cloudflare.com/r2/api/s3/temporary-credentials/)
+minted locally (no Cloudflare API call — see `docs/cost-model.md`'s Phase 8
+section). This is **S3 API access via environment variables, not a real
+POSIX-mounted filesystem** — the right fit for an app that already speaks
+S3 (most object-storage-aware apps do), not for one that expects a plain
+file path.
+
+### Using it (`workers/nodes` Pods)
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: my-data
+spec:
+  accessModes: ["ReadWriteMany"] # R2 has no real single-writer exclusivity to enforce
+  resources:
+    requests:
+      storage: 1Gi # accepted, but not enforced as a hard quota in v1
+  # storageClassName omitted -- defaults to "r2", the only class this
+  # project dynamically provisions
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-app
+spec:
+  containers:
+    - name: app
+      image: k8flare/demo:latest # workers/nodes' v1 allowlist -- see Node backends above
+      volumeMounts:
+        - name: data
+          mountPath: /data # accepted for schema completeness; nothing is actually mounted at this path in v1, see below
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: my-data
+```
+
+Creating the PVC above synchronously provisions and binds a `PersistentVolume`
+in the same request (`kubectl get pvc` shows `Bound` immediately, no polling
+needed). When `workers/nodes` starts `my-app`'s container, it mints a
+credential scoped to exactly this PVC's R2 key prefix and injects it as:
+
+| Env var                                                         | Contents                                                                                                        |
+| --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN` | Standard AWS credential trio — any S3 SDK/CLI picks these up automatically from its default credential chain    |
+| `R2_ENDPOINT`                                                   | `https://<account-id>.r2.cloudflarestorage.com`                                                                 |
+| `R2_BUCKET`                                                     | This cluster's shared R2 bucket (one bucket for every PVC, isolated by prefix — see `spikes/s6-r2/RESEARCH.md`) |
+| `R2_PREFIX`                                                     | This PVC's own key prefix (`pvc-<uid>/`) — write/read keys under this prefix, not the bucket root               |
+
+Any S3-compatible SDK (boto3, aws-sdk-\*, aws4fetch, `aws-cli`) works
+immediately with these five variables and no other configuration.
+
+**Credentials expire and are refreshed, not renewed in place.** A minted
+credential is short-lived (1 hour by default). `workers/nodes` re-mints a
+fresh one every time it (re)starts a Pod's container for any reason, and —
+for `restartPolicy: Always` Pods only — proactively cycles the container
+once its credential is past expiry, so long-running Pods keep working
+without manual intervention. This means a brief container restart roughly
+once per hour for a Pod that runs that long; `restartPolicy: OnFailure`/
+`Never` Pods are not proactively cycled (forcing a restart would violate
+their own semantics) and will start seeing `403`s from R2 if they outlive
+the credential's TTL. See `workers/nodes/src/virtualnode.ts`'s "Credential
+refresh" doc comment for the full design and what's left as future work (an
+in-image credential-refresh sidecar, which would need a base image built to
+cooperate with it — out of scope for v1's single demo image).
+
+**Not yet implemented**: a real POSIX-mounted filesystem at
+`volumeMounts[].mountPath` (Cloudflare Containers officially supports
+FUSE-mounting an R2 bucket, but this can't be verified in local `wrangler
+dev` — see `spikes/s6-r2/RESEARCH.md` — so it's offered as a future opt-in
+once verified against a real deployment, not in v1), and deleting the R2
+objects under a PVC's prefix when it's deleted (the `PersistentVolume`
+object itself is cleaned up; the underlying data is not — see
+`pkg/apiserver/pvcbind.go`'s package doc comment).
+
+### Using it (BYO VM nodes)
+
+A BYO VM node (`cmd/agent`, a real unmodified k3s agent) is a normal
+Kubernetes node with a real kubelet and container runtime — it can run any
+existing CSI driver that mounts an S3-compatible bucket as a filesystem,
+independent of anything `workers/nodes` does. This isn't wired up by
+k8flare itself (a CSI driver is a separate DaemonSet/controller a cluster
+operator installs), but any of the common S3-backed CSI drivers work
+against R2's S3-compatible endpoint (`https://<account-id>.r2.cloudflarestorage.com`,
+`region: auto`) the same as against real AWS S3:
+
+- [`s3fs-fuse`](https://github.com/s3fs-fuse/s3fs-fuse) (or the `csi-s3`/
+  `ctrox/csi-s3` CSI wrapper around it) — the most common choice, POSIX
+  semantics via FUSE.
+- [`goofys`](https://github.com/kahing/goofys) — faster than `s3fs` for
+  some workloads, looser POSIX compliance.
+- Cloudflare's own `tigrisfs`-based FUSE example
+  (`developers.cloudflare.com/containers/examples/r2-fuse-mount/`), if
+  running the mount directly rather than via a CSI driver.
+
+This path is independent of k8flare's own per-PVC credential minting (that
+endpoint is service-binding-only — reachable from another Worker in this
+project, not from a BYO VM host, by design: it has no separate
+authentication of its own, trusting the service-binding boundary the same
+way every other `/internal/*` route in this project does). Configure the
+CSI driver the normal way instead: create your own
+[R2 API token](https://developers.cloudflare.com/r2/api/tokens/) via the
+Cloudflare dashboard (Object Read & Write, scoped to one bucket), point the
+driver's endpoint at `https://<account-id>.r2.cloudflarestorage.com`
+(`region: auto`), and store the resulting Access Key ID/Secret Access Key
+as a Kubernetes `Secret` the CSI driver reads — this gives a BYO VM Pod a
+real mounted filesystem today, which `workers/nodes` Pods don't have in v1.
 
 ## Roadmap
 
@@ -431,9 +544,19 @@ See [scripts/ec2-user-data.sh](scripts/ec2-user-data.sh) for automated EC2 boots
 
 ### Worker Environment Variables
 
-| Variable    | Required | Description                                                        |
-| ----------- | -------- | ------------------------------------------------------------------ |
-| `K3S_TOKEN` | Yes      | Cluster authentication token. Generate with `openssl rand -hex 32` |
+| Variable               | Required                                | Description                                                                                                                                       |
+| ---------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `K3S_TOKEN`            | Yes                                     | Cluster authentication token. Generate with `openssl rand -hex 32`                                                                                |
+| `R2_ACCOUNT_ID`        | Only for [R2 PV/PVC](#volumes-r2-pvpvc) | Your Cloudflare account ID                                                                                                                        |
+| `R2_ACCESS_KEY_ID`     | Only for [R2 PV/PVC](#volumes-r2-pvpvc) | Access Key ID of a parent [R2 API token](https://developers.cloudflare.com/r2/api/tokens/) (Object Read & Write, scoped to `R2_BUCKET` below)     |
+| `R2_SECRET_ACCESS_KEY` | Only for [R2 PV/PVC](#volumes-r2-pvpvc) | Secret Access Key of the same token — set via `wrangler secret put`, never `vars`                                                                 |
+| `R2_BUCKET`            | Only for [R2 PV/PVC](#volumes-r2-pvpvc) | The one shared R2 bucket every PVC provisions into (isolated per-PVC by key prefix, not by bucket — see [Volumes (R2 PV/PVC)](#volumes-r2-pvpvc)) |
+
+All four `R2_*` variables are set on `workers/apiserver` (the only Worker
+that signs credentials). Without them, PVCs still bind and mint
+syntactically valid credentials from fixed dev placeholder values — see
+`docs/cost-model.md`'s Phase 8 section — that simply won't authenticate
+against real R2 until real values are set.
 
 ### Optional: VPC Service (for kubelet proxy)
 

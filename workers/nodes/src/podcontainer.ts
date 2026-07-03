@@ -43,11 +43,22 @@ export abstract class PodContainerBase extends Container<Env> {
     return error;
   }
 
-  /** Starts the container if it isn't already up, waiting for defaultPort to be reachable. Idempotent. */
-  async ensureRunning(): Promise<void> {
+  /**
+   * Starts the container if it isn't already up, waiting for defaultPort to
+   * be reachable. Idempotent. envVars (Phase 8: R2 PV/PVC backend) are
+   * passed straight through to @cloudflare/containers' startOptions --
+   * used by virtualnode.ts to inject AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/
+   * AWS_SESSION_TOKEN (and this project's own R2_ENDPOINT/R2_BUCKET/
+   * R2_PREFIX) for a Pod whose spec.volumes references a PersistentVolumeClaim.
+   * Note: env vars are fixed at container start and never updated in place
+   * for an already-running container -- see virtualnode.ts's doc comment on
+   * the credential-refresh design for how (and how far) this project works
+   * around that for long-running Pods.
+   */
+  async ensureRunning(envVars?: Record<string, string>): Promise<void> {
     const state = await this.getState();
     if (state.status === "running" || state.status === "healthy") return;
-    await this.startAndWaitForPorts({ ports: this.defaultPort });
+    await this.startAndWaitForPorts({ ports: this.defaultPort, startOptions: { envVars } });
   }
 
   /** RPC-visible wrapper so virtualnode.ts can read container health without an extra fetch(). */

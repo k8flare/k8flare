@@ -23,6 +23,8 @@ export const RESOURCE_KINDS: Record<string, string> = {
   limitranges: "LimitRange",
   namespaces: "Namespace",
   nodes: "Node",
+  persistentvolumeclaims: "PersistentVolumeClaim",
+  persistentvolumes: "PersistentVolume",
   poddisruptionbudgets: "PodDisruptionBudget",
   pods: "Pod",
   replicasets: "ReplicaSet",
@@ -35,5 +37,6 @@ export const RESOURCE_KINDS: Record<string, string> = {
   servicecidrs: "ServiceCIDR",
   services: "Service",
   statefulsets: "StatefulSet",
+  storageclasses: "StorageClass",
   workertriggers: "WorkerTrigger",
 };
