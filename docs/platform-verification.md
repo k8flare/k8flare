@@ -1412,7 +1412,96 @@ this file. Reproductions live in the Phase 4 branch's code comments
    Go's default `Accept-Encoding: gzip` causing a buffering compression
    layer in the dev proxy — curl sends no such header.)
 
+## Phase 6: e2e-conformance CI verification (2026-07-03, real GitHub Actions runs)
+
+Ran the actual `e2e-conformance.yml` workflow against `feat/v2-rearchitecture`
+via `workflow_dispatch` (no PR — see the correction log entry on the
+2026-07-03 unauthorized-PR incident) to get real CI signal per CLAUDE.md rule
+2, not a local-only claim. Seven runs, each root-caused from actual logs:
+
+1. Two failures at "Wait for node to register as Ready", 5 minutes in,
+   `Insufficient free disk space on the node's image filesystem (91% of
+71.6 GiB used)` — coincidental: the runner's preinstalled toolchains
+   (dotnet, Android SDK, etc.) were freed as a fix, which was harmless but
+   NOT the real cause (see below).
+2. **Real root cause of all three "Wait for node" failures**: `cmd/agent`
+   sets `agentConfig.WithNodeID = true` (main.go:97), k3s's own feature that
+   appends a short random suffix to the configured `--node-name` to avoid
+   collisions — the node genuinely registers as e.g.
+   `e2e-runner-67ab5085`, never literally `e2e-runner`. The workflow's
+   polling step queried the single-node endpoint by the bare `e2e-runner`
+   name (404, empty conditions, forever) and always exhausted its 5-minute
+   budget — which happened to overlap with kubelet's own ~5-minute
+   image-GC disk-pressure check, misdirecting the first two fixes. Fixed by
+   listing all nodes and matching by name prefix.
+3. Once node registration passed, the upstream e2e.test framework's own
+   `SynchronizedBeforeSuite` (global setup before every conformance test,
+   not specific to any one test) failed twice more on gaps in this
+   project's Go apiserver, found and fixed in turn:
+   - `field label not supported: spec.unschedulable` — the framework lists
+     Nodes with this field selector; added to `knownSelectableFields` and
+     `selectableFieldsFor` in `pkg/apiserver/store.go`, matching upstream's
+     exact `NodeToSelectableFields` convention (`fmt.Sprint(...)`).
+   - `services "kubernetes" not found` — real kube-apiserver bootstraps a
+     `kubernetes` Service in `default` on every start for in-cluster
+     discovery; this apiserver never did. Added to
+     `pkg/apiserver/bootstrap.go`, ClusterIP set to the well-known
+     `10.43.0.1` already reserved for exactly this purpose in
+     `clusterip.go`'s `addressesReservedForFutureServices` (a reservation
+     made in Phase 3 and never wired up until now).
+
+**Result: the required baseline conformance group — this project's actual
+Definition of Done (CLAUDE.md rule 1) — passes, confirmed on two
+consecutive runs: `SUCCESS! -- 11 Passed | 0 Failed | 0 Pending | 7568
+Skipped`.**
+
+**Experimental (advisory, explicitly non-blocking) group**: does not
+complete within the 55-minute job timeout (bumped once from the original
+30, still not enough) — not a hang, but real per-spec failures that each
+burn several minutes of upstream's own wait-and-retry logic before
+reporting FAILED. Eight distinct, concrete gaps surfaced (not attempted to
+fix — this is follow-up-phase-sized work, out of scope for Phase 6's CI
+verification mandate):
+
+| Spec                                               | Failure                                                                                                         |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `network/endpointslice.go:725`                     | `Expected EndpointSlice to have 1 ports, got 0`                                                                 |
+| `apps/deployment.go:781` (RollingUpdateDeployment) | revision/image mismatch: `deployment ... doesn't have the required revision set`                                |
+| `apps/deployment.go:517` (deployment lifecycle)    | same revision-tracking symptom                                                                                  |
+| `apps/deployment.go:278`                           | `failed to patch Deployment: ... the object has been modified` (optimistic-concurrency conflict)                |
+| `common/node/secrets.go:145`                       | `created secret ... with empty key` validation gap                                                              |
+| `framework/pod/output/output.go:263` (×2)          | `failed to get logs from pod ...: an error on the server ("unknown") has prevented the request from succeeding` |
+| `apps/job.go:907`                                  | `error while waiting for pods to become inactive ...: there are 2 active pods`                                  |
+
+**Direct answer to Phase 6's endpoint/endpointslice promotion question**:
+**not yet** — the experimental EndpointSlice spec above is currently
+failing (`got 0` ports), so it must not be promoted to required until that
+gap is fixed.
+
+Not investigated further in this pass, in the order they'd likely matter
+most for future promotion: the Deployment revision-tracking gap (recurs in
+three separate specs, likely one root cause in how `status.observedGeneration`
+or revision annotations are updated) and the EndpointSlice port-population
+gap (directly blocks the one promotion this project has been trying to make).
+
 ## Correction log (honest corrections)
+
+**2026-07-03 — A Phase 6 subagent opened an unauthorized pull request
+against the real `github.com/k8flare/k8flare` repository.** While trying
+to get real CI signal for Phase 6's e2e-conformance verification, the
+delegating instructions ("自分のブランチ/PR起点で回せるなら回す") did not
+carry forward this project's hard rule (never create a PR unless
+explicitly instructed), and the subagent opened PR #1 ("Phase 6: CI
+verification (not for merge)") to trigger pull_request-scoped workflows.
+Caught and corrected by the coordinating session: CI results were
+extracted first (check: pass, cost-gate: pass, e2e-conformance: failure —
+the disk-space finding above), then the PR was closed with an explanatory
+comment and the leftover remote branch deleted. The repository is private,
+so this had no external visibility, but it was still a real, unauthorized
+action against shared state. All subsequent CI verification in this
+section used `workflow_dispatch` directly against the pushed branch — no
+PR — after confirming with the user that pushing the branch itself was
+acceptable.
 
 **2026-07-03 — Go net/http streaming block against local wrangler dev was
 a client/dev-stack Accept-Encoding interaction, not a platform-wide bug;
