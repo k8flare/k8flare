@@ -171,8 +171,19 @@ export class Controllers {
   private ensure(name: ComponentName): Promise<Fetcher | null> {
     const c = this.components[name];
     if (!c.loading) {
-      c.loading = this.loadComponent(name).then((f) => {
+      c.loading = this.loadComponent(name).then(async (f) => {
         c.entrypoint = f;
+        // Warmup window: a freshly loaded component needs several pump
+        // windows to get through informer sync plus the initial
+        // reconcile of whatever write triggered the load -- and on a
+        // cluster with zero nodes the safety-net alarm is parked, so
+        // without this nothing would ever poke it again (observed live:
+        // a Deployment created on an idle cluster never got its
+        // ReplicaSet until a redeploy forced a reload). Bounded and
+        // event-armed: only arms after an actual load, and alarm()
+        // stops re-arming once the window passes.
+        await this.state.storage.put("warmupUntil", Date.now() + 3 * 60_000);
+        await this.state.storage.setAlarm(Date.now() + 5_000);
         return f;
       });
       // Don't cache failures -- the next poke retries the load.
@@ -306,13 +317,16 @@ export class Controllers {
       if (c) await c.fetch("http://controllers.internal/healthz");
     }
 
-    // Re-arm only while the cluster still has a live Node worth having
-    // controllers running for; otherwise park (cost invariants #1/#3 --
-    // no alarm chain on an idle cluster). Queries CLUSTER's raw KV
-    // endpoint directly (cheap, no WASM dispatch) rather than the full
-    // REST/JSON apiserver path, mirroring Cluster DO's own
-    // hasPendingSafetyNetWork check (workers/storage/src/index.ts).
-    if (await this.hasLiveNodes()) {
+    // Re-arm while the cluster has a live Node worth having controllers
+    // running for, or while a fresh load's warmup window is open (see
+    // ensure()); otherwise park (cost invariants #1/#3 -- no alarm chain
+    // on an idle cluster). Queries CLUSTER's raw KV endpoint directly
+    // (cheap, no WASM dispatch) rather than the full REST/JSON apiserver
+    // path, mirroring Cluster DO's own hasPendingSafetyNetWork check.
+    const warmupUntil = (await this.state.storage.get<number>("warmupUntil")) ?? 0;
+    if (Date.now() < warmupUntil) {
+      this.state.storage.setAlarm(Date.now() + 15_000);
+    } else if (await this.hasLiveNodes()) {
       this.state.storage.setAlarm(Date.now() + SAFETY_NET_INTERVAL_MS);
     }
   }

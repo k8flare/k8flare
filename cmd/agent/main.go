@@ -16,6 +16,7 @@ import (
 
 	"github.com/k3s-io/k3s/pkg/agent"
 	"github.com/k3s-io/k3s/pkg/cli/cmds"
+	cli "github.com/urfave/cli/v2"
 	"github.com/k3s-io/k3s/pkg/daemons/executor"
 	"github.com/k3s-io/k3s/pkg/executor/embed"
 	"github.com/k8flare/k8flare/pkg/cacert"
@@ -64,6 +65,8 @@ func main() {
 	dataDir := flag.String("data-dir", "/var/lib/rancher/k3s", "Data directory")
 	tunnelToken := flag.String("tunnel-token", os.Getenv("TUNNEL_TOKEN"), "Cloudflare tunnel token")
 	nodeExternalIP := flag.String("node-external-ip", "", "Node external IP to advertise (needed for flannel wireguard-native across networks that don't share L2; see docs/cloudflare-mesh-networking.md)")
+	nodeLabels := flag.String("node-labels", "", "Comma-separated key=value labels the kubelet registers its Node with (k3s --node-label). Per-Pod microVM nodes use this for the k8flare.com/backend selector label")
+	nodeTaints := flag.String("node-taints", "", "Comma-separated key=value:Effect taints the kubelet registers its Node with (k3s --node-taint). Per-Pod microVM nodes use this for the pod-on-containers NoSchedule taint")
 	withNodeID := flag.Bool("with-node-id", true, "Append a unique ID suffix to the node name (k3s --with-node-id). Disable for per-Pod microVM nodes, whose names must match exactly what workers/nodes' cf-containers-scheduler registered and will later bind to / tear down")
 	flag.Parse()
 
@@ -97,6 +100,12 @@ func main() {
 	agentConfig.DataDir = *dataDir
 	agentConfig.DisableLoadBalancer = true
 	agentConfig.WithNodeID = *withNodeID
+	if *nodeLabels != "" {
+		agentConfig.Labels = *cli.NewStringSlice(strings.Split(*nodeLabels, ",")...)
+	}
+	if *nodeTaints != "" {
+		agentConfig.Taints = *cli.NewStringSlice(strings.Split(*nodeTaints, ",")...)
+	}
 	if *nodeExternalIP != "" {
 		agentConfig.NodeExternalIP.Set(*nodeExternalIP)
 	}
