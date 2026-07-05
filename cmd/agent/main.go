@@ -64,6 +64,7 @@ func main() {
 	dataDir := flag.String("data-dir", "/var/lib/rancher/k3s", "Data directory")
 	tunnelToken := flag.String("tunnel-token", os.Getenv("TUNNEL_TOKEN"), "Cloudflare tunnel token")
 	nodeExternalIP := flag.String("node-external-ip", "", "Node external IP to advertise (needed for flannel wireguard-native across networks that don't share L2; see docs/cloudflare-mesh-networking.md)")
+	withNodeID := flag.Bool("with-node-id", true, "Append a unique ID suffix to the node name (k3s --with-node-id). Disable for per-Pod microVM nodes, whose names must match exactly what workers/nodes' cf-containers-scheduler registered and will later bind to / tear down")
 	flag.Parse()
 
 	if *serverURL == "" {
@@ -95,7 +96,7 @@ func main() {
 	agentConfig.NodeName = *nodeName
 	agentConfig.DataDir = *dataDir
 	agentConfig.DisableLoadBalancer = true
-	agentConfig.WithNodeID = true
+	agentConfig.WithNodeID = *withNodeID
 	if *nodeExternalIP != "" {
 		agentConfig.NodeExternalIP.Set(*nodeExternalIP)
 	}
