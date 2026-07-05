@@ -35,14 +35,29 @@ const (
 	ContainersSchedulerName = "cf-containers-scheduler"
 )
 
-// MutatePodForComputeClass injects the Containers-backend nodeSelector
-// and taint toleration into pod iff it carries
-// `k8flare.com/compute: containers`. Idempotent; called from
-// ResourceStore.Create, mirroring prepareJobForCreate's placement.
-func MutatePodForComputeClass(pod *corev1.Pod) {
-	if pod.Annotations[ComputeClassAnnotation] != ComputeClassContainers {
-		return
+// PodWantsContainers resolves the effective compute class with
+// namespace-first precedence (user decision 2026-07-06, mirroring how
+// managed per-Pod-node platforms and Istio's namespace-scoped injection
+// behave): an explicit pod annotation always wins (both to opt IN from a
+// plain namespace and to opt OUT -- any value other than "containers" --
+// from a containers namespace); otherwise the namespace LABEL
+// k8flare.com/compute=containers routes every pod in it. A label, not an
+// annotation, on the namespace because this is selection semantics
+// (`kubectl get ns -l k8flare.com/compute=containers` should work).
+// Label changes affect newly created pods only, same as any admission
+// mechanism.
+func PodWantsContainers(pod *corev1.Pod, nsLabels map[string]string) bool {
+	if v, ok := pod.Annotations[ComputeClassAnnotation]; ok {
+		return v == ComputeClassContainers
 	}
+	return nsLabels[ComputeClassAnnotation] == ComputeClassContainers
+}
+
+// MutatePodForComputeClass injects the Containers-backend schedulerName,
+// nodeSelector and taint toleration. Idempotent; the caller decides
+// applicability via PodWantsContainers (handler.go's pod-create path,
+// which can see the Namespace object).
+func MutatePodForComputeClass(pod *corev1.Pod) {
 	// Route to the cf-containers-scheduler binder via Kubernetes' standard
 	// multi-scheduler mechanism (spec.schedulerName). Only when the pod
 	// didn't explicitly pick a scheduler itself: "default-scheduler" is what admission defaulting

@@ -391,9 +391,6 @@ func (rs *ResourceStore) Create(ctx context.Context, namespace string, obj runti
 	if job, ok := obj.(*batchv1.Job); ok {
 		prepareJobForCreate(job)
 	}
-	if pod, ok := obj.(*corev1.Pod); ok {
-		MutatePodForComputeClass(pod)
-	}
 
 	data, err := EncodeToStorage(obj)
 	if err != nil {

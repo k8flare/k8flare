@@ -184,6 +184,21 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		// networking/batch), so this is a no-op there -- Pod is core/v1-only
 		// and always routes through the core/v1 registration.
 		if pod, ok := rObj.(*corev1.Pod); ok {
+			// Compute-class routing (namespace-first; see computeclass.go).
+			// stores["namespaces"] only exists in the core/v1 stores map,
+			// which is also the only map that can contain pods -- so the
+			// lookup is always available on this path.
+			var nsLabels map[string]string
+			if nsStore, exists := stores["namespaces"]; exists {
+				if nsObj, err := nsStore.Get(ctx, "", namespace); err == nil {
+					if nsTyped, ok := nsObj.(*corev1.Namespace); ok {
+						nsLabels = nsTyped.Labels
+					}
+				}
+			}
+			if PodWantsContainers(pod, nsLabels) {
+				MutatePodForComputeClass(pod)
+			}
 			if lrStore, exists := stores["limitranges"]; exists {
 				if lrList, err := lrStore.List(ctx, namespace, "", ""); err == nil {
 					limitRanges := lrList.(*corev1.LimitRangeList).Items
