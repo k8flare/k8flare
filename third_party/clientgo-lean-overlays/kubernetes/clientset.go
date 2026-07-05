@@ -15,6 +15,8 @@
 // file, unmodified) + this repo's Clientset implementing the other ~49
 // methods as panic stubs (pkg/leanclient/clientset/stubs.go, adapted from
 // the older third_party/leanclient-kcm's identical pattern) instead.
+//go:build !leanwidth
+
 package kubernetes
 
 import (

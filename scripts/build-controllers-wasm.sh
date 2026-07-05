@@ -34,6 +34,7 @@ if ! command -v wasm-opt >/dev/null 2>&1; then
 fi
 
 bash scripts/gen-k8s-js-mirror.sh
+bash scripts/gen-clientgo-lean-mirror.sh
 
 go run github.com/syumai/workers/cmd/workers-assets-gen -mode=go -o workers/controllers/build
 mkdir -p workers/controllers/assets
@@ -43,8 +44,9 @@ CAP=67108864 # the Loader's 64MiB total-module-bytes cap (S14 Part 2)
 
 build_one() {
   local name="$1" pkg="$2"
+  shift 2
   echo "== $name ($pkg)"
-  GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath \
+  GOOS=js GOARCH=wasm go build "$@" -ldflags="-s -w" -trimpath \
     -o "workers/controllers/build/$name.wasm" "$pkg"
   wasm-opt -Oz \
     --strip-debug --strip-producers \
@@ -63,5 +65,20 @@ build_one() {
   node scripts/chunk-wasm.mjs "workers/controllers/build/$name.opt.wasm" workers/controllers/assets "$name"
 }
 
-build_one kcm ./workers/controllers
-build_one sched ./workers/controllers/scheduler
+# KCM: built against go.wasm.mod (k8s.io/client-go -> width-pruned
+# .build/clientgo-lean-mirror) with -tags leanwidth (narrow
+# kubernetes.Interface + narrow leanclient stubs). Interface WIDTH is
+# what keeps this binary under the Loader cap -- full width measured
+# 98.6MB opt vs 66.1MB narrow (docs/platform-verification.md).
+GOFLAGS=-modfile=go.wasm.mod build_one kcm ./workers/controllers -tags leanwidth
+# scheduler: NOT built (workers/controllers/src/index.ts tolerates the
+# missing sched manifest). Its informer factory is the full-width
+# client-go SharedInformerFactory, so the leanwidth trick above does not
+# apply, and against the reproducible mirrors the binary measures
+# 102.8MB opt -- far over the Loader cap. The earlier 66.4MB figure was
+# an artifact of the same unreproducible mirror state as the KCM
+# regression (docs/platform-verification.md). kube-scheduler therefore
+# remains host-process/BYO-VM (cmd/scheduler) until it gets its own
+# width answer; workers/controllers/scheduler/main.go is kept as the
+# ready entrypoint for that day. Re-enable with:
+#   build_one sched ./workers/controllers/scheduler

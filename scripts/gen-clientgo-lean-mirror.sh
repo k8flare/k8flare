@@ -72,6 +72,9 @@ chmod -R u+w "$DST"
 # size-saving) interfaces, but this script no longer swaps them in.
 
 cp "$OVERLAY_DIR/kubernetes/clientset.go" "$DST/kubernetes/clientset.go"
+# leanwidth variant: narrow kubernetes.Interface for the `-tags leanwidth`
+# KCM wasm build (see its doc comment for why width decides binary size).
+cp "$OVERLAY_DIR/kubernetes/clientset_leanwidth.go" "$DST/kubernetes/clientset_leanwidth.go"
 
 # kubernetes/scheme/register.go: THE size lever for the GOOS=js binaries.
 # Upstream init()-registers all ~55 group-versions, and init side effects

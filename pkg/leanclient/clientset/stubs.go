@@ -1,4 +1,4 @@
-//go:build js && wasm
+//go:build js && wasm && !leanwidth
 
 // Adapted from third_party/leanclient-kcm's identical-purpose stubs.go
 // (originally scaffolded from k8s.io/client-go's kubernetes.Interface,

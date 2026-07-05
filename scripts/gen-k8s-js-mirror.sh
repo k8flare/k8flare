@@ -95,6 +95,57 @@ REG_DIR="$DST/pkg/scheduler/framework/plugins"
 cp "$OVERLAY_DIR/scheduler-registry_notjs.go" "$REG_DIR/registry.go"
 cp "$OVERLAY_DIR/scheduler-registry_js.go" "$REG_DIR/registry_js.go"
 
+# Deterministic js-pair transforms for the KCM size budget (see
+# docs/platform-verification.md's OPEN REGRESSION resolution): each
+# upstream file is sha256-pinned, split into an untouched !js half and a
+# js half with exactly one surgical change. Host builds (cmd/agent,
+# cmd/controller-manager, conformance CI) are byte-for-byte unaffected.
+#   - pkg/controller/controller_utils.go: drop the blank
+#     `_ core/install` import on js (pure legacyscheme side effect;
+#     nothing in the file references legacyscheme -- verified by grep).
+#   - pkg/controller/nodeipam/{ipam/cidr_allocator,node_ipam_controller,
+#     nolegacyprovider}.go: replace `cloudprovider.Interface` with
+#     `interface{}` on js, severing k8s.io/cloud-provider -> aggregate
+#     client-go informers -> all-groups typed clientset (this repo only
+#     ever uses the RangeAllocator; callers pass nil).
+check_pin() {
+  local rel="$1" pin="$2"
+  local actual
+  actual="$(shasum -a 256 "$SRC/$rel" | awk '{print $1}')"
+  local expected
+  expected="$(awk '{print $1}' "$OVERLAY_DIR/$pin")"
+  if [[ "$actual" != "$expected" ]]; then
+    echo "gen-k8s-js-mirror: upstream $rel changed since its js-pair transform was last reviewed (expected $expected, got $actual). Re-review the transform below, then refresh $pin. See docs/k8s-version-bump.md." >&2
+    exit 1
+  fi
+}
+check_pin pkg/controller/controller_utils.go upstream-controller-utils.go.sha256
+check_pin pkg/controller/nodeipam/ipam/cidr_allocator.go upstream-nodeipam-cidr-allocator.go.sha256
+check_pin pkg/controller/nodeipam/node_ipam_controller.go upstream-nodeipam-controller.go.sha256
+check_pin pkg/controller/nodeipam/nolegacyprovider.go upstream-nodeipam-nolegacyprovider.go.sha256
+
+python3 - "$DST" <<'PYEOF'
+import re, sys
+dst = sys.argv[1]
+
+def pair(rel, js_transform):
+    p = f"{dst}/{rel}"
+    src = open(p).read()
+    open(p, "w").write("//go:build !js\n\n" + src)
+    js = js_transform(src)
+    assert js != src, f"transform was a no-op for {rel}"
+    jsp = p[:-3] + "_js.go"
+    open(jsp, "w").write("//go:build js\n\n" + js)
+
+pair("pkg/controller/controller_utils.go",
+     lambda s: s.replace('\t_ "k8s.io/kubernetes/pkg/apis/core/install"\n', ""))
+for rel in ["pkg/controller/nodeipam/ipam/cidr_allocator.go",
+            "pkg/controller/nodeipam/node_ipam_controller.go",
+            "pkg/controller/nodeipam/nolegacyprovider.go"]:
+    pair(rel, lambda s: s.replace('cloudprovider.Interface', 'interface{}')
+                         .replace('\tcloudprovider "k8s.io/cloud-provider"\n', ''))
+PYEOF
+
 # queue/testing.go is a non-_test.go file (so it's part of the package's
 # normal build) whose test-helper exports are confirmed unused by any
 # non-test code in pkg/scheduler (grep) but import

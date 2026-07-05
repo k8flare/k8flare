@@ -1775,13 +1775,31 @@ Containers work). Recorded per rules 4/5 instead of being papered over:
   those numbers were taken against the old mirror and need re-validation
   once KCM reproducibility is restored.
 
-**Next step**: reconstruct the width-pruned client-go configuration for
-the KCM binary (5-group `kubernetes.Interface` via
-`.build/clientgo-lean-mirror` + `go.wasm.mod`, per the lean overlays'
-original design), which per the overlay README's own measurements is the
-only mechanism with the right order of magnitude; the scheduler binary
-(which needs full-width informers) then needs its own separate size
-answer.
+**RESOLVED for KCM (same day):** the lost mechanism was exactly the
+predicted one — **`kubernetes.Interface` width**. Reconstructed as a
+committed, reproducible configuration: the KCM binary builds with
+`-tags leanwidth` against `go.wasm.mod` (client-go → the lean mirror,
+whose `clientset_leanwidth.go` overlay narrows `kubernetes.Interface`
+to the five real groups + SchedulingV1alpha2, which the 1.36 job
+controller's PodGroup informer import requires), plus js-pair mirror
+transforms severing `pkg/controller`'s blank `core/install` import and
+nodeipam's `cloudprovider.Interface` (all sha256-pinned in
+`scripts/gen-k8s-js-mirror.sh`). Measured from a clean
+`npm run build:wasm:controllers`: **105MB → 78.3MB raw → 66,128,527
+opt (957KiB under the Loader cap)**, and verified live (Deployment
+create → 2 Pods in 5s, scale-down 5s, Events recorded, no panics).
+gzip is 13.2MB, so the normal-Worker (10MiB gzip) route stays closed.
+
+**Still open — the scheduler:** its earlier 66.4MB figure was an
+artifact of the same lost mirror state; against the reproducible
+mirrors the full-width scheduler binary measures **102.8MB opt**, and
+leanwidth cannot apply (scheduler.NewInformerFactory is the full-width
+aggregate SharedInformerFactory — the Phase 10 correction recorded in
+`scripts/gen-clientgo-lean-mirror.sh`'s comments). kube-scheduler
+therefore remains host-process/BYO-VM; `workers/controllers/scheduler/`
+and the DRA registry overlay are kept as the ready entrypoint for a
+future scheduler-width answer, and the Controllers DO treats the absent
+`sched` manifest as "not shipped" rather than an error.
 
 ## Correction log (honest corrections)
 

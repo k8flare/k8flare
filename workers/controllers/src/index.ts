@@ -110,7 +110,9 @@ export default {
 // sched) through manifest fetch, chunk assembly, and dynamic-worker load.
 interface LoadedComponent {
   entrypoint: Fetcher | null;
-  loading: Promise<Fetcher> | null;
+  // Resolves null when the component's manifest is absent from ASSETS
+  // (component not shipped -- e.g. "sched" today).
+  loading: Promise<Fetcher | null> | null;
 }
 
 // The two control-plane binaries this DO hosts as dynamic workers. Two,
@@ -143,8 +145,15 @@ export class Controllers {
     this.env = env;
   }
 
-  private async fetchManifest(name: ComponentName): Promise<KcmManifest> {
+  private async fetchManifest(name: ComponentName): Promise<KcmManifest | null> {
     const resp = await this.env.ASSETS.fetch(`https://assets.internal/${name}.manifest.json`);
+    if (resp.status === 404) {
+      // Component not shipped in this deployment -- currently true for
+      // "sched" (the scheduler binary has no reproducible <64MiB build
+      // yet; see scripts/build-controllers-wasm.sh). Treated as absent,
+      // not as an error, so pokes/alarms stay quiet about it.
+      return null;
+    }
     if (!resp.ok) {
       throw new Error(
         `${name}.manifest.json: HTTP ${resp.status} -- workers/controllers/assets/ is missing; run npm run build:wasm first`,
@@ -159,7 +168,7 @@ export class Controllers {
     return resp;
   }
 
-  private ensure(name: ComponentName): Promise<Fetcher> {
+  private ensure(name: ComponentName): Promise<Fetcher | null> {
     const c = this.components[name];
     if (!c.loading) {
       c.loading = this.loadComponent(name).then((f) => {
@@ -186,8 +195,9 @@ export class Controllers {
   // both every part and the assembled copy alive at once (~2x binary
   // size ≈ 125MB), which flirts with production's 128MiB isolate memory
   // limit that wrangler dev never enforces.
-  private async loadComponent(name: ComponentName): Promise<Fetcher> {
+  private async loadComponent(name: ComponentName): Promise<Fetcher | null> {
     const manifest = await this.fetchManifest(name);
+    if (!manifest) return null; // not shipped (see fetchManifest)
     const worker = this.env.LOADER.get(`${name}@${manifest.sha256}`, async () => {
       const wasm = new Uint8Array(manifest.size);
       let off = 0;
@@ -245,7 +255,7 @@ export class Controllers {
       return c.entrypoint.fetch(request ?? "http://controllers.internal/healthz");
     }
     void this.ensure(name)
-      .then((f) => f.fetch("http://controllers.internal/healthz"))
+      .then((f) => f && f.fetch("http://controllers.internal/healthz"))
       .catch(() => {}); // already logged in ensure()
     return null;
   }
@@ -271,7 +281,7 @@ export class Controllers {
         .then((r) => r.json<Record<string, unknown>>().then((j) => j.scheduler ?? "up"))
         .catch((err) => `dispatch failed: ${err}`);
     } else {
-      statuses.scheduler = "loading";
+      statuses.scheduler = "not loaded";
     }
     if (!kcmResp) {
       statuses.controllerManager = "loading";
@@ -293,7 +303,7 @@ export class Controllers {
     // here is safe (and is what completes a load whose pokes all died).
     for (const name of COMPONENTS) {
       const c = await this.ensure(name);
-      await c.fetch("http://controllers.internal/healthz");
+      if (c) await c.fetch("http://controllers.internal/healthz");
     }
 
     // Re-arm only while the cluster still has a live Node worth having
