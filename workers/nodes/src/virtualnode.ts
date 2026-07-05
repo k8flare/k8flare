@@ -197,7 +197,16 @@ export class VirtualNode extends DurableObject<Env> {
   async alarm(): Promise<void> {
     await this.ensureNodeRegistered();
     await this.renewNodeLease();
-    await this.reassertNodeReady();
+    // Best-effort: the status PUT races the node-lifecycle controllers'
+    // own writes (409 on stale resourceVersion) -- observed live
+    // 2026-07-06: an uncaught conflict here aborted the whole alarm tick,
+    // starving reconcilePods while the Lease (renewed above) kept looking
+    // healthy. Next tick re-GETs and retries anyway.
+    try {
+      await this.reassertNodeReady();
+    } catch (err) {
+      console.log(`virtualnode: reassertNodeReady failed (retrying next tick): ${err}`);
+    }
     await this.reconcilePods();
     // Re-arm unconditionally: unlike Cluster DO's safety-net alarm (which
     // parks once no Node/Service exists), this virtual node's own existence
