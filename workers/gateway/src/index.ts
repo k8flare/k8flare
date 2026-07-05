@@ -80,7 +80,32 @@ export default {
     // For /apis and /openapi/v3, inject our custom group into the response
     // (the Go apiserver only knows about its own build-time-baked
     // per-group-version documents -- see pkg/apiserver/discovery.go).
-    const apiResp = await env.APISERVER.fetch(req);
+    //
+    // Cold-start absorber (read-only requests only): instantiating the
+    // 43MB apiserver WASM under a parallel burst (kubectl's discovery
+    // fans out ~30 concurrent group requests, each of which can land on
+    // its own cold isolate) intermittently blows the isolate's startup
+    // CPU budget -- the binding fetch then throws, which kubectl surfaces
+    // as `couldn't get resource list ... ("unknown")`. Retrying after a
+    // short pause lands on a now-warm isolate and succeeds (verified
+    // live: the same URL 200s immediately after a failure). Retries are
+    // strictly limited to GET/HEAD so no mutation is ever replayed.
+    const attempts = req.method === "GET" || req.method === "HEAD" ? 3 : 1;
+    let apiResp: Response | undefined;
+    let lastErr: unknown;
+    for (let i = 0; i < attempts; i++) {
+      if (i > 0) await new Promise((r) => setTimeout(r, 250 * 2 ** (i - 1)));
+      try {
+        apiResp = await env.APISERVER.fetch(req.clone() as Request);
+        if (apiResp.status < 500 || i === attempts - 1) break;
+      } catch (err) {
+        lastErr = err;
+        apiResp = undefined;
+      }
+    }
+    if (!apiResp) {
+      throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+    }
     if (url.pathname === "/apis" || url.pathname === "/apis/") {
       return injectCustomAPIGroup(apiResp, DW_GROUP, DW_VERSION);
     }
