@@ -204,7 +204,15 @@ export class VirtualNode extends DurableObject<Env> {
           "k8flare.dev/pool": this.pool,
         },
       },
-      spec: {},
+      // NoSchedule taint: EKS-on-Fargate-style isolation. Ordinary Pods
+      // must never land on this backend (image allowlist, no UDP, no
+      // kubectl exec -- see README.md); only Pods that opted in via the
+      // `k8flare.dev/compute: containers` annotation get a matching
+      // toleration + nodeSelector injected by the apiserver at admission
+      // (pkg/apiserver, MutatePodForComputeClass).
+      spec: {
+        taints: [{ key: "k8flare.dev/pod-on-containers", value: "true", effect: "NoSchedule" }],
+      },
       status: {
         // Deliberately large, fixed capacity rather than a tight number:
         // Cloudflare Containers' real ceiling is an account-wide concurrency
