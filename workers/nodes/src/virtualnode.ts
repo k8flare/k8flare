@@ -171,6 +171,7 @@ export class VirtualNode extends DurableObject<Env> {
   async alarm(): Promise<void> {
     await this.ensureNodeRegistered();
     await this.renewNodeLease();
+    await this.reassertNodeReady();
     await this.reconcilePods();
     // Re-arm unconditionally: unlike Cluster DO's safety-net alarm (which
     // parks once no Node/Service exists), this virtual node's own existence
@@ -254,6 +255,41 @@ export class VirtualNode extends DurableObject<Env> {
       created.status = node.status;
       await updateNodeStatus(this.env, created);
     }
+  }
+
+  /**
+   * Re-assert Ready on every tick, exactly like a real kubelet's periodic
+   * node-status update. Without this, one transient Lease gap (DO
+   * eviction, redeploy) lets the node-lifecycle controllers set the
+   * conditions to Unknown and add node.kubernetes.io/unreachable taints
+   * that nothing ever clears -- observed live (2026-07-05): the virtual
+   * node's Lease had recovered but the stale NoSchedule/NoExecute taints
+   * left every annotated Pod permanently unschedulable ("untolerated
+   * taint(s)"). With a freshly-Ready status, the real
+   * kube-controller-manager's node_lifecycle_controller removes those
+   * taints itself (upstream behavior), so recovery needs no
+   * apiserver-side change. Costs 1 GET + 1 status PUT per ~10s tick on
+   * top of the 4 requests/tick already priced in docs/cost-model.md's
+   * Phase 7 section.
+   */
+  private async reassertNodeReady(): Promise<void> {
+    const node = await getNode(this.env, this.nodeName);
+    if (!node) return;
+    const now = new Date().toISOString();
+    const status = (node.status ?? {}) as { conditions?: Record<string, unknown>[] };
+    const prevReady = (status.conditions ?? []).find((c) => c.type === "Ready");
+    status.conditions = [
+      {
+        type: "Ready",
+        status: "True",
+        reason: "VirtualNodeReady",
+        message: "workers/nodes virtual node is ready",
+        lastHeartbeatTime: now,
+        lastTransitionTime: prevReady?.status === "True" ? prevReady.lastTransitionTime : now,
+      },
+    ];
+    node.status = status as NodeObject["status"];
+    await updateNodeStatus(this.env, node);
   }
 
   private async renewNodeLease(): Promise<void> {
