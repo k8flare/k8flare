@@ -1,5 +1,21 @@
 import { RESOURCE_KINDS } from "./gen/resource-kinds.gen.ts";
 
+// Real Kubernetes stores true CustomResourceDefinition-backed types in etcd
+// as "/registry/<plural>.<group>/...", not "/registry/<plural>/..." --
+// the group suffix is what lets a CRD's plural name collide with an
+// unrelated built-in resource without colliding in storage. This repo's Go
+// apiserver's built-in groups (apps, batch, ...) don't use that suffix
+// (matching upstream, which only suffixes genuine CRDs), so the group
+// alone can't tell us which convention applies. CRD_GROUPS is therefore a
+// small hand-maintained list of this repo's groups that DO use the
+// suffixed convention -- mirrors keyspace.ts's CLUSTER_SCOPED_RESOURCES
+// denylist pattern. See packages/dynamic-worker/src/constants.ts's
+// DW_PREFIX / packages/worker-trigger/src/constants.ts's WT_PREFIX, which
+// this list must stay in sync with (duplicated here rather than imported
+// to avoid packages/k8s depending on packages/dynamic-worker+worker-trigger,
+// which already depend on packages/k8s).
+const CRD_GROUPS = new Set(["k8flare.com"]);
+
 /**
  * Map a Kubernetes API URL pathname to a kine storage prefix.
  *
@@ -8,14 +24,17 @@ import { RESOURCE_KINDS } from "./gen/resource-kinds.gen.ts";
  *   /api/v1/namespaces/{ns}/pods                              -> /registry/pods/{ns}/
  *   /api/v1/pods                                              -> /registry/pods/
  *   /apis/coordination.k8s.io/v1/namespaces/{ns}/leases       -> /registry/leases/{ns}/
+ *   /apis/k8flare.com/v1alpha1/namespaces/{ns}/dynamicworkers -> /registry/dynamicworkers.k8flare.com/{ns}/
  */
 export function urlToStoragePrefix(pathname: string): string | null {
   let path: string;
+  let group = "";
   if (pathname.startsWith("/api/v1/")) {
     path = pathname.slice(8); // strip "/api/v1/"
   } else if (pathname.startsWith("/apis/")) {
     const parts = pathname.split("/");
     // /apis/{group}/{version}/...  ->  parts[4..]
+    group = parts[2];
     path = parts.slice(4).join("/");
   } else {
     return null;
@@ -25,15 +44,16 @@ export function urlToStoragePrefix(pathname: string): string | null {
   path = path.replace(/\/$/, "");
 
   const parts = path.split("/");
+  const resourceSuffix = CRD_GROUPS.has(group) ? "." + group : "";
 
   // namespaces/{ns}/{resource} -> /registry/{resource}/{ns}/
   if (parts[0] === "namespaces" && parts.length >= 3) {
-    return "/registry/" + parts[2] + "/" + parts[1] + "/";
+    return "/registry/" + parts[2] + resourceSuffix + "/" + parts[1] + "/";
   }
 
   // {resource} -> /registry/{resource}/
   if (parts.length === 1 && parts[0] !== "") {
-    return "/registry/" + parts[0] + "/";
+    return "/registry/" + parts[0] + resourceSuffix + "/";
   }
 
   return null;

@@ -1,5 +1,6 @@
 import type { CRDConfig } from "./types.ts";
 import { crGet, crList, crPut, crDelete } from "./storage.ts";
+import { applyMergePatch, applyJSONPatch } from "./patch.ts";
 
 /** Return a Response containing a Kubernetes Status error JSON body. */
 function crdError(status: number, message: string): Response {
@@ -125,6 +126,63 @@ export async function handleResourceCRUD(
         status: "Success",
         message: `${config.resource} "${name}" deleted`,
       });
+    }
+
+    case "PATCH": {
+      if (!name) return crdError(400, "name is required for patch");
+      const existing = await crGet(env, config.prefix, namespace, name);
+      if (!existing) return crdError(404, `${config.resource} "${name}" not found`);
+
+      const contentType = req.headers.get("Content-Type") || "";
+      let body: any;
+      try {
+        body = await req.json();
+      } catch {
+        return crdError(400, "invalid JSON");
+      }
+
+      let obj: any;
+      try {
+        if (contentType.includes("json-patch")) {
+          obj = applyJSONPatch(existing.obj, body);
+        } else if (
+          contentType.includes("merge-patch") ||
+          contentType.includes("strategic-merge-patch") ||
+          contentType === ""
+        ) {
+          // kubectl (label/annotate/client-side apply) sends merge-patch+json
+          // for custom resources that have no OpenAPI schema to compute a
+          // strategic-merge 3-way diff against -- see spikes/s14 gap report.
+          // Strategic-merge-patch bodies aren't distinguished from plain
+          // merge-patch here since we have no per-field merge-key metadata;
+          // treating them as a merge-patch is correct for the object-level
+          // (non-list-field) patches kubectl actually sends against a CRD.
+          obj = applyMergePatch(existing.obj, body);
+        } else {
+          return crdError(415, `unsupported patch content-type "${contentType}"`);
+        }
+      } catch (e: any) {
+        return crdError(400, `patch failed: ${e?.message || e}`);
+      }
+
+      obj.metadata = {
+        ...obj.metadata,
+        name,
+        namespace: namespace || existing.obj.metadata.namespace,
+      };
+      if (JSON.stringify(obj.spec) !== JSON.stringify(existing.obj.spec)) {
+        obj.metadata.generation = (existing.obj.metadata.generation || 0) + 1;
+      }
+      // Same as PUT: the top-level resource endpoint doesn't touch status.
+      obj.status = existing.obj.status;
+      config.applyDefaults(obj);
+      const err = config.validate(obj.spec);
+      if (err) return crdError(400, err);
+      const resp = await crPut(env, config.prefix, obj, existing.modRevision);
+      if (!resp.ok) return crdError(409, "conflict: resource was modified");
+      const r: any = await resp.json();
+      obj.metadata.resourceVersion = String(r.revision);
+      return Response.json(obj);
     }
 
     default:

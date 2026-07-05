@@ -1,13 +1,16 @@
 package apiserver
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"reflect"
 
 	jsonpatch "gopkg.in/evanphx/json-patch.v4"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 
@@ -53,6 +56,13 @@ func HandleSubresource(w http.ResponseWriter, r *http.Request, stores map[string
 			return
 		}
 		handleStatusSubresource(w, r, store, namespace, name)
+
+	case "scale":
+		if !apidef.HasSubresource(resource, "scale") {
+			writeStatusError(w, http.StatusNotFound, "NotFound", "the server does not support the subresource \""+subresource+"\" for resource \""+resource+"\"")
+			return
+		}
+		handleScaleSubresource(w, r, store, namespace, name)
 
 	case "binding", "log", "exec", "attach":
 		if resource != "pods" {
@@ -313,4 +323,233 @@ func applyPatch(currentObj runtime.Object, patchBytes []byte, contentType string
 		return nil, err
 	}
 	return obj, nil
+}
+
+// handleScaleSubresource implements GET/PUT/PATCH for a resource's /scale
+// subresource, generically across every type in apidef.Table that declares
+// one (deployments, replicasets, statefulsets): all three share the same
+// Spec.Replicas *int32 / Status.Replicas int32 / Spec.Selector
+// *metav1.LabelSelector shape, so this is one reflection-based handler
+// (scaleFromObject/applyReplicasToObject below) instead of one hand-copied
+// ScaleREST per resource, the same generalization copyStatus already applies
+// to /status above.
+func handleScaleSubresource(w http.ResponseWriter, r *http.Request, store *ResourceStore, namespace, name string) {
+	ctx := r.Context()
+
+	switch r.Method {
+	case http.MethodGet:
+		obj, err := store.Get(ctx, namespace, name)
+		if err != nil {
+			writeResourceError(w, err, store.resource, name)
+			return
+		}
+		scale, err := scaleFromObject(obj)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		writeRuntimeObject(w, http.StatusOK, scale)
+
+	case http.MethodPut:
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to read request body")
+			return
+		}
+		defer r.Body.Close()
+
+		// decodeBody (not a plain json.Unmarshal) because client-go's
+		// generated UpdateScale calls UseProtobufAsDefault(), so real
+		// clients (kubectl scale included) PUT this body as protobuf, not
+		// JSON -- found by TestScaleSubresource against the real typed
+		// client, which a hand-rolled JSON-only fixture wouldn't have
+		// caught. decodeBody's UniversalDeserializer auto-detects either.
+		incomingObj, err := decodeBody(body)
+		if err != nil {
+			writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to decode request body: "+err.Error())
+			return
+		}
+		incoming, ok := incomingObj.(*autoscalingv1.Scale)
+		if !ok {
+			writeStatusError(w, http.StatusBadRequest, "BadRequest", fmt.Sprintf("request body is %T, expected Scale", incomingObj))
+			return
+		}
+
+		current, err := store.Get(ctx, namespace, name)
+		if err != nil {
+			writeResourceError(w, err, store.resource, name)
+			return
+		}
+		if err := applyReplicasToObject(current, incoming.Spec.Replicas); err != nil {
+			writeInternalError(w, err)
+			return
+		}
+
+		updated, err := store.Update(ctx, namespace, name, current)
+		if err != nil {
+			writeResourceError(w, err, store.resource, name)
+			return
+		}
+		scale, err := scaleFromObject(updated)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		writeRuntimeObject(w, http.StatusOK, scale)
+
+	case http.MethodPatch:
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to read request body")
+			return
+		}
+		defer r.Body.Close()
+
+		current, err := store.Get(ctx, namespace, name)
+		if err != nil {
+			writeResourceError(w, err, store.resource, name)
+			return
+		}
+		currentScale, err := scaleFromObject(current)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+
+		// Scale isn't stored as its own object -- there's nothing for the
+		// generic applyPatch (which round-trips through the *stored*
+		// resource's Encode/Decode) to patch. Patch the derived Scale's own
+		// JSON representation instead, then fold just .spec.replicas back
+		// onto the real object, the same two-step PUT does above.
+		currentJSON, err := json.Marshal(currentScale)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+
+		var patchedJSON []byte
+		switch r.Header.Get("Content-Type") {
+		case "application/merge-patch+json":
+			patchedJSON, err = jsonpatch.MergePatch(currentJSON, body)
+		case "application/strategic-merge-patch+json":
+			patchedJSON, err = strategicpatch.StrategicMergePatch(currentJSON, body, &autoscalingv1.Scale{})
+		case "application/json-patch+json":
+			var patch jsonpatch.Patch
+			patch, err = jsonpatch.DecodePatch(body)
+			if err == nil {
+				patchedJSON, err = patch.Apply(currentJSON)
+			}
+		default:
+			err = fmt.Errorf("unsupported patch type")
+		}
+		if err != nil {
+			writeStatusError(w, http.StatusBadRequest, "BadRequest", "patch failed: "+err.Error())
+			return
+		}
+
+		var patchedScale autoscalingv1.Scale
+		if err := json.Unmarshal(patchedJSON, &patchedScale); err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if err := applyReplicasToObject(current, patchedScale.Spec.Replicas); err != nil {
+			writeInternalError(w, err)
+			return
+		}
+
+		updated, err := store.Update(ctx, namespace, name, current)
+		if err != nil {
+			writeResourceError(w, err, store.resource, name)
+			return
+		}
+		scale, err := scaleFromObject(updated)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		writeRuntimeObject(w, http.StatusOK, scale)
+
+	default:
+		writeStatusError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method "+r.Method+" is not supported for "+store.resource+"/scale")
+	}
+}
+
+// scaleFromObject builds an autoscaling/v1.Scale view of obj (a Deployment,
+// ReplicaSet, or StatefulSet) via reflection on the Spec.Replicas/
+// Status.Replicas/Spec.Selector fields every one of those types shares,
+// matching upstream's per-type convertToScale (e.g.
+// pkg/registry/apps/deployment/storage/storage.go) without a copy of it per
+// type.
+func scaleFromObject(obj runtime.Object) (*autoscalingv1.Scale, error) {
+	objMeta := getObjectMeta(obj)
+	if objMeta == nil {
+		return nil, fmt.Errorf("%T does not implement ObjectMetaAccessor", obj)
+	}
+
+	v := reflect.ValueOf(obj).Elem()
+	specVal := v.FieldByName("Spec")
+	statusVal := v.FieldByName("Status")
+	if !specVal.IsValid() || !statusVal.IsValid() {
+		return nil, fmt.Errorf("%T has no Spec/Status field", obj)
+	}
+
+	var specReplicas int32
+	if replicasField := specVal.FieldByName("Replicas"); replicasField.IsValid() && !replicasField.IsNil() {
+		specReplicas = int32(replicasField.Elem().Int())
+	}
+
+	var statusReplicas int32
+	if replicasField := statusVal.FieldByName("Replicas"); replicasField.IsValid() {
+		statusReplicas = int32(replicasField.Int())
+	}
+
+	var selectorStr string
+	if selectorField := specVal.FieldByName("Selector"); selectorField.IsValid() && !selectorField.IsNil() {
+		if selector, ok := selectorField.Interface().(*metav1.LabelSelector); ok {
+			if s, err := metav1.LabelSelectorAsSelector(selector); err == nil {
+				selectorStr = s.String()
+			}
+		}
+	}
+
+	return &autoscalingv1.Scale{
+		// Encode (scheme.go) is a bare json.Marshal underneath -- it does
+		// not consult Scheme to fill in TypeMeta the way a full versioning
+		// codec would, so every response this apiserver writes is
+		// responsible for setting its own kind/apiVersion if it needs one.
+		// Most callers get away without it (typed client-go Get/List calls
+		// already know their expected type and never look at the response's
+		// kind), but kubectl's `scale` command decodes this specific
+		// response with a kind-aware (effectively dynamic/unstructured)
+		// client and hard-errors with "Object 'Kind' is missing" without
+		// this -- found via real kubectl, not just client-go, against this
+		// handler.
+		TypeMeta: metav1.TypeMeta{Kind: "Scale", APIVersion: "autoscaling/v1"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              objMeta.Name,
+			Namespace:         objMeta.Namespace,
+			UID:               objMeta.UID,
+			ResourceVersion:   objMeta.ResourceVersion,
+			CreationTimestamp: objMeta.CreationTimestamp,
+		},
+		Spec:   autoscalingv1.ScaleSpec{Replicas: specReplicas},
+		Status: autoscalingv1.ScaleStatus{Replicas: statusReplicas, Selector: selectorStr},
+	}, nil
+}
+
+// applyReplicasToObject sets obj's Spec.Replicas (a Deployment, ReplicaSet,
+// or StatefulSet) to replicas, in place. The counterpart write half of
+// scaleFromObject above.
+func applyReplicasToObject(obj runtime.Object, replicas int32) error {
+	v := reflect.ValueOf(obj).Elem()
+	specVal := v.FieldByName("Spec")
+	if !specVal.IsValid() {
+		return fmt.Errorf("%T has no Spec field", obj)
+	}
+	replicasField := specVal.FieldByName("Replicas")
+	if !replicasField.IsValid() || replicasField.Type() != reflect.TypeOf((*int32)(nil)) {
+		return fmt.Errorf("%T.Spec.Replicas is not *int32", obj)
+	}
+	replicasField.Set(reflect.ValueOf(&replicas))
+	return nil
 }

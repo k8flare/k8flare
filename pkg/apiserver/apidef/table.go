@@ -24,6 +24,7 @@ package apidef
 
 import (
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -31,6 +32,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	nodev1 "k8s.io/api/node/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -125,6 +127,20 @@ var standardStatusSubresourceVerbs = []string{"get", "patch", "update"}
 // by every resource below that has one.
 func statusSubresource() Subresource {
 	return Subresource{Name: "status", Verbs: standardStatusSubresourceVerbs}
+}
+
+// standardScaleSubresourceVerbs is the verb set for a "scale" subresource:
+// pkg/apiserver/subresource.go's generic scale handler supports GET (read
+// replica count/selector as an autoscaling/v1.Scale), PUT (replace replica
+// count), and PATCH -- no create/delete/list, matching upstream's
+// pkg/registry/*/*/storage.go ScaleREST for these types.
+var standardScaleSubresourceVerbs = []string{"get", "patch", "update"}
+
+// scaleSubresource returns the standard "scale" Subresource entry shared by
+// every resource below that has one. Its Kind is always "Scale"
+// (autoscaling/v1.Scale), not the parent resource's Kind.
+func scaleSubresource() Subresource {
+	return Subresource{Name: "scale", Verbs: standardScaleSubresourceVerbs, Kind: "Scale"}
 }
 
 // Table is the full list of API resources this apiserver serves, grouped by
@@ -253,6 +269,15 @@ var Table = []ResourceDef{
 		},
 	},
 	{
+		GroupVersion: corev1.SchemeGroupVersion, Kind: "ResourceQuota", Resource: "resourcequotas",
+		Singular: "resourcequota", ShortNames: []string{"quota"}, Namespaced: true,
+		Subresources: []Subresource{statusSubresource()},
+		New:          func() runtime.Object { return &corev1.ResourceQuota{} },
+		NewList: func() runtime.Object {
+			return &corev1.ResourceQuotaList{TypeMeta: metav1.TypeMeta{Kind: "ResourceQuotaList", APIVersion: "v1"}}
+		},
+	},
+	{
 		GroupVersion: corev1.SchemeGroupVersion, Kind: "ReplicationController", Resource: "replicationcontrollers",
 		Singular: "replicationcontroller", ShortNames: []string{"rc"}, Namespaced: true,
 		StubReason:   "Never populated with real data. The real kube-scheduler's InterPodAffinity/PodTopologySpread plugins do owning-controller lookups against ReplicationController unconditionally, and DefaultPreemption checks PodDisruptionBudgets unconditionally, the same way the DRA plugin does for ResourceClaim/ResourceSlice/DeviceClass below -- registered only so those informers complete WaitForCacheSync against an empty list instead of hanging forever.",
@@ -354,7 +379,7 @@ var Table = []ResourceDef{
 	{
 		GroupVersion: appsv1.SchemeGroupVersion, Kind: "ReplicaSet", Resource: "replicasets",
 		Singular: "replicaset", ShortNames: []string{"rs"}, Namespaced: true,
-		Subresources: []Subresource{statusSubresource()},
+		Subresources: []Subresource{statusSubresource(), scaleSubresource()},
 		New:          func() runtime.Object { return &appsv1.ReplicaSet{} },
 		NewList: func() runtime.Object {
 			return &appsv1.ReplicaSetList{TypeMeta: metav1.TypeMeta{Kind: "ReplicaSetList", APIVersion: "apps/v1"}}
@@ -363,7 +388,7 @@ var Table = []ResourceDef{
 	{
 		GroupVersion: appsv1.SchemeGroupVersion, Kind: "Deployment", Resource: "deployments",
 		Singular: "deployment", ShortNames: []string{"deploy"}, Namespaced: true,
-		Subresources: []Subresource{statusSubresource()},
+		Subresources: []Subresource{statusSubresource(), scaleSubresource()},
 		New:          func() runtime.Object { return &appsv1.Deployment{} },
 		NewList: func() runtime.Object {
 			return &appsv1.DeploymentList{TypeMeta: metav1.TypeMeta{Kind: "DeploymentList", APIVersion: "apps/v1"}}
@@ -382,7 +407,7 @@ var Table = []ResourceDef{
 		GroupVersion: appsv1.SchemeGroupVersion, Kind: "StatefulSet", Resource: "statefulsets",
 		Singular: "statefulset", ShortNames: []string{"sts"}, Namespaced: true,
 		StubReason:   "Never populated with real data -- confirmed empirically by running the real scheduler: its default InterPodAffinity/PodTopologySpread (owning-controller lookups) plugin starts an informer for this type unconditionally, the same way DRA's plugin does for ResourceClaim/ResourceSlice/DeviceClass above, even when no pod in the cluster uses the corresponding feature.",
-		Subresources: []Subresource{statusSubresource()},
+		Subresources: []Subresource{statusSubresource(), scaleSubresource()},
 		New:          func() runtime.Object { return &appsv1.StatefulSet{} },
 		NewList: func() runtime.Object {
 			return &appsv1.StatefulSetList{TypeMeta: metav1.TypeMeta{Kind: "StatefulSetList", APIVersion: "apps/v1"}}
@@ -432,6 +457,37 @@ var Table = []ResourceDef{
 			return &networkingv1.ServiceCIDRList{TypeMeta: metav1.TypeMeta{Kind: "ServiceCIDRList", APIVersion: "networking.k8s.io/v1"}}
 		},
 	},
+	{
+		GroupVersion: networkingv1.SchemeGroupVersion, Kind: "Ingress", Resource: "ingresses",
+		Singular: "ingress", ShortNames: []string{"ing"}, Namespaced: true,
+		Subresources: []Subresource{statusSubresource()},
+		New:          func() runtime.Object { return &networkingv1.Ingress{} },
+		NewList: func() runtime.Object {
+			return &networkingv1.IngressList{TypeMeta: metav1.TypeMeta{Kind: "IngressList", APIVersion: "networking.k8s.io/v1"}}
+		},
+	},
+	{
+		GroupVersion: networkingv1.SchemeGroupVersion, Kind: "IngressClass", Resource: "ingressclasses",
+		Singular: "ingressclass", Namespaced: false,
+		New: func() runtime.Object { return &networkingv1.IngressClass{} },
+		NewList: func() runtime.Object {
+			return &networkingv1.IngressClassList{TypeMeta: metav1.TypeMeta{Kind: "IngressClassList", APIVersion: "networking.k8s.io/v1"}}
+		},
+	},
+	{
+		// CRUD+watch only, like Role/RoleBinding above -- nothing in this
+		// project enforces NetworkPolicy today (no CNI plugin runs; pod
+		// networking here is BYO VM + k3s embed, see CLAUDE.md's
+		// architecture section), so a stored NetworkPolicy is not yet acted
+		// on. Registered so `kubectl apply -f networkpolicy.yaml` doesn't
+		// 404 outright.
+		GroupVersion: networkingv1.SchemeGroupVersion, Kind: "NetworkPolicy", Resource: "networkpolicies",
+		Singular: "networkpolicy", ShortNames: []string{"netpol"}, Namespaced: true,
+		New: func() runtime.Object { return &networkingv1.NetworkPolicy{} },
+		NewList: func() runtime.Object {
+			return &networkingv1.NetworkPolicyList{TypeMeta: metav1.TypeMeta{Kind: "NetworkPolicyList", APIVersion: "networking.k8s.io/v1"}}
+		},
+	},
 
 	// ---- batch/v1 ----
 	{
@@ -450,6 +506,66 @@ var Table = []ResourceDef{
 		New:          func() runtime.Object { return &batchv1.CronJob{} },
 		NewList: func() runtime.Object {
 			return &batchv1.CronJobList{TypeMeta: metav1.TypeMeta{Kind: "CronJobList", APIVersion: "batch/v1"}}
+		},
+	},
+
+	// ---- rbac.authorization.k8s.io/v1 ----
+	// Plain CRUD+watch like every other resource here -- this project's
+	// authorization is still all-or-nothing per bearer token (see
+	// pkg/apiserver/auth.go), so these objects aren't consulted to make any
+	// access decision yet. Registered so `kubectl get roles`/`kubectl apply
+	// -f role.yaml` etc. work (and so real controllers that read RBAC
+	// objects, if ever embedded, have somewhere to read them from) -- not
+	// because anything in this apiserver enforces them today.
+	{
+		GroupVersion: rbacv1.SchemeGroupVersion, Kind: "Role", Resource: "roles",
+		Singular: "role", Namespaced: true,
+		New: func() runtime.Object { return &rbacv1.Role{} },
+		NewList: func() runtime.Object {
+			return &rbacv1.RoleList{TypeMeta: metav1.TypeMeta{Kind: "RoleList", APIVersion: "rbac.authorization.k8s.io/v1"}}
+		},
+	},
+	{
+		GroupVersion: rbacv1.SchemeGroupVersion, Kind: "RoleBinding", Resource: "rolebindings",
+		Singular: "rolebinding", Namespaced: true,
+		New: func() runtime.Object { return &rbacv1.RoleBinding{} },
+		NewList: func() runtime.Object {
+			return &rbacv1.RoleBindingList{TypeMeta: metav1.TypeMeta{Kind: "RoleBindingList", APIVersion: "rbac.authorization.k8s.io/v1"}}
+		},
+	},
+	{
+		GroupVersion: rbacv1.SchemeGroupVersion, Kind: "ClusterRole", Resource: "clusterroles",
+		Singular: "clusterrole", Namespaced: false,
+		New: func() runtime.Object { return &rbacv1.ClusterRole{} },
+		NewList: func() runtime.Object {
+			return &rbacv1.ClusterRoleList{TypeMeta: metav1.TypeMeta{Kind: "ClusterRoleList", APIVersion: "rbac.authorization.k8s.io/v1"}}
+		},
+	},
+	{
+		GroupVersion: rbacv1.SchemeGroupVersion, Kind: "ClusterRoleBinding", Resource: "clusterrolebindings",
+		Singular: "clusterrolebinding", Namespaced: false,
+		New: func() runtime.Object { return &rbacv1.ClusterRoleBinding{} },
+		NewList: func() runtime.Object {
+			return &rbacv1.ClusterRoleBindingList{TypeMeta: metav1.TypeMeta{Kind: "ClusterRoleBindingList", APIVersion: "rbac.authorization.k8s.io/v1"}}
+		},
+	},
+
+	// ---- autoscaling/v2 ----
+	// v2, not v1: v2 is the version `kubectl autoscale`/`kubectl get hpa`
+	// prefer and the one real HPA controllers target today; v1 is kept
+	// upstream only for old clients and isn't worth a second registration
+	// here. CRUD+watch only -- no controller in pkg/controllers reconciles
+	// HPA's target replica count yet (the real
+	// k8s.io/kubernetes/pkg/controller/podautoscaler package needs a
+	// metrics client this project doesn't wire up), so a created HPA is
+	// stored but not acted on, the same gap RBAC/NetworkPolicy above have.
+	{
+		GroupVersion: autoscalingv2.SchemeGroupVersion, Kind: "HorizontalPodAutoscaler", Resource: "horizontalpodautoscalers",
+		Singular: "horizontalpodautoscaler", ShortNames: []string{"hpa"}, Namespaced: true,
+		Subresources: []Subresource{statusSubresource()},
+		New:          func() runtime.Object { return &autoscalingv2.HorizontalPodAutoscaler{} },
+		NewList: func() runtime.Object {
+			return &autoscalingv2.HorizontalPodAutoscalerList{TypeMeta: metav1.TypeMeta{Kind: "HorizontalPodAutoscalerList", APIVersion: "autoscaling/v2"}}
 		},
 	},
 }

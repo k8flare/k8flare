@@ -3,6 +3,7 @@ import {
   parseCustomGroupPath,
   buildDiscoveryResources,
   buildDiscoveryGroup,
+  buildGroupOpenAPIDocument,
   handleResourceCRUD,
 } from "@k8flare/crd";
 import {
@@ -128,6 +129,24 @@ function dwDiscoveryGroup(): Response {
   return buildDiscoveryGroup(DW_GROUP, DW_VERSION);
 }
 
+/**
+ * Build the OpenAPI v3 document for the custom API group (DynamicWorker +
+ * WorkerTrigger), served at /openapi/v3/apis/{DW_GROUP}/{DW_VERSION} --
+ * see gateway/src/index.ts for the /openapi/v3 index entry that points
+ * here. Permissive on purpose (see buildGroupOpenAPIDocument's doc
+ * comment): this repo has no generated Go schema for these two kinds, so
+ * the goal is just to let kubectl's client-side validation recognize the
+ * Kind and stop requiring --validate=false, not to enforce field shapes.
+ */
+function dwOpenAPIDocument(): Response {
+  return Response.json(
+    buildGroupOpenAPIDocument(DW_GROUP, DW_VERSION, [
+      { kind: DW_KIND, resource: DW_RESOURCE, schemaName: "com.k8flare.v1alpha1.DynamicWorker" },
+      { kind: WT_KIND, resource: WT_RESOURCE, schemaName: "com.k8flare.v1alpha1.WorkerTrigger" },
+    ]),
+  );
+}
+
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
@@ -147,6 +166,12 @@ export default {
     }
     if (url.pathname === `/apis/${DW_GROUP}` || url.pathname === `/apis/${DW_GROUP}/`) {
       return dwDiscoveryGroup();
+    }
+
+    // OpenAPI v3 document for the custom group (query string, e.g. ?hash=...
+    // and ?timeout=..., is ignored -- the document is static per deploy).
+    if (url.pathname === `/openapi/v3/apis/${DW_GROUP}/${DW_VERSION}`) {
+      return dwOpenAPIDocument();
     }
 
     // HTTP trigger dispatch

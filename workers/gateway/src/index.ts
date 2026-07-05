@@ -4,7 +4,7 @@ import {
   handleRemotedialConnect,
 } from "./proxy/index.ts";
 import { handleWatch } from "@k8flare/k8s";
-import { injectCustomAPIGroup } from "@k8flare/crd";
+import { injectCustomAPIGroup, injectOpenAPIV3Path } from "@k8flare/crd";
 import { DW_GROUP, DW_VERSION } from "@k8flare/dynamic-worker";
 import type { Env } from "./env.ts";
 
@@ -29,15 +29,17 @@ export default {
       return handleRemotedialConnect(req, env);
     }
 
-    // Custom API group: DynamicWorker + WorkerTrigger CRUD, discovery, and
-    // dispatch all live in the runtime Worker.
+    // Custom API group: DynamicWorker + WorkerTrigger CRUD, discovery,
+    // OpenAPI v3 document, and dispatch all live in the runtime Worker.
     const dwGroupPrefix = `/apis/${DW_GROUP}/${DW_VERSION}/`;
+    const dwOpenAPIPath = `/openapi/v3/apis/${DW_GROUP}/${DW_VERSION}`;
     if (
       url.pathname.startsWith(dwGroupPrefix) ||
       url.pathname === `/apis/${DW_GROUP}/${DW_VERSION}` ||
       url.pathname === `/apis/${DW_GROUP}/${DW_VERSION}/` ||
       url.pathname === `/apis/${DW_GROUP}` ||
-      url.pathname === `/apis/${DW_GROUP}/`
+      url.pathname === `/apis/${DW_GROUP}/` ||
+      url.pathname === dwOpenAPIPath
     ) {
       return env.RUNTIME.fetch(req);
     }
@@ -48,10 +50,20 @@ export default {
     }
 
     // All other requests go to the Go apiserver Worker.
-    // For /apis, inject our custom group into the response.
+    // For /apis and /openapi/v3, inject our custom group into the response
+    // (the Go apiserver only knows about its own build-time-baked
+    // per-group-version documents -- see pkg/apiserver/discovery.go).
     const apiResp = await env.APISERVER.fetch(req);
     if (url.pathname === "/apis" || url.pathname === "/apis/") {
       return injectCustomAPIGroup(apiResp, DW_GROUP, DW_VERSION);
+    }
+    if (url.pathname === "/openapi/v3") {
+      return injectOpenAPIV3Path(
+        apiResp,
+        DW_GROUP,
+        DW_VERSION,
+        `${dwOpenAPIPath}?hash=k8flare-custom`,
+      );
     }
     return apiResp;
   },

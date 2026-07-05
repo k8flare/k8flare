@@ -130,6 +130,11 @@ func main() {
 	apiserver.RegisterGroupDiscovery(mux)
 	apiserver.RegisterOpenAPIDiscovery(mux)
 
+	// authorization.k8s.io/v1 SelfSubjectAccessReview (`kubectl auth can-i`)
+	// -- not in apidef.Table, so not covered by the per-GroupVersion loop
+	// below. See selfsubjectaccessreview.go for why.
+	apiserver.RegisterAuthorizationHandlers(mux, getToken)
+
 	// Supervisor endpoints (/cacerts, /v1-k3s/*)
 	apiserver.RegisterSupervisorHandlers(mux, cam, storage, getToken)
 
@@ -144,12 +149,16 @@ func main() {
 	// One auth-wrapped route per GroupVersion in apidef.Table. core/v1
 	// additionally bootstraps the cluster's baseline namespaces/
 	// ServiceAccounts on first request and sweeps dependents on Namespace
-	// delete (namespacedStores is nil for every other group, since
-	// "namespaces" never exists as a key in a non-core stores map --
-	// HandleResource's doc comment in pkg/apiserver/handler.go explains why
-	// that alone is enough to make the cascading-delete branch a no-op
-	// there). storage.k8s.io/v1 similarly bootstraps the "r2" StorageClass
-	// on first request (Phase 8).
+	// delete ("namespaces" never exists as a key in a non-core stores map,
+	// so that branch of HandleResource's DELETE case is a no-op for every
+	// other group even though they all pass the same namespacedStores).
+	// namespacedStores is passed to every group, not just core, because
+	// HandleResource's DELETE case also uses it for ownerReferences cascade
+	// GC (gc.go) -- e.g. deleting an apps/v1 Deployment must be able to find
+	// and delete the ReplicaSets (apps/v1) and Pods (core/v1) it owns, which
+	// requires the union across every group, not just the deleted object's
+	// own. storage.k8s.io/v1 similarly bootstraps the "r2" StorageClass on
+	// first request (Phase 8).
 	for _, gv := range apidef.GroupVersions() {
 		prefix := apidef.APIPrefix(gv)
 		stores := storesByGV[gv]
@@ -159,13 +168,11 @@ func main() {
 		mux.Handle(prefix, apiserver.AuthMiddleware(getToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if isCore {
 				apiserver.BootstrapCluster(r.Context(), stores)
-				apiserver.HandleResource(w, r, prefix, stores, namespacedStores)
-				return
 			}
 			if isStorage {
 				apiserver.BootstrapStorageClasses(r.Context(), stores)
 			}
-			apiserver.HandleResource(w, r, prefix, stores, nil)
+			apiserver.HandleResource(w, r, prefix, stores, namespacedStores)
 		})))
 	}
 

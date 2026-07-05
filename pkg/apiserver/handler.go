@@ -1,6 +1,7 @@
 package apiserver
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -9,8 +10,52 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
+
+// parseDeletePropagationPolicy extracts spec.propagationPolicy from a DELETE
+// request. Real clients (client-go's Delete/DeleteCollection) send it as a
+// JSON-encoded metav1.DeleteOptions request body; the query parameter form
+// (?propagationPolicy=Foreground) some direct callers use instead is also
+// accepted, matching upstream kube-apiserver's dual acceptance. Restores
+// r.Body after reading it so later code in the same request (there is none
+// today, but this must not be a trap for a future caller) still sees it.
+// An absent/empty policy defaults to Background, matching this project's
+// registered resources' upstream default (none opt into Orphan-by-default).
+func parseDeletePropagationPolicy(r *http.Request) (metav1.DeletionPropagation, error) {
+	if q := r.URL.Query().Get("propagationPolicy"); q != "" {
+		return metav1.DeletionPropagation(q), nil
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return "", fmt.Errorf("read request body: %w", err)
+	}
+	r.Body.Close()
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	if len(body) == 0 {
+		return metav1.DeletePropagationBackground, nil
+	}
+	// client-go's default negotiated content type is protobuf, not JSON --
+	// same reason decodeBody below needs Codecs.UniversalDeserializer rather
+	// than plain encoding/json (found by running this against a real
+	// client-go client, not assumed: a bare json.Unmarshal failed to decode
+	// with "invalid character 'k' looking for beginning of value", the tell
+	// for feeding protobuf bytes to a JSON decoder).
+	obj, err := decodeBody(body)
+	if err != nil {
+		return "", fmt.Errorf("decode delete options: %w", err)
+	}
+	opts, ok := obj.(*metav1.DeleteOptions)
+	if !ok {
+		return "", fmt.Errorf("decode delete options: unexpected type %T", obj)
+	}
+	if opts.PropagationPolicy == nil {
+		return metav1.DeletePropagationBackground, nil
+	}
+	return *opts.PropagationPolicy, nil
+}
 
 // decodeBody decodes the request body as a Kubernetes runtime.Object.
 // Uses UniversalDeserializer which auto-detects JSON and protobuf formats.
@@ -29,12 +74,15 @@ func decodeBody(body []byte) (runtime.Object, error) {
 // mux route per prefix and passes the matching stores map for each, so
 // prefix and stores always agree on which GroupVersion is being served.
 //
-// namespacedStores, if non-nil, is swept when a Namespace object itself is
-// deleted (see NamespacedResourceStores and the http.MethodDelete case
-// below). Only the core/v1 registration passes it: "namespaces" never
-// exists as a key in any other group's stores map, so the cascading-delete
-// branch is naturally unreachable for group-API calls even when they pass
-// their own (always nil) namespacedStores.
+// namespacedStores, if non-nil, is used two ways by the http.MethodDelete
+// case below (see NamespacedResourceStores): swept when a Namespace object
+// itself is deleted ("namespaces" never exists as a key in any other
+// group's stores map, so that branch is naturally unreachable for group-API
+// calls even though they pass the same namespacedStores), and walked for
+// ownerReferences cascade GC (gc.go's CascadeDeleteDependents) whenever any
+// namespaced object is deleted, regardless of group -- deleting an apps/v1
+// Deployment must reach ReplicaSets (apps/v1) and Pods (core/v1) alike, so
+// every group's HandleResource call passes the same full, cross-group slice.
 //
 // This single function replaces what used to be two near-identical
 // functions, HandleAPI and HandleGroupAPI: same CRUD switch, same path
@@ -80,14 +128,14 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 				writeResourceError(w, err, resource, name)
 				return
 			}
-			writeRuntimeObject(w, http.StatusOK, obj)
+			writeGetResponse(w, r, obj)
 		} else {
 			obj, err := store.Get(ctx, namespace, name)
 			if err != nil {
 				writeResourceError(w, err, resource, name)
 				return
 			}
-			writeRuntimeObject(w, http.StatusOK, obj)
+			writeGetResponse(w, r, obj)
 		}
 
 	case http.MethodPost:
@@ -98,11 +146,18 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		}
 		defer r.Body.Close()
 
-		rObj, err := decodeBody(body)
+		fieldValidation, err := parseFieldValidation(r)
+		if err != nil {
+			writeStatusError(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+
+		rObj, warnings, err := decodeBodyWithFieldValidation(body, fieldValidation)
 		if err != nil {
 			writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to decode request body: "+err.Error())
 			return
 		}
+		writeFieldValidationWarnings(w, warnings)
 
 		ApplyDefaults(rObj)
 
@@ -168,11 +223,18 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		}
 		defer r.Body.Close()
 
-		rObj, err := decodeBody(body)
+		fieldValidation, err := parseFieldValidation(r)
+		if err != nil {
+			writeStatusError(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+
+		rObj, warnings, err := decodeBodyWithFieldValidation(body, fieldValidation)
 		if err != nil {
 			writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to decode request body: "+err.Error())
 			return
 		}
+		writeFieldValidationWarnings(w, warnings)
 
 		obj, err := store.Update(ctx, namespace, name, rObj)
 		if err != nil {
@@ -183,6 +245,12 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		writeRuntimeObject(w, http.StatusOK, obj)
 
 	case http.MethodDelete:
+		policy, err := parseDeletePropagationPolicy(r)
+		if err != nil {
+			writeStatusError(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+
 		if name == "" {
 			labelSelector := r.URL.Query().Get("labelSelector")
 
@@ -244,6 +312,26 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 					log.Printf("endpoints reconciliation error for namespace %s: %v", namespace, err)
 				}
 			}
+			if store.namespaced && namespacedStores != nil {
+				// ownerReferences cascade GC (see gc.go) for every object
+				// this collection-delete just removed, e.g. `kubectl delete
+				// replicasets --all` should also take their Pods with it.
+				// Uses each item's own namespace, not the request's (which is
+				// "" for an all-namespaces collection delete).
+				items, err := meta.ExtractList(obj)
+				if err != nil {
+					writeInternalError(w, fmt.Errorf("extract deleted %s list: %w", resource, err))
+					return
+				}
+				for _, item := range items {
+					if m := getObjectMeta(item); m != nil {
+						if err := CascadeDeleteDependents(ctx, namespacedStores, m.Namespace, m.UID, policy); err != nil {
+							writeInternalError(w, err)
+							return
+						}
+					}
+				}
+			}
 			writeRuntimeObject(w, http.StatusOK, obj)
 			return
 		}
@@ -280,6 +368,14 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		}
 		if pvc, ok := obj.(*corev1.PersistentVolumeClaim); ok {
 			ReleasePersistentVolume(ctx, stores, pvc)
+		}
+		if store.namespaced && namespacedStores != nil {
+			if m := getObjectMeta(obj); m != nil {
+				if err := CascadeDeleteDependents(ctx, namespacedStores, namespace, m.UID, policy); err != nil {
+					writeInternalError(w, err)
+					return
+				}
+			}
 		}
 		TriggerEndpointsReconcile(ctx, store.storage, namespace, obj)
 		writeRuntimeObject(w, http.StatusOK, obj)
@@ -378,6 +474,22 @@ func parseResourcePath(path string) (resource, namespace, name, subresource stri
 	default:
 		return "", "", "", "", false
 	}
+}
+
+// writeGetResponse writes obj as the response to a GET (get or list), as a
+// meta.k8s.io/v1 Table if r's Accept header requested one (kubectl's default
+// human-readable "get" output), or as obj itself otherwise.
+func writeGetResponse(w http.ResponseWriter, r *http.Request, obj runtime.Object) {
+	if wantsTable(r) {
+		table, err := ConvertToTable(obj)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		writeRuntimeObject(w, http.StatusOK, table)
+		return
+	}
+	writeRuntimeObject(w, http.StatusOK, obj)
 }
 
 // writeRuntimeObject encodes a runtime.Object to JSON and writes it to the response.

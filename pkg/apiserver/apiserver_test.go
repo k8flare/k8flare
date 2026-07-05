@@ -24,9 +24,14 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	authorizationv1 "k8s.io/api/authorization/v1"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -1163,6 +1168,232 @@ func TestWorkloadStatusSubresources(t *testing.T) {
 	})
 }
 
+// TestScaleSubresource exercises `kubectl scale --replicas=N` against every
+// resource apidef.Table declares a "scale" subresource for, via the real
+// typed GetScale/UpdateScale client-go calls (the same ones `kubectl scale`
+// itself uses), not raw HTTP.
+func TestScaleSubresource(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+	ns := "default"
+
+	podTemplate := corev1.PodTemplateSpec{
+		ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "scale-sub-test"}},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "c", Image: "busybox"}},
+		},
+	}
+	selector := &metav1.LabelSelector{MatchLabels: map[string]string{"app": "scale-sub-test"}}
+
+	t.Run("Deployment", func(t *testing.T) {
+		name := "scale-sub-dep"
+		_ = client.AppsV1().Deployments(ns).Delete(ctx, name, metav1.DeleteOptions{})
+		one := int32(1)
+		_, err := client.AppsV1().Deployments(ns).Create(ctx, &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec:       appsv1.DeploymentSpec{Replicas: &one, Selector: selector, Template: podTemplate},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+
+		scale, err := client.AppsV1().Deployments(ns).GetScale(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("GetScale: %v", err)
+		}
+		if scale.Spec.Replicas != 1 {
+			t.Fatalf("GetScale.Spec.Replicas: got %d, want 1", scale.Spec.Replicas)
+		}
+
+		// Checked on the raw response bytes, not the typed client-go decode
+		// of it: client-go's typed Into() strips TypeMeta on the way out
+		// (a client convention, see TestGetAsTable's comment), which would
+		// hide a real server-side omission here. kubectl's `scale` command
+		// decodes this response with a kind-aware client and hard-errors
+		// without kind/apiVersion present -- found by team-lead's
+		// independent verification against real kubectl.
+		raw, err := client.AppsV1().RESTClient().Get().
+			Namespace(ns).Resource("deployments").Name(name).SubResource("scale").
+			DoRaw(ctx)
+		if err != nil {
+			t.Fatalf("raw GetScale: %v", err)
+		}
+		if !strings.Contains(string(raw), `"kind":"Scale"`) || !strings.Contains(string(raw), `"apiVersion":"autoscaling/v1"`) {
+			t.Fatalf("scale response is missing TypeMeta: %s", raw)
+		}
+
+		scale.Spec.Replicas = 3
+		updatedScale, err := client.AppsV1().Deployments(ns).UpdateScale(ctx, name, scale, metav1.UpdateOptions{})
+		if err != nil {
+			t.Fatalf("UpdateScale: %v", err)
+		}
+		if updatedScale.Spec.Replicas != 3 {
+			t.Fatalf("UpdateScale.Spec.Replicas: got %d, want 3", updatedScale.Spec.Replicas)
+		}
+
+		dep, err := client.AppsV1().Deployments(ns).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 3 {
+			t.Errorf("Deployment.Spec.Replicas after scale: got %v, want 3", dep.Spec.Replicas)
+		}
+	})
+
+	t.Run("ReplicaSet", func(t *testing.T) {
+		name := "scale-sub-rs"
+		_ = client.AppsV1().ReplicaSets(ns).Delete(ctx, name, metav1.DeleteOptions{})
+		two := int32(2)
+		_, err := client.AppsV1().ReplicaSets(ns).Create(ctx, &appsv1.ReplicaSet{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec:       appsv1.ReplicaSetSpec{Replicas: &two, Selector: selector, Template: podTemplate},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+
+		scale, err := client.AppsV1().ReplicaSets(ns).GetScale(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("GetScale: %v", err)
+		}
+		if scale.Spec.Replicas != 2 {
+			t.Fatalf("GetScale.Spec.Replicas: got %d, want 2", scale.Spec.Replicas)
+		}
+
+		scale.Spec.Replicas = 4
+		if _, err := client.AppsV1().ReplicaSets(ns).UpdateScale(ctx, name, scale, metav1.UpdateOptions{}); err != nil {
+			t.Fatalf("UpdateScale: %v", err)
+		}
+
+		rs, err := client.AppsV1().ReplicaSets(ns).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if rs.Spec.Replicas == nil || *rs.Spec.Replicas != 4 {
+			t.Errorf("ReplicaSet.Spec.Replicas after scale: got %v, want 4", rs.Spec.Replicas)
+		}
+	})
+
+	t.Run("PatchScale", func(t *testing.T) {
+		name := "scale-sub-patch"
+		_ = client.AppsV1().Deployments(ns).Delete(ctx, name, metav1.DeleteOptions{})
+		one := int32(1)
+		_, err := client.AppsV1().Deployments(ns).Create(ctx, &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec:       appsv1.DeploymentSpec{Replicas: &one, Selector: selector, Template: podTemplate},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+
+		// client-go's typed Deployments() client has no generated PatchScale
+		// method (only kubectl-facing GetScale/UpdateScale/ApplyScale) --
+		// real clients never Patch(..., "scale") through the Deployment
+		// typed client. Decoding via the raw RESTClient into the real
+		// response type (autoscaling/v1.Scale) instead of *appsv1.Deployment
+		// matches what actually comes back now that the response carries
+		// "kind":"Scale" (see scaleFromObject's TypeMeta comment) -- before
+		// that fix this subtest passed only by coincidence: Scale and
+		// Deployment both spell their replica count "spec.replicas" in
+		// JSON, so decoding the kind-less response straight into a
+		// *Deployment happened to fill in the right field.
+		patch := []byte(`{"spec":{"replicas":5}}`)
+		var patchedScale autoscalingv1.Scale
+		err = client.AppsV1().RESTClient().Patch(types.MergePatchType).
+			Namespace(ns).Resource("deployments").Name(name).SubResource("scale").
+			Body(patch).Do(ctx).Into(&patchedScale)
+		if err != nil {
+			t.Fatalf("Patch scale: %v", err)
+		}
+		if patchedScale.Spec.Replicas != 5 {
+			t.Errorf("Scale.Spec.Replicas after scale patch: got %d, want 5", patchedScale.Spec.Replicas)
+		}
+
+		dep, err := client.AppsV1().Deployments(ns).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 5 {
+			t.Errorf("Deployment.Spec.Replicas after scale patch: got %v, want 5", dep.Spec.Replicas)
+		}
+	})
+}
+
+// TestGetAsTable exercises `kubectl get`'s default human-readable output path:
+// requesting the meta.k8s.io/v1 Table representation via the same Accept
+// header kubectl sends, against both a list and a single named object.
+func TestGetAsTable(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+	ns := "default"
+	name := "table-sub-pod"
+
+	client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: ns},
+	}, metav1.CreateOptions{})
+	_ = client.CoreV1().Pods(ns).Delete(ctx, name, metav1.DeleteOptions{})
+	if _, err := client.CoreV1().Pods(ns).Create(ctx, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "busybox"}}},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	req := client.CoreV1().RESTClient().Get().
+		Namespace(ns).Resource("pods").
+		SetHeader("Accept", "application/json;as=Table;v=v1;g=meta.k8s.io")
+
+	t.Run("List", func(t *testing.T) {
+		raw, err := req.Do(ctx).Raw()
+		if err != nil {
+			t.Fatalf("Do: %v", err)
+		}
+		// Checked on the raw bytes, not after Into(): client-go's typed
+		// decode clears TypeMeta on the object it hands back (a client
+		// convention for typed clients), so asserting Kind post-Into would
+		// pass even if the server never set it.
+		if !strings.Contains(string(raw), `"kind":"Table"`) {
+			t.Fatalf("response is not a Table: %s", raw)
+		}
+
+		var table metav1.Table
+		if err := json.Unmarshal(raw, &table); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if len(table.ColumnDefinitions) == 0 || table.ColumnDefinitions[0].Name != "Name" {
+			t.Fatalf("ColumnDefinitions: got %+v", table.ColumnDefinitions)
+		}
+		found := false
+		for _, row := range table.Rows {
+			if len(row.Cells) > 0 && row.Cells[0] == name {
+				found = true
+				if len(row.Object.Raw) == 0 {
+					t.Errorf("row.Object.Raw is empty for %s", name)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("Rows: pod %s not found among %+v", name, table.Rows)
+		}
+	})
+
+	t.Run("Single", func(t *testing.T) {
+		var table metav1.Table
+		if err := client.CoreV1().RESTClient().Get().
+			Namespace(ns).Resource("pods").Name(name).
+			SetHeader("Accept", "application/json;as=Table;v=v1;g=meta.k8s.io").
+			Do(ctx).Into(&table); err != nil {
+			t.Fatalf("Do: %v", err)
+		}
+		if len(table.Rows) != 1 {
+			t.Fatalf("Rows: got %d, want 1", len(table.Rows))
+		}
+		if table.Rows[0].Cells[0] != name {
+			t.Errorf("Rows[0].Cells[0]: got %v, want %s", table.Rows[0].Cells[0], name)
+		}
+	})
+}
+
 func TestLeaseCRUD(t *testing.T) {
 	client := setupWranglerDev(t)
 	ctx := context.Background()
@@ -1297,6 +1528,289 @@ func TestResourceAPIGroup(t *testing.T) {
 			t.Fatalf("Delete: %v", err)
 		}
 	})
+}
+
+// TestRBACGroup exercises rbac.authorization.k8s.io/v1's Role/RoleBinding/
+// ClusterRole/ClusterRoleBinding CRUD via the real typed client-go clientset,
+// the same one `kubectl get roles`/`kubectl apply -f role.yaml` use.
+func TestRBACGroup(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+	ns := "default"
+
+	t.Run("Discovery", func(t *testing.T) {
+		resources, err := client.Discovery().ServerResourcesForGroupVersion("rbac.authorization.k8s.io/v1")
+		if err != nil {
+			t.Fatalf("ServerResourcesForGroupVersion(rbac.authorization.k8s.io/v1): %v", err)
+		}
+		expected := map[string]bool{"roles": false, "rolebindings": false, "clusterroles": false, "clusterrolebindings": false}
+		for _, r := range resources.APIResources {
+			if _, ok := expected[r.Name]; ok {
+				expected[r.Name] = true
+			}
+		}
+		for name, found := range expected {
+			if !found {
+				t.Errorf("Resource %q not found in discovery", name)
+			}
+		}
+	})
+
+	t.Run("RoleCRUD", func(t *testing.T) {
+		name := "test-role-crud"
+		_ = client.RbacV1().Roles(ns).Delete(ctx, name, metav1.DeleteOptions{})
+
+		role, err := client.RbacV1().Roles(ns).Create(ctx, &rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get", "list"}},
+			},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if role.Name != name {
+			t.Errorf("Name: got %q", role.Name)
+		}
+
+		if _, err := client.RbacV1().Roles(ns).Get(ctx, name, metav1.GetOptions{}); err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+
+		if err := client.RbacV1().Roles(ns).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+	})
+
+	t.Run("RoleBindingCRUD", func(t *testing.T) {
+		name := "test-rolebinding-crud"
+		_ = client.RbacV1().RoleBindings(ns).Delete(ctx, name, metav1.DeleteOptions{})
+
+		rb, err := client.RbacV1().RoleBindings(ns).Create(ctx, &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Subjects:   []rbacv1.Subject{{Kind: "User", Name: "test-user", APIGroup: "rbac.authorization.k8s.io"}},
+			RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: "test-role-crud"},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if rb.Name != name {
+			t.Errorf("Name: got %q", rb.Name)
+		}
+
+		if err := client.RbacV1().RoleBindings(ns).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+	})
+
+	t.Run("ClusterRoleCRUD", func(t *testing.T) {
+		name := "test-clusterrole-crud"
+		_ = client.RbacV1().ClusterRoles().Delete(ctx, name, metav1.DeleteOptions{})
+
+		cr, err := client.RbacV1().ClusterRoles().Create(ctx, &rbacv1.ClusterRole{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{""}, Resources: []string{"nodes"}, Verbs: []string{"get", "list"}},
+			},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if cr.Name != name {
+			t.Errorf("Name: got %q", cr.Name)
+		}
+
+		if err := client.RbacV1().ClusterRoles().Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+	})
+
+	t.Run("ClusterRoleBindingCRUD", func(t *testing.T) {
+		name := "test-clusterrolebinding-crud"
+		_ = client.RbacV1().ClusterRoleBindings().Delete(ctx, name, metav1.DeleteOptions{})
+
+		crb, err := client.RbacV1().ClusterRoleBindings().Create(ctx, &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Subjects:   []rbacv1.Subject{{Kind: "User", Name: "test-user", APIGroup: "rbac.authorization.k8s.io"}},
+			RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "test-clusterrole-crud"},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if crb.Name != name {
+			t.Errorf("Name: got %q", crb.Name)
+		}
+
+		if err := client.RbacV1().ClusterRoleBindings().Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+	})
+}
+
+// TestNewlyRegisteredResources exercises the apidef.Table gaps closed
+// against a standard cluster's `kubectl api-resources` output: core/v1
+// ResourceQuota, networking.k8s.io/v1 Ingress/IngressClass/NetworkPolicy,
+// and autoscaling/v2 HorizontalPodAutoscaler. CRUD+watch only, via the real
+// typed client-go clientset -- none of these are reconciled by any
+// controller in pkg/controllers yet (see apidef.Table's comments on each),
+// so this only proves they're storable/gettable/discoverable, not that
+// anything acts on them.
+func TestNewlyRegisteredResources(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+	ns := "default"
+
+	t.Run("ResourceQuota", func(t *testing.T) {
+		name := "test-resourcequota-crud"
+		_ = client.CoreV1().ResourceQuotas(ns).Delete(ctx, name, metav1.DeleteOptions{})
+		rq, err := client.CoreV1().ResourceQuotas(ns).Create(ctx, &corev1.ResourceQuota{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: corev1.ResourceQuotaSpec{
+				Hard: corev1.ResourceList{corev1.ResourcePods: resource.MustParse("10")},
+			},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if rq.Name != name {
+			t.Errorf("Name: got %q", rq.Name)
+		}
+		if _, err := client.CoreV1().ResourceQuotas(ns).Get(ctx, name, metav1.GetOptions{}); err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if err := client.CoreV1().ResourceQuotas(ns).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+	})
+
+	t.Run("Ingress", func(t *testing.T) {
+		name := "test-ingress-crud"
+		pathType := networkingv1.PathTypePrefix
+		_ = client.NetworkingV1().Ingresses(ns).Delete(ctx, name, metav1.DeleteOptions{})
+		ing, err := client.NetworkingV1().Ingresses(ns).Create(ctx, &networkingv1.Ingress{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: networkingv1.IngressSpec{
+				Rules: []networkingv1.IngressRule{{
+					Host: "example.com",
+					IngressRuleValue: networkingv1.IngressRuleValue{
+						HTTP: &networkingv1.HTTPIngressRuleValue{
+							Paths: []networkingv1.HTTPIngressPath{{
+								Path:     "/",
+								PathType: &pathType,
+								Backend: networkingv1.IngressBackend{
+									Service: &networkingv1.IngressServiceBackend{
+										Name: "test-svc",
+										Port: networkingv1.ServiceBackendPort{Number: 80},
+									},
+								},
+							}},
+						},
+					},
+				}},
+			},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if ing.Name != name {
+			t.Errorf("Name: got %q", ing.Name)
+		}
+		if err := client.NetworkingV1().Ingresses(ns).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+	})
+
+	t.Run("IngressClass", func(t *testing.T) {
+		name := "test-ingressclass-crud"
+		_ = client.NetworkingV1().IngressClasses().Delete(ctx, name, metav1.DeleteOptions{})
+		ic, err := client.NetworkingV1().IngressClasses().Create(ctx, &networkingv1.IngressClass{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec:       networkingv1.IngressClassSpec{Controller: "example.com/ingress-controller"},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if ic.Name != name {
+			t.Errorf("Name: got %q", ic.Name)
+		}
+		if err := client.NetworkingV1().IngressClasses().Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+	})
+
+	t.Run("NetworkPolicy", func(t *testing.T) {
+		name := "test-networkpolicy-crud"
+		_ = client.NetworkingV1().NetworkPolicies(ns).Delete(ctx, name, metav1.DeleteOptions{})
+		np, err := client.NetworkingV1().NetworkPolicies(ns).Create(ctx, &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "netpol-test"}},
+			},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if np.Name != name {
+			t.Errorf("Name: got %q", np.Name)
+		}
+		if err := client.NetworkingV1().NetworkPolicies(ns).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+	})
+
+	t.Run("HorizontalPodAutoscaler", func(t *testing.T) {
+		name := "test-hpa-crud"
+		minReplicas := int32(1)
+		_ = client.AutoscalingV2().HorizontalPodAutoscalers(ns).Delete(ctx, name, metav1.DeleteOptions{})
+		hpa, err := client.AutoscalingV2().HorizontalPodAutoscalers(ns).Create(ctx, &autoscalingv2.HorizontalPodAutoscaler{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+				ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
+					Kind: "Deployment", Name: "hpa-target", APIVersion: "apps/v1",
+				},
+				MinReplicas: &minReplicas,
+				MaxReplicas: 5,
+			},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if hpa.Name != name {
+			t.Errorf("Name: got %q", hpa.Name)
+		}
+		if _, err := client.Discovery().ServerResourcesForGroupVersion("autoscaling/v2"); err != nil {
+			t.Fatalf("ServerResourcesForGroupVersion(autoscaling/v2): %v", err)
+		}
+		if err := client.AutoscalingV2().HorizontalPodAutoscalers(ns).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+	})
+}
+
+// TestSelfSubjectAccessReview exercises `kubectl auth can-i`'s codepath: a
+// real client-go SelfSubjectAccessReviews().Create call. This project's
+// token model is all-or-nothing (any request with a valid bearer token can
+// do anything -- see auth.go), so the only correct answer here is
+// Allowed: true regardless of the resource/verb asked about.
+func TestSelfSubjectAccessReview(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+
+	review, err := client.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, &authorizationv1.SelfSubjectAccessReview{
+		Spec: authorizationv1.SelfSubjectAccessReviewSpec{
+			ResourceAttributes: &authorizationv1.ResourceAttributes{
+				Namespace: "default",
+				Verb:      "delete",
+				Resource:  "pods",
+			},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if !review.Status.Allowed {
+		t.Errorf("Status.Allowed: got false, want true (Status: %+v)", review.Status)
+	}
 }
 
 func TestSupervisorCACerts(t *testing.T) {

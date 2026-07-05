@@ -118,6 +118,34 @@ func RegisterGroupDiscovery(mux *http.ServeMux) {
 		mux.HandleFunc("GET /apis/"+gv.Group+"/"+gv.Version, writeJSONHandler(resourceList))
 	}
 
+	// authorization.k8s.io/v1 isn't in apidef.Table -- selfsubjectaccessreviews
+	// is a compute-on-request resource with no backing ResourceStore (see
+	// selfsubjectaccessreview.go), so it doesn't fit apidef.ResourceDef's
+	// New/NewList shape the way every other resource above does. Its
+	// discovery documents are hand-written here instead, the one exception
+	// to "the table is the only place to register a resource" this project
+	// currently has.
+	authGV := metav1.GroupVersionForDiscovery{GroupVersion: "authorization.k8s.io/v1", Version: "v1"}
+	groups = append(groups, metav1.APIGroup{
+		TypeMeta:         metav1.TypeMeta{Kind: "APIGroup"},
+		Name:             "authorization.k8s.io",
+		Versions:         []metav1.GroupVersionForDiscovery{authGV},
+		PreferredVersion: authGV,
+	})
+	mux.HandleFunc("GET /apis/authorization.k8s.io", writeJSONHandler(metav1.APIGroup{
+		TypeMeta:         metav1.TypeMeta{Kind: "APIGroup"},
+		Name:             "authorization.k8s.io",
+		Versions:         []metav1.GroupVersionForDiscovery{authGV},
+		PreferredVersion: authGV,
+	}))
+	mux.HandleFunc("GET /apis/authorization.k8s.io/v1", writeJSONHandler(metav1.APIResourceList{
+		TypeMeta:     metav1.TypeMeta{Kind: "APIResourceList"},
+		GroupVersion: "authorization.k8s.io/v1",
+		APIResources: []metav1.APIResource{
+			{Name: "selfsubjectaccessreviews", SingularName: "selfsubjectaccessreview", Namespaced: false, Kind: "SelfSubjectAccessReview", Verbs: metav1.Verbs{"create"}},
+		},
+	}))
+
 	mux.HandleFunc("GET /apis", writeJSONHandler(metav1.APIGroupList{
 		TypeMeta: metav1.TypeMeta{Kind: "APIGroupList", APIVersion: "v1"},
 		Groups:   groups,
