@@ -39,6 +39,7 @@ documentation or guesswork alone has a proven cost.
 | S6  | R2 (PVC access isolation, S3 access from Containers)                                                                                                                        | verified (desk research + one read-only check)                                                                                                                                                                                                                                                                                                                                                                                                                        | Phase 8                                                               |
 | S7  | Re-verifying apiserver residency (double-checking the rejection)                                                                                                            | not started                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Final confirmation of the rejection decision                          |
 | S8  | Whether controllers can run WASM-resident (reframed 2026-07-02: WASM execution-_shape_ design material, not a go/no-go gate — Containers isn't an option under any outcome) | partially confirmed — (a)(c)(d) verified locally with real 10+ min runs; the outbound-`net/http` crash found mid-spike has a verified one-file library-level fix (`wasm_exec.js` patch); startup-tax measured against the real apiserver binary (~14ms cold); `ctx.waitUntil` confirmed to keep the whole scheduler pumped with no client connected (45s+ observed) — see the S8 follow-up subsection for the failure-mode layer table and candidate execution shapes | ★Highest priority. Informs which WASM execution shape Phase 5 adopts  |
+| S14 | ASSETS/R2 → Worker Loader runtime code supply (routing around the 10MiB gzip deploy cap for the real kube-controller-manager WASM)                                          | verified locally end-to-end (spike: `spikes/s14-loader-external-fetch/FINDINGS.md`; production-path integration: this file's S14 section) — Loader has its own hard 64MiB total-module-bytes cap, satisfied via `-s -w` + `wasm-opt -Oz` (59.6MiB); Loader caps/eviction/memory in production still unverified                                                                                                                                                        | workers/controllers deploy path (real KCM in Workers)                 |
 
 ---
 
@@ -1598,6 +1599,83 @@ most for future promotion: the Deployment revision-tracking gap (recurs in
 three separate specs, likely one root cause in how `status.observedGeneration`
 or revision annotations are updated) and the EndpointSlice port-population
 gap (directly blocks the one promotion this project has been trying to make).
+
+## S14: ASSETS+LOADER code supply — the deploy path that puts the real kube-controller-manager inside Workers (2026-07-05)
+
+Spike findings in `spikes/s14-loader-external-fetch/FINDINGS.md` (runtime
+code supply from R2/ASSETS into the Worker Loader works; the Loader has its
+own hard 64MiB total-module-bytes cap — superseding s2-loader's "no limit"
+claim; a wasm-opt'd lean KCM build fits under it and executes). This
+section records the production-path integration that followed the spike,
+all verified live against `wrangler dev` (5-Worker multi-config, fresh DO
+state):
+
+**Architecture (now in-tree, `workers/controllers`):** the Worker script
+itself is small TypeScript only. The KCM WASM is built by
+`scripts/build-controllers-wasm.sh` — `-ldflags="-s -w"` (78,217,864 →
+75,749,798 bytes) then `wasm-opt -Oz` (→ 62,535,235 bytes = 59.6MiB,
+~4.4MiB under the Loader's 67,108,864-byte cap; ~2 min build cost) — and
+shipped as Static Assets in three ≤24MiB chunks (ASSETS per-file cap is
+25MiB) plus a sha256 manifest. The Controllers DO assembles the chunks at
+Loader-factory time and runs the binary as a Dynamic Worker via
+`modules["app.wasm"] = { wasm }`; the manifest's sha256 is the Loader
+cache id, so a rebuild naturally busts the isolate cache. The GATEWAY
+service binding and `K3S_TOKEN` pass through `WorkerCode.env` (Fetchers
+survive the env clone, S2 item 3a), so `pkg/controllers.RestConfig`
+works unchanged inside the loaded worker. This removes the 10MiB gzip
+deploy blocker that had kept `workers/controllers` undeployable
+(gzip was ~13.6MB); `workers/apiserver` still ships conventionally
+(gzip 7.98MB < 10MiB).
+
+**New execution-shape finding — the pump window:** unlike the previous
+DO-hosted shape (where `DurableObjectState.waitUntil` kept the Go
+scheduler pumped), a Loader-loaded dynamic worker freezes the moment a
+dispatch's response completes. Observed directly: initial
+Deployment→ReplicaSet→Pod creation worked (inside the first request's
+window), but a scale PATCH issued after ~40s idle was never reconciled.
+Fix: the dynamic worker's bootstrap arms `ctx.waitUntil(25s)` on every
+poke — event-armed (storage's `pingControllers` on relevant writes + the
+DO's safety-net alarm), bounded, and KCM's own writes re-ping and chain
+windows while real work exists, then everything goes quiet. Idle cluster
+⇒ no pokes ⇒ no windows ⇒ no CPU (invariant #2: I/O waits inside a window
+are not CPU-billed).
+
+**Two real library bugs surfaced only by running the full lifecycle
+against the live stack** (both invisible to source reading):
+
+1. `pkg/leanclient`'s `Delete`/`DeleteCollection` marshaled
+   `metav1.DeleteOptions` with plain `encoding/json` (no
+   kind/apiVersion), and the apiserver's strict decoder 400s a
+   TypeMeta-less body — so every UID-preconditioned Pod delete from the
+   real replicaset controller failed and scale-down never converged.
+   Fixed by stamping TypeMeta in `verbs.go`.
+2. The generated `events` client's `*WithEventNamespace` methods used the
+   client's namespace (always `""` — `record.EventBroadcaster` builds its
+   sink as `Events("")`) instead of the event's own namespace, so every
+   Event write went to the cluster-scoped path and failed; zero Events
+   were ever stored. Fixed in `cmd/k8flare-gen/leanclient.go`'s
+   `eventExtras` (upstream `NamespaceIfScoped` semantics) and
+   regenerated.
+
+**A cascade/GC race with the now-live controllers:**
+`pkg/apiserver/gc.go`'s children-first walk deleted a ReplicaSet's Pods
+while the RS still existed; the real replicaset controller raced
+replacement Pods into existence mid-cascade, and with no background
+garbagecollector they survived as permanent orphans (observed: Deployment
+delete left 1 fresh Pod behind). Fixed by switching `deleteDependents` to
+owner-first order plus a bounded repeat-until-quiet re-sweep.
+
+**Verified end-to-end after the fixes** (real `kube-controller-manager`
+inside a Loader-loaded dynamic worker, against the live local stack):
+Deployment create → RS (real pod-template-hash naming) → 2 Pods in ~6s;
+scale up 2→3 issued after an idle window → reconciled in ≤5s; scale down
+3→1 → ≤5s; all with correct `ownerReferences`/`generateName` semantics.
+
+**Still unverified (production-only):** the exact 64MiB Loader cap figure
+in production (matches Cloudflare's documented number), Loader isolate
+idle-eviction cadence (affects re-load frequency → $0.002/unique/day and
+informer resync cost), and the 128MiB isolate memory limit under real
+KCM load — `wrangler dev` enforces none of these.
 
 ## Correction log (honest corrections)
 

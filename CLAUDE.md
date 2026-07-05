@@ -28,15 +28,20 @@ workers/gateway(TS, 唯一の公開 Worker)
 workers/storage(TS)
    ├─ Cluster DO: リビジョン権威・kine ログ・facet(ns/<name>, events-log, ca-vault)
    └─ WatchHub DO: watch fan-out(hibernation 必須)
-workers/controllers: 実 kube-controller-manager(DO-hosted Go WASM 常駐、
-   fetch()/alarm() ディスパッチ + waitUntil。Containers フォールバックなし)。
+workers/controllers: 実 kube-controller-manager(Go WASM)。スクリプト本体は
+   小さな TS のみ: KCM WASM は 10MiB gzip デプロイ上限に収まらないため
+   Static Assets に ≤24MiB チャンクで配置し、Controllers DO が実行時に
+   組み立てて Worker Loader(modules.wasm)で Dynamic Worker として起動
+   する(S14。Loader 自体の 64MiB raw 上限があり、-s -w + wasm-opt -Oz で
+   59.6MiB に収めて充足 — scripts/build-controllers-wasm.sh がゲート)。
+   動的 Worker は poke(storage の pingControllers / DO の event-armed
+   安全網 alarm)ごとに有界 waitUntil ウィンドウでのみポンプされる。
    **実 kube-scheduler は GOOS=js で構文コンパイル不可**(k8s 本体フォーク
    禁止と衝突するため断念、判断根拠は docs/platform-verification.md 参照)
-   — BYO VM / ホストプロセス専用に固定。KCM も client-go 型付き
-   Clientset+Informers だけで Workers 10MiB 予算の 89% を消費し、軽量
-   クライアントに置き換えても実コントローラー本体が +6MiB 級を要求する
-   ため 5 コントローラー構成で 15〜16MiB(予算超過)——**KCM も現状 BYO VM /
-   ホストプロセス専用**(判断根拠は docs/platform-verification.md 参照)。
+   — BYO VM / ホストプロセス専用に固定。
+   (訂正 2026-07-05: 以前ここに「KCM も 10MiB 予算超過のため BYO VM /
+   ホストプロセス専用」とあったが、上記 ASSETS+LOADER 経路の実機検証に
+   より Workers 内実行へ復帰 — 経緯は docs/platform-verification.md S14)。
 workers/nodes: Pod-on-Containers ノードバックエンド(任意 OCI 実行が要るため Containers)
 R2: PV/PVC/StorageClass バックエンド
 ```
@@ -90,6 +95,8 @@ CI ゲート(`.github/workflows/`): `ci.yml`(vp check / build:wasm / go vet+test
 - `wrangler dev` の alarm エミュレーションは、読み取り専用のポーリングだけでは発火しないことがある。「動いていない」と結論する前に書き込みを1件試すこと。
 - `kubectl apply` に `--validate=false` はもう不要(OpenAPI v2/v3 を Static Assets で配信、実 kubectl で確認済み)。ただし plain HTTP(`wrangler dev` そのまま)だと client-go の `clientcmd` が TLS 以外への認証情報送信を拒否するため、kubeconfig 経由の実 kubectl 検証にはローカル TLS 終端(自己署名証明書 + リバースプロキシ)が要る — Go の `rest.Config{BearerToken: ...}` を直接使う `go test` はこの制約を受けない。サーバー側の strict field validation(`fieldValidation=Strict`)は未実装なので、未知フィールドはクライアント側 OpenAPI 検証をすり抜けても現状はサーバーで黙って受理される。
 - `wrangler deploy` / `wrangler secret put` は実アカウントに影響するので、指示なく実行しない(`.claude/settings.json` の deny 設定でもブロックされる)。
+- `npm run dev` は `workers/controllers`(実 KCM)を**含むようになった**(2026-07-05、S14 の ASSETS+LOADER 化と同時に追加。それ以前は含まれておらず、「Pod が生成されない」誤結論の原因だった)。ただし `go test ./pkg/apiserver/...` が起動する wrangler dev は今も 4 Worker 構成(controllers なし)— テスト内の Pod は KCM に触られない前提で書かれている。controllers を動かすには先に `npm run build:wasm`(wasm-opt 込みで controllers 側は約2分)で `workers/controllers/assets/` を生成しておくこと。
+- `go test ./pkg/apiserver/...` は repo ルートの `.wrangler/state` を**クリアせずに**使う。中断された前回実行の残骸があると「already exists」で決定論的に落ちる(2026-07-05 実測)。落ちたらまず `rm -rf .wrangler/state` してから再実行し、flaky と結論しない。
 
 ## コード規約
 

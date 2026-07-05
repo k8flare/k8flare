@@ -8,12 +8,12 @@ import (
 	"net"
 	"time"
 
-	clientset "k8s.io/client-go/kubernetes"
 	restclient "k8s.io/client-go/rest"
 
-	"k8s.io/client-go/informers"
-
 	"k8s.io/client-go/util/flowcontrol"
+
+	leanclientset "github.com/k8flare/k8flare/pkg/leanclient/clientset"
+	leaninformers "github.com/k8flare/k8flare/pkg/leanclient/informers"
 	"k8s.io/kubernetes/pkg/controller/cronjob"
 	"k8s.io/kubernetes/pkg/controller/daemon"
 	"k8s.io/kubernetes/pkg/controller/deployment"
@@ -102,26 +102,26 @@ func RunControllerManager(ctx context.Context, restCfg *restclient.Config) (err 
 		}
 	}()
 
-	client, err := clientset.NewForConfig(restclient.AddUserAgent(restCfg, "kube-controller-manager"))
+	client, err := leanclientset.NewForConfig(restclient.AddUserAgent(restCfg, "kube-controller-manager"))
 	if err != nil {
 		return fmt.Errorf("controller-manager: build client: %w", err)
 	}
 
-	factory := informers.NewSharedInformerFactory(client, minResyncPeriod)
+	factory := leaninformers.New(client, minResyncPeriod)
 
 	rsc := replicaset.NewReplicaSetController(
 		ctx,
-		factory.Apps().V1().ReplicaSets(),
-		factory.Core().V1().Pods(),
+		factory.ReplicaSets(),
+		factory.Pods(),
 		client,
 		replicaset.BurstReplicas,
 	)
 
 	dc, err := deployment.NewDeploymentController(
 		ctx,
-		factory.Apps().V1().Deployments(),
-		factory.Apps().V1().ReplicaSets(),
-		factory.Core().V1().Pods(),
+		factory.Deployments(),
+		factory.ReplicaSets(),
+		factory.Pods(),
 		client,
 	)
 	if err != nil {
@@ -130,10 +130,10 @@ func RunControllerManager(ctx context.Context, restCfg *restclient.Config) (err 
 
 	dsc, err := daemon.NewDaemonSetsController(
 		ctx,
-		factory.Apps().V1().DaemonSets(),
-		factory.Apps().V1().ControllerRevisions(),
-		factory.Core().V1().Pods(),
-		factory.Core().V1().Nodes(),
+		factory.DaemonSets(),
+		factory.ControllerRevisions(),
+		factory.Pods(),
+		factory.Nodes(),
 		client,
 		flowcontrol.NewBackOff(1*time.Second, 15*time.Minute),
 	)
@@ -148,8 +148,8 @@ func RunControllerManager(ctx context.Context, restCfg *restclient.Config) (err 
 	jc, err := job.NewController(
 		ctx,
 		client,
-		factory.Core().V1().Pods(),
-		factory.Batch().V1().Jobs(),
+		factory.Pods(),
+		factory.Jobs(),
 		nil,
 		nil,
 	)
@@ -159,8 +159,8 @@ func RunControllerManager(ctx context.Context, restCfg *restclient.Config) (err 
 
 	cjc, err := cronjob.NewControllerV2(
 		ctx,
-		factory.Batch().V1().Jobs(),
-		factory.Batch().V1().CronJobs(),
+		factory.Jobs(),
+		factory.CronJobs(),
 		client,
 	)
 	if err != nil {
@@ -169,19 +169,19 @@ func RunControllerManager(ctx context.Context, restCfg *restclient.Config) (err 
 
 	ec := endpoint.NewEndpointController(
 		ctx,
-		factory.Core().V1().Pods(),
-		factory.Core().V1().Services(),
-		factory.Core().V1().Endpoints(),
+		factory.Pods(),
+		factory.Services(),
+		factory.Endpoints(),
 		client,
 		endpointUpdatesBatchPeriod,
 	)
 
 	esc := endpointslice.NewController(
 		ctx,
-		factory.Core().V1().Pods(),
-		factory.Core().V1().Services(),
-		factory.Core().V1().Nodes(),
-		factory.Discovery().V1().EndpointSlices(),
+		factory.Pods(),
+		factory.Services(),
+		factory.Nodes(),
+		factory.EndpointSlices(),
 		maxEndpointsPerSlice,
 		client,
 		endpointUpdatesBatchPeriod,
@@ -193,7 +193,7 @@ func RunControllerManager(ctx context.Context, restCfg *restclient.Config) (err 
 	}
 	nic, err := nodeipam.NewNodeIpamController(
 		ctx,
-		factory.Core().V1().Nodes(),
+		factory.Nodes(),
 		nil, // cloud provider: none (matches --cloud-provider="" -- KEP-2395 removed in-tree cloud providers from KCM in v1.31)
 		client,
 		[]*net.IPNet{clusterCIDRNet},
@@ -208,10 +208,10 @@ func RunControllerManager(ctx context.Context, restCfg *restclient.Config) (err 
 
 	nlc, err := nodelifecycle.NewNodeLifecycleController(
 		ctx,
-		factory.Coordination().V1().Leases(),
-		factory.Core().V1().Pods(),
-		factory.Core().V1().Nodes(),
-		factory.Apps().V1().DaemonSets(),
+		factory.Leases(),
+		factory.Pods(),
+		factory.Nodes(),
+		factory.DaemonSets(),
 		client,
 		nodeMonitorPeriod,
 		nodeStartupGracePeriod,
@@ -229,7 +229,7 @@ func RunControllerManager(ctx context.Context, restCfg *restclient.Config) (err 
 	// is GA + LockToDefault -- nodelifecycle no longer runs its own private
 	// taint-eviction loop internally). See this repo's cmd/controller-manager/main.go
 	// comment for the exact canonical controller name this corresponds to.
-	tec, err := tainteviction.New(ctx, client, factory.Core().V1().Pods(), factory.Core().V1().Nodes(), "taint-eviction-controller")
+	tec, err := tainteviction.New(ctx, client, factory.Pods(), factory.Nodes(), "taint-eviction-controller")
 	if err != nil {
 		return fmt.Errorf("controller-manager: new taint-eviction controller: %w", err)
 	}

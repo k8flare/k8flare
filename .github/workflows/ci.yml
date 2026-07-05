@@ -67,18 +67,25 @@ jobs:
       - name: TypeScript check (workers/nodes, uncovered by vp check)
         run: npx tsc --noEmit -p workers/nodes/tsconfig.json
 
+      # binaryen's wasm-opt is required by scripts/build-controllers-wasm.sh
+      # (workers/controllers' KCM WASM only fits under the Worker Loader's
+      # hard 64MiB cap after -Oz -- see the script's header comment).
+      - name: Install binaryen (wasm-opt)
+        run: sudo apt-get update && sudo apt-get install -y binaryen
+
       - name: Build WASM
         run: npm run build:wasm
 
-      # workers/apiserver is the only Worker with a deploy-time size risk
-      # (Go/WASM + client-go-adjacent deps); the other 3 deployable Workers
-      # (gateway/storage/runtime) are plain TypeScript, nowhere near
-      # Cloudflare's 10MiB gzip limit. workers/controllers is excluded on
-      # purpose: it's already known (docs/platform-verification.md's S8
-      # section, Phase 5 finding) to be ~19MiB gzip and not deployable at
-      # all, kept in-repo as verified-but-undeployable reference code, not
-      # part of the release artifact -- gating its size here would just
-      # fail CI on a known, already-documented condition.
+      # workers/apiserver is the only Worker whose WASM ships inside the
+      # script bundle and is therefore bound by Cloudflare's 10MiB gzip
+      # deploy cap; the 3 plain-TypeScript Workers (gateway/storage/
+      # runtime) are nowhere near it. workers/controllers is NOT gated
+      # here because its KCM WASM is not part of the script bundle at all:
+      # it ships via Static Assets in <=24MiB chunks and loads through the
+      # Worker Loader at runtime (spikes/s14-loader-external-fetch), whose
+      # own hard 64MiB raw cap is already enforced inside
+      # scripts/build-controllers-wasm.sh (the Build WASM step above fails
+      # if it's exceeded).
       - name: Check apiserver WASM gzip size budget
         run: |
           SIZE=$(gzip -c workers/apiserver/build/app.wasm | wc -c)

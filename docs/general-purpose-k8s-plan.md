@@ -344,6 +344,45 @@ strategy type: "`, since real clients rely on apiserver-side admission
    client-go for older-style apiservers like this one, but Watch is
    unverified) rather than assuming it works.
 
+   **Investigated (2026-07-05):** embedding the real `garbagecollector`
+   compiles for GOOS=js/wasm cheaply (+2.1MB over the s13-kcm-lean-only
+   baseline's 67MB, `-s -w`) once its RESTMapper/`metadata.Interface`
+   dependencies are stubbed just enough to type-check. Making it functionally
+   real, though, requires building two subsystems `pkg/leanclient` doesn't
+   have today: a generic PartialObjectMetadata client
+   (`k8s.io/client-go/metadata`'s `Interface` — Get/List/Watch/Delete/Patch
+   across arbitrary GVRs, which `graph_builder.go` depends on throughout) and
+   a `meta.ResettableRESTMapper`. Neither is a small addition on top of the
+   existing typed-clientset generator (`cmd/k8flare-gen`) — it's a second,
+   differently-shaped client generator plus a REST-mapping layer, comparable
+   in scope to `pkg/leanclient` itself.
+
+   Given that, `pkg/apiserver/gc.go`'s `CascadeDeleteDependents` was added as
+   a deliberately narrower, **temporary** substitute instead: a synchronous
+   ownerReferences walk over this apiserver's own namespaced `ResourceStore`s
+   (known statically from `apidef.Table`, no RESTMapper/discovery needed),
+   run inline inside the same DELETE request that removes the owner —
+   handles `kubectl delete deployment` cascading to its ReplicaSets/Pods, and
+   honors `propagationPolicy: Orphan`, but is not upstream code and does not
+   cover cluster-scoped owners or CRDs. This is recorded here rather than
+   quietly swapped in per CLAUDE.md rule 4: the long-term intent is still to
+   replace it with the real `garbagecollector` once the PartialObjectMetadata
+   client + RESTMapper exist, not to keep the hand-rolled version.
+
+   **Correction (2026-07-05, found live while verifying the S14
+   ASSETS+LOADER controllers deploy path):** the first version of this
+   walk deleted children-first (a ReplicaSet's Pods before the ReplicaSet
+   itself). Against the now-live in-Workers kube-controller-manager that
+   order races: the real replicaset controller, still holding the RS in
+   its informer cache, recreated Pods mid-cascade and — with no background
+   garbagecollector to reap dangling dependents — they survived as
+   permanent orphans (observed: deleting a Deployment left one
+   freshly-created Pod behind). `deleteDependents` now deletes owner-first
+   and re-sweeps until quiescent (bounded passes); verified live and by
+   `TestOwnerReferenceCascadeDelete`. A window in principle remains (a
+   create landing after the final pass) — the real `garbagecollector`
+   stays the actual fix.
+
 Verify: conformance `[sig-apps]` ReplicaSet/Deployment basics move into the
 required set — these are Conformance-tagged upstream, so this phase is the
 largest single jump in official conformance coverage.
@@ -388,6 +427,21 @@ Then the auth ladder, shared with the hosted-product plan:
 - Server-side apply, dry-run, admission webhooks: evaluated after the above;
   client-side apply with OpenAPI covers most real usage until then.
 
+> **Update (2026-07-05):** the "types" half of the RBAC item above is done —
+> `rbac.authorization.k8s.io/v1`'s Role/RoleBinding/ClusterRole/
+> ClusterRoleBinding are registered in `apidef.Table` for CRUD+watch
+> (`pkg/apiserver/apidef/table.go`), verified against the real typed
+> `client-go` clientset (`TestRBACGroup`,
+> `pkg/apiserver/apiserver_test.go`). A `SelfSubjectAccessReview` handler
+> (`pkg/apiserver/selfsubjectaccessreview.go`) also answers `kubectl auth
+can-i` requests, always with `allowed: true` — the accurate answer for
+> this project's all-or-nothing bearer token (`auth.go`'s `AuthMiddleware`),
+> not a stand-in for a real per-verb/per-resource authorizer. **Not done:**
+> "an authorizer in front of the stores" and default roles/bindings — the
+> objects above are stored and gettable but nothing evaluates them for an
+> actual access decision. See the README's
+> [Auth & admission](../README.md#auth--admission) table.
+
 ## Phase 6 — the rest, on demand
 
 - **Storage**: PV/PVC/StorageClass with a `local-path`-style provisioner
@@ -399,6 +453,43 @@ Then the auth ladder, shared with the hosted-product plan:
 - **Ingress**: the Worker _is_ the ingress — this folds into the hosted
   product's Service-exposure path rather than running an ingress controller
   per cluster.
+
+> **Update (2026-07-05):** `HorizontalPodAutoscaler` (`autoscaling/v2`),
+> `Ingress`/`IngressClass`/`NetworkPolicy` (`networking.k8s.io/v1`), and
+> `ResourceQuota` (core/v1) are now registered in `apidef.Table` for
+> CRUD+watch (verified against real `client-go`,
+> `TestNewlyRegisteredResources` in `pkg/apiserver/apiserver_test.go`). This
+> closes only the "object exists and is storable" step — the actual gaps
+> this section describes (no Metrics API driving HPA, no CNI enforcing
+> NetworkPolicy, no ingress controller reading Ingress, nothing tracking
+> ResourceQuota usage) are unchanged; a created object of any of these
+> types is inert.
+>
+> Other resources a standard cluster has that this apiserver still doesn't
+> register, considered and deliberately not done in this pass (budgeted
+> against the Workers WASM size limit — each additional `k8s.io/api` group
+> costs on the order of a few hundred KiB of compiled code, see
+> `docs/cost-model.md`): `admissionregistration.k8s.io/v1`
+> (Mutating/ValidatingWebhookConfiguration, ValidatingAdmissionPolicy) —
+> low daily-use value here since this apiserver has no admission webhook
+> call-out mechanism for them to configure; `storage.k8s.io/v1`
+> `VolumeAttachment` — an internal CSI-attacher bookkeeping type with no
+> CSI attacher running in this project; `certificates.k8s.io/v1`
+> `CertificateSigningRequest` — this project already has its own bootstrap
+> certificate issuance path (`pkg/apiserver/certmanager.go`,
+> `supervisor.go`), so a generic CSR object would be a second, unused
+> mechanism; `apiregistration.k8s.io/v1` `APIService` — no aggregation
+> layer exists to register against; `flowcontrol.apiserver.k8s.io/v1`
+> `FlowSchema`/`PriorityLevelConfiguration` — API Priority and Fairness is
+> meaningless against a single-Worker-per-request-path deployment with no
+> shared apiserver process to protect. `apiextensions.k8s.io/v1`
+> `CustomResourceDefinition` (generic/dynamic CRDs) is intentionally out of
+> `apidef.Table`'s scope entirely, not merely deprioritized: `workers/runtime`
+> owns CRD/`DynamicWorker` handling on its own path (see
+> `docs/control-plane-architecture.md`), so a second CRD mechanism inside
+> the Go apiserver would duplicate it. `scheduling.k8s.io/v1` `PriorityClass`
+> is still open too, but that one already has its own line item above (this
+> pass didn't newly decide against it — it's simply not done yet).
 
 ## Sequencing rationale
 
