@@ -1,0 +1,12 @@
+{
+  "name": "s14-loader-ext-parent",
+  "main": "./src/index.ts",
+  "compatibility_date": "2026-03-24",
+  "worker_loaders": [{ "binding": "LOADER" }],
+  "r2_buckets": [
+    { "binding": "CODE_BUCKET", "bucket_name": "s14-code" },
+    { "binding": "SCHED_BUCKET", "bucket_name": "s14-sched" }
+  ],
+  "assets": { "directory": "./public", "binding": "ASSETS" },
+  "observability": { "enabled": true },
+}

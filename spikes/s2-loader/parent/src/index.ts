@@ -1,4 +1,11 @@
 import { addWasmBytes } from "./wasm-fixture.ts";
+import realMainJs from "../goscript-klog-test/main.js";
+import realKlogJs from "../goscript-klog-test/klog.js";
+import realContextualJs from "../goscript-klog-test/contextual.js";
+import realKlogIndexJs from "../goscript-klog-test/klog-index.js";
+import realTextloggerJs from "../goscript-klog-test/textlogger.js";
+import stubGocmpJs from "../goscript-klog-test/stub-gocmp.js";
+import stubNobleJs from "../goscript-klog-test/stub-noble.js";
 
 export interface Env {
   LOADER: any; // WorkerLoader — @cloudflare/workers-types doesn't export the name publicly yet
@@ -105,6 +112,125 @@ export default {
     return Response.json({ ok: true, result, moduleCtor: wasmModule.constructor.name });
   }
 };
+`;
+
+// Item 6 (goscript investigation, feat/v2-rearchitecture session): two ES
+// modules with a genuine circular import, where module A eagerly
+// constructs an instance of a class exported by module B (at A's own
+// top-level, via top-level await) while B itself imports A back. This
+// mirrors k8s.io/klog/v2's klog.gs.ts <-> contextual.gs.ts pair after
+// Go->TypeScript transpilation via goscript: klog.go's real func init()
+// (correctly auto-invoked by goscript) does `new loggerOptions()`, a type
+// from klog/v2's contextual.go, and that file imports klog.go back for its
+// own SetLogger/FromContext helpers. Confirmed locally: plain Node ESM
+// (no bundler) resolves this correctly; esbuild --bundle flattens both
+// files into one sequential script and there produced an "X is not a
+// constructor" TDZ-style failure on the real ~5,600-file scheduler
+// dependency graph (though not on a 2-file esbuild-bundled repro of just
+// this shape -- the failure only appeared at the real graph's scale).
+// This route asks: does workerd's own Loader module graph -- passing
+// A_MODULE_SRC / B_MODULE_SRC as SEPARATE modules.entries, unbundled --
+// resolve the cycle the same way Node's native (non-bundled) loader does?
+const A_MODULE_SRC = `
+import * as b from "./b.js";
+
+class Settings {
+  constructor() {
+    this.opt = new b.LoggerOptions();
+  }
+}
+
+export function getSettings() {
+  return new Settings();
+}
+
+const settings = await getSettings();
+
+export default {
+  async fetch(req) {
+    return Response.json({ ok: true, optName: settings.opt.name });
+  }
+};
+`;
+
+const B_MODULE_SRC = `
+import * as a from "./a.js";
+
+export class LoggerOptions {
+  constructor() {
+    this.name = "default";
+  }
+}
+
+export function useA() {
+  return a.getSettings;
+}
+`;
+
+// Same shape as A/B above but using goscript's actual "@goscript/..."
+// bare-specifier import convention (not a relative path) for both
+// directions, to check whether that resolves against a workerd Loader
+// modules map the same way plain relative paths do -- required before
+// wiring up the real ~5,600-file goscript output, which uses bare
+// "@goscript/k8s.io/..." specifiers throughout, not relative paths.
+const BARE_A_SRC = `
+import * as b from "@goscript/b.js";
+
+class Settings {
+  constructor() {
+    this.opt = new b.LoggerOptions();
+  }
+}
+
+const settings = new Settings();
+
+export default {
+  async fetch(req) {
+    return Response.json({ ok: true, optName: settings.opt.name });
+  }
+};
+`;
+
+const BARE_B_SRC = `
+import * as a from "@goscript/a.js";
+
+export class LoggerOptions {
+  constructor() {
+    this.name = "bare-default";
+  }
+}
+`;
+
+// Variant: absolute-style ("/...") specifiers instead of bare
+// ("@goscript/...") ones, to check whether workerd's Loader resolves a
+// leading "/" as root-relative (matching the modules map key verbatim)
+// rather than relative to the importing module's own directory.
+const ABS_A_SRC = `
+import * as b from "/goscript/b.js";
+
+class Settings {
+  constructor() {
+    this.opt = new b.LoggerOptions();
+  }
+}
+
+const settings = new Settings();
+
+export default {
+  async fetch(req) {
+    return Response.json({ ok: true, optName: settings.opt.name });
+  }
+};
+`;
+
+const ABS_B_SRC = `
+import * as a from "/goscript/a.js";
+
+export class LoggerOptions {
+  constructor() {
+    this.name = "abs-default";
+  }
+}
 `;
 
 async function passthrough(resp: Response): Promise<Response> {
@@ -230,6 +356,72 @@ export default {
         });
       }
 
+      // --- Item 6: circular import between two separate Loader modules ---
+      if (pathname === "/circular") {
+        const worker = env.LOADER.get(`circular-test-${Date.now()}`, () => ({
+          compatibilityDate: "2026-03-24",
+          mainModule: "a.js",
+          modules: {
+            "a.js": A_MODULE_SRC,
+            "b.js": B_MODULE_SRC,
+          },
+        }));
+        const resp = await worker.getEntrypoint().fetch("http://internal/");
+        return passthrough(resp);
+      }
+
+      // --- Item 6b: same circular pattern with "@goscript/..."-style bare specifiers ---
+      if (pathname === "/circular-bare") {
+        const worker = env.LOADER.get(`circular-bare-test-${Date.now()}`, () => ({
+          compatibilityDate: "2026-03-24",
+          mainModule: "@goscript/a.js",
+          modules: {
+            "@goscript/a.js": BARE_A_SRC,
+            "@goscript/b.js": BARE_B_SRC,
+          },
+        }));
+        const resp = await worker.getEntrypoint().fetch("http://internal/");
+        return passthrough(resp);
+      }
+
+      // --- Item 6d: the REAL goscript-transpiled scheduler dependency graph
+      // (minified esbuild bundle, klog.gs.ts/contextual.gs.ts circular pair
+      // and their two barrel/consumer files split out as 4 separate small
+      // satellite bundles, everything wired together with relative-path
+      // imports) loaded end to end via the Loader as 5 unbundled modules. ---
+      if (pathname === "/circular-real") {
+        const worker = env.LOADER.get(`circular-real-test-${Date.now()}`, () => ({
+          compatibilityDate: "2026-03-24",
+          mainModule: "main.js",
+          modules: {
+            "main.js": realMainJs,
+            "klog.js": realKlogJs,
+            "contextual.js": realContextualJs,
+            "klog-index.js": realKlogIndexJs,
+            "textlogger.js": realTextloggerJs,
+            "@goscript/github.com/google/go-cmp/cmp/index.js": stubGocmpJs,
+            "@goscript/github.com/google/go-cmp/cmp/cmpopts/index.js": stubGocmpJs,
+            "@noble/ciphers/aes.js": stubNobleJs,
+          },
+        }));
+        const resp = await worker.getEntrypoint().fetch("http://internal/");
+        return passthrough(resp);
+      }
+
+      // --- Item 6c: same circular pattern with absolute ("/...") specifiers ---
+      if (pathname === "/circular-abs") {
+        const worker = env.LOADER.get(`circular-abs-test-${Date.now()}`, () => ({
+          compatibilityDate: "2026-03-24",
+          mainModule: "/goscript/a.js",
+          modules: {
+            "/goscript/a.js": ABS_A_SRC,
+            "/goscript/b.js": ABS_B_SRC,
+          },
+        }));
+        const resp = await worker.getEntrypoint().fetch("http://internal/");
+        return passthrough(resp);
+      }
+
       return Response.json({
         ok: true,
         routes: [
@@ -238,6 +430,9 @@ export default {
           "/env",
           "/outbound?mode=none|inherit|custom-svc|custom-plain&url=...",
           "/counter?id=A",
+          "/circular",
+          "/circular-bare",
+          "/circular-abs",
         ],
       });
     } catch (e: any) {

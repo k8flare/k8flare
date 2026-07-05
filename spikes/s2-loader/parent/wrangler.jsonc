@@ -10,4 +10,5 @@
   "services": [{ "binding": "REMOTE_SVC", "service": "s2-loader-child-service" }],
   "vars": { "SIMPLE_VALUE": "hello-from-parent" },
   "observability": { "enabled": true },
+  "rules": [{ "type": "Text", "globs": ["**/goscript-klog-test/*.js"], "fallthrough": true }],
 }
