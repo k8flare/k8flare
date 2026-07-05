@@ -2,6 +2,9 @@
   "name": "k8flare-apiserver",
   "main": "./build/worker.mjs",
   "compatibility_date": "2026-03-24",
+  // Internal-only: all traffic arrives via the gateway's service binding
+  // (CLAUDE.md: gateway is the only public Worker).
+  "workers_dev": false,
   "durable_objects": {
     "bindings": [{ "name": "CLUSTER", "class_name": "Cluster", "script_name": "k8flare-storage" }],
   },

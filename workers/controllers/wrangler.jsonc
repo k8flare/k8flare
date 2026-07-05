@@ -2,6 +2,10 @@
   "name": "k8flare-controllers",
   "main": "./src/index.ts",
   "compatibility_date": "2026-03-24",
+  // Internal-only: poked via storage's service binding; a public URL
+  // would let anyone open pump windows (CLAUDE.md: gateway is the only
+  // public Worker).
+  "workers_dev": false,
   // The real kube-controller-manager WASM is NOT bundled into this script
   // (it would blow Workers' 10MiB gzip deploy cap -- gzip ~13MB). It is
   // served from Static Assets in <=24MiB chunks and assembled + loaded at
