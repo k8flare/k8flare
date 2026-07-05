@@ -51,6 +51,7 @@ func run() error {
 		{"version", genVersion},
 		{"resource-kinds", genResourceKinds},
 		{"openapi", genOpenAPI},
+		{"discovery-assets", genDiscoveryAssets},
 		{"leanclient", genLeanClient},
 	}
 	for _, step := range steps {
