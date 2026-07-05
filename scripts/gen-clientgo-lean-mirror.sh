@@ -73,6 +73,28 @@ chmod -R u+w "$DST"
 
 cp "$OVERLAY_DIR/kubernetes/clientset.go" "$DST/kubernetes/clientset.go"
 
+# kubernetes/scheme/register.go: THE size lever for the GOOS=js binaries.
+# Upstream init()-registers all ~55 group-versions, and init side effects
+# defeat dead-code elimination -- importing client-go/discovery (reached
+# via applyconfigurations/meta/v1 from every typed client) dragged ~21MiB
+# of generated API-type code into the wasm builds. The overlay registers
+# only the group-versions the wasm control-plane binaries actually
+# serialize; see its doc comment. Drift-checked like the k8s-js-mirror
+# overlays: a client-go bump that changes upstream's register.go must be
+# human-reviewed here.
+UPSTREAM_SCHEME_REG="$SRC/kubernetes/scheme/register.go"
+EXPECTED_SR_SHA="$(awk '{print $1}' "$OVERLAY_DIR/upstream-scheme-register.go.sha256")"
+ACTUAL_SR_SHA="$(shasum -a 256 "$UPSTREAM_SCHEME_REG" | awk '{print $1}')"
+if [[ "$ACTUAL_SR_SHA" != "$EXPECTED_SR_SHA" ]]; then
+  echo "gen-clientgo-lean-mirror: upstream kubernetes/scheme/register.go changed since the overlay was last reviewed." >&2
+  echo "  expected sha256 $EXPECTED_SR_SHA, got $ACTUAL_SR_SHA" >&2
+  echo "  Review the new upstream file, update kubernetes/scheme/register.go in" >&2
+  echo "  $OVERLAY_DIR if group-versions were added/renamed, then refresh" >&2
+  echo "  upstream-scheme-register.go.sha256." >&2
+  exit 1
+fi
+cp "$OVERLAY_DIR/kubernetes/scheme/register.go" "$DST/kubernetes/scheme/register.go"
+
 # informers/<group>/<version> and listers/<group>/<version> are NOT
 # pruned, deliberately -- see third_party/clientgo-lean-overlays/README.md's
 # "correction" note. pkg/scheduler.New's informerFactory parameter is

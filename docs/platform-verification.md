@@ -1730,6 +1730,59 @@ correctly — a cold-start burst effect, not a registration bug. Also
 Table path while `-o json` is correct — server-side printing gap for
 Namespace, tracked as a small follow-up.
 
+### OPEN REGRESSION (2026-07-05 evening): the ≤64MiB KCM build is not reproducible from the committed tree
+
+Found while wiring the kube-scheduler as a second dynamic worker (Pod-on-
+Containers work). Recorded per rules 4/5 instead of being papered over:
+
+- **The deployed, working KCM WASM (raw 75,749,798 → wasm-opt
+  62,537,211 bytes, manifest sha256 `dc63e0f4808d2cdb…`) was built
+  against `.build/k8s-js-mirror` state left on disk by an earlier
+  session.** Running the committed `scripts/gen-k8s-js-mirror.sh`
+  regenerates a mirror from which the identical `go build` command
+  produces **105MB raw / 98.6MB opt — far over the Loader's 64MiB cap.**
+  The old mirror was destroyed by the regeneration (`rm -rf` inside the
+  script) before it was ever diffed, so what exactly it pruned is lost.
+  Lesson encoded in CLAUDE.md's pitfalls: snapshot `.build/` mirrors
+  before regenerating them.
+- The production deployment is unaffected (it runs the preserved
+  artifacts; a local copy is kept at
+  `workers/controllers/assets-backup-20260705/`, gitignored). The CI
+  `build:wasm` gate now fails loudly on the oversize binary — that is
+  correct behavior, not a gate bug.
+- **What was measured while trying to close the gap** (wasm name-section
+  attribution, `spikes` method): today's 105MB KCM carries ~21MiB of
+  code for ALL ~55 `k8s.io/api` groups plus full applyconfigurations/
+  gnostic/protobuf machinery. A probe binary importing only
+  `pkg/leanclient/clientset` weighs **52.9MB** — the full-width
+  `kubernetes.Interface` (which upstream controller constructors
+  require) anchors most of the weight, and that anchor is NOT removable
+  by any of: pruning `kubernetes/scheme/register.go` to 9 groups (new
+  overlay, kept — necessary but not sufficient), dropping
+  `pkg/controller`'s blank `core/install` import, stubbing nodeipam's
+  `cloudprovider.Interface`, or the DRA registry overlay — each was
+  measured individually AND together with no meaningful size change.
+  How the old mirror produced a 22MB-smaller anchor is the open
+  question; the pre-"Phase 10 correction" width-pruned client-go mirror
+  (see `scripts/gen-clientgo-lean-mirror.sh`'s comments — the correction
+  note it cites was never actually written to this file) is the leading
+  candidate, since `third_party/clientgo-lean-overlays/README.md`
+  documents exactly this 44MiB-scale sibling-linkage effect and its fix.
+- **Also measured and still valid regardless of the regression**: the
+  combined KCM+scheduler binary is 71.5MB opt (over cap → two dynamic
+  workers required); scheduler-only is 67.46MB opt (355KB over) and
+  66.39MB (714KB under) with the DynamicResources registry overlay —
+  those numbers were taken against the old mirror and need re-validation
+  once KCM reproducibility is restored.
+
+**Next step**: reconstruct the width-pruned client-go configuration for
+the KCM binary (5-group `kubernetes.Interface` via
+`.build/clientgo-lean-mirror` + `go.wasm.mod`, per the lean overlays'
+original design), which per the overlay README's own measurements is the
+only mechanism with the right order of magnitude; the scheduler binary
+(which needs full-width informers) then needs its own separate size
+answer.
+
 ## Correction log (honest corrections)
 
 **2026-07-03 — A Phase 6 subagent opened an unauthorized pull request

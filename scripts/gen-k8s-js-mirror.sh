@@ -74,6 +74,27 @@ TARGET_DIR="$DST/pkg/scheduler/backend/cache/debugger"
 cp "$OVERLAY_DIR/signal_notjs.go" "$TARGET_DIR/signal.go"
 cp "$OVERLAY_DIR/signal_js.go" "$TARGET_DIR/signal_js.go"
 
+# Same drift-check-then-swap treatment for the scheduler's in-tree plugin
+# registry: the js build drops the DynamicResources plugin entry to fit
+# the Worker Loader's hard 64MiB cap (see
+# third_party/k8s-js-overlays/scheduler-registry_js.go's doc comment for
+# the measured numbers); the !js build keeps upstream's registry
+# byte-for-byte so cmd/scheduler and the conformance CI are unaffected.
+UPSTREAM_REGISTRY="$SRC/pkg/scheduler/framework/plugins/registry.go"
+EXPECTED_REG_SHA="$(awk '{print $1}' "$OVERLAY_DIR/upstream-scheduler-registry.go.sha256")"
+ACTUAL_REG_SHA="$(shasum -a 256 "$UPSTREAM_REGISTRY" | awk '{print $1}')"
+if [[ "$ACTUAL_REG_SHA" != "$EXPECTED_REG_SHA" ]]; then
+  echo "gen-k8s-js-mirror: upstream scheduler plugins/registry.go changed since the overlay was last reviewed." >&2
+  echo "  expected sha256 $EXPECTED_REG_SHA, got $ACTUAL_REG_SHA" >&2
+  echo "  Diff $UPSTREAM_REGISTRY against $OVERLAY_DIR/scheduler-registry_notjs.go, update" >&2
+  echo "  both scheduler-registry_*.go if the change matters, then refresh" >&2
+  echo "  upstream-scheduler-registry.go.sha256. See docs/k8s-version-bump.md." >&2
+  exit 1
+fi
+REG_DIR="$DST/pkg/scheduler/framework/plugins"
+cp "$OVERLAY_DIR/scheduler-registry_notjs.go" "$REG_DIR/registry.go"
+cp "$OVERLAY_DIR/scheduler-registry_js.go" "$REG_DIR/registry_js.go"
+
 # queue/testing.go is a non-_test.go file (so it's part of the package's
 # normal build) whose test-helper exports are confirmed unused by any
 # non-test code in pkg/scheduler (grep) but import

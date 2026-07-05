@@ -1,6 +1,14 @@
 //go:build js && wasm
 
-package controllers
+// Package sched is deliberately a separate package from its parent
+// pkg/controllers: merely importing k8s.io/kubernetes/pkg/scheduler links
+// its init-time closure (scheme registration, metrics, the CEL evaluator
+// behind the DRA machinery, ...) into ANY binary that imports the
+// package, dead-code elimination notwithstanding -- keeping RunScheduler
+// here means the kube-controller-manager binary (workers/controllers,
+// which must stay under the Worker Loader's 64MiB cap on its own) never
+// pays for the scheduler tree, and vice versa.
+package sched
 
 import (
 	"context"
@@ -73,6 +81,14 @@ func RunScheduler(ctx context.Context, restCfg *restclient.Config) (err error) {
 		{Name: "VolumeRestrictions"},
 		{Name: "NodeVolumeLimits"},
 		{Name: "VolumeZone"},
+		// DynamicResources must be disabled on GOOS=js: the js half of the
+		// scheduler-registry overlay (third_party/k8s-js-overlays/
+		// scheduler-registry_js.go) drops it from the in-tree registry to
+		// fit the Worker Loader's 64MiB cap, and a profile that names a
+		// plugin missing from the registry fails framework construction.
+		// DRA is unusable against this apiserver anyway (ResourceClaim/
+		// ResourceSlice/DeviceClass are permanently-empty stubs).
+		{Name: "DynamicResources"},
 	}
 
 	recorderAdapter := events.NewEventBroadcasterAdapter(client)

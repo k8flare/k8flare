@@ -106,43 +106,48 @@ export default {
 };
 `;
 
+// LoadedComponent tracks one Loader-loaded control-plane binary (kcm or
+// sched) through manifest fetch, chunk assembly, and dynamic-worker load.
+interface LoadedComponent {
+  entrypoint: Fetcher | null;
+  loading: Promise<Fetcher> | null;
+}
+
+// The two control-plane binaries this DO hosts as dynamic workers. Two,
+// not one: the combined KCM+scheduler binary exceeds the Loader's 64MiB
+// cap while each fits alone (workers/controllers/scheduler/main.go's doc
+// comment has the numbers). All LOADER.get() calls happen here in the
+// parent -- a loaded worker cannot load further workers (S14 Part 6).
+const COMPONENTS = ["kcm", "sched"] as const;
+type ComponentName = (typeof COMPONENTS)[number];
+
 export class Controllers {
   state: DurableObjectState;
   env: Env;
-  manifestPromise: Promise<KcmManifest> | null = null;
-  // Resolved entrypoint once the dynamic worker is loaded, and the
+  // Resolved entrypoint once each dynamic worker is loaded, and the
   // in-flight load. Loading ~60MB through the Loader factory takes long
   // enough in production that awaiting it inline from a poke is wrong:
   // storage's pingControllers runs inside the write path, the canceled
   // ping tears down the load with it, and the next write starts the
   // whole load over -- observed live as an endless "GET / - Canceled"
   // storm with KCM never coming up. Pokes therefore return immediately
-  // and the load runs detached (DO lifetime is not tied to any one
-  // request); the load's own completion handler delivers the first poke.
-  kcmEntrypoint: Fetcher | null = null;
-  kcmLoading: Promise<Fetcher> | null = null;
+  // and loads run detached (DO lifetime is not tied to any one request);
+  // each load's own completion handler delivers the first poke.
+  components: Record<ComponentName, LoadedComponent> = {
+    kcm: { entrypoint: null, loading: null },
+    sched: { entrypoint: null, loading: null },
+  };
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
     this.env = env;
   }
 
-  private async manifest(): Promise<KcmManifest> {
-    if (!this.manifestPromise) {
-      this.manifestPromise = this.fetchManifest();
-      // Don't cache failures (e.g. assets not built yet).
-      this.manifestPromise.catch(() => {
-        this.manifestPromise = null;
-      });
-    }
-    return this.manifestPromise;
-  }
-
-  private async fetchManifest(): Promise<KcmManifest> {
-    const resp = await this.env.ASSETS.fetch("https://assets.internal/kcm.manifest.json");
+  private async fetchManifest(name: ComponentName): Promise<KcmManifest> {
+    const resp = await this.env.ASSETS.fetch(`https://assets.internal/${name}.manifest.json`);
     if (!resp.ok) {
       throw new Error(
-        `kcm.manifest.json: HTTP ${resp.status} -- workers/controllers/assets/ is missing; run npm run build:wasm first`,
+        `${name}.manifest.json: HTTP ${resp.status} -- workers/controllers/assets/ is missing; run npm run build:wasm first`,
       );
     }
     return resp.json<KcmManifest>();
@@ -154,36 +159,36 @@ export class Controllers {
     return resp;
   }
 
-  // Returns a Fetcher into the Loader-loaded kube-controller-manager
-  // dynamic worker. Cheap on the warm path: LOADER.get() with an
-  // already-loaded id skips the factory entirely (S2 item 4), so the
-  // chunk fetching/assembly below only runs on isolate cold start. The
-  // binary's own sha256 is the cache id, so a rebuilt binary is a new id
-  // and the stale isolate is simply never addressed again.
-  //
-  // Chunks are fetched sequentially and streamed straight into one
-  // preallocated buffer: the earlier fetch-all-then-concat version held
-  // both every part and the assembled copy alive at once (~2x binary
-  // size ≈ 125MB), which flirts with production's 128MiB isolate memory
-  // limit that wrangler dev never enforces.
-  private ensureKcm(): Promise<Fetcher> {
-    if (!this.kcmLoading) {
-      this.kcmLoading = this.loadKcm().then((f) => {
-        this.kcmEntrypoint = f;
+  private ensure(name: ComponentName): Promise<Fetcher> {
+    const c = this.components[name];
+    if (!c.loading) {
+      c.loading = this.loadComponent(name).then((f) => {
+        c.entrypoint = f;
         return f;
       });
       // Don't cache failures -- the next poke retries the load.
-      this.kcmLoading.catch((err) => {
-        console.log(`controllers: kcm load failed: ${err}`);
-        this.kcmLoading = null;
+      c.loading.catch((err) => {
+        console.log(`controllers: ${name} load failed: ${err}`);
+        c.loading = null;
       });
     }
-    return this.kcmLoading;
+    return c.loading;
   }
 
-  private async loadKcm(): Promise<Fetcher> {
-    const manifest = await this.manifest();
-    const worker = this.env.LOADER.get(`kcm@${manifest.sha256}`, async () => {
+  // Loads one control-plane binary as a dynamic worker and returns its
+  // Fetcher. Cheap on the warm path: LOADER.get() with an already-loaded
+  // id skips the factory entirely (S2 item 4). The binary's own sha256 is
+  // the cache id, so a rebuilt binary is a new id and the stale isolate
+  // is simply never addressed again.
+  //
+  // Chunks are fetched sequentially and streamed straight into one
+  // preallocated buffer: an earlier fetch-all-then-concat version held
+  // both every part and the assembled copy alive at once (~2x binary
+  // size ≈ 125MB), which flirts with production's 128MiB isolate memory
+  // limit that wrangler dev never enforces.
+  private async loadComponent(name: ComponentName): Promise<Fetcher> {
+    const manifest = await this.fetchManifest(name);
+    const worker = this.env.LOADER.get(`${name}@${manifest.sha256}`, async () => {
       const wasm = new Uint8Array(manifest.size);
       let off = 0;
       for (const part of manifest.parts) {
@@ -198,9 +203,11 @@ export class Controllers {
         }
       }
       if (off !== manifest.size) {
-        throw new Error(`kcm wasm reassembly: got ${off} bytes, manifest says ${manifest.size}`);
+        throw new Error(
+          `${name} wasm reassembly: got ${off} bytes, manifest says ${manifest.size}`,
+        );
       }
-      console.log(`controllers: kcm chunks assembled (${off} bytes)`);
+      console.log(`controllers: ${name} chunks assembled (${off} bytes)`);
       const wasmExec = await this.fetchAsset("wasm_exec.js").then((r) => r.text());
       // Only plain values and Fetchers survive the env clone (S2 item
       // 3a) -- this is exactly what pkg/controllers.RestConfig("GATEWAY")
@@ -222,48 +229,72 @@ export class Controllers {
     // Force the factory to actually run now (getEntrypoint alone is lazy)
     // and prove the dynamic worker is dispatchable before declaring it
     // ready -- this doubles as the "first poke" that starts the resident
-    // controller-manager.
+    // control loop.
     await entrypoint.fetch("http://controllers.internal/healthz");
-    console.log("controllers: kcm dynamic worker up");
+    console.log(`controllers: ${name} dynamic worker up`);
     return entrypoint;
+  }
+
+  // Poke one component: dispatch if loaded, otherwise kick off (or keep
+  // retrying) its detached load, whose completion delivers the first
+  // dispatch. Never awaited from fetch() -- see the components field's
+  // doc comment.
+  private poke(name: ComponentName, request?: Request): Promise<Response> | null {
+    const c = this.components[name];
+    if (c.entrypoint) {
+      return c.entrypoint.fetch(request ?? "http://controllers.internal/healthz");
+    }
+    void this.ensure(name)
+      .then((f) => f.fetch("http://controllers.internal/healthz"))
+      .catch(() => {}); // already logged in ensure()
+    return null;
   }
 
   async fetch(request: Request): Promise<Response> {
     // Arm the safety net if it isn't already, so a redeploy/panic/
-    // eviction that resets the dynamic worker still gets noticed and
+    // eviction that resets the dynamic workers still gets noticed and
     // restarted even if no further relevant write happens to re-trigger
     // storage's pingControllers (workers/storage/src/index.ts). Cheap
     // local check -- no cross-DO call on this hot path. Armed before the
-    // dispatch so a still-loading KCM gets a completion poke even if no
-    // further write ever arrives.
+    // dispatch so a still-loading component gets a completion poke even
+    // if no further write ever arrives.
     const current = await this.state.storage.getAlarm();
     if (current === null) {
       this.state.storage.setAlarm(Date.now() + SAFETY_NET_INTERVAL_MS);
     }
 
-    const kcm = this.kcmEntrypoint;
-    if (!kcm) {
-      // Never await the load from a poke: pokes come from storage's
-      // write path and get canceled when that write finishes, and a
-      // canceled poke must not tear down (or serially restart) the load.
-      // The detached promise outlives this request -- DO lifetime is not
-      // request-scoped -- and its completion dispatch starts KCM.
-      void this.ensureKcm()
-        .then((f) => f.fetch("http://controllers.internal/healthz"))
-        .catch(() => {}); // already logged in ensureKcm
-      return Response.json({ controllerManager: "loading" }, { status: 202 });
+    const kcmResp = this.poke("kcm", request);
+    const schedResp = this.poke("sched");
+    const statuses: Record<string, unknown> = {};
+    if (schedResp) {
+      statuses.scheduler = await schedResp
+        .then((r) => r.json<Record<string, unknown>>().then((j) => j.scheduler ?? "up"))
+        .catch((err) => `dispatch failed: ${err}`);
+    } else {
+      statuses.scheduler = "loading";
     }
-    return kcm.fetch(request);
+    if (!kcmResp) {
+      statuses.controllerManager = "loading";
+      return Response.json(statuses, { status: 202 });
+    }
+    // Preserve the KCM response shape for callers that read it, but fold
+    // the scheduler's status in so /healthz reports both.
+    const kcmJson = await kcmResp
+      .then((r) => r.json<Record<string, unknown>>())
+      .catch((err) => ({ controllerManager: `dispatch failed: ${err}` }));
+    return Response.json({ ...kcmJson, ...statuses });
   }
 
   async alarm(): Promise<void> {
     // Hitting /healthz both confirms liveness and (re-)triggers the Go
-    // side's ensureStarted() if the dynamic worker's isolate was evicted
+    // side's ensureStarted() if a dynamic worker's isolate was evicted
     // since the last request (the Loader factory then reruns too). The
-    // alarm context has no client to cancel it, so awaiting the load
+    // alarm context has no client to cancel it, so awaiting the loads
     // here is safe (and is what completes a load whose pokes all died).
-    const kcm = await this.ensureKcm();
-    await kcm.fetch("http://controllers.internal/healthz");
+    for (const name of COMPONENTS) {
+      const c = await this.ensure(name);
+      await c.fetch("http://controllers.internal/healthz");
+    }
 
     // Re-arm only while the cluster still has a live Node worth having
     // controllers running for; otherwise park (cost invariants #1/#3 --

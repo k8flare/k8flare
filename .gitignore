@@ -1,6 +1,7 @@
 node_modules/
 build/
 workers/controllers/assets/
+workers/controllers/assets-backup-*/
 dist/
 .build/
 *.tsbuildinfo

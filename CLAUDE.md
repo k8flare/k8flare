@@ -97,6 +97,7 @@ CI ゲート(`.github/workflows/`): `ci.yml`(vp check / build:wasm / go vet+test
 - `wrangler deploy` / `wrangler secret put` は実アカウントに影響するので、指示なく実行しない(`.claude/settings.json` の deny 設定でもブロックされる)。
 - `npm run dev` は `workers/controllers`(実 KCM)を**含むようになった**(2026-07-05、S14 の ASSETS+LOADER 化と同時に追加。それ以前は含まれておらず、「Pod が生成されない」誤結論の原因だった)。ただし `go test ./pkg/apiserver/...` が起動する wrangler dev は今も 4 Worker 構成(controllers なし)— テスト内の Pod は KCM に触られない前提で書かれている。controllers を動かすには先に `npm run build:wasm`(wasm-opt 込みで controllers 側は約2分)で `workers/controllers/assets/` を生成しておくこと。
 - `go test ./pkg/apiserver/...` は repo ルートの `.wrangler/state` を**クリアせずに**使う。中断された前回実行の残骸があると「already exists」で決定論的に落ちる(2026-07-05 実測)。落ちたらまず `rm -rf .wrangler/state` してから再実行し、flaky と結論しない。
+- **`.build/` のミラー(k8s-js-mirror / clientgo-lean-mirror)を再生成する前に、必ず現物を退避すること**(`cp -Rc .build/k8s-js-mirror .build/k8s-js-mirror.bak-$(date +%s)` 等)。2026-07-05 に、稼働中の 62.5MB KCM WASM を生んでいたディスク上のミラー状態が `rm -rf` 込みの再生成で失われ、コミット済みツリーからは 98.6MB(64MiB cap 超過)しか再現できなくなる回帰が起きた(docs/platform-verification.md の OPEN REGRESSION 参照)。gitignore された生成物でも、それがビルド入力である限り「消して作り直せば同じ」とは限らない。
 
 ## コード規約
 
