@@ -17,21 +17,31 @@ export default {
       return handleKubeletProxy(req, env, url, (r) => env.APISERVER.fetch(r));
     }
 
-    // HTTP ingress into a Pod-on-Containers Pod:
-    // /podproxy/{namespace}/{pod}/{path...} -> workers/nodes ->
-    // VirtualNode DO -> the Pod's backing Container (port 8080).
-    // Token-gated here (same dwAuth as watch/kubelet-proxy); the nodes
+    // Standard Kubernetes pods/proxy subresource, backed by the
+    // Pod-on-Containers backend: GET/... /api/v1/namespaces/{ns}/pods/
+    // {pod}/proxy/{path} -> workers/nodes -> VirtualNode DO -> the Pod's
+    // backing Container (port 8080). Using the upstream API surface (what
+    // `kubectl proxy` / `kubectl get --raw .../proxy/...` speak) instead
+    // of an invented path keeps the route inside the API's URL namespace
+    // and inherits the pods/proxy verb semantics the moment a real RBAC
+    // authorizer lands. Token-gated like every other API path; the nodes
     // Worker re-checks the same Authorization header on its side too.
-    if (url.pathname.startsWith("/podproxy/")) {
+    const podProxyMatch = url.pathname.match(
+      /^\/api\/v1\/namespaces\/([^/]+)\/pods\/([^/]+)\/proxy(\/.*)?$/,
+    );
+    if (podProxyMatch) {
       if (!dwAuth(req, env)) {
         return new Response("unauthorized", { status: 401 });
       }
       if (!env.NODES) {
-        return new Response("podproxy: workers/nodes is not deployed on this cluster", {
+        return new Response("pods/proxy: workers/nodes is not deployed on this cluster", {
           status: 503,
         });
       }
-      return env.NODES.fetch(req);
+      const [, ns, pod, rest] = podProxyMatch;
+      const target = new URL(req.url);
+      target.pathname = `/podproxy/${ns}/${pod}${rest ?? "/"}`;
+      return env.NODES.fetch(new Request(target.toString(), req));
     }
 
     // Handle watch requests in JS (Go WASM cannot do streaming)
