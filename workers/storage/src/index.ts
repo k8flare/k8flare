@@ -80,6 +80,17 @@ function needsControllersPing(key: string): boolean {
 }
 
 /**
+ * Whether writing this key should poke workers/nodes'
+ * cf-containers-scheduler (the per-Pod microVM binder): pod writes only
+ * -- a new unscheduled pod is its work queue, and pod status/deletion
+ * drives VM teardown. Same event-armed shape as needsControllersPing;
+ * the binder's own safety-net alarm parks when it tracks nothing.
+ */
+function needsNodesPing(key: string): boolean {
+  return key.startsWith("/registry/pods/");
+}
+
+/**
  * Whether writing this key means the node-lifecycle safety net (see
  * reconcileNodeLifecycle) should be pulled in to run soon, mirroring
  * needsServiceIPAttention's role for ClusterIP allocation. Coarse (any
@@ -192,6 +203,21 @@ export class Cluster {
     }
   }
 
+  /** Same best-effort contract as pingControllers, for workers/nodes'
+   * cf-containers-scheduler. The nodes worker token-gates inbound pokes,
+   * so the shared cluster token is forwarded. */
+  private async pingNodes(): Promise<void> {
+    const nodes = this.env.NODES;
+    if (!nodes) return; // not bound in some dev/test configs
+    try {
+      await nodes.fetch("http://nodes.internal/", {
+        headers: { Authorization: `Bearer ${this.env.K3S_TOKEN || "k8flare-dev-token"}` },
+      });
+    } catch {
+      // best-effort
+    }
+  }
+
   async fetch(request: Request): Promise<Response> {
     this.initialize();
     const url = new URL(request.url);
@@ -269,6 +295,7 @@ export class Cluster {
       if (needsServiceIPAttention(key, value)) await this.armSafetyNetSoon();
       if (needsNodeLifecycleAttention(key)) await this.armSafetyNetSoon();
       if (needsControllersPing(key)) await this.pingControllers();
+      if (needsNodesPing(key)) await this.pingNodes();
       return jsonResponse({ revision: id }, 201);
     } else {
       const { rev, event } = await storeGetCurrent(this.sql, this.host, key, false);
@@ -299,6 +326,7 @@ export class Cluster {
       if (needsServiceIPAttention(key, value)) await this.armSafetyNetSoon();
       if (needsNodeLifecycleAttention(key)) await this.armSafetyNetSoon();
       if (needsControllersPing(key)) await this.pingControllers();
+      if (needsNodesPing(key)) await this.pingNodes();
       return jsonResponse({ revision: id, kv, updated: true });
     }
   }
@@ -326,6 +354,7 @@ export class Cluster {
     if (needsServiceIPAttention(key, oldValue)) await this.armSafetyNetSoon();
     if (needsNodeLifecycleAttention(key)) await this.armSafetyNetSoon();
     if (needsControllersPing(key)) await this.pingControllers();
+    if (needsNodesPing(key)) await this.pingNodes();
 
     // Namespace deletion does NOT call ctx.facets.delete() here, despite the
     // original plan calling for it as a GC nicety. Empirically reproduced

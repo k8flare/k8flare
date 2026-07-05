@@ -63,11 +63,12 @@ export interface PodObject {
   metadata: { name: string; namespace: string; uid?: string; deletionTimestamp?: string };
   spec?: {
     nodeName?: string;
+    schedulerName?: string;
     restartPolicy?: "Always" | "OnFailure" | "Never";
     containers?: Array<{
       name: string;
       image: string;
-      resources?: { requests?: Record<string, string> };
+      resources?: { requests?: Record<string, string>; limits?: Record<string, string> };
       // Phase 8 (R2 PV/PVC backend): only volumeMounts[].name is needed, to
       // cross-reference against spec.volumes[].name below and find which
       // (if any) of this Pod's volumes is actually mounted by its one
@@ -317,4 +318,89 @@ export async function mintR2Credentials(
   });
   if (!resp.ok) return undefined;
   return resp.json();
+}
+
+/** Lists pods that have no node assigned yet (the binder's work queue). */
+export async function listUnscheduledPods(env: Env): Promise<PodObject[]> {
+  const resp = await apiFetch(
+    env,
+    `/api/v1/pods?fieldSelector=${encodeURIComponent("spec.nodeName=")}`,
+  );
+  if (!resp.ok) throw new Error(`listUnscheduledPods: ${resp.status} ${await resp.text()}`);
+  const data = (await resp.json()) as { items?: PodObject[] };
+  return data.items ?? [];
+}
+
+export async function getPod(env: Env, namespace: string, name: string): Promise<PodObject | null> {
+  const resp = await apiFetch(env, `/api/v1/namespaces/${namespace}/pods/${name}`);
+  if (resp.status === 404) return null;
+  if (!resp.ok) throw new Error(`getPod ${namespace}/${name}: ${resp.status} ${await resp.text()}`);
+  return (await resp.json()) as PodObject;
+}
+
+/**
+ * Binds a pod to a node via the official Binding subresource -- the same
+ * API the real kube-scheduler uses (POST pods/{name}/binding), no
+ * spec.nodeName back-door writes.
+ */
+export async function bindPod(
+  env: Env,
+  namespace: string,
+  name: string,
+  nodeName: string,
+): Promise<void> {
+  const resp = await apiFetch(env, `/api/v1/namespaces/${namespace}/pods/${name}/binding`, {
+    method: "POST",
+    body: JSON.stringify({
+      apiVersion: "v1",
+      kind: "Binding",
+      metadata: { name, namespace },
+      target: { apiVersion: "v1", kind: "Node", name: nodeName },
+    }),
+  });
+  if (!resp.ok)
+    throw new Error(
+      `bindPod ${namespace}/${name} -> ${nodeName}: ${resp.status} ${await resp.text()}`,
+    );
+}
+
+/** Records a scheduling Event with the standard shape kubectl describe shows. */
+export async function createSchedulingEvent(
+  env: Env,
+  pod: PodObject,
+  reason: "Scheduled" | "FailedScheduling",
+  message: string,
+): Promise<void> {
+  const ns = pod.metadata.namespace;
+  const now = new Date().toISOString();
+  const resp = await apiFetch(env, `/api/v1/namespaces/${ns}/events`, {
+    method: "POST",
+    body: JSON.stringify({
+      apiVersion: "v1",
+      kind: "Event",
+      metadata: { generateName: `${pod.metadata.name}.`, namespace: ns },
+      involvedObject: {
+        apiVersion: "v1",
+        kind: "Pod",
+        namespace: ns,
+        name: pod.metadata.name,
+        uid: pod.metadata.uid,
+      },
+      reason,
+      message,
+      type: reason === "Scheduled" ? "Normal" : "Warning",
+      source: { component: "cf-containers-scheduler" },
+      firstTimestamp: now,
+      lastTimestamp: now,
+      count: 1,
+    }),
+  });
+  if (!resp.ok) console.log(`createSchedulingEvent: ${resp.status} ${await resp.text()}`);
+}
+
+export async function deleteNode(env: Env, name: string): Promise<void> {
+  const resp = await apiFetch(env, `/api/v1/nodes/${name}`, { method: "DELETE" });
+  if (!resp.ok && resp.status !== 404) {
+    throw new Error(`deleteNode ${name}: ${resp.status} ${await resp.text()}`);
+  }
 }

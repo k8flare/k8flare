@@ -16,6 +16,8 @@
   "services": [
     { "binding": "CONTROLLERS", "service": "k8flare-controllers" },
     { "binding": "APISERVER", "service": "k8flare-apiserver" },
+    // cf-containers-scheduler poke target (pingNodes on pod writes)
+    { "binding": "NODES", "service": "k8flare-nodes" },
   ],
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Cluster", "WatchHub"] }],
   "observability": { "enabled": true, "head_sampling_rate": 1 },

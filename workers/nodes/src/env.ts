@@ -1,16 +1,14 @@
-import type { PodContainerLarge, PodContainerMedium, PodContainerSmall } from "./podcontainer.ts";
-import type { VirtualNode } from "./virtualnode.ts";
+import type { NodeVMLarge, NodeVMMedium, NodeVMSmall } from "./nodevm.ts";
+import type { CFContainersScheduler } from "./scheduler.ts";
 
 export interface Env {
-  VIRTUAL_NODE: DurableObjectNamespace<VirtualNode>;
-  POD_CONTAINER_SMALL: DurableObjectNamespace<PodContainerSmall>;
-  POD_CONTAINER_MEDIUM: DurableObjectNamespace<PodContainerMedium>;
-  POD_CONTAINER_LARGE: DurableObjectNamespace<PodContainerLarge>;
+  SCHEDULER: DurableObjectNamespace<CFContainersScheduler>;
+  NODE_VM_SMALL: DurableObjectNamespace<NodeVMSmall>;
+  NODE_VM_MEDIUM: DurableObjectNamespace<NodeVMMedium>;
+  NODE_VM_LARGE: DurableObjectNamespace<NodeVMLarge>;
   APISERVER: Fetcher;
   K3S_TOKEN?: string;
-  // Name suffix for the virtual Node this Worker registers, so more than one
-  // pool can be deployed side by side (e.g. distinct size/region policies) --
-  // the registered Node is named `cf-containers-${NODE_POOL}`. Defaults to
-  // "default" (see virtualnode.ts's DEFAULT_POOL).
-  NODE_POOL?: string;
+  // Public gateway URL the in-VM k3s agent joins through (the microVM
+  // dials out over the internet; service bindings don't reach into it).
+  GATEWAY_URL?: string;
 }

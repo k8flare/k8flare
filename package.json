@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "wrangler dev -c workers/gateway/wrangler.jsonc -c workers/storage/wrangler.jsonc -c workers/apiserver/wrangler.jsonc -c workers/runtime/wrangler.jsonc -c workers/controllers/wrangler.jsonc --persist-to .wrangler/state",
     "deploy": "npm run deploy:storage && npm run deploy:apiserver && npm run deploy:runtime && npm run deploy:controllers && npm run deploy:gateway",
+    "deploy:nodes": "bash scripts/build-nodes-agent.sh && wrangler deploy --config workers/nodes/wrangler.jsonc",
     "deploy:controllers": "wrangler deploy --config workers/controllers/wrangler.jsonc",
     "deploy:storage": "wrangler deploy --config workers/storage/wrangler.jsonc",
     "deploy:apiserver": "wrangler deploy --config workers/apiserver/wrangler.jsonc",
