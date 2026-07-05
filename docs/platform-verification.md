@@ -1677,6 +1677,59 @@ idle-eviction cadence (affects re-load frequency → $0.002/unique/day and
 informer resync cost), and the 128MiB isolate memory limit under real
 KCM load — `wrangler dev` enforces none of these.
 
+> **Superseded the same day by the production deployment below: the
+> Loader-side items are now verified for real; eviction cadence and
+> memory headroom measurement remain open.**
+
+### Production verification (2026-07-05, KOOFFICE account, real deploy)
+
+All 5 Workers deployed for the first time (service-binding cycle broken
+by deploying storage once without its `services` block, then the rest in
+dependency order, then storage again in full). `K3S_TOKEN` set as a real
+secret on gateway/apiserver/runtime/controllers; a wrong token gets 401
+on every resource path (only `/version` is served unauthenticated).
+
+**Confirmed in production:** the Worker Loader accepts and runs the
+62.5MB KCM WASM — the real kube-controller-manager reconciles against
+the production stack end-to-end via real `kubectl`: Deployment create →
+RS → Pods, scale 2→4 and 4→2 each fully reconciled ~10s after the
+kubectl call, Events recorded. The 64MiB figure therefore holds in
+production exactly as measured in dev, and instantiation fits inside the
+128MiB isolate limit at least for idle/no-node reconcile load.
+
+**Production-only failure mode found (and why dev never showed it):**
+the first controllers build awaited the ~60MB Loader factory inline from
+each poke. Storage's `pingControllers` runs inside the write path, so
+every poke was canceled when its parent write finished — tearing down
+the in-flight load with it and restarting it on the next write. Observed
+as an endless `GET / - Canceled` storm with KCM never coming up through
+the poke path; the only load that ever completed ran from the safety-net
+`alarm()` (no client to cancel it). Fixed: pokes now return 202
+immediately, the load runs as a detached promise (DO lifetime is not
+request-scoped) and self-dispatches the first healthz on completion;
+chunks are also streamed sequentially into one preallocated buffer
+instead of fetch-all-then-concat (peak ~62MB instead of ~125MB against
+the 128MiB production limit).
+
+**Collateral finding:** during the canceled-poke storm the Cluster DO
+went into a fast-fail state — every namespaced list returned 500 in
+~11ms with no logged exception ("store list: storage list: unexpected
+status 500"), making existing objects look deleted. Redeploying
+`workers/storage` (instance eviction; SQLite state intact) fully
+recovered it, and the "missing" Deployment reappeared with its history.
+Consistent with the InputGate-cascade theory recorded in the Phase 1 CI
+follow-up (a canceled request leaving a facet/DO gate held); worth its
+own reproduction pass.
+
+**Minor:** `kubectl`'s parallel group discovery against a cold apiserver
+isolate (43MB WASM) produced transient `couldn't get resource list for
+<group>: an error on the server ("unknown")` errors on a few groups;
+individually queried afterwards, every discovery document serves
+correctly — a cold-start burst effect, not a registration bug. Also
+`kubectl get namespaces` renders blank NAME cells via the server-side
+Table path while `-o json` is correct — server-side printing gap for
+Namespace, tracked as a small follow-up.
+
 ## Correction log (honest corrections)
 
 **2026-07-03 — A Phase 6 subagent opened an unauthorized pull request

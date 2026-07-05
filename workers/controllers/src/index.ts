@@ -110,6 +110,17 @@ export class Controllers {
   state: DurableObjectState;
   env: Env;
   manifestPromise: Promise<KcmManifest> | null = null;
+  // Resolved entrypoint once the dynamic worker is loaded, and the
+  // in-flight load. Loading ~60MB through the Loader factory takes long
+  // enough in production that awaiting it inline from a poke is wrong:
+  // storage's pingControllers runs inside the write path, the canceled
+  // ping tears down the load with it, and the next write starts the
+  // whole load over -- observed live as an endless "GET / - Canceled"
+  // storm with KCM never coming up. Pokes therefore return immediately
+  // and the load runs detached (DO lifetime is not tied to any one
+  // request); the load's own completion handler delivers the first poke.
+  kcmEntrypoint: Fetcher | null = null;
+  kcmLoading: Promise<Fetcher> | null = null;
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
@@ -149,21 +160,47 @@ export class Controllers {
   // chunk fetching/assembly below only runs on isolate cold start. The
   // binary's own sha256 is the cache id, so a rebuilt binary is a new id
   // and the stale isolate is simply never addressed again.
-  private async kcm(): Promise<Fetcher> {
+  //
+  // Chunks are fetched sequentially and streamed straight into one
+  // preallocated buffer: the earlier fetch-all-then-concat version held
+  // both every part and the assembled copy alive at once (~2x binary
+  // size ≈ 125MB), which flirts with production's 128MiB isolate memory
+  // limit that wrangler dev never enforces.
+  private ensureKcm(): Promise<Fetcher> {
+    if (!this.kcmLoading) {
+      this.kcmLoading = this.loadKcm().then((f) => {
+        this.kcmEntrypoint = f;
+        return f;
+      });
+      // Don't cache failures -- the next poke retries the load.
+      this.kcmLoading.catch((err) => {
+        console.log(`controllers: kcm load failed: ${err}`);
+        this.kcmLoading = null;
+      });
+    }
+    return this.kcmLoading;
+  }
+
+  private async loadKcm(): Promise<Fetcher> {
     const manifest = await this.manifest();
     const worker = this.env.LOADER.get(`kcm@${manifest.sha256}`, async () => {
-      const parts = await Promise.all(
-        manifest.parts.map((p) => this.fetchAsset(p).then((r) => r.arrayBuffer())),
-      );
       const wasm = new Uint8Array(manifest.size);
       let off = 0;
-      for (const part of parts) {
-        wasm.set(new Uint8Array(part), off);
-        off += part.byteLength;
+      for (const part of manifest.parts) {
+        const resp = await this.fetchAsset(part);
+        if (!resp.body) throw new Error(`asset ${part}: empty body`);
+        const reader = resp.body.getReader();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          wasm.set(value, off);
+          off += value.byteLength;
+        }
       }
       if (off !== manifest.size) {
         throw new Error(`kcm wasm reassembly: got ${off} bytes, manifest says ${manifest.size}`);
       }
+      console.log(`controllers: kcm chunks assembled (${off} bytes)`);
       const wasmExec = await this.fetchAsset("wasm_exec.js").then((r) => r.text());
       // Only plain values and Fetchers survive the env clone (S2 item
       // 3a) -- this is exactly what pkg/controllers.RestConfig("GATEWAY")
@@ -181,29 +218,51 @@ export class Controllers {
         env: dynamicEnv,
       };
     });
-    return worker.getEntrypoint();
+    const entrypoint = worker.getEntrypoint();
+    // Force the factory to actually run now (getEntrypoint alone is lazy)
+    // and prove the dynamic worker is dispatchable before declaring it
+    // ready -- this doubles as the "first poke" that starts the resident
+    // controller-manager.
+    await entrypoint.fetch("http://controllers.internal/healthz");
+    console.log("controllers: kcm dynamic worker up");
+    return entrypoint;
   }
 
   async fetch(request: Request): Promise<Response> {
-    const kcm = await this.kcm();
-    const response = await kcm.fetch(request);
     // Arm the safety net if it isn't already, so a redeploy/panic/
     // eviction that resets the dynamic worker still gets noticed and
     // restarted even if no further relevant write happens to re-trigger
     // storage's pingControllers (workers/storage/src/index.ts). Cheap
-    // local check -- no cross-DO call on this hot path.
+    // local check -- no cross-DO call on this hot path. Armed before the
+    // dispatch so a still-loading KCM gets a completion poke even if no
+    // further write ever arrives.
     const current = await this.state.storage.getAlarm();
     if (current === null) {
       this.state.storage.setAlarm(Date.now() + SAFETY_NET_INTERVAL_MS);
     }
-    return response;
+
+    const kcm = this.kcmEntrypoint;
+    if (!kcm) {
+      // Never await the load from a poke: pokes come from storage's
+      // write path and get canceled when that write finishes, and a
+      // canceled poke must not tear down (or serially restart) the load.
+      // The detached promise outlives this request -- DO lifetime is not
+      // request-scoped -- and its completion dispatch starts KCM.
+      void this.ensureKcm()
+        .then((f) => f.fetch("http://controllers.internal/healthz"))
+        .catch(() => {}); // already logged in ensureKcm
+      return Response.json({ controllerManager: "loading" }, { status: 202 });
+    }
+    return kcm.fetch(request);
   }
 
   async alarm(): Promise<void> {
     // Hitting /healthz both confirms liveness and (re-)triggers the Go
     // side's ensureStarted() if the dynamic worker's isolate was evicted
-    // since the last request (the Loader factory then reruns too).
-    const kcm = await this.kcm();
+    // since the last request (the Loader factory then reruns too). The
+    // alarm context has no client to cancel it, so awaiting the load
+    // here is safe (and is what completes a load whose pokes all died).
+    const kcm = await this.ensureKcm();
     await kcm.fetch("http://controllers.internal/healthz");
 
     // Re-arm only while the cluster still has a live Node worth having
