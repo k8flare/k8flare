@@ -188,10 +188,16 @@ export class Cluster {
    * Fire-and-forget ping to workers/controllers (see
    * CONTROLLER_RELEVANT_PREFIXES/needsControllersPing above), ensuring the
    * real kube-controller-manager it hosts is instantiated and its resident
-   * reconcile loop running. Best-effort: a failure here must not fail the
-   * write that triggered it -- the real controllers' own client-go
-   * informers and this same ping firing again on the next relevant write
-   * are both still there to catch a missed wake.
+   * reconcile loop running. Best-effort AND fire-and-forget: a failure
+   * must not fail the write, and the write must NOT wait on the ping --
+   * these used to be awaited inline, which meant every relevant write
+   * held this DO's input gate for a full cross-worker round trip; under
+   * bursts that serialized/starved every other request on this instance
+   * and propagated caller cancellations into the ping chain (the
+   * "GET / - Canceled" storms and minutes-long fast-500 wedge episodes
+   * observed in production, see docs/platform-verification.md). The
+   * detached promise keeps running past the response; errors are
+   * swallowed here.
    */
   private async pingControllers(): Promise<void> {
     const controllers = this.env.CONTROLLERS;
@@ -294,8 +300,8 @@ export class Cluster {
       await broadcastEvent(this.host, this.sql, key, id);
       if (needsServiceIPAttention(key, value)) await this.armSafetyNetSoon();
       if (needsNodeLifecycleAttention(key)) await this.armSafetyNetSoon();
-      if (needsControllersPing(key)) await this.pingControllers();
-      if (needsNodesPing(key)) await this.pingNodes();
+      if (needsControllersPing(key)) void this.pingControllers();
+      if (needsNodesPing(key)) void this.pingNodes();
       return jsonResponse({ revision: id }, 201);
     } else {
       const { rev, event } = await storeGetCurrent(this.sql, this.host, key, false);
@@ -325,8 +331,8 @@ export class Cluster {
       await broadcastEvent(this.host, this.sql, key, id);
       if (needsServiceIPAttention(key, value)) await this.armSafetyNetSoon();
       if (needsNodeLifecycleAttention(key)) await this.armSafetyNetSoon();
-      if (needsControllersPing(key)) await this.pingControllers();
-      if (needsNodesPing(key)) await this.pingNodes();
+      if (needsControllersPing(key)) void this.pingControllers();
+      if (needsNodesPing(key)) void this.pingNodes();
       return jsonResponse({ revision: id, kv, updated: true });
     }
   }
@@ -353,8 +359,8 @@ export class Cluster {
     await broadcastEvent(this.host, this.sql, key, id);
     if (needsServiceIPAttention(key, oldValue)) await this.armSafetyNetSoon();
     if (needsNodeLifecycleAttention(key)) await this.armSafetyNetSoon();
-    if (needsControllersPing(key)) await this.pingControllers();
-    if (needsNodesPing(key)) await this.pingNodes();
+    if (needsControllersPing(key)) void this.pingControllers();
+    if (needsNodesPing(key)) void this.pingNodes();
 
     // Namespace deletion does NOT call ctx.facets.delete() here, despite the
     // original plan calling for it as a GC nicety. Empirically reproduced
