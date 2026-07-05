@@ -79,7 +79,7 @@ const R2StorageClassName = "r2"
 // something meaningful) rather than an empty string, and so
 // workers/nodes/src/virtualnode.ts has a stable driver name to assert on
 // before trusting a PV's volumeAttributes.
-const R2CSIDriverName = "k8flare.dev/r2"
+const R2CSIDriverName = "k8flare.com/r2"
 
 // r2AttrBucket and r2AttrPrefix are the spec.csi.volumeAttributes keys a
 // bound PersistentVolume carries its R2 location under. workers/nodes reads

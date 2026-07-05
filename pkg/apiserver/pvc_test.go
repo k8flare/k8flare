@@ -73,8 +73,8 @@ func TestPVCBinding_SynchronousAndDefaultStorageClass(t *testing.T) {
 	if pv.Spec.CSI == nil {
 		t.Fatal("PV spec.csi is nil, want an R2-backed CSI source")
 	}
-	if pv.Spec.CSI.Driver != "k8flare.dev/r2" {
-		t.Errorf("PV spec.csi.driver = %q, want \"k8flare.dev/r2\"", pv.Spec.CSI.Driver)
+	if pv.Spec.CSI.Driver != "k8flare.com/r2" {
+		t.Errorf("PV spec.csi.driver = %q, want \"k8flare.com/r2\"", pv.Spec.CSI.Driver)
 	}
 	prefix := pv.Spec.CSI.VolumeAttributes["prefix"]
 	if !strings.HasPrefix(prefix, "pvc-"+string(pvc.UID)) {
@@ -175,8 +175,8 @@ func TestStorageClassBootstrap_R2ExistsAndIsDefault(t *testing.T) {
 	if sc.Annotations["storageclass.kubernetes.io/is-default-class"] != "true" {
 		t.Errorf("r2 StorageClass annotations = %v, want is-default-class=true", sc.Annotations)
 	}
-	if sc.Provisioner != "k8flare.dev/r2" {
-		t.Errorf("r2 StorageClass provisioner = %q, want \"k8flare.dev/r2\"", sc.Provisioner)
+	if sc.Provisioner != "k8flare.com/r2" {
+		t.Errorf("r2 StorageClass provisioner = %q, want \"k8flare.com/r2\"", sc.Provisioner)
 	}
 }
 

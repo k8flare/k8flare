@@ -236,18 +236,18 @@ export class VirtualNode extends DurableObject<Env> {
         name: this.nodeName,
         labels: {
           "kubernetes.io/hostname": this.nodeName,
-          "k8flare.dev/backend": "containers",
-          "k8flare.dev/pool": this.pool,
+          "k8flare.com/backend": "containers",
+          "k8flare.com/pool": this.pool,
         },
       },
       // NoSchedule taint: opt-in-only isolation. Ordinary Pods
       // must never land on this backend (image allowlist, no UDP, no
       // kubectl exec -- see README.md); only Pods that opted in via the
-      // `k8flare.dev/compute: containers` annotation get a matching
+      // `k8flare.com/compute: containers` annotation get a matching
       // toleration + nodeSelector injected by the apiserver at admission
       // (pkg/apiserver, MutatePodForComputeClass).
       spec: {
-        taints: [{ key: "k8flare.dev/pod-on-containers", value: "true", effect: "NoSchedule" }],
+        taints: [{ key: "k8flare.com/pod-on-containers", value: "true", effect: "NoSchedule" }],
       },
       status: {
         // Deliberately large, fixed capacity rather than a tight number:

@@ -8,7 +8,7 @@ import (
 // (workers/nodes): a Pod opts in with a single annotation, and this
 // apiserver injects the scheduling constraints at admission (the role a
 // mutating webhook plays on managed per-Pod-node platforms). The virtual
-// node registers with a `k8flare.dev/pod-on-containers=true:NoSchedule`
+// node registers with a `k8flare.com/pod-on-containers=true:NoSchedule`
 // taint (workers/nodes/src/virtualnode.ts), so un-annotated Pods can
 // never land on the Containers backend (image allowlist, no UDP, no
 // exec -- see README.md), and annotated Pods schedule ONLY there.
@@ -19,13 +19,13 @@ import (
 // creates, so the mutation fires when those Pods reach Create here.
 const (
 	// ComputeClassAnnotation is the opt-in annotation key.
-	ComputeClassAnnotation = "k8flare.dev/compute"
+	ComputeClassAnnotation = "k8flare.com/compute"
 	// ComputeClassContainers routes the Pod to the Cloudflare Containers
 	// virtual node pool.
 	ComputeClassContainers = "containers"
 
-	containersBackendLabel = "k8flare.dev/backend"
-	containersTaintKey     = "k8flare.dev/pod-on-containers"
+	containersBackendLabel = "k8flare.com/backend"
+	containersTaintKey     = "k8flare.com/pod-on-containers"
 
 	// ContainersSchedulerName is the schedulerName of workers/nodes'
 	// per-Pod binder (binds via the official Binding
@@ -37,7 +37,7 @@ const (
 
 // MutatePodForComputeClass injects the Containers-backend nodeSelector
 // and taint toleration into pod iff it carries
-// `k8flare.dev/compute: containers`. Idempotent; called from
+// `k8flare.com/compute: containers`. Idempotent; called from
 // ResourceStore.Create, mirroring prepareJobForCreate's placement.
 func MutatePodForComputeClass(pod *corev1.Pod) {
 	if pod.Annotations[ComputeClassAnnotation] != ComputeClassContainers {
