@@ -3,7 +3,7 @@ import {
   handleKubeletProxy,
   handleRemotedialConnect,
 } from "./proxy/index.ts";
-import { handleWatch } from "@k8flare/k8s";
+import { dwAuth, handleWatch } from "@k8flare/k8s";
 import { injectCustomAPIGroup, injectOpenAPIV3Path } from "@k8flare/crd";
 import { DW_GROUP, DW_VERSION } from "@k8flare/dynamic-worker";
 import type { Env } from "./env.ts";
@@ -15,6 +15,23 @@ export default {
     // Kubelet proxy requests (pods/log, pods/exec, etc.)
     if (isKubeletProxyRequest(url.pathname)) {
       return handleKubeletProxy(req, env, url, (r) => env.APISERVER.fetch(r));
+    }
+
+    // HTTP ingress into a Pod-on-Containers Pod:
+    // /podproxy/{namespace}/{pod}/{path...} -> workers/nodes ->
+    // VirtualNode DO -> the Pod's backing Container (port 8080).
+    // Token-gated here (same dwAuth as watch/kubelet-proxy); the nodes
+    // Worker re-checks the same Authorization header on its side too.
+    if (url.pathname.startsWith("/podproxy/")) {
+      if (!dwAuth(req, env)) {
+        return new Response("unauthorized", { status: 401 });
+      }
+      if (!env.NODES) {
+        return new Response("podproxy: workers/nodes is not deployed on this cluster", {
+          status: 503,
+        });
+      }
+      return env.NODES.fetch(req);
     }
 
     // Handle watch requests in JS (Go WASM cannot do streaming)

@@ -165,6 +165,32 @@ export class VirtualNode extends DurableObject<Env> {
     if (url.pathname === "/healthz") {
       return Response.json({ ok: true, node: this.nodeName, pool: this.pool });
     }
+    // /podproxy/{namespace}/{pod}/{rest...}: HTTP ingress into a Pod's
+    // backing container. Cloudflare Containers expose no routable Pod IP
+    // (README.md's networking limits), so Service/ClusterIP routing can
+    // never reach these Pods -- this DO, which owns the pod->container
+    // bookkeeping, is the only component that can forward traffic in.
+    // Reached via gateway's authenticated /podproxy route (the only
+    // public Worker); @cloudflare/containers' Container.fetch proxies the
+    // rewritten request to the container's defaultPort (8080).
+    if (url.pathname.startsWith("/podproxy/")) {
+      const parts = url.pathname.split("/").filter(Boolean); // ["podproxy", ns, pod, ...rest]
+      if (parts.length < 3) {
+        return new Response("usage: /podproxy/{namespace}/{pod}/{path}", { status: 400 });
+      }
+      const [, namespace, name, ...rest] = parts;
+      const known = (await this.ctx.storage.get<Record<string, KnownPod>>("knownPods")) ?? {};
+      const entry = known[podKey(namespace, name)];
+      if (!entry) {
+        return new Response(`pod ${namespace}/${name} is not running on this node`, {
+          status: 404,
+        });
+      }
+      const target = new URL(request.url);
+      target.pathname = "/" + rest.join("/");
+      const stub = this.containerStub(entry.tier, namespace, name);
+      return stub.fetch(new Request(target.toString(), request));
+    }
     return new Response("k8flare-nodes: not directly routable (see /healthz)", { status: 404 });
   }
 

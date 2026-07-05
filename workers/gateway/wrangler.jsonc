@@ -10,6 +10,9 @@
   "services": [
     { "binding": "APISERVER", "service": "k8flare-apiserver" },
     { "binding": "RUNTIME", "service": "k8flare-runtime" },
+    // Pod-on-Containers HTTP ingress (/podproxy). Remove this binding on
+    // clusters that don't deploy workers/nodes.
+    { "binding": "NODES", "service": "k8flare-nodes" },
   ],
   "observability": { "enabled": true, "head_sampling_rate": 1 },
 }

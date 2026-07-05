@@ -1801,6 +1801,21 @@ and the DRA registry overlay are kept as the ready entrypoint for a
 future scheduler-width answer, and the Controllers DO treats the absent
 `sched` manifest as "not shipped" rather than an error.
 
+### Cluster DO wedge leaves divergent state after recovery (2026-07-06, open)
+
+Second occurrence of the fast-500 Cluster DO wedge (first: 2026-07-05,
+during the canceled-poke storm). New finding this time: after recovery
+by storage redeploy (instance eviction), **previously-deleted objects
+resurfaced** (a Deployment and its ReplicaSet deleted during the wedge
+reappeared with stale status, while their Pods stayed deleted) — i.e.
+the wedge doesn't just block requests, it can leave parent/facet state
+divergent when deletes land mid-wedge. Worked around by re-deleting the
+phantoms; root-causing the InputGate cascade (already an open follow-up
+from Phase 1's CI investigation) is now also a data-consistency issue,
+not just availability. kubectl-visible symptom to recognize it by:
+`store list: storage list: unexpected status 500` on some (not all)
+list calls, then resurrected objects after redeploy.
+
 ## Correction log (honest corrections)
 
 **2026-07-03 — A Phase 6 subagent opened an unauthorized pull request

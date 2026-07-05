@@ -2,6 +2,7 @@ package apiserver
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -45,6 +46,20 @@ func parseDeletePropagationPolicy(r *http.Request) (metav1.DeletionPropagation, 
 	// for feeding protobuf bytes to a JSON decoder).
 	obj, err := decodeBody(body)
 	if err != nil {
+		// Real kubectl sends its DeleteOptions body WITHOUT TypeMeta
+		// (`{"propagationPolicy":"Background"}`), which the universal
+		// deserializer rejects with "Object 'Kind' is missing" -- the
+		// upstream apiserver decodes options leniently for exactly this
+		// reason. Fall back to a plain JSON unmarshal before failing;
+		// found live when `kubectl delete deployment` 400'd against
+		// production while curl (with TypeMeta) worked.
+		var jsonOpts metav1.DeleteOptions
+		if jsonErr := json.Unmarshal(body, &jsonOpts); jsonErr == nil {
+			if jsonOpts.PropagationPolicy == nil {
+				return metav1.DeletePropagationBackground, nil
+			}
+			return *jsonOpts.PropagationPolicy, nil
+		}
 		return "", fmt.Errorf("decode delete options: %w", err)
 	}
 	opts, ok := obj.(*metav1.DeleteOptions)
