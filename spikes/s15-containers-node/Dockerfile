@@ -1,12 +1,11 @@
-# S15: Fargate-style per-Pod node image — the ONE deploy-time-fixed image
+# S15: cf-containers per-Pod node image — the ONE deploy-time-fixed image
 # workers/nodes ships. Runs the unmodified k3s agent embed (cmd/agent:
 # kubelet + containerd + flannel) inside a Cloudflare Container microVM;
 # containerd inside pulls the Pod's arbitrary user image at runtime, which
-# is how the image-allowlist limitation dissolves (EKS Fargate's shape:
-# Fargate infrastructure runs a kubelet under every pod).
+# is how the image-allowlist limitation dissolves (the per-Pod managed-node shape: each Pod gets its own microVM with a kubelet under it).
 #
 # Build context is the repo root (needs the full Go module):
-#   docker build -f spikes/s15-fargate-node/Dockerfile -t k8flare/fargate-node .
+#   docker build -f spikes/s15-containers-node/Dockerfile -t k8flare/containers-node .
 FROM golang:1.26-alpine AS build
 RUN apk add --no-cache bash git jq perl-utils python3
 WORKDIR /src
@@ -33,7 +32,7 @@ RUN case "$TARGETARCH" in \
     && chmod +x /usr/local/bin/k3s
 COPY --from=build /k8flare-agent /usr/local/bin/k8flare-agent
 ENV K3S_TOKEN=""
-COPY spikes/s15-fargate-node/entrypoint.sh /entrypoint.sh
+COPY spikes/s15-containers-node/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 # SERVER_URL/NODE_NAME provided per-instance via Containers envVars.
 ENTRYPOINT ["/entrypoint.sh"]

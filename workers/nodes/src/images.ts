@@ -95,19 +95,31 @@ export interface PodResourceRequest {
 export interface PodLike {
   spec?: {
     containers?: Array<{
-      resources?: { requests?: Record<string, string> };
+      resources?: { requests?: Record<string, string>; limits?: Record<string, string> };
     }>;
   };
 }
 
-/** Sums resources.requests across every container in the Pod (Pod-level total, matching how a real Node's allocatable is consumed). */
+/**
+ * Sums the per-container effective resource ask across the Pod, taking
+ * max(limits, requests) per container: limits are the ceiling the
+ * workload may actually consume, so a Pod sized only by its (smaller)
+ * requests could be placed on a tier its limits then blow through.
+ * Standard k8s semantics also guarantee requests <= limits when both are
+ * set, so this is simply "whichever of the two is specified, prefer the
+ * ceiling".
+ */
 export function podResourceRequests(pod: PodLike): PodResourceRequest {
   let milliCPU = 0;
   let memoryBytes = 0;
   for (const c of pod.spec?.containers ?? []) {
     const requests = c.resources?.requests ?? {};
-    milliCPU += parseCPUQuantity(requests.cpu);
-    memoryBytes += parseMemoryQuantity(requests.memory);
+    const limits = c.resources?.limits ?? {};
+    milliCPU += Math.max(parseCPUQuantity(requests.cpu), parseCPUQuantity(limits.cpu));
+    memoryBytes += Math.max(
+      parseMemoryQuantity(requests.memory),
+      parseMemoryQuantity(limits.memory),
+    );
   }
   return { milliCPU, memoryBytes };
 }

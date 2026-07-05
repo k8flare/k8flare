@@ -240,7 +240,7 @@ export class VirtualNode extends DurableObject<Env> {
           "k8flare.dev/pool": this.pool,
         },
       },
-      // NoSchedule taint: EKS-on-Fargate-style isolation. Ordinary Pods
+      // NoSchedule taint: opt-in-only isolation. Ordinary Pods
       // must never land on this backend (image allowlist, no UDP, no
       // kubectl exec -- see README.md); only Pods that opted in via the
       // `k8flare.dev/compute: containers` annotation get a matching

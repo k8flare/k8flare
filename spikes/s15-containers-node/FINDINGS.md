@@ -1,13 +1,13 @@
-# S15 — Fargate-style node-in-a-Container: local Docker round (2026-07-06)
+# S15 — cf-containers-style node-in-a-Container: local Docker round (2026-07-06)
 
 Goal: replace workers/nodes' hand-written VirtualNode/PodContainer backend
-with EKS-Fargate-shaped per-Pod ephemeral nodes: one microVM per Pod,
+with EKS-cf-containers-shaped per-Pod ephemeral nodes: one microVM per Pod,
 running OUR fixed node image (unmodified k3s agent embed = kubelet +
 containerd), containerd pulling the Pod's arbitrary image inside.
 
 ## Round 1: local Docker (cost-free stand-in for the microVM) — PROVEN
 
-`docker run --privileged -v s15-data:/var/lib/rancher/k3s k8flare/fargate-node`
+`docker run --privileged -v s15-data:/var/lib/rancher/k3s k8flare/containers-node`
 against the PRODUCTION gateway:
 
 - Node `s15-local-docker-<id>` registered and went Ready (kubelet
@@ -59,7 +59,7 @@ host-cross-compiled agent + official k3s binary).
   destroyed, spike worker deleted, node object removed. Total billed
   microVM wall-clock: ~12 minutes of standard-1 (~$0.015).
 
-VERDICT: the Fargate-style replacement is feasible end-to-end on the
+VERDICT: the cf-containers-style replacement is feasible end-to-end on the
 real platform. Remaining engineering (not spike): per-Pod lifecycle
 manager in workers/nodes (pending annotated pod -> boot VM with
 NODE_NAME=pod-derived, envVars token via secret -> bind -> destroy on

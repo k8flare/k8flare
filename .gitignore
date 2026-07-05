@@ -20,4 +20,4 @@ spikes/s3-containers/hoststream/hoststream-server
 spikes/s2-loader/parent/goscript-klog-test/
 /apiserver
 /k8flare-gen
-spikes/s15-fargate-node/worker/k8flare-agent
+spikes/s15-containers-node/worker/k8flare-agent

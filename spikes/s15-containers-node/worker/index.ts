@@ -5,7 +5,7 @@
 // the join at the gateway). DELETE THIS WORKER after the spike.
 import { Container } from "@cloudflare/containers";
 
-export class FargateNodeVM extends Container<unknown> {
+export class ContainersNodeVM extends Container<unknown> {
   defaultPort = 10250; // kubelet's port -- open means the agent came up
   sleepAfter = "10m";
   override async onActivityExpired(): Promise<void> {} // spike: manual /down only
@@ -27,7 +27,7 @@ export class FargateNodeVM extends Container<unknown> {
 }
 
 interface Env {
-  VM: DurableObjectNamespace<FargateNodeVM>;
+  VM: DurableObjectNamespace<ContainersNodeVM>;
 }
 
 export default {
