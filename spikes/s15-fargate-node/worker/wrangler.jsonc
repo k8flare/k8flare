@@ -1,0 +1,24 @@
+{
+  "name": "k8flare-s15-spike",
+  "main": "./index.ts",
+  // spike lives outside the pnpm workspaces, so alias the containers lib
+  // to workers/nodes' resolved copy
+  "alias": {
+    "@cloudflare/containers": "../../../workers/nodes/node_modules/@cloudflare/containers/dist/index.js",
+  },
+  "compatibility_date": "2026-07-01",
+  "workers_dev": true,
+  "containers": [
+    {
+      "class_name": "FargateNodeVM",
+      "image": "./Dockerfile",
+      "instance_type": "standard-1",
+      "max_instances": 1,
+    },
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "VM", "class_name": "FargateNodeVM" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["FargateNodeVM"] }],
+  "observability": { "enabled": true },
+}

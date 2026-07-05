@@ -41,3 +41,28 @@ Build/runtime lessons (all encoded in Dockerfile/entrypoint.sh):
 Same image (amd64), one instance via a throwaway spike Worker, verify
 nested containerd inside the real microVM, then teardown. Wall-clock cost
 while running ≈ $0.07/h (standard-1 + 4GiB) — minutes-scale test.
+
+## Round 2: Cloudflare Containers microVM (2026-07-06) — PROVEN, spike complete
+
+Throwaway worker k8flare-s15-spike (deployed, verified, then fully
+deleted): one standard-1 microVM booted the same node image (amd64,
+host-cross-compiled agent + official k3s binary).
+
+- Agent came up inside the microVM (kubelet port 10250 reachable ->
+  Container state "healthy" ~60s after /up).
+- Node `s15-cf-microvm-1f7ac066` registered against the PRODUCTION
+  gateway and went Ready (v1.36.2-k3s1).
+- `nginx:1.27` (arbitrary, non-allowlisted) scheduled there and reached
+  Running/ready in 102s including the containerd pull INSIDE the microVM.
+- No overlayfs issue in the real microVM (as predicted; Docker-only).
+- Cleanup verified: deployment deleted (pods -A empty), container
+  destroyed, spike worker deleted, node object removed. Total billed
+  microVM wall-clock: ~12 minutes of standard-1 (~$0.015).
+
+VERDICT: the Fargate-style replacement is feasible end-to-end on the
+real platform. Remaining engineering (not spike): per-Pod lifecycle
+manager in workers/nodes (pending annotated pod -> boot VM with
+NODE_NAME=pod-derived, envVars token via secret -> bind -> destroy on
+pod deletion), node image productization, apiserver followups
+(node-status SMP patch, events.k8s.io), and removing the old
+VirtualNode/PodContainer backend.
