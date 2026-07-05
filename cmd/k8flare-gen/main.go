@@ -51,6 +51,7 @@ func run() error {
 		{"version", genVersion},
 		{"resource-kinds", genResourceKinds},
 		{"openapi", genOpenAPI},
+		{"leanclient", genLeanClient},
 	}
 	for _, step := range steps {
 		if err := step.fn(root); err != nil {

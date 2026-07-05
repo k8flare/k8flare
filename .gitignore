@@ -1,6 +1,8 @@
 node_modules/
 build/
+workers/controllers/assets/
 dist/
+.build/
 *.tsbuildinfo
 .dev.vars
 *.wasm
@@ -13,3 +15,7 @@ bin/
 .claude/worktrees/
 spikes/**/*-linux-amd64
 spikes/s3-containers/hoststream/hoststream-server
+.wrangler-state/
+spikes/s2-loader/parent/goscript-klog-test/
+/apiserver
+/k8flare-gen

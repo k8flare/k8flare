@@ -1,0 +1,1 @@
+github.com/k3s-io/kubernetes/staging/src/k8s.io/client-go v1.36.2-k3s1

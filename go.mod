@@ -62,7 +62,13 @@ replace (
 	k8s.io/kube-scheduler => github.com/k3s-io/kubernetes/staging/src/k8s.io/kube-scheduler v1.36.2-k3s1
 	k8s.io/kubectl => github.com/k3s-io/kubernetes/staging/src/k8s.io/kubectl v1.36.2-k3s1
 	k8s.io/kubelet => github.com/k3s-io/kubernetes/staging/src/k8s.io/kubelet v1.36.2-k3s1
-	k8s.io/kubernetes => github.com/k3s-io/kubernetes v1.36.2-k3s1
+	// Local mirror of github.com/k3s-io/kubernetes v1.36.2-k3s1 with a
+	// GOOS=js-compatible pkg/scheduler/backend/cache/debugger/signal.go
+	// swapped in -- see third_party/k8s-js-overlays/README.md for why
+	// (short version: go build -overlay cannot patch files beneath
+	// GOMODCACHE, so this is the only lever). Generated, not committed;
+	// run scripts/gen-k8s-js-mirror.sh if this directory is missing.
+	k8s.io/kubernetes => ./.build/k8s-js-mirror
 	k8s.io/metrics => github.com/k3s-io/kubernetes/staging/src/k8s.io/metrics v1.36.2-k3s1
 	k8s.io/mount-utils => github.com/k3s-io/kubernetes/staging/src/k8s.io/mount-utils v1.36.2-k3s1
 	k8s.io/node-api => github.com/k3s-io/kubernetes/staging/src/k8s.io/node-api v1.36.2-k3s1
