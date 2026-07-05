@@ -26,6 +26,13 @@ const (
 
 	containersBackendLabel = "k8flare.dev/backend"
 	containersTaintKey     = "k8flare.dev/pod-on-containers"
+
+	// FargateSchedulerName is the schedulerName of workers/nodes'
+	// fargate-style per-Pod binder (binds via the official Binding
+	// subresource; see the design in the repo task/docs). The real
+	// kube-scheduler never picks these pods up, and the binder never
+	// touches default-scheduler pods.
+	FargateSchedulerName = "k8flare-fargate"
 )
 
 // MutatePodForComputeClass injects the Containers-backend nodeSelector
@@ -35,6 +42,14 @@ const (
 func MutatePodForComputeClass(pod *corev1.Pod) {
 	if pod.Annotations[ComputeClassAnnotation] != ComputeClassContainers {
 		return
+	}
+	// Route to the fargate-style binder via Kubernetes' standard
+	// multi-scheduler mechanism (spec.schedulerName), exactly like EKS's
+	// Fargate webhook does. Only when the pod didn't explicitly pick a
+	// scheduler itself: "default-scheduler" is what admission defaulting
+	// fills in for an unset field, so that value counts as unset here.
+	if pod.Spec.SchedulerName == "" || pod.Spec.SchedulerName == corev1.DefaultSchedulerName {
+		pod.Spec.SchedulerName = FargateSchedulerName
 	}
 	if pod.Spec.NodeSelector == nil {
 		pod.Spec.NodeSelector = map[string]string{}
