@@ -4,8 +4,13 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
+	"fmt"
 	"log"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -16,11 +21,34 @@ import (
 
 	"github.com/k3s-io/k3s/pkg/agent"
 	"github.com/k3s-io/k3s/pkg/cli/cmds"
-	cli "github.com/urfave/cli/v2"
 	"github.com/k3s-io/k3s/pkg/daemons/executor"
 	"github.com/k3s-io/k3s/pkg/executor/embed"
 	"github.com/k8flare/k8flare/pkg/cacert"
+	cli "github.com/urfave/cli/v2"
 )
+
+// runKubeletPlainProxy serves the kubelet's authenticated HTTPS API
+// (10250: /containerLogs, /exec, ...) over plain HTTP on the given port.
+// Cloudflare Workers cannot speak TLS to a self-signed kubelet cert
+// through containerFetch, so on per-Pod microVM nodes the gateway's
+// logs/metrics bridge dials this port instead. Only meaningful together
+// with the node image's kubelet drop-in (anonymous auth + AlwaysAllow):
+// the VM runs exactly one Pod and has no inbound network path except the
+// token-gated Worker, so TLS+authz on the last localhost hop adds
+// nothing (documented in README's node backend section).
+func runKubeletPlainProxy(port int) {
+	target := &url.URL{Scheme: "https", Host: "127.0.0.1:10250"}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.Transport = &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	proxy.FlushInterval = -1 // stream `kubectl logs -f` line by line
+	addr := fmt.Sprintf(":%d", port)
+	log.Printf("kubelet plain-HTTP proxy listening on %s -> %s", addr, target)
+	if err := http.ListenAndServe(addr, proxy); err != nil {
+		log.Printf("kubelet plain-HTTP proxy failed: %v", err)
+	}
+}
 
 // prepareK3sDataDir ensures k3s data directory is extracted and adds its
 // bin directories to PATH. The embedded executor's Bootstrap method uses
@@ -68,6 +96,7 @@ func main() {
 	nodeLabels := flag.String("node-labels", "", "Comma-separated key=value labels the kubelet registers its Node with (k3s --node-label). Per-Pod microVM nodes use this for the k8flare.com/backend selector label")
 	nodeTaints := flag.String("node-taints", "", "Comma-separated key=value:Effect taints the kubelet registers its Node with (k3s --node-taint). Per-Pod microVM nodes use this for the pod-on-containers NoSchedule taint")
 	withNodeID := flag.Bool("with-node-id", true, "Append a unique ID suffix to the node name (k3s --with-node-id). Disable for per-Pod microVM nodes, whose names must match exactly what workers/nodes' cf-containers-scheduler registered and will later bind to / tear down")
+	kubeletPlainProxyPort := flag.Int("kubelet-plain-proxy-port", 0, "Serve the kubelet's HTTPS API (10250) over plain HTTP on this port for the Workers logs/metrics bridge (0 = disabled). Per-Pod microVM nodes only; pair with the node image's kubelet auth drop-in")
 	flag.Parse()
 
 	if *serverURL == "" {
@@ -111,6 +140,10 @@ func main() {
 	}
 
 	log.Printf("Starting k3s-cf-agent: server=%s node=%s", *serverURL, *nodeName)
+
+	if *kubeletPlainProxyPort > 0 {
+		go runKubeletPlainProxy(*kubeletPlainProxyPort)
+	}
 
 	// Replace server-ca.crt with system CA bundle after k3s writes it.
 	// Cloudflare Workers uses a publicly trusted TLS cert, not our self-signed CA.

@@ -2,6 +2,7 @@ export { CFContainersScheduler } from "./scheduler.ts";
 export { NodeVMLarge, NodeVMMedium, NodeVMSmall } from "./nodevm.ts";
 
 import type { Env } from "./env.ts";
+import { vmBinding } from "./scheduler.ts";
 
 // workers/nodes hosts the cf-containers-scheduler (per-Pod microVM node
 // binder, scheduler.ts) and the NodeVM container classes it manages. The
@@ -17,6 +18,23 @@ export default {
       return new Response("unauthorized", { status: 401 });
     }
     const url = new URL(request.url);
+    // Kubelet bridge for the gateway's logs/metrics proxy:
+    //   /kubelet/{podUID|nodeName}/10256/{kubelet path}
+    // The scheduler DO resolves which NodeVM (and size tier) backs the
+    // pod/node; the NodeVM DO containerFetches the in-VM kubelet port.
+    const kubeletMatch = url.pathname.match(/^\/kubelet\/([^/]+)(\/10256\/.*)$/);
+    if (kubeletMatch) {
+      const [, key, portAndPath] = kubeletMatch;
+      const scheduler = env.SCHEDULER.get(env.SCHEDULER.idFromName("default"));
+      const vm = await scheduler.lookupVM(key);
+      if (!vm) {
+        return new Response(`no live node VM for ${key}`, { status: 404 });
+      }
+      const ns = vmBinding(env, vm.tier);
+      const target = new URL(request.url);
+      target.pathname = portAndPath;
+      return ns.get(ns.idFromName(vm.podUID)).fetch(new Request(target.toString(), request));
+    }
     if (url.pathname.startsWith("/podproxy/")) {
       // The old VirtualNode-backed pod proxy died with that backend.
       // Reinstating HTTP ingress against per-Pod NodeVMs (via the real

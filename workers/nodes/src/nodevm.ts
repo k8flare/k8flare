@@ -52,6 +52,28 @@ export abstract class NodeVMBase extends Container<Env> {
   async destroyVM(): Promise<void> {
     await this.destroy();
   }
+
+  // Kubelet bridge: the nodes Worker forwards gateway requests here as
+  // /{port}/{kubelet path}. Only 10256 is reachable -- cmd/agent's
+  // plain-HTTP proxy in front of the authenticated kubelet API
+  // (/containerLogs, /stats/summary, /metrics/resource; k3s pins the
+  // read-only 10255 off via CLI flag). Streams straight through, so
+  // `kubectl logs -f` follows for as long as the client stays connected
+  // (CPU-time billing only -- idle stream time is I/O wait).
+  override async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const match = url.pathname.match(/^\/(10256)(\/.*)$/);
+    if (!match) {
+      return new Response("NodeVM: expected /10256/...", { status: 400 });
+    }
+    const [, port, rest] = match;
+    url.pathname = rest;
+    // The Authorization header (cluster bearer token) is forwarded
+    // as-is: the kubelet runs stock webhook auth and TokenReviews the
+    // token against this cluster's own apiserver, so the bridged port
+    // is useless without a valid cluster token.
+    return this.containerFetch(new Request(url.toString(), request), Number(port));
+  }
 }
 
 export class NodeVMSmall extends NodeVMBase {}

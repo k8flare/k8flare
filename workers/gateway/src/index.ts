@@ -44,6 +44,41 @@ export default {
       return env.NODES.fetch(new Request(target.toString(), req));
     }
 
+    // nodes/{name}/proxy/{path}: kubelet endpoints (stats/summary,
+    // metrics, metrics/resource, pods) for Containers-backed per-Pod
+    // nodes -- the standard path metrics scrapers use. Port 10256 is
+    // cmd/agent's plain-HTTP front for the authenticated kubelet API
+    // (k3s pins --read-only-port=0 as a CLI flag, which beats any
+    // kubelet config drop-in, so 10255 never listens on these nodes).
+    // The node object's backend label (stamped at kubelet registration)
+    // decides the branch; BYO nodes fall through to the apiserver.
+    const nodeProxyMatch = url.pathname.match(/^\/api\/v1\/nodes\/([^/]+)\/proxy(\/.*)$/);
+    if (nodeProxyMatch && env.NODES) {
+      if (!dwAuth(req, env)) {
+        return new Response("unauthorized", { status: 401 });
+      }
+      const [, nodeName, rest] = nodeProxyMatch;
+      const token = env.K3S_TOKEN || "k8flare-dev-token";
+      const nodeResp = await env.APISERVER.fetch(
+        new Request(`http://internal/api/v1/nodes/${nodeName}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+      );
+      if (nodeResp.ok) {
+        const node: any = await nodeResp.json();
+        if (node.metadata?.labels?.["k8flare.com/backend"] === "containers") {
+          const target = new URL(req.url);
+          target.pathname = `/kubelet/${nodeName}/10256${rest}`;
+          return env.NODES.fetch(
+            new Request(target.toString(), {
+              method: req.method,
+              headers: { Authorization: `Bearer ${token}` },
+            }),
+          );
+        }
+      }
+    }
+
     // Handle watch requests in JS (Go WASM cannot do streaming)
     if (url.searchParams.get("watch") === "true") {
       return handleWatch(req, env, url, ctx);

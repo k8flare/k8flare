@@ -78,6 +78,30 @@ export async function handleKubeletProxy(
       return dwError(501, `${subresource} is not yet supported`);
   }
 
+  // Per-Pod Containers-backed node (workers/nodes microVM): the compute-
+  // class admission stamps this nodeSelector, so it reliably marks pods
+  // whose kubelet lives inside a NodeVM. Reach it through the nodes
+  // Worker's kubelet bridge (port 10256 = cmd/agent's plain-HTTP front
+  // for the authenticated kubelet API) instead of the VPC binding, which
+  // only dials BYO VMs.
+  if (pod.spec?.nodeSelector?.["k8flare.com/backend"] === "containers") {
+    if (!env.NODES) {
+      return dwError(503, "workers/nodes is not deployed on this cluster");
+    }
+    if (!kubeletPath) {
+      return dwError(501, `${subresource} is not yet supported on the per-Pod node backend`);
+    }
+    const target = new URL(url);
+    target.pathname = `/kubelet/${pod.metadata.uid}/10256${kubeletPath.split("?")[0]}`;
+    target.search = kubeletPath.includes("?") ? `?${kubeletPath.split("?")[1]}` : "";
+    return env.NODES.fetch(
+      new Request(target.toString(), {
+        method: req.method,
+        headers: { Authorization: `Bearer ${token}`, Accept: req.headers.get("Accept") || "*/*" },
+      }),
+    );
+  }
+
   // Proxy via VPC Service binding if available
   if (env.KUBELET_VPC) {
     try {

@@ -46,7 +46,7 @@ interface TrackedVM {
 // FailedScheduling and destroy so the next poke can retry fresh.
 const NODE_READY_TIMEOUT_MS = 5 * 60_000;
 
-function vmBinding(env: Env, tier: SizeTier): DurableObjectNamespace<NodeVMBase> {
+export function vmBinding(env: Env, tier: SizeTier): DurableObjectNamespace<NodeVMBase> {
   switch (tier) {
     case "small":
       return env.NODE_VM_SMALL;
@@ -70,10 +70,19 @@ export class CFContainersScheduler extends DurableObject<Env> {
   }
 
   async alarm(): Promise<void> {
-    await this.reconcile().catch((err) => console.log(`cf-containers-scheduler alarm: ${err}`));
-    // Re-arm only while there is work in flight; park on an idle cluster.
-    const tracked = await this.trackedVMs();
-    if (Object.keys(tracked).length > 0) {
+    const hasWork = await this.reconcile().catch((err) => {
+      console.log(`cf-containers-scheduler alarm: ${err}`);
+      // A failed reconcile IS pending work -- stay awake through
+      // apiserver hiccups rather than park with the queue unknown.
+      return true;
+    });
+    // Re-arm while there is work in flight; park on an idle cluster.
+    // "Work" includes PENDING pods with no VM, not just tracked VMs:
+    // after a FailedScheduling teardown the pod is still unscheduled and
+    // nothing will write it again, so parking on tracked-VMs-only left
+    // it stuck forever (hit live 2026-07-06, same predicate class as
+    // the KCM liveness bug fixed in d1a9503).
+    if (hasWork) {
       await this.ctx.storage.setAlarm(Date.now() + SAFETY_NET_INTERVAL_MS);
     }
   }
@@ -89,7 +98,23 @@ export class CFContainersScheduler extends DurableObject<Env> {
     return (await this.ctx.storage.get<Record<string, TrackedVM>>("vms")) ?? {};
   }
 
-  private async reconcile(): Promise<void> {
+  /**
+   * Resolves a tracked VM by pod UID or node name, for the gateway's
+   * kubelet bridge (pods/log, nodes/proxy stats) to find the right
+   * NodeVM DO. Returns null for unknown/already-reaped VMs.
+   */
+  async lookupVM(key: string): Promise<{ podUID: string; tier: SizeTier } | null> {
+    const tracked = await this.trackedVMs();
+    const direct = tracked[key];
+    if (direct) return { podUID: direct.podUID, tier: direct.tier };
+    for (const vm of Object.values(tracked)) {
+      if (vm.nodeName === key) return { podUID: vm.podUID, tier: vm.tier };
+    }
+    return null;
+  }
+
+  /** Returns whether there is still work in flight (pending pods or live VMs). */
+  private async reconcile(): Promise<boolean> {
     const tracked = await this.trackedVMs();
     let dirty = false;
 
@@ -171,6 +196,7 @@ export class CFContainersScheduler extends DurableObject<Env> {
     }
 
     if (dirty) await this.ctx.storage.put("vms", tracked);
+    return pending.length > 0 || Object.keys(tracked).length > 0;
   }
 
   private async teardown(vm: TrackedVM): Promise<void> {
