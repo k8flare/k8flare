@@ -71,6 +71,9 @@ jobs:
       # Both apiserver and controllers are needed here (unlike ci.yml/
       # release.yml, which only need apiserver): this job's item (c)
       # specifically exercises workers/controllers.
+      - name: Install binaryen (wasm-opt)
+        run: sudo apt-get update && sudo apt-get install -y binaryen
+
       - name: Build WASM
         run: npm run build:wasm
 
