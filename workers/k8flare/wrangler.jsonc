@@ -85,12 +85,17 @@
     // bindings don't reach into microVMs) -- workers/k8flare/src/nodes.
     "GATEWAY_URL": "https://k8flare.kooffice.workers.dev",
   },
-  // Fresh v1: the consolidation deliberately abandons the old per-Worker
-  // DO storage (user-approved, 2026-07-06) -- new Worker name = new DO
-  // namespaces, no data migration.
+  // Migration history must match what production has already applied:
+  // the "k8flare" Worker name predates the 6-Worker split (the original
+  // packages/worker deploy) and sits at tag v1 = [Etcd]. v2 is the
+  // consolidation cutover: drop Etcd (old DO state discarded,
+  // user-approved 2026-07-06) and create today's classes. Fresh local
+  // state replays v1+v2 in order, which nets out to the same result.
   "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Etcd"] },
     {
-      "tag": "v1",
+      "tag": "v2",
+      "deleted_classes": ["Etcd"],
       "new_sqlite_classes": [
         "Cluster",
         "WatchHub",
