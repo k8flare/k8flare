@@ -280,7 +280,8 @@ export class Controllers {
     // dispatch so a still-loading component gets a completion poke even
     // if no further write ever arrives.
     const current = await this.state.storage.getAlarm();
-    if (current === null) {
+    await this.state.storage.put("unconvergedTicks", 0); // fresh write: reset backoff
+    if (current === null || current > Date.now() + SAFETY_NET_INTERVAL_MS) {
       this.state.storage.setAlarm(Date.now() + SAFETY_NET_INTERVAL_MS);
     }
 
@@ -317,32 +318,95 @@ export class Controllers {
       if (c) await c.fetch("http://controllers.internal/healthz");
     }
 
-    // Re-arm while the cluster has a live Node worth having controllers
-    // running for, or while a fresh load's warmup window is open (see
-    // ensure()); otherwise park (cost invariants #1/#3 -- no alarm chain
-    // on an idle cluster). Queries CLUSTER's raw KV endpoint directly
-    // (cheap, no WASM dispatch) rather than the full REST/JSON apiserver
-    // path, mirroring Cluster DO's own hasPendingSafetyNetWork check.
+    // Re-arm while there is UNCONVERGED WORKLOAD WORK, or while a fresh
+    // load's warmup window is open (see ensure()); otherwise park (cost
+    // invariants #1/#3 -- no alarm chain on an idle cluster).
+    //
+    // The predicate used to be "does any Node exist", which was wrong on
+    // both edges (observed live, 2026-07-06): a node-less cluster with a
+    // freshly created Deployment parked the alarm the moment warmup
+    // expired, leaving the KCM permanently inert (its dynamic worker
+    // only makes progress inside pump windows, and nothing else opens
+    // them once storage's per-write pokes stop coming); conversely a
+    // cluster with an idle BYO node kept a pointless 60s chain alive.
+    // "Work exists" for the slimmed KCM (five workload controllers) is
+    // exactly workload convergence: any Deployment/ReplicaSet/Job whose
+    // status lags its spec. Checked via the same gateway API the KCM
+    // itself uses; 2-3 cheap list calls per tick, and only while ticking.
     const warmupUntil = (await this.state.storage.get<number>("warmupUntil")) ?? 0;
     if (Date.now() < warmupUntil) {
+      await this.state.storage.put("unconvergedTicks", 0);
       this.state.storage.setAlarm(Date.now() + 15_000);
-    } else if (await this.hasLiveNodes()) {
-      this.state.storage.setAlarm(Date.now() + SAFETY_NET_INTERVAL_MS);
+      return;
+    }
+    if (await this.hasUnconvergedWork()) {
+      // Exponential backoff bounds the cost of work that will never
+      // converge (e.g. a Deployment whose pods are unschedulable on a
+      // node-less cluster): 15s doubling to a 10min ceiling. Any fresh
+      // relevant write resets the cadence via fetch() below.
+      const ticks = ((await this.state.storage.get<number>("unconvergedTicks")) ?? 0) + 1;
+      await this.state.storage.put("unconvergedTicks", ticks);
+      const interval = Math.min(15_000 * 2 ** Math.max(0, ticks - 4), 600_000);
+      this.state.storage.setAlarm(Date.now() + interval);
+    } else {
+      await this.state.storage.put("unconvergedTicks", 0);
     }
   }
 
-  private async hasLiveNodes(): Promise<boolean> {
-    const ns = this.env.CLUSTER;
-    if (!ns) return false;
+  private async apiGet(path: string): Promise<Record<string, unknown> | null> {
     try {
-      const stub = ns.get(ns.idFromName("default"));
-      const resp = await stub.fetch("http://cluster.internal/list/registry/nodes/?limit=1");
-      if (!resp.ok) return false;
-      const data = await resp.json<{ count?: number }>();
-      return (data.count ?? 0) > 0;
+      const resp = await this.env.GATEWAY.fetch(`http://gateway.internal${path}`, {
+        headers: { Authorization: `Bearer ${this.env.K3S_TOKEN || "k8flare-dev-token"}` },
+      });
+      if (!resp.ok) return null;
+      return await resp.json();
     } catch {
-      return false;
+      return null;
     }
+  }
+
+  private async hasUnconvergedWork(): Promise<boolean> {
+    interface WorkloadItem {
+      metadata?: { generation?: number };
+      spec?: { replicas?: number; completions?: number };
+      status?: {
+        observedGeneration?: number;
+        replicas?: number;
+        availableReplicas?: number;
+        readyReplicas?: number;
+        active?: number;
+        succeeded?: number;
+        failed?: number;
+        completionTime?: string;
+      };
+    }
+    const lists = await Promise.all([
+      this.apiGet("/apis/apps/v1/deployments"),
+      this.apiGet("/apis/apps/v1/replicasets"),
+      this.apiGet("/apis/batch/v1/jobs"),
+    ]);
+    const [deploys, rss, jobs] = lists.map((l) => (l?.items as WorkloadItem[] | undefined) ?? []);
+    // A list call failing (null) counts as "work exists": staying awake
+    // through an apiserver hiccup is cheap; parking on one is not.
+    if (lists.some((l) => l === null)) return true;
+    for (const d of deploys) {
+      const spec = d.spec?.replicas ?? 1;
+      const st = d.status ?? {};
+      if ((st.observedGeneration ?? 0) < (d.metadata?.generation ?? 0)) return true;
+      if ((st.replicas ?? 0) !== spec || (st.availableReplicas ?? 0) !== spec) return true;
+    }
+    for (const r of rss) {
+      const spec = r.spec?.replicas ?? 1;
+      if (((r.status ?? {}).replicas ?? 0) !== spec) return true;
+    }
+    for (const j of jobs) {
+      const st = j.status ?? {};
+      if (!st.completionTime && (st.failed ?? 0) === 0) {
+        // Job not finished: active work unless it already succeeded.
+        if ((st.succeeded ?? 0) < (j.spec?.completions ?? 1)) return true;
+      }
+    }
+    return false;
   }
 }
 
