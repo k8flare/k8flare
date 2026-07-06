@@ -498,6 +498,47 @@ single-writer shape as etcd itself), and every namespace gets its own Facet
 - **Worker / Durable Object / DynamicWorker / Facets as Kubernetes
   resources** — manage real Cloudflare primitives with `kubectl`.
 
+## Multi-cluster (management API)
+
+One deployment serves many clusters. The zero-config **default** cluster
+lives at the bare URL and authenticates with `K3S_TOKEN`, exactly as before
+— everything in this README keeps working with no provisioning step.
+Additional clusters are provisioned through the admin-only management API
+and live under a `/c/<id>` path prefix (kubectl and client-go fully support
+path-prefixed server URLs):
+
+```bash
+# Create a cluster; the response carries the id, its first bearer token,
+# and a ready-to-use kubeconfig (server: https://<host>/c/dev1)
+curl -X POST https://<host>/clusters \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -d '{"id": "dev1"}'
+
+curl https://<host>/clusters                          # list
+curl https://<host>/clusters/dev1/kubeconfig          # kubeconfig YAML
+curl -X POST https://<host>/clusters/dev1/tokens      # mint a 2nd token (rotation)
+curl -X DELETE https://<host>/clusters/dev1/tokens/<tokenId>  # revoke (refuses the last one)
+curl -X DELETE https://<host>/clusters/dev1           # teardown (async, idempotent)
+```
+
+Each provisioned cluster gets its own Durable Object tree (storage, watch
+fan-out, controllers, node scheduler), its own rotatable token vault, and —
+for R2-backed volumes — its own `clusters/<name>/` object-key prefix. Tokens
+never cross clusters: a request for `/c/dev1` is authenticated against
+dev1's vault at the door, and the default cluster only ever accepts
+`K3S_TOKEN`.
+
+The management API itself authenticates with either (or both) of:
+
+- `ADMIN_TOKENS` — comma-separated rotatable admin secrets
+  (`npx wrangler secret put ADMIN_TOKENS`), presented as `Authorization:
+Bearer <token>`.
+- `ACCESS_TEAM_DOMAIN` + `ACCESS_AUD` — Cloudflare Access JWT verification
+  (signature against the team's JWKS, issuer, audience, expiry).
+
+With neither configured the API falls back to the dev-only admin token
+`k8flare-dev-admin-token` — the same posture as `K3S_TOKEN`'s dev fallback.
+**Production deployments must set `ADMIN_TOKENS` or the Access variables.**
+
 ## Quick Start
 
 ### From Release

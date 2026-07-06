@@ -23,12 +23,14 @@
 const LAST_SEEN_KEY = "lastSeenRevision";
 
 interface WatchHubContext {
+  id?: { name?: string };
   acceptWebSocket(ws: WebSocket, tags?: string[]): void;
   getWebSockets(tag?: string): WebSocket[];
   getTags(ws: WebSocket): string[];
   storage: {
     get<T = unknown>(key: string): Promise<T | undefined>;
     put(key: string, value: unknown): Promise<void>;
+    deleteAll(): Promise<void>;
   };
 }
 
@@ -48,11 +50,28 @@ export class WatchHub {
 
   private clusterStub(): any {
     const ns = this.env.CLUSTER;
-    return ns.get(ns.idFromName("default"));
+    // Multi-cluster: this hub's own instance name IS the cluster doName
+    // (the gateway's wrapped WATCHHUB namespace and the Cluster DO's
+    // push both address it that way).
+    return ns.get(ns.idFromName(this.ctx.id?.name ?? "default"));
   }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+
+    // Cluster teardown (clusters/api.ts): close every client socket and
+    // drop hub state. Idempotent.
+    if (url.pathname === "/admin/destroy" && request.method === "POST") {
+      for (const ws of this.ctx.getWebSockets()) {
+        try {
+          ws.close(1001, "cluster deleted");
+        } catch {
+          // already closed
+        }
+      }
+      await this.ctx.storage.deleteAll();
+      return Response.json({ destroyed: true });
+    }
 
     if (url.pathname === "/push" && request.method === "POST") {
       return this.handlePush(request);

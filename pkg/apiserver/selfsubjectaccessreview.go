@@ -24,9 +24,9 @@ import (
 // changes get recorded, not silently patched over" spirit: the day this
 // project gets real per-subject RBAC enforcement, this handler is exactly
 // where that decision needs to be wired in.
-func RegisterAuthorizationHandlers(mux *http.ServeMux, tokenFn TokenFunc) {
+func RegisterAuthorizationHandlers(mux *http.ServeMux, tokensFn TokensFunc) {
 	mux.Handle("POST /apis/authorization.k8s.io/v1/selfsubjectaccessreviews",
-		AuthMiddleware(tokenFn, http.HandlerFunc(handleSelfSubjectAccessReview)))
+		AuthMiddleware(tokensFn, http.HandlerFunc(handleSelfSubjectAccessReview)))
 	// subjectaccessreviews: the kubelet's Webhook authorizer POSTs this
 	// after its webhook token authenticator accepted a request (see
 	// tokenreview.go). Same all-or-nothing model as the SSAR above -- the
@@ -34,7 +34,7 @@ func RegisterAuthorizationHandlers(mux *http.ServeMux, tokenFn TokenFunc) {
 	// "admin" (system:masters), so Allowed:true is the accurate verdict,
 	// and this handler is where a real RBAC authorizer would plug in.
 	mux.Handle("POST /apis/authorization.k8s.io/v1/subjectaccessreviews",
-		AuthMiddleware(tokenFn, http.HandlerFunc(handleSubjectAccessReview)))
+		AuthMiddleware(tokensFn, http.HandlerFunc(handleSubjectAccessReview)))
 }
 
 func handleSelfSubjectAccessReview(w http.ResponseWriter, r *http.Request) {

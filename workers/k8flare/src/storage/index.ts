@@ -134,11 +134,18 @@ function hasPendingSafetyNetWork(sql: SqlExec): boolean {
 
 /** Minimal ctx shape Cluster needs: facets (FacetHost) plus DO storage/alarm access. */
 interface ClusterContext {
+  id?: { name?: string };
   facets: {
     get(name: string, factory: () => { class: any }): { fetch(req: Request): Promise<Response> };
     delete(name: string): void;
   };
-  storage: { sql: SqlExec; setAlarm(ms: number): void; getAlarm(): Promise<number | null> };
+  storage: {
+    sql: SqlExec;
+    setAlarm(ms: number): void;
+    getAlarm(): Promise<number | null>;
+    deleteAlarm(): Promise<void>;
+    deleteAll(): Promise<void>;
+  };
 }
 
 export class Cluster {
@@ -152,7 +159,7 @@ export class Cluster {
     this.ctx = ctx;
     this.env = env;
     this.sql = ctx.storage.sql;
-    this.host = { env, ctx };
+    this.host = { env, ctx, doName: ctx.id?.name ?? "default" };
     this.initialized = false;
   }
 
@@ -200,12 +207,18 @@ export class Cluster {
    * detached promise keeps running past the response; errors are
    * swallowed here.
    */
+  /** This DO's own instance name IS the cluster identity ("default" or
+   * "<id>@<uid>") -- sibling DOs of the same cluster share it. */
+  private selfName(): string {
+    return this.ctx.id?.name ?? "default";
+  }
+
   private async pingControllers(): Promise<void> {
     const controllers = this.env.CONTROLLERS; // local DO binding post-consolidation
     if (!controllers) return; // not bound in some dev/test configs
     if (this.env.KCM_DISABLED === "1") return; // test kill switch (see Env.KCM_DISABLED)
     try {
-      const stub = controllers.get(controllers.idFromName("default"));
+      const stub = controllers.get(controllers.idFromName(this.selfName()));
       await stub.fetch("http://controllers.internal/");
     } catch {
       // best-effort; see doc comment above
@@ -220,7 +233,7 @@ export class Cluster {
     const scheduler = this.env.SCHEDULER;
     if (!scheduler) return; // not bound in some dev/test configs
     try {
-      const stub = scheduler.get(scheduler.idFromName("default"));
+      const stub = scheduler.get(scheduler.idFromName(this.selfName()));
       await stub.fetch("http://nodes.internal/");
     } catch {
       // best-effort
@@ -233,6 +246,32 @@ export class Cluster {
     const path = url.pathname;
 
     try {
+      // Cluster teardown (clusters/api.ts): delete every facet this DO
+      // owns (ns/<name> per stored Namespace + events-log + ca-vault),
+      // park the alarm, drop all parent storage. Facet deletion here is
+      // safe from the name-reuse wedge (see handleDelete below): a
+      // cluster's DO name embeds its uid, so a recreated cluster id gets
+      // a brand-new DO, never a recycled facet name. Idempotent.
+      if (path === "/admin/destroy" && request.method === "POST") {
+        const { kvs } = await storeList(this.sql, this.host, "/registry/namespaces/", 0, 0);
+        const facets = [
+          ...kvs.map((kv: any) => `ns/${String(kv.key).slice("/registry/namespaces/".length)}`),
+          "events-log",
+          "ca-vault",
+        ];
+        for (const name of facets) {
+          try {
+            this.ctx.facets.delete(name);
+          } catch (err) {
+            console.log(`cluster destroy: facet ${name}: ${err}`);
+          }
+        }
+        await this.ctx.storage.deleteAlarm();
+        await this.ctx.storage.deleteAll();
+        this.initialized = false;
+        return jsonResponse({ destroyed: true, facets: facets.length });
+      }
+
       if (path === "/revision" && request.method === "GET") {
         return jsonResponse({ revision: currentRevision(this.sql) });
       }

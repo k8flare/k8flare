@@ -10,6 +10,26 @@ import type { Env } from "../env.ts";
 import { apiserverFetch } from "../loader/apiserver.ts";
 import { handleRuntime } from "../runtime/index.ts";
 import { handleNodes } from "../nodes/index.ts";
+import { handleClustersAPI } from "../clusters/api.ts";
+import { clusterEnv } from "../clusters/clusterenv.ts";
+import { resolveCluster } from "../clusters/resolve.ts";
+import { verifyClusterToken } from "../clusters/tokens.ts";
+
+// Paths a cluster serves WITHOUT a token, matching what the default
+// cluster has always exposed (version, the agent bootstrap trust hint,
+// and the discovery/OpenAPI documents that are edge-served assets on
+// the un-prefixed path).
+function isUnauthenticatedPath(url: URL): boolean {
+  const p = url.pathname;
+  return (
+    p === "/version" ||
+    p === "/cacerts" ||
+    p === "/api" ||
+    p.startsWith("/openapi/") ||
+    /^\/api\/v1$/.test(p) ||
+    /^\/apis(\/[^/]+(\/[^/]+)?)?$/.test(p)
+  );
+}
 
 // The consolidated Worker's public routing -- the former gateway Worker's
 // fetch handler, with the cross-Worker service bindings replaced:
@@ -17,10 +37,55 @@ import { handleNodes } from "../nodes/index.ts";
 // direct function calls, WATCHHUB -> the now-local DO binding.
 export async function handleGateway(
   req: Request,
-  env: Env,
+  outerEnv: Env,
   ctx: ExecutionContext,
 ): Promise<Response> {
-  const url = new URL(req.url);
+  let url = new URL(req.url);
+
+  // Cluster management API (admin-authenticated, clusters/adminauth.ts).
+  // Never cluster-prefixed; doesn't collide with any k8s API path.
+  if (url.pathname === "/clusters" || url.pathname.startsWith("/clusters/")) {
+    return handleClustersAPI(req, outerEnv, ctx);
+  }
+
+  // Multi-cluster resolution: parse+strip /c/<id> (unknown id 404s
+  // before any DO is touched); no prefix = the zero-config "default"
+  // cluster. Everything below runs against a derived env whose DO
+  // namespaces transparently retarget to this cluster's tree
+  // (clusters/clusterenv.ts).
+  const resolved = await resolveCluster(req, outerEnv, url);
+  if (resolved instanceof Response) return resolved;
+  const { cluster } = resolved;
+  req = resolved.req;
+  url = resolved.url;
+
+  let env: Env;
+  if (cluster.doName === "default") {
+    // Default keeps its exact pre-multi-cluster auth semantics: the env
+    // token, enforced downstream (Go AuthMiddleware, dwAuth, handleNodes).
+    env = clusterEnv(outerEnv, cluster);
+  } else {
+    // Provisioned clusters authenticate AT THE DOOR against the
+    // cluster's own token vault. This is what prevents cross-cluster
+    // token reuse: downstream dwAuth-style checks compare against
+    // env.K3S_TOKEN, so the derived env carries the verified presented
+    // token -- and an unverified request never reaches them.
+    const presented = await verifyClusterToken(req, outerEnv, cluster.doName);
+    if (!presented && !isUnauthenticatedPath(url)) {
+      return Response.json(
+        {
+          kind: "Status",
+          apiVersion: "v1",
+          status: "Failure",
+          message: "Unauthorized",
+          reason: "Unauthorized",
+          code: 401,
+        },
+        { status: 401 },
+      );
+    }
+    env = clusterEnv(outerEnv, cluster, presented ?? crypto.randomUUID());
+  }
 
   // /internal/* was implicitly private pre-consolidation (reachable only
   // over service bindings to unrouted Workers; the Go handlers themselves

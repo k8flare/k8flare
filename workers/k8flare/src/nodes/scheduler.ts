@@ -15,6 +15,7 @@
 // cf-containers pods or live VMs to reap) and parks otherwise.
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./env.ts";
+import { clusterSecrets } from "../clusters/tokens.ts";
 import type { NodeVMBase } from "./nodevm.ts";
 import {
   bindPod,
@@ -58,7 +59,52 @@ export function vmBinding(env: Env, tier: SizeTier): DurableObjectNamespace<Node
 }
 
 export class CFContainersScheduler extends DurableObject<Env> {
-  async fetch(_request: Request): Promise<Response> {
+  // Multi-cluster identity: this DO's instance name IS the cluster's
+  // doName ("<id>@<uid>", or "default") -- storage's pingNodes and the
+  // gateway's wrapped SCHEDULER namespace both address it that way.
+  private clusterName(): string {
+    return this.ctx.id.name ?? "default";
+  }
+
+  // NodeVM DOs are scheduler-scoped: "<doName>/<podUID>", uniformly with
+  // clusters/clusterenv.ts's prefixNs (so the gateway's kubelet bridge
+  // resolves the same instance).
+  private vmStub(tier: SizeTier, podUID: string) {
+    const ns = vmBinding(this.env, tier);
+    return ns.get(ns.idFromName(`${this.clusterName()}/${podUID}`));
+  }
+
+  // Cluster-scoped env for every apiserver call (client.ts): stamps this
+  // cluster's storage routing and authenticates with its vault token
+  // (default keeps the env token; see clusters/tokens.ts).
+  private async apiEnv(): Promise<Env> {
+    const name = this.clusterName();
+    if (name === "default") return this.env;
+    const [secret] = await clusterSecrets(this.env, name);
+    return {
+      ...this.env,
+      CLUSTER_DO_NAME: name,
+      ENV_K3S_TOKEN: this.env.K3S_TOKEN,
+      K3S_TOKEN: secret ?? this.env.K3S_TOKEN,
+    };
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    // Cluster teardown (clusters/api.ts): destroy every live VM FIRST
+    // (Containers are wall-clock billed), then drop all state. Idempotent.
+    if (new URL(request.url).pathname === "/admin/destroy" && request.method === "POST") {
+      const tracked = await this.trackedVMs();
+      for (const vm of Object.values(tracked)) {
+        try {
+          await this.vmStub(vm.tier, vm.podUID).destroyVM();
+        } catch (err) {
+          console.log(`cf-containers-scheduler destroy: ${vm.nodeName}: ${err}`);
+        }
+      }
+      await this.ctx.storage.deleteAlarm();
+      await this.ctx.storage.deleteAll();
+      return Response.json({ destroyed: true, vms: Object.keys(tracked).length });
+    }
     // Pokes are cheap and idempotent; real work happens in reconcile().
     // Never let a caller's cancellation tear reconciliation down
     // mid-flight: run it detached, exactly like workers/controllers'
@@ -116,10 +162,11 @@ export class CFContainersScheduler extends DurableObject<Env> {
   /** Returns whether there is still work in flight (pending pods or live VMs). */
   private async reconcile(): Promise<boolean> {
     const tracked = await this.trackedVMs();
+    const env = await this.apiEnv();
     let dirty = false;
 
     // 1) New work: unscheduled pods addressed to this scheduler.
-    const pending = (await listUnscheduledPods(this.env)).filter(
+    const pending = (await listUnscheduledPods(env)).filter(
       (p) => p.spec?.schedulerName === SCHEDULER_NAME && !p.metadata.deletionTimestamp,
     );
     for (const pod of pending) {
@@ -128,7 +175,7 @@ export class CFContainersScheduler extends DurableObject<Env> {
       const tier = resolveSizeTier(pod);
       if (!tier) {
         await createSchedulingEvent(
-          this.env,
+          env,
           pod,
           "FailedScheduling",
           "pod resources exceed the largest cf-containers size tier",
@@ -136,7 +183,7 @@ export class CFContainersScheduler extends DurableObject<Env> {
         continue;
       }
       const nodeName = `cf-${pod.metadata.name}-${uid.slice(0, 8)}`;
-      const stub = vmBinding(this.env, tier).get(vmBinding(this.env, tier).idFromName(uid));
+      const stub = this.vmStub(tier, uid);
       await stub.up(nodeName);
       tracked[uid] = {
         namespace: pod.metadata.namespace,
@@ -153,7 +200,7 @@ export class CFContainersScheduler extends DurableObject<Env> {
 
     // 2) Advance/reap tracked VMs.
     for (const [uid, vm] of Object.entries(tracked)) {
-      const pod = await getPod(this.env, vm.namespace, vm.podName);
+      const pod = await getPod(env, vm.namespace, vm.podName);
       const podGone =
         !pod ||
         pod.metadata.uid !== vm.podUID ||
@@ -161,20 +208,20 @@ export class CFContainersScheduler extends DurableObject<Env> {
         pod.status?.phase === "Succeeded" ||
         pod.status?.phase === "Failed";
       if (podGone) {
-        await this.teardown(vm);
+        await this.teardown(env, vm);
         delete tracked[uid];
         dirty = true;
         continue;
       }
       if (!vm.bound) {
-        const node = await getNode(this.env, vm.nodeName);
+        const node = await getNode(env, vm.nodeName);
         const ready = node?.status?.conditions?.some(
           (c) => c.type === "Ready" && c.status === "True",
         );
         if (ready) {
-          await bindPod(this.env, vm.namespace, vm.podName, vm.nodeName);
+          await bindPod(env, vm.namespace, vm.podName, vm.nodeName);
           await createSchedulingEvent(
-            this.env,
+            env,
             pod,
             "Scheduled",
             `Successfully assigned ${vm.namespace}/${vm.podName} to ${vm.nodeName}`,
@@ -183,12 +230,12 @@ export class CFContainersScheduler extends DurableObject<Env> {
           dirty = true;
         } else if (Date.now() - vm.bootedAt > NODE_READY_TIMEOUT_MS) {
           await createSchedulingEvent(
-            this.env,
+            env,
             pod,
             "FailedScheduling",
             `node VM ${vm.nodeName} did not become Ready within ${NODE_READY_TIMEOUT_MS / 1000}s`,
           );
-          await this.teardown(vm);
+          await this.teardown(env, vm);
           delete tracked[uid];
           dirty = true;
         }
@@ -199,15 +246,14 @@ export class CFContainersScheduler extends DurableObject<Env> {
     return pending.length > 0 || Object.keys(tracked).length > 0;
   }
 
-  private async teardown(vm: TrackedVM): Promise<void> {
+  private async teardown(env: Env, vm: TrackedVM): Promise<void> {
     try {
-      const ns = vmBinding(this.env, vm.tier);
-      await ns.get(ns.idFromName(vm.podUID)).destroyVM();
+      await this.vmStub(vm.tier, vm.podUID).destroyVM();
     } catch (err) {
       console.log(`cf-containers-scheduler: destroy ${vm.nodeName}: ${err}`);
     }
     try {
-      await deleteNode(this.env, vm.nodeName);
+      await deleteNode(env, vm.nodeName);
     } catch (err) {
       console.log(`cf-containers-scheduler: delete node ${vm.nodeName}: ${err}`);
     }

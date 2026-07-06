@@ -25,12 +25,27 @@ async function apiserverEntrypoint(env: Env): Promise<Fetcher> {
     }
   }
   const manifest = manifestCache;
-  const worker = env.LOADER.get(`apiserver@${manifest.sha256}`, async () => {
+  // One dynamic-worker isolate PER CLUSTER: the Go binary's sync.Once
+  // bootstraps (BootstrapCluster, CAManager, token cache) then carry
+  // per-cluster semantics for free, and the vault-backed TokensFunc
+  // rotates without a new isolate (unlike KCM, whose token is baked at
+  // factory time). Cost: +$0.002/unique/day per ACTIVE cluster
+  // (docs/cost-model.md).
+  const doName = env.CLUSTER_DO_NAME ?? "default";
+  const worker = env.LOADER.get(`apiserver:${doName}@${manifest.sha256}`, async () => {
     const wasm = await assembleWasm(env.ASSETS, manifest);
     const wasmExec = await fetchWasmAsset(env.ASSETS, "wasm_exec.js").then((r) => r.text());
-    const dynamicEnv: Record<string, unknown> = { STORAGE: env.STORAGE };
+    const dynamicEnv: Record<string, unknown> = {
+      STORAGE: env.STORAGE,
+      CLUSTER_DO_NAME: doName,
+      CLUSTER_BASE_PATH: env.CLUSTER_BASE_PATH ?? "",
+    };
+    // The PRISTINE env token (never the caller-presented one a derived
+    // env carries -- see Env.ENV_K3S_TOKEN): it's the stable fallback
+    // the Go side unions with the per-cluster vault.
+    const envToken = env.ENV_K3S_TOKEN ?? env.K3S_TOKEN;
+    if (envToken) dynamicEnv.K3S_TOKEN = envToken;
     for (const k of [
-      "K3S_TOKEN",
       "R2_ACCOUNT_ID",
       "R2_ACCESS_KEY_ID",
       "R2_SECRET_ACCESS_KEY",
@@ -62,7 +77,7 @@ async function apiserverEntrypoint(env: Env): Promise<Fetcher> {
 export async function apiserverFetch(env: Env, req: Request): Promise<Response> {
   const stamped = new Request(req);
   if (!stamped.headers.has(CLUSTER_HEADER)) {
-    stamped.headers.set(CLUSTER_HEADER, "default");
+    stamped.headers.set(CLUSTER_HEADER, env.CLUSTER_DO_NAME ?? "default");
   }
   const attempts = req.method === "GET" || req.method === "HEAD" ? 3 : 1;
   let lastErr: unknown;

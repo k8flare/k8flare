@@ -173,7 +173,7 @@ func bindPersistentVolumeClaim(ctx context.Context, stores map[string]*ResourceS
 
 	cfg := currentR2Config()
 
-	prefix := "pvc-" + string(pvc.UID) + "/"
+	prefix := currentClusterStoragePrefix() + "pvc-" + string(pvc.UID) + "/"
 	pv := &corev1.PersistentVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: "pv-" + string(pvc.UID)},
 		Spec: corev1.PersistentVolumeSpec{

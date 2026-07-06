@@ -7,6 +7,7 @@ import { handleGateway } from "./gateway/index.ts";
 
 export { Cluster, WatchHub } from "./storage/index.ts";
 export { Controllers } from "./controllers/index.ts";
+export { ClusterRegistry } from "./clusters/registry.ts";
 export { CFContainersScheduler } from "./nodes/scheduler.ts";
 export { NodeVMLarge, NodeVMMedium, NodeVMSmall } from "./nodes/nodevm.ts";
 export { ClusterLoopback } from "./entrypoints.ts";

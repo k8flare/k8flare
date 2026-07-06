@@ -9,6 +9,9 @@ export interface Env {
   CLUSTER: DurableObjectNamespace;
   WATCHHUB: DurableObjectNamespace;
   CONTROLLERS: DurableObjectNamespace;
+  // Multi-cluster metadata (clusters/registry.ts): {id -> uid/state} and
+  // the cluster list ONLY -- no alarms/WS, idle cost is storage alone.
+  REGISTRY: DurableObjectNamespace;
   SCHEDULER: DurableObjectNamespace<CFContainersScheduler>;
   NODE_VM_SMALL: DurableObjectNamespace<NodeVMSmall>;
   NODE_VM_MEDIUM: DurableObjectNamespace<NodeVMMedium>;
@@ -29,6 +32,13 @@ export interface Env {
   KUBELET_VPC?: Fetcher;
 
   K3S_TOKEN?: string;
+  // Management-API auth (clusters/adminauth.ts): comma-separated
+  // rotatable admin secrets, and/or Cloudflare Access JWT verification
+  // (team domain + application AUD). Neither set = dev fallback token,
+  // same posture as K3S_TOKEN's dev fallback.
+  ADMIN_TOKENS?: string;
+  ACCESS_TEAM_DOMAIN?: string;
+  ACCESS_AUD?: string;
   // Public URL in-VM k3s agents join through (microVMs dial out over
   // the internet; bindings don't reach them).
   GATEWAY_URL?: string;
@@ -43,4 +53,19 @@ export interface Env {
   // run against the consolidated single config. See CLAUDE.md's
   // local-dev pitfalls.
   KCM_DISABLED?: string;
+  // Multi-cluster: set ONLY on derived envs (clusters/clusterenv.ts, DO
+  // apiEnv helpers), never in wrangler.jsonc -- names the Cluster DO
+  // instance downstream storage traffic targets. loader/apiserver.ts
+  // stamps it as the X-K8flare-Cluster header and keys the per-cluster
+  // dynamic-worker isolate with it. Absent = "default".
+  CLUSTER_DO_NAME?: string;
+  // Multi-cluster: the public URL path prefix ("/c/<id>", "" for
+  // default) the supervisor advertises to joining agents.
+  CLUSTER_BASE_PATH?: string;
+  // Multi-cluster: the PRISTINE wrangler-level K3S_TOKEN, preserved by
+  // clusters/clusterenv.ts when it overwrites K3S_TOKEN with the
+  // caller's presented token -- loader/apiserver.ts must bake the env
+  // token (a stable fallback), never whichever presented token happened
+  // to arrive first on a cold isolate.
+  ENV_K3S_TOKEN?: string;
 }

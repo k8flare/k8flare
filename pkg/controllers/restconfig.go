@@ -47,11 +47,15 @@ import (
 // CAData, etc.) -- client-go's transport.New refuses to combine a custom
 // Transport with TLS options ("using a custom transport with TLS
 // certificate options or the insecure flag is not allowed").
-func RestConfig(bindingName, token string) *restclient.Config {
+// basePath is the cluster's public URL path prefix ("" for the default
+// cluster, "/c/<id>" for provisioned ones): every API path this config
+// produces must carry it so the single consolidated Worker's cluster
+// resolver routes the traffic to the right Cluster DO tree.
+func RestConfig(bindingName, token, basePath string) *restclient.Config {
 	binding := cloudflare.GetBinding(bindingName)
 	client := cffetch.NewClient(cffetch.WithBinding(binding))
 	return &restclient.Config{
-		Host:        "https://" + bindingName + ".k8flare.internal/",
+		Host:        "https://" + bindingName + ".k8flare.internal" + basePath + "/",
 		BearerToken: token,
 		Transport:   client.HTTPClient(cffetch.RedirectModeFollow).Transport,
 	}

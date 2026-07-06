@@ -1,0 +1,144 @@
+import type { Env } from "../env.ts";
+
+// Per-cluster bearer tokens, stored as ONE kine value at
+// /ca/cluster-tokens inside the cluster's own Cluster DO -- the /ca/
+// prefix routes into the ca-vault facet via the existing keyspace
+// classification (storage/keyspace.ts), so no new storage machinery
+// exists for this. Plaintext by design: the NodeVM path injects the
+// real token into microVMs and the kubeconfig endpoint re-serves it;
+// the vault already holds the CA private keys, so this adds no new
+// exposure class (multi-cluster plan, decision A).
+//
+// Multiple concurrently-valid tokens = rotation. Verifiers cache per
+// isolate with a short TTL; revocation therefore propagates within
+// TOKEN_CACHE_TTL_MS (documented tradeoff -- emergency revocation is
+// cluster deletion).
+
+export interface ClusterToken {
+  tokenId: string;
+  secret: string;
+  createdAt: string;
+}
+
+export const TOKENS_KEY = "/ca/cluster-tokens";
+const TOKEN_CACHE_TTL_MS = 60_000;
+
+const b64encode = (s: string) => btoa(String.fromCharCode(...new TextEncoder().encode(s)));
+const b64decode = (b: string) =>
+  new TextDecoder().decode(Uint8Array.from(atob(b), (c) => c.charCodeAt(0)));
+
+function clusterStub(env: Env, doName: string) {
+  const ns = env.CLUSTER;
+  return ns.get(ns.idFromName(doName));
+}
+
+/** Raw read of the token list (no cache). Returns null when the vault key doesn't exist. */
+export async function readClusterTokens(
+  env: Env,
+  doName: string,
+): Promise<{ tokens: ClusterToken[]; revision: number } | null> {
+  const resp = await clusterStub(env, doName).fetch(`http://do.internal/key${TOKENS_KEY}`);
+  if (!resp.ok) throw new Error(`read cluster tokens: HTTP ${resp.status}`);
+  const body = (await resp.json()) as {
+    revision: number;
+    kv: { value: string; modRevision: number } | null;
+  };
+  if (!body.kv) return null;
+  return {
+    tokens: (JSON.parse(b64decode(body.kv.value)) as { tokens: ClusterToken[] }).tokens,
+    revision: body.kv.modRevision,
+  };
+}
+
+/** Write the token list. revision 0 = create (409 on exists); otherwise compare-and-swap. */
+export async function writeClusterTokens(
+  env: Env,
+  doName: string,
+  tokens: ClusterToken[],
+  revision: number,
+): Promise<void> {
+  const resp = await clusterStub(env, doName).fetch(`http://do.internal/key${TOKENS_KEY}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ value: b64encode(JSON.stringify({ tokens })), revision }),
+  });
+  if (!resp.ok && resp.status !== 201) {
+    throw new Error(`write cluster tokens: HTTP ${resp.status} ${await resp.text()}`);
+  }
+}
+
+export function mintToken(): ClusterToken {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return {
+    tokenId: crypto.randomUUID().slice(0, 8),
+    secret: [...bytes].map((b) => b.toString(16).padStart(2, "0")).join(""),
+    createdAt: new Date().toISOString(),
+  };
+}
+
+// Isolate-level TTL cache of ACCEPTED secrets per cluster doName.
+const tokenCache = new Map<string, { secrets: string[]; expires: number }>();
+
+export async function clusterSecrets(env: Env, doName: string): Promise<string[]> {
+  const hit = tokenCache.get(doName);
+  if (hit && hit.expires > Date.now()) return hit.secrets;
+  let secrets: string[];
+  if (doName === "default") {
+    // Zero-config path: STRICTLY the env token (rotation = wrangler
+    // secret). Deliberately no vault read here -- the Go apiserver is
+    // per-request (no cross-request cache, S19) and mirrors this rule,
+    // so a default-cluster vault would either cost it a storage read on
+    // every request or silently diverge between the two layers.
+    secrets = [env.K3S_TOKEN || "k8flare-dev-token"];
+  } else {
+    const vault = await readClusterTokens(env, doName);
+    secrets = vault?.tokens.map((t) => t.secret) ?? [];
+  }
+  tokenCache.set(doName, { secrets, expires: Date.now() + TOKEN_CACHE_TTL_MS });
+  return secrets;
+}
+
+function timingSafeEqualStr(a: string, b: string): boolean {
+  const enc = new TextEncoder();
+  const ab = enc.encode(a);
+  const bb = enc.encode(b);
+  if (ab.byteLength !== bb.byteLength) return false;
+  // @ts-expect-error timingSafeEqual is a Workers runtime API on crypto.subtle
+  return crypto.subtle.timingSafeEqual(ab, bb) as boolean;
+}
+
+/**
+ * Cluster-scoped replacement for packages/k8s's dwAuth: accepts Bearer
+ * <token> (kubectl/clients) or Basic <any>:<token> (the k3s agent join
+ * path) against ANY currently-valid token of the cluster. Returns the
+ * presented secret on success (the caller threads it into the derived
+ * env so downstream defense-in-depth dwAuth re-checks still pass), or
+ * null on failure.
+ */
+export async function verifyClusterToken(
+  req: Request,
+  env: Env,
+  doName: string,
+): Promise<string | null> {
+  const auth = req.headers.get("Authorization") || "";
+  let presented: string | null = null;
+  if (auth.startsWith("Bearer ")) {
+    presented = auth.slice("Bearer ".length);
+  } else if (auth.startsWith("Basic ")) {
+    const decoded = atob(auth.slice("Basic ".length));
+    const colon = decoded.indexOf(":");
+    if (colon >= 0) presented = decoded.slice(colon + 1);
+  }
+  if (!presented) return null;
+  const secrets = await clusterSecrets(env, doName);
+  for (const s of secrets) {
+    if (timingSafeEqualStr(s, presented)) return presented;
+  }
+  return null;
+}
+
+/** Test hook / teardown helper: drop a cluster's cached secrets in this isolate. */
+export function invalidateTokenCache(doName: string): void {
+  tokenCache.delete(doName);
+}

@@ -79,7 +79,10 @@ func defaultClusterConfig() clusterConfig {
 // RegisterSupervisorHandlers registers all k3s supervisor protocol endpoints on the mux.
 // These endpoints are called by k3s agents during bootstrap to obtain CA certificates,
 // cluster configuration, signed certificates, and server information.
-func RegisterSupervisorHandlers(mux *http.ServeMux, cam *CAManager, storage *Storage, tokenFn TokenFunc) {
+// basePathFn returns the cluster's public URL path prefix ("" for the
+// default cluster, "/c/<id>" for provisioned ones) -- lazy for the same
+// env-only-during-request reason as TokensFunc.
+func RegisterSupervisorHandlers(mux *http.ServeMux, cam *CAManager, storage *Storage, tokensFn TokensFunc, basePathFn func() string) {
 	// 1. /cacerts — unauthenticated, returns empty so the agent uses system CAs.
 	// Cloudflare terminates TLS with a publicly trusted certificate. If we returned
 	// our self-signed CA here, the agent would use it as the sole trust root and
@@ -92,7 +95,7 @@ func RegisterSupervisorHandlers(mux *http.ServeMux, cam *CAManager, storage *Sto
 	})
 
 	// 2. /v1-k3s/config — returns cluster configuration JSON
-	mux.HandleFunc("GET /v1-k3s/config", supervisorAuth(tokenFn, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /v1-k3s/config", supervisorAuth(tokensFn, func(w http.ResponseWriter, r *http.Request) {
 		if err := cam.Initialize(r.Context()); err != nil {
 			http.Error(w, "failed to initialize CA: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -101,7 +104,7 @@ func RegisterSupervisorHandlers(mux *http.ServeMux, cam *CAManager, storage *Sto
 	}))
 
 	// 3. /v1-k3s/client-ca.crt — returns client CA cert
-	mux.HandleFunc("GET /v1-k3s/client-ca.crt", supervisorAuth(tokenFn, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /v1-k3s/client-ca.crt", supervisorAuth(tokensFn, func(w http.ResponseWriter, r *http.Request) {
 		if err := cam.Initialize(r.Context()); err != nil {
 			http.Error(w, "failed to initialize CA: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -112,7 +115,7 @@ func RegisterSupervisorHandlers(mux *http.ServeMux, cam *CAManager, storage *Sto
 	}))
 
 	// 4. /v1-k3s/server-ca.crt — returns server CA cert
-	mux.HandleFunc("GET /v1-k3s/server-ca.crt", supervisorAuth(tokenFn, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /v1-k3s/server-ca.crt", supervisorAuth(tokensFn, func(w http.ResponseWriter, r *http.Request) {
 		if err := cam.Initialize(r.Context()); err != nil {
 			http.Error(w, "failed to initialize CA: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -123,7 +126,7 @@ func RegisterSupervisorHandlers(mux *http.ServeMux, cam *CAManager, storage *Sto
 	}))
 
 	// 5. /v1-k3s/serving-kubelet.crt — sign serving cert (requires node auth)
-	mux.HandleFunc("POST /v1-k3s/serving-kubelet.crt", supervisorAuth(tokenFn, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /v1-k3s/serving-kubelet.crt", supervisorAuth(tokensFn, func(w http.ResponseWriter, r *http.Request) {
 		if err := cam.Initialize(r.Context()); err != nil {
 			http.Error(w, "failed to initialize CA: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -135,7 +138,7 @@ func RegisterSupervisorHandlers(mux *http.ServeMux, cam *CAManager, storage *Sto
 	}))
 
 	// 6. /v1-k3s/client-kubelet.crt — sign client kubelet cert (requires node auth)
-	mux.HandleFunc("POST /v1-k3s/client-kubelet.crt", supervisorAuth(tokenFn, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /v1-k3s/client-kubelet.crt", supervisorAuth(tokensFn, func(w http.ResponseWriter, r *http.Request) {
 		if err := cam.Initialize(r.Context()); err != nil {
 			http.Error(w, "failed to initialize CA: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -147,7 +150,7 @@ func RegisterSupervisorHandlers(mux *http.ServeMux, cam *CAManager, storage *Sto
 	}))
 
 	// 7. /v1-k3s/client-kube-proxy.crt — sign client kube-proxy cert
-	mux.HandleFunc("POST /v1-k3s/client-kube-proxy.crt", supervisorAuth(tokenFn, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /v1-k3s/client-kube-proxy.crt", supervisorAuth(tokensFn, func(w http.ResponseWriter, r *http.Request) {
 		if err := cam.Initialize(r.Context()); err != nil {
 			http.Error(w, "failed to initialize CA: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -156,7 +159,7 @@ func RegisterSupervisorHandlers(mux *http.ServeMux, cam *CAManager, storage *Sto
 	}))
 
 	// 8. /v1-k3s/client-k3s-controller.crt — sign client k3s-controller cert
-	mux.HandleFunc("POST /v1-k3s/client-k3s-controller.crt", supervisorAuth(tokenFn, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /v1-k3s/client-k3s-controller.crt", supervisorAuth(tokensFn, func(w http.ResponseWriter, r *http.Request) {
 		if err := cam.Initialize(r.Context()); err != nil {
 			http.Error(w, "failed to initialize CA: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -165,7 +168,7 @@ func RegisterSupervisorHandlers(mux *http.ServeMux, cam *CAManager, storage *Sto
 	}))
 
 	// 9. /v1-k3s/apiservers — returns list of API server URLs
-	mux.HandleFunc("GET /v1-k3s/apiservers", supervisorAuth(tokenFn, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /v1-k3s/apiservers", supervisorAuth(tokensFn, func(w http.ResponseWriter, r *http.Request) {
 		if err := cam.Initialize(r.Context()); err != nil {
 			http.Error(w, "failed to initialize CA: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -175,11 +178,13 @@ func RegisterSupervisorHandlers(mux *http.ServeMux, cam *CAManager, storage *Sto
 		// Cloudflare always terminates TLS in front of the Worker, so the
 		// agent-facing URL is always https regardless of how this request
 		// itself arrived (e.g. plain HTTP under `wrangler dev` locally).
-		json.NewEncoder(w).Encode([]string{"https://" + r.Host})
+		// Multi-cluster: the advertised URL carries the /c/<id> path
+		// prefix so everything the agent dials next stays cluster-scoped.
+		json.NewEncoder(w).Encode([]string{"https://" + r.Host + basePathFn()})
 	}))
 
 	// 10. /v1-k3s/readyz — readiness check
-	mux.HandleFunc("GET /v1-k3s/readyz", supervisorAuth(tokenFn, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /v1-k3s/readyz", supervisorAuth(tokensFn, func(w http.ResponseWriter, r *http.Request) {
 		if err := cam.Initialize(r.Context()); err != nil {
 			http.Error(w, "failed to initialize CA: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -190,7 +195,7 @@ func RegisterSupervisorHandlers(mux *http.ServeMux, cam *CAManager, storage *Sto
 	}))
 
 	// /v1-k3s/tls-cert — generate TLS cert signed by server CA (for socat proxy)
-	mux.HandleFunc("GET /v1-k3s/tls-cert", supervisorAuth(tokenFn, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /v1-k3s/tls-cert", supervisorAuth(tokensFn, func(w http.ResponseWriter, r *http.Request) {
 		if err := cam.Initialize(r.Context()); err != nil {
 			http.Error(w, "failed to initialize CA: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -213,12 +218,12 @@ func RegisterSupervisorHandlers(mux *http.ServeMux, cam *CAManager, storage *Sto
 // supervisorAuth is a middleware that validates k3s agent authentication.
 // k3s agents authenticate using Basic Auth (password=<token>) or Bearer token.
 // The username in Basic Auth is accepted as long as the password matches.
-func supervisorAuth(tokenFn TokenFunc, next http.HandlerFunc) http.HandlerFunc {
+func supervisorAuth(tokensFn TokensFunc, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		token := tokenFn()
-		// Check Basic Auth: any username, password must match token
+		tokens := tokensFn()
+		// Check Basic Auth: any username, password must match a token
 		if _, password, ok := r.BasicAuth(); ok {
-			if password == token {
+			if tokenMatches(tokens, password) {
 				next(w, r)
 				return
 			}
@@ -228,7 +233,7 @@ func supervisorAuth(tokenFn TokenFunc, next http.HandlerFunc) http.HandlerFunc {
 		authHeader := r.Header.Get("Authorization")
 		if strings.HasPrefix(authHeader, "Bearer ") {
 			bearerToken := strings.TrimPrefix(authHeader, "Bearer ")
-			if bearerToken == token {
+			if tokenMatches(tokens, bearerToken) {
 				next(w, r)
 				return
 			}

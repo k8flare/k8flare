@@ -3,6 +3,8 @@
 package main
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
 
 	corev1 "k8s.io/api/core/v1"
@@ -16,20 +18,114 @@ import (
 	cffetch "github.com/syumai/workers/cloudflare/fetch"
 )
 
-// getToken returns the K3S_TOKEN from Workers env binding.
-// Must be called during request handling (not at init time).
-var cachedToken string
+// clusterDOName / clusterBasePath: multi-cluster identity of THIS
+// dynamic-worker instance (one Loader isolate per cluster,
+// loader/apiserver.ts). Env is only readable during request handling.
+func clusterDOName() string {
+	if n := cloudflare.Getenv("CLUSTER_DO_NAME"); n != "" {
+		return n
+	}
+	return "default"
+}
 
-func getToken() string {
-	if cachedToken != "" {
-		return cachedToken
+func clusterBasePath() string {
+	return cloudflare.Getenv("CLUSTER_BASE_PATH")
+}
+
+// getTokens returns every currently-valid token for this cluster.
+//
+// Default cluster: STRICTLY the env token (mirrors clusters/tokens.ts --
+// rotation there is `wrangler secret put`). Provisioned clusters: the
+// token vault at /ca/cluster-tokens inside this cluster's own Cluster
+// DO, read per request. No cross-request cache is possible here: this
+// binary is instantiated fresh per request (S19's per-request worker.mjs
+// contract), so the read costs one extra subrequest to the same DO the
+// request is about to talk to anyway -- recorded in docs/cost-model.md.
+var cachedTokens []string // per-instance memo (one request's lifetime)
+
+func getTokens() []string {
+	if cachedTokens != nil {
+		return cachedTokens
 	}
-	t := cloudflare.Getenv("K3S_TOKEN")
-	if t == "" {
-		t = "k8flare-dev-token" // fallback for dev
+	name := clusterDOName()
+	if name == "default" {
+		t := cloudflare.Getenv("K3S_TOKEN")
+		if t == "" {
+			t = "k8flare-dev-token" // fallback for dev
+		}
+		cachedTokens = []string{t}
+		return cachedTokens
 	}
-	cachedToken = t
-	return t
+	tokens, err := readVaultTokens()
+	if err != nil {
+		// Fail closed: no readable vault means nothing authenticates.
+		cachedTokens = []string{}
+		return cachedTokens
+	}
+	cachedTokens = tokens
+	return cachedTokens
+}
+
+// storageDo routes a kine request to THIS cluster's Cluster DO: the
+// STORAGE env Fetcher is the parent script's ClusterLoopback entrypoint,
+// which dispatches on the X-K8flare-Cluster header (DO namespaces cannot
+// cross the Loader env clone, S2 item 3a). Same GetBinding+cffetch
+// pattern pkg/controllers.RestConfig proved in production. Lazily
+// initialized: env bindings are only reachable once a request has
+// actually arrived.
+var storageClient *http.Client
+
+func storageDo(req *http.Request) (*http.Response, error) {
+	if storageClient == nil {
+		binding := cloudflare.GetBinding("STORAGE")
+		storageClient = cffetch.NewClient(cffetch.WithBinding(binding)).
+			HTTPClient(cffetch.RedirectModeFollow)
+	}
+	req.Header.Set("X-K8flare-Cluster", clusterDOName())
+	return storageClient.Do(req)
+}
+
+// readVaultTokens reads the per-cluster token vault (a single kine value
+// at /ca/cluster-tokens, which the storage keyspace routes into the
+// ca-vault facet). Shape owned by workers/k8flare/src/clusters/tokens.ts.
+func readVaultTokens() ([]string, error) {
+	req, err := http.NewRequest(http.MethodGet, "http://do.internal/key/ca/cluster-tokens", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := storageDo(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var body struct {
+		KV *struct {
+			Value string `json:"value"`
+		} `json:"kv"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, err
+	}
+	if body.KV == nil {
+		return []string{}, nil
+	}
+	raw, err := base64.StdEncoding.DecodeString(body.KV.Value)
+	if err != nil {
+		return nil, err
+	}
+	var vault struct {
+		Tokens []struct {
+			Secret string `json:"secret"`
+		} `json:"tokens"`
+	}
+	if err := json.Unmarshal(raw, &vault); err != nil {
+		return nil, err
+	}
+	secrets := make([]string, 0, len(vault.Tokens))
+	for _, t := range vault.Tokens {
+		secrets = append(secrets, t.Secret)
+	}
+	return secrets, nil
 }
 
 // r2DevBucket/r2DevAccountID/r2DevAccessKeyID/r2DevSecretAccessKey are dev
@@ -90,25 +186,7 @@ func getR2Config() apiserver.R2Config {
 func main() {
 	mux := http.NewServeMux()
 
-	// Post-consolidation this binary runs as a Loader dynamic worker,
-	// which can receive Fetchers but never DO namespaces (S2 item 3a) --
-	// so the Cluster DO is reached through the STORAGE env Fetcher (the
-	// parent script's ClusterLoopback entrypoint, which routes on the
-	// X-K8flare-Cluster header; unset means "default"). Same
-	// GetBinding+cffetch pattern pkg/controllers.RestConfig proved in
-	// production. Lazily initialized: env bindings are only reachable
-	// once a request has actually arrived (same constraint as getToken).
-	var storageClient *http.Client
-	doFetch := func(req *http.Request) (*http.Response, error) {
-		if storageClient == nil {
-			binding := cloudflare.GetBinding("STORAGE")
-			storageClient = cffetch.NewClient(cffetch.WithBinding(binding)).
-				HTTPClient(cffetch.RedirectModeFollow)
-		}
-		return storageClient.Do(req)
-	}
-
-	storage := apiserver.NewStorage(doFetch, "/registry")
+	storage := apiserver.NewStorage(storageDo, "/registry")
 
 	// One ResourceStore map per GroupVersion in apidef.Table (replaces what
 	// used to be 10 separate hand-written NewXStores calls, one per API
@@ -130,6 +208,15 @@ func main() {
 	// r2.go's currentR2Config doc comment for why this is a settable
 	// func-var rather than a parameter threaded through HandleResource.
 	apiserver.SetR2ConfigFunc(getR2Config)
+	// Multi-cluster: scope this cluster's R2 object keys under
+	// clusters/<doName>/ (default keeps unprefixed keys -- see
+	// pkg/apiserver/r2.go's currentClusterStoragePrefix).
+	apiserver.SetClusterStoragePrefixFunc(func() string {
+		if n := clusterDOName(); n != "default" {
+			return "clusters/" + n + "/"
+		}
+		return ""
+	})
 
 	// Discovery (no auth)
 	apiserver.RegisterDiscovery(mux)
@@ -142,11 +229,11 @@ func main() {
 	// logs/metrics bridge) -- not in apidef.Table, so not covered by the
 	// per-GroupVersion loop below. See selfsubjectaccessreview.go /
 	// tokenreview.go for why.
-	apiserver.RegisterAuthorizationHandlers(mux, getToken)
-	apiserver.RegisterAuthenticationHandlers(mux, getToken)
+	apiserver.RegisterAuthorizationHandlers(mux, getTokens)
+	apiserver.RegisterAuthenticationHandlers(mux, getTokens)
 
 	// Supervisor endpoints (/cacerts, /v1-k3s/*)
-	apiserver.RegisterSupervisorHandlers(mux, cam, storage, getToken)
+	apiserver.RegisterSupervisorHandlers(mux, cam, storage, getTokens, clusterBasePath)
 
 	// Internal endpoints, service-binding-only (/internal/*)
 	apiserver.RegisterInternalHandlers(mux, storage)
@@ -175,7 +262,7 @@ func main() {
 		isCore := gv == corev1.SchemeGroupVersion
 		isStorage := gv == storagev1.SchemeGroupVersion
 
-		mux.Handle(prefix, apiserver.AuthMiddleware(getToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.Handle(prefix, apiserver.AuthMiddleware(getTokens, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if isCore {
 				apiserver.BootstrapCluster(r.Context(), stores)
 			}

@@ -439,6 +439,60 @@ Each phase keeps the live cluster working and the conformance CI green.
 > correction above); the rest of each row's acceptance criteria was met
 > or superseded as described inline.
 
+### Implementation record (2026-07-06): path-prefix multi-cluster shipped
+
+Phase 0 of the table above, plus the `POST /clusters` slice of Phase 5's
+management plane, shipped in `workers/k8flare/src/clusters/` — with one
+deliberate deviation: cluster resolution is a **`/c/<id>` path prefix**
+(the Rancher `/k8s/clusters/<id>` precedent), not the Host-based wildcard
+routing described under "Routing" above. Path prefixes work today on
+`*.workers.dev` and any single hostname with zero DNS/zone setup; Host
+routing remains the plan for hosted `k8flare.com` and layers on top (map
+Host → id, then reuse this exact resolution seam). The decisions, for
+reference from code comments:
+
+- **Decision A — tokens are plaintext in the cluster's own `ca-vault`
+  facet** (one kine value at `/ca/cluster-tokens`, multiple
+  concurrently-valid tokens = rotation). The vault already holds the CA
+  private keys, the NodeVM path injects the real token into microVMs, and
+  the kubeconfig endpoint re-serves it — hashing would add no real
+  exposure barrier here while breaking both. Verifiers cache per isolate
+  (60s TTL), so revocation propagates within the TTL; emergency
+  revocation is cluster deletion.
+- **Decision B — registry DO with uid indirection.** One tiny
+  `ClusterRegistry` DO (`idFromName("registry")`) holds only
+  `{id → uid, state}` and the list; DO instances are named `<id>@<uid>`
+  so a recreated cluster id never reuses a DO or facet name (the facet
+  name-reuse wedge), and auth never funnels through this single-threaded
+  DO. No alarms, no WebSockets: idle = storage only.
+- **Decision C — the derived-env seam.** The public router derives a
+  per-request `Env` whose DO namespaces transparently retarget
+  `idFromName("default")` → this cluster's tree
+  (`clusters/clusterenv.ts`), so every downstream module stays
+  single-cluster-shaped. Inside DOs the wrapper doesn't exist — sibling
+  DOs of the same cluster share the DO's own instance name.
+- **Decision D — provisioned clusters authenticate at the door** against
+  their vault; the verified presented token is threaded into the derived
+  env's `K3S_TOKEN` so downstream defense-in-depth checks re-validate
+  trivially. The default cluster keeps its exact pre-multi-cluster
+  semantics (env token, enforced downstream), preserving the zero-config
+  OSS path and the Go/CI dev-token dependency.
+- **Teardown** is admin-`DELETE`, async and idempotent: mark `deleting`
+  (resolution 404s) → destroy Scheduler first (Containers are wall-clock
+  billed) → Controllers → WatchHub → Cluster (facets + `deleteAll`) →
+  registry record. Not covered in v1: R2 objects under
+  `clusters/<doName>/` (needs SigV4 the Worker doesn't carry; R2 deletes
+  are free, so a later cleanup pass loses nothing — see
+  `docs/cost-model.md`).
+
+Verified 2026-07-06 against real `wrangler dev`: two clusters on one
+deployment with disjoint data and watch streams; each cluster's token
+rejected by the other (Phase 0's acceptance shape, minus conformance CI
+which runs against the default cluster unchanged); rotation (two live
+tokens), revocation, refusal to delete the last token; teardown then
+recreation of the same id yields a fresh empty cluster and kills the old
+tokens. `go test ./pkg/apiserver/...` green against the same build.
+
 ## Open questions
 
 - Facet execution parallelism is undocumented (tracked as unverified); the

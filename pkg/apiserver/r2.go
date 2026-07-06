@@ -90,6 +90,20 @@ type R2Config struct {
 // class of dev-convenience fallback.
 var currentR2Config func() R2Config = func() R2Config { return R2Config{} }
 
+// currentClusterStoragePrefix, set via SetClusterStoragePrefixFunc, is
+// the multi-cluster object-key prefix ("clusters/<doName>/") pvcbind.go
+// prepends to a claim's R2 prefix so two clusters sharing the one bucket
+// can never collide (and teardown can enumerate its own objects).
+// Empty for the default cluster -- pre-multi-cluster keys keep working.
+// Same settable-func-var pattern (and reason) as currentR2Config above.
+var currentClusterStoragePrefix func() string = func() string { return "" }
+
+// SetClusterStoragePrefixFunc installs fn as the source of truth for
+// currentClusterStoragePrefix().
+func SetClusterStoragePrefixFunc(fn func() string) {
+	currentClusterStoragePrefix = fn
+}
+
 // SetR2ConfigFunc installs fn as the source of truth for currentR2Config().
 // Called exactly once, from workers/apiserver/main.go's main(), before
 // workers.Serve(mux).

@@ -72,7 +72,7 @@ func setStatus(msg string) {
 // RunControllerManager itself starts).
 func ensureStarted() {
 	startOnce.Do(func() {
-		restCfg := controllers.RestConfig("GATEWAY", getToken())
+		restCfg := controllers.RestConfig("GATEWAY", getToken(), cloudflare.Getenv("CLUSTER_BASE_PATH"))
 		cloudflare.WaitUntil(func() {
 			ctx := context.Background()
 			setStatus("running")

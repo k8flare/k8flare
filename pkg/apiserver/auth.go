@@ -2,6 +2,7 @@ package apiserver
 
 import (
 	"context"
+	"crypto/subtle"
 	"net/http"
 	"strings"
 )
@@ -33,13 +34,28 @@ type statusResponse struct {
 // Basic Auth is used by k3s agent (username="node", password=token).
 // Requests with valid credentials proceed to the next handler with UserInfo set in the context.
 // Requests without valid credentials receive a 401 Unauthorized response.
-// TokenFunc is a function that returns the current auth token.
-// This allows lazy token loading from Workers environment bindings.
-type TokenFunc func() string
+// TokensFunc returns every currently-valid cluster token (multi-cluster:
+// the per-cluster vault holds several concurrently-valid tokens so
+// rotation is possible; the zero-config default cluster returns exactly
+// its env token). Lazy so Workers env bindings / storage are only read
+// during request handling.
+type TokensFunc func() []string
 
-func AuthMiddleware(tokenFn TokenFunc, next http.Handler) http.Handler {
+// tokenMatches reports whether presented equals ANY currently-valid
+// token, in constant time per candidate.
+func tokenMatches(tokens []string, presented string) bool {
+	ok := false
+	for _, t := range tokens {
+		if len(t) == len(presented) && subtle.ConstantTimeCompare([]byte(t), []byte(presented)) == 1 {
+			ok = true
+		}
+	}
+	return ok
+}
+
+func AuthMiddleware(tokensFn TokensFunc, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token := tokenFn()
+		tokens := tokensFn()
 		authHeader := r.Header.Get("Authorization")
 		authenticated := false
 		var user *UserInfo
@@ -47,7 +63,7 @@ func AuthMiddleware(tokenFn TokenFunc, next http.Handler) http.Handler {
 		// Check Bearer token (kubectl, existing clients)
 		if strings.HasPrefix(authHeader, "Bearer ") {
 			bearerToken := strings.TrimPrefix(authHeader, "Bearer ")
-			if bearerToken == token {
+			if tokenMatches(tokens, bearerToken) {
 				authenticated = true
 				// When X-Remote-User is present (set by TLS proxy from client cert),
 				// use it as the identity instead of the default admin user.
@@ -66,7 +82,7 @@ func AuthMiddleware(tokenFn TokenFunc, next http.Handler) http.Handler {
 
 		// Check Basic Auth (k3s agent sends node:<password>)
 		if !authenticated {
-			if username, password, ok := r.BasicAuth(); ok && password == token {
+			if username, password, ok := r.BasicAuth(); ok && tokenMatches(tokens, password) {
 				authenticated = true
 				if username == "node" {
 					user = &UserInfo{Name: "node", Groups: []string{"k3s:agent", "system:nodes"}}

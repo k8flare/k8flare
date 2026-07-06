@@ -29,6 +29,7 @@
 // GATEWAY cross-Worker service binding is now SELF (the same script's
 // public fetch handler).
 import type { Env } from "./env.ts";
+import { clusterSecrets } from "../clusters/tokens.ts";
 import { makeResidentBootstrapJS } from "../loader/bootstrap.ts";
 import { assembleWasm, fetchWasmAsset, fetchWasmManifest } from "../loader/chunks.ts";
 
@@ -127,6 +128,26 @@ export class Controllers {
   // both every part and the assembled copy alive at once (~2x binary
   // size ≈ 125MB), which flirts with production's 128MiB isolate memory
   // limit that wrangler dev never enforces.
+  // Multi-cluster identity: this DO's instance name IS the cluster's
+  // doName ("<id>@<uid>", or "default") -- storage's pingControllers
+  // addresses the Controllers DO by its own Cluster DO name.
+  private clusterName(): string {
+    return this.state.id.name ?? "default";
+  }
+
+  private clusterBasePath(): string {
+    const name = this.clusterName();
+    return name === "default" ? "" : `/c/${name.split("@")[0]}`;
+  }
+
+  // The token this cluster's KCM authenticates with: the vault's first
+  // token for provisioned clusters, the env token for default (see
+  // clusters/tokens.ts).
+  private async clusterToken(): Promise<string | undefined> {
+    const [secret] = await clusterSecrets(this.env, this.clusterName());
+    return secret;
+  }
+
   private async loadComponent(name: ComponentName): Promise<Fetcher | null> {
     // Manifest absent = component not shipped in this deployment --
     // currently true for "sched" (no reproducible <64MiB build yet; see
@@ -134,27 +155,43 @@ export class Controllers {
     // pokes/alarms stay quiet about it.
     const manifest = await fetchWasmManifest(this.env.ASSETS, name);
     if (!manifest) return null;
-    const worker = this.env.LOADER.get(`${name}@${manifest.sha256}`, async () => {
-      const wasm = await assembleWasm(this.env.ASSETS, manifest);
-      console.log(`controllers: ${name} chunks assembled (${wasm.byteLength} bytes)`);
-      const wasmExec = await fetchWasmAsset(this.env.ASSETS, "wasm_exec.js").then((r) => r.text());
-      // Only plain values and Fetchers survive the env clone (S2 item
-      // 3a) -- this is exactly what pkg/controllers.RestConfig("GATEWAY")
-      // and getToken() read on the Go side. SELF is this same script's
-      // public fetch handler (the former gateway Worker).
-      const dynamicEnv: Record<string, unknown> = { GATEWAY: this.env.SELF };
-      if (this.env.K3S_TOKEN) dynamicEnv.K3S_TOKEN = this.env.K3S_TOKEN;
-      return {
-        compatibilityDate: "2026-07-01",
-        mainModule: "index.js",
-        modules: {
-          "index.js": makeResidentBootstrapJS(PUMP_WINDOW_MS),
-          "wasm_exec.js": wasmExec,
-          "app.wasm": { wasm: wasm.buffer as ArrayBuffer },
-        },
-        env: dynamicEnv,
-      };
-    });
+    const doName = this.clusterName();
+    const token = await this.clusterToken();
+    // Per-cluster dynamic worker, and the token is baked at factory time
+    // (unlike the apiserver's vault-backed TokensFunc) -- so the loader
+    // id carries a token fingerprint: rotation = new id = fresh isolate,
+    // and the stale one is simply never addressed again.
+    const tokenTag = token ? token.slice(0, 8) : "none";
+    const worker = this.env.LOADER.get(
+      `${name}:${doName}@${manifest.sha256}#${tokenTag}`,
+      async () => {
+        const wasm = await assembleWasm(this.env.ASSETS, manifest);
+        console.log(`controllers: ${name} chunks assembled (${wasm.byteLength} bytes)`);
+        const wasmExec = await fetchWasmAsset(this.env.ASSETS, "wasm_exec.js").then((r) =>
+          r.text(),
+        );
+        // Only plain values and Fetchers survive the env clone (S2 item
+        // 3a) -- this is exactly what pkg/controllers.RestConfig("GATEWAY")
+        // and getToken() read on the Go side. SELF is this same script's
+        // public fetch handler; CLUSTER_BASE_PATH keeps every API call the
+        // KCM makes inside this cluster's /c/<id> URL space.
+        const dynamicEnv: Record<string, unknown> = {
+          GATEWAY: this.env.SELF,
+          CLUSTER_BASE_PATH: this.clusterBasePath(),
+        };
+        if (token) dynamicEnv.K3S_TOKEN = token;
+        return {
+          compatibilityDate: "2026-07-01",
+          mainModule: "index.js",
+          modules: {
+            "index.js": makeResidentBootstrapJS(PUMP_WINDOW_MS),
+            "wasm_exec.js": wasmExec,
+            "app.wasm": { wasm: wasm.buffer as ArrayBuffer },
+          },
+          env: dynamicEnv,
+        };
+      },
+    );
     const entrypoint = worker.getEntrypoint();
     // Force the factory to actually run now (getEntrypoint alone is lazy)
     // and prove the dynamic worker is dispatchable before declaring it
@@ -181,6 +218,16 @@ export class Controllers {
   }
 
   async fetch(request: Request): Promise<Response> {
+    // Cluster teardown (clusters/api.ts): stop the alarm, drop state.
+    // The dynamic workers die by disuse -- their loader ids are simply
+    // never addressed again. Idempotent.
+    if (new URL(request.url).pathname === "/admin/destroy" && request.method === "POST") {
+      await this.state.storage.deleteAlarm();
+      await this.state.storage.deleteAll();
+      this.components.kcm = { entrypoint: null, loading: null };
+      this.components.sched = { entrypoint: null, loading: null };
+      return Response.json({ destroyed: true });
+    }
     // Test kill switch (see Env.KCM_DISABLED): pkg/apiserver's go test
     // suite runs against the consolidated single config, and its Pods
     // must not be touched by controllers.
@@ -271,9 +318,13 @@ export class Controllers {
 
   private async apiGet(path: string): Promise<Record<string, unknown> | null> {
     try {
-      const resp = await this.env.SELF.fetch(`http://gateway.internal${path}`, {
-        headers: { Authorization: `Bearer ${this.env.K3S_TOKEN || "k8flare-dev-token"}` },
-      });
+      const token = (await this.clusterToken()) || "k8flare-dev-token";
+      const resp = await this.env.SELF.fetch(
+        `http://gateway.internal${this.clusterBasePath()}${path}`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      );
       if (!resp.ok) return null;
       return await resp.json();
     } catch {

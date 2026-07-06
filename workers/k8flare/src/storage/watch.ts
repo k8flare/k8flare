@@ -11,9 +11,12 @@ interface DurableObjectNamespaceLike {
   get(id: unknown): { fetch(req: Request): Promise<Response> };
 }
 
-/** Host shape watch.ts needs: facet access (FacetHost) plus a WATCHHUB binding to push events to. */
+/** Host shape watch.ts needs: facet access (FacetHost) plus a WATCHHUB
+ * binding to push events to, and the owning Cluster DO's own instance
+ * name (multi-cluster: the WatchHub instance shares it). */
 export interface WatchHost extends FacetHost {
   env: FacetHost["env"] & { WATCHHUB?: DurableObjectNamespaceLike };
+  doName?: string;
 }
 
 /**
@@ -79,7 +82,7 @@ export async function broadcastEvent(
   if (!watchhub) return; // defensive: hosts without a WATCHHUB binding just skip fan-out
 
   try {
-    const stub = watchhub.get(watchhub.idFromName("default"));
+    const stub = watchhub.get(watchhub.idFromName(host.doName ?? "default"));
     const pushResp = await stub.fetch(
       new Request("http://watchhub.internal/push", {
         method: "POST",

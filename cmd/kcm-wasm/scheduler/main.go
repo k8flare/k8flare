@@ -57,7 +57,7 @@ func setStatus(msg string) {
 // WASM instance -- same idempotent shape as ../main.go's ensureStarted.
 func ensureStarted() {
 	startOnce.Do(func() {
-		restCfg := controllers.RestConfig("GATEWAY", getToken())
+		restCfg := controllers.RestConfig("GATEWAY", getToken(), cloudflare.Getenv("CLUSTER_BASE_PATH"))
 		cloudflare.WaitUntil(func() {
 			ctx := context.Background()
 			setStatus("running")

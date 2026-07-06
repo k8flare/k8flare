@@ -24,14 +24,14 @@ import (
 // The identity minted for the (single, all-powerful) cluster token
 // matches AuthMiddleware's bearer identity so both auth paths agree on
 // who the token is.
-func RegisterAuthenticationHandlers(mux *http.ServeMux, tokenFn TokenFunc) {
+func RegisterAuthenticationHandlers(mux *http.ServeMux, tokensFn TokensFunc) {
 	mux.Handle("POST /apis/authentication.k8s.io/v1/tokenreviews",
-		AuthMiddleware(tokenFn, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			handleTokenReview(w, r, tokenFn)
+		AuthMiddleware(tokensFn, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handleTokenReview(w, r, tokensFn)
 		})))
 }
 
-func handleTokenReview(w http.ResponseWriter, r *http.Request, tokenFn TokenFunc) {
+func handleTokenReview(w http.ResponseWriter, r *http.Request, tokensFn TokensFunc) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to read request body")
@@ -50,7 +50,7 @@ func handleTokenReview(w http.ResponseWriter, r *http.Request, tokenFn TokenFunc
 		return
 	}
 
-	if tr.Spec.Token == tokenFn() {
+	if tokenMatches(tokensFn(), tr.Spec.Token) {
 		tr.Status = authenticationv1.TokenReviewStatus{
 			Authenticated: true,
 			User: authenticationv1.UserInfo{
