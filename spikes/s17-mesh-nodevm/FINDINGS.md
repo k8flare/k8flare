@@ -46,3 +46,12 @@ when this spike concludes).
 - PoP-relay throughput for pod traffic
 - TLS posture unchanged either way (Workers fetch has no custom-CA
   support): the :10256 in-VM shim + TokenReview webhook auth stays.
+
+## Status: DEFERRED (2026-07-06, user decision)
+
+Parked after gate 1 (pass) and gate 2 method confirmation, in favor of
+k8s-primitive work toward a first public release. Resume point: run the
+one-time Mesh setup wizard, mint a Tunnel/Mesh-scoped API token, then
+gates 3-5 on a single NodeVM. The 50-nodes/account cap is the standing
+design constraint to re-check (Mesh Docker image availability may have
+changed the calculus by then).
