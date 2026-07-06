@@ -220,7 +220,13 @@ func TestMintR2Credentials_ReturnsWellFormedScopedCredential(t *testing.T) {
 		"namespace": ns,
 		"claimName": "pvc-mint-test",
 	})
-	resp, err := http.Post(fmt.Sprintf("http://127.0.0.1:%d/internal/mint-r2-credentials", testPort), "application/json", bytes.NewReader(reqBody))
+	// The consolidated Worker exposes /internal/* to the outside only
+	// behind the cluster token (in-Worker callers bypass the public
+	// handler entirely) -- so this external-client test authenticates.
+	req, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/internal/mint-r2-credentials", testPort), bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer k8flare-dev-token")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST /internal/mint-r2-credentials: %v", err)
 	}
@@ -325,7 +331,13 @@ func TestMintR2Credentials_UnboundClaimIsRejected(t *testing.T) {
 	})
 
 	reqBody, _ := json.Marshal(map[string]any{"namespace": ns, "claimName": "pvc-unbound-test"})
-	resp, err := http.Post(fmt.Sprintf("http://127.0.0.1:%d/internal/mint-r2-credentials", testPort), "application/json", bytes.NewReader(reqBody))
+	// The consolidated Worker exposes /internal/* to the outside only
+	// behind the cluster token (in-Worker callers bypass the public
+	// handler entirely) -- so this external-client test authenticates.
+	req, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/internal/mint-r2-credentials", testPort), bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer k8flare-dev-token")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST /internal/mint-r2-credentials: %v", err)
 	}

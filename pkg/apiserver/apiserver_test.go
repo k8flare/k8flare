@@ -55,11 +55,19 @@ func setupWranglerDev(t *testing.T) *kubernetes.Clientset {
 		testPort = findFreePort(t)
 		projectRoot := findProjectRoot(t)
 
+		// Single consolidated config (workers/k8flare). Two flags keep the
+		// old 4-Worker harness semantics:
+		//   --enable-containers=false -- no Docker needed (S19 G1); the
+		//     NodeVM containers are irrelevant to these tests.
+		//   KCM_DISABLED=1 -- the consolidated config always includes the
+		//     Controllers DO, but this suite's Pods are written assuming no
+		//     controller ever touches them (see CLAUDE.md's local-dev
+		//     pitfalls); the var short-circuits storage's pingControllers
+		//     and the Controllers DO itself.
 		devCmd = exec.Command("npx", "wrangler", "dev",
-			"-c", "workers/gateway/wrangler.jsonc",
-			"-c", "workers/storage/wrangler.jsonc",
-			"-c", "workers/apiserver/wrangler.jsonc",
-			"-c", "workers/runtime/wrangler.jsonc",
+			"-c", "workers/k8flare/wrangler.jsonc",
+			"--enable-containers=false",
+			"--var", "KCM_DISABLED:1",
 			"--port", fmt.Sprintf("%d", testPort),
 			"--persist-to", filepath.Join(projectRoot, ".wrangler", "state"),
 			"--log-level", "error",

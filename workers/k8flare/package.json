@@ -1,0 +1,14 @@
+{
+  "name": "@k8flare/k8flare-worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "@cloudflare/containers": "^0.3.7",
+    "@k8flare/crd": "workspace:*",
+    "@k8flare/dynamic-worker": "workspace:*",
+    "@k8flare/k8s": "workspace:*",
+    "@k8flare/worker-trigger": "workspace:*"
+  }
+}

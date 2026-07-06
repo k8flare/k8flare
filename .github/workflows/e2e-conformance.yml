@@ -13,8 +13,7 @@ on:
       - "cmd/scheduler/**"
       - "cmd/controller-manager/**"
       - "cmd/agent/**"
-      - "workers/storage/**"
-      - "workers/apiserver/**"
+      - "workers/k8flare/**"
       - "go.mod"
       - "go.sum"
   workflow_dispatch:
@@ -96,13 +95,13 @@ jobs:
       # relative to each wrangler config's own directory, not the invocation
       # cwd, so a token dropped at the repo root would silently be ignored
       # for all of them (verified locally: this repo's root .dev.vars is not
-      # loaded by the 4-config `wrangler dev` invocation below, since it's
-      # not next to any of those wrangler.jsonc files). With no K3S_TOKEN
+      # loaded by the `wrangler dev` invocation below, since it's
+      # not next to the wrangler.jsonc). With no K3S_TOKEN
       # set, main.go's getToken() (Go apiserver) and the TS Workers' dwAuth
       # (packages/k8s/src/auth.ts) all fall back to the same hardcoded
       # "k8flare-dev-token" dev value — the exact fallback
       # pkg/apiserver/apiserver_test.go's setupWranglerDev already relies on.
-      # Reusing that proven fallback everywhere (all 4 Workers, agent,
+      # Reusing that proven fallback everywhere (the Worker, agent,
       # scheduler) is simpler than wiring up a fresh random token end-to-end
       # for a value that is never a real secret in this ephemeral,
       # localhost-only CI instance.
@@ -155,10 +154,8 @@ jobs:
       - name: Start wrangler dev (real Workers + Durable Object storage)
         run: |
           nohup npx wrangler dev \
-            -c workers/gateway/wrangler.jsonc \
-            -c workers/storage/wrangler.jsonc \
-            -c workers/apiserver/wrangler.jsonc \
-            -c workers/runtime/wrangler.jsonc \
+            -c workers/k8flare/wrangler.jsonc \
+            --enable-containers=false \
             --port 8787 \
             --local-protocol https \
             --https-key-path "$RUNNER_TEMP/devtls/dev.key" \

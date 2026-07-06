@@ -1926,6 +1926,65 @@ Findings recorded along the way:
    The InputGate-cascade follow-up keeps gaining evidence that the
    trigger involves cold-apiserver bootstrap writes racing user writes.
 
+## S18: real RBAC enforcement fits the WASM apiserver — with two size landmines (2026-07-06)
+
+Spike: `spikes/s18-rbac-authz/` (full numbers in its FINDINGS.md).
+Question: can RBAC be enforced with upstream code inside
+`workers/apiserver` (10MiB-gzip cap, baseline 8.17MiB gzip)?
+
+- **PASS**: `plugin/pkg/auth/authorizer/rbac` (the real RBACAuthorizer)
+  - `endpoints/request.RequestInfoFactory` compile AND run on js/wasm
+    (executed under Node wasm_exec: bootstrap `cluster-admin` →
+    `system:masters` evaluates to Allow, so the existing cluster-token
+    identity keeps working when enforcement turns on). Cost: **+33KB
+    gzip** combined. The authorizer's four getter interfaces map directly
+    onto `ResourceStore`s — no informers.
+- **FAIL, direct link**: `bootstrappolicy` (+2.62MiB gzip, over cap —
+  drags the full client-go clientset via `legacytokentracking`; 227 new
+  packages) and `pkg/serviceaccount` (+2.68MiB gzip, over cap — typed
+  client-go + component-base metrics + audit). Neither belongs in the
+  WASM binary.
+- **Viable shape (all upstream semantics, +185KB gzip total, measured
+  8.35MiB)**: bootstrap policy emitted as generated data by
+  `cmd/k8flare-gen` (host build) and seeded in `BootstrapCluster`; SA
+  JWTs minted/verified with `go-jose` (the same library
+  `pkg/serviceaccount` uses internally, already in go.mod) using the
+  upstream claim shape.
+- **Enforcement is not apiserver-only**: `?watch=true` never reaches the
+  Go apiserver (gateway `handleWatch`, token-equality `dwAuth` only) and
+  the runtime CRD path, pods/proxy, and nodes/proxy
+  (`workers/gateway/src/index.ts:33,57`) are the same — each needs a
+  `SubjectAccessReview` call before proceeding (the webhook pattern the
+  kubelet bridge already proved live). And `system:nodes` needs an explicit
+  ClusterRoleBinding (upstream deliberately doesn't bind `system:node`
+  — it assumes a Node authorizer this project doesn't have; k3s
+  precedent applies).
+
+## S19: single-Worker consolidation gates — all three PASS (2026-07-06)
+
+Spike: `spikes/s19-single-worker/` (full numbers in its FINDINGS.md).
+Pre-implementation gates for the 6→1 Worker consolidation +
+multi-cluster plan, run against the real 43MB apiserver WASM in
+`wrangler dev` 4.106.0:
+
+- **G1 PASS**: containers[] + assets(run_worker_first) + worker_loaders
+  - sqlite DOs + self service bindings (default + named entrypoint) in
+    ONE config. Docker-less dev works with `--enable-containers=false`
+    (default is a hard startup failure; container images must EXPOSE a
+    port) — CI harnesses add the flag, no second Worker needed.
+- **G2 PASS**: a named-entrypoint self-binding Fetcher survives the
+  Loader env clone and reaches a DO from inside the loaded worker —
+  the replacement for the Go apiserver's CLUSTER DO binding.
+- **G3 PASS**: Loader-hosted apiserver hot path — cold 135–195 ms,
+  warm 12–24 ms, 30-parallel discovery burst 30/30 in 842 ms, and the
+  dynamic-worker isolate is **shared across caller contexts** (a DO's
+  `LOADER.get` with the same id skipped the factory). Two contract
+  findings: loader entrypoint stubs are request-scoped I/O (call
+  `LOADER.get` per request in stateless handlers; DOs may cache), and
+  the apiserver bootstrap must mirror syumai's per-request
+  `worker.mjs` shape — the KCM resident shape dies on dispatch 2 with
+  "Go program has already exited" (observed live).
+
 ## Correction log (honest corrections)
 
 **2026-07-03 — A Phase 6 subagent opened an unauthorized pull request

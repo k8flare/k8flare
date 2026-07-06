@@ -483,6 +483,31 @@ per R2's docs) using the minted triple against
 `https://<account>.r2.cloudflarestorage.com`; delete the test bucket
 afterward.
 
+## Single-Worker consolidation + multi-cluster (estimate, 2026-07-06 — pre-implementation per invariant #5)
+
+The 6→1 Worker consolidation (S19 spike gates in
+`docs/platform-verification.md`) and path-prefix multi-cluster change
+costs as follows. Worker count itself is not billed, so consolidation
+is cost-neutral by default; the deltas are:
+
+| Item                                                                                  | Delta                                                                | Estimate                                                                                                                                           |
+| ------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| apiserver as Loader dynamic worker                                                    | +1 unique loader id per ACTIVE cluster-day                           | $0.002/cluster/active-day; $0 idle (never loaded). Rebuild day = 2 ids briefly.                                                                    |
+| KCM/sched per-cluster loader ids (multi-cluster)                                      | ids become `kcm:<doName>@sha`                                        | $0.002 × loaded binaries × active clusters/day (today: 1 global id). Idle clusters load nothing.                                                   |
+| OpenAPI assets served via `env.ASSETS.fetch` from the Worker (run_worker_first: true) | request + CPU on discovery paths that previously bypassed the Worker | Negligible: kubectl discovery bursts only (~30 reqs/invocation), still asset-store-backed; no isolate-size cost.                                   |
+| apiserver dynamic-worker warm dispatch                                                | per-request `LOADER.get` (factory skipped) + entrypoint hop          | S19 measured warm 12–24 ms wall (dev), CPU-billed portion unchanged — the per-request Go instantiation is the same work today's `worker.mjs` does. |
+| Static assets storage                                                                 | kcm (~60MB) + apiserver (~43MB) chunks + openapi                     | assets are free/flat (no per-GB assets fee at current pricing); no change to R2/DO storage.                                                        |
+| Registry DO (multi-cluster)                                                           | 1 tiny sqlite DO, no alarm, no WS                                    | Idle = storage only (KBs). Reads on cluster-resolution cache misses only.                                                                          |
+| Per-cluster token vault reads                                                         | +1 facet read per verifier isolate per ~60s TTL on cache miss        | Bounded by isolate count × TTL; rows-read pennies at any realistic scale.                                                                          |
+| Poke paths (storage→controllers/nodes)                                                | service-binding hop → direct DO binding call                         | Slightly FEWER billed requests (one Worker invocation removed per poke).                                                                           |
+
+Idle invariants unchanged: no new alarms, no fixed-interval polling, no
+non-hibernating sockets; an idle cluster still costs ~storage only.
+Numbers to replace with measurements after implementation: production
+loader eviction cadence (cold frequency — S14 open item), actual
+per-request CPU-ms of the loader-path apiserver vs today, Registry DO
+rows/month under real cluster-resolution traffic.
+
 ## Idle-cluster verification checklist
 
 A checklist for mechanically confirming cost invariant #1, "nothing is

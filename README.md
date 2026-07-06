@@ -10,29 +10,33 @@ Runs a minimal K8s API server as a Cloudflare Worker with Durable Objects (SQLit
 kubectl / kubelet (BYO VM: cmd/agent, an unmodified k3s agent embed)
    │ HTTPS + token
    ▼
-gateway (TypeScript Worker — the only public one)
-   │ auth, watch streaming, kubelet proxy (VPC)
-   ├──► apiserver (Go, compiled to WASM)
-   ├──► runtime (TypeScript: CRDs, DynamicWorker/WorkerTrigger)
-   ▼ Durable Object binding
-storage (TypeScript)
+k8flare — ONE Cloudflare Worker (workers/k8flare, the single deploy unit)
+   public fetch: auth, watch streaming, kubelet proxy (VPC), /nodes/* ops surface
+   ├──► apiserver (real Go/WASM, table-driven from real k8s.io/kubernetes types) —
+   │      shipped as Static Assets chunks, run as a Worker Loader dynamic worker
+   ├──► runtime/ (TypeScript: CRDs, DynamicWorker/WorkerTrigger; user code via Loader)
    ├─ Cluster DO — revision authority, kine-compatible log, per-namespace Facets
-   └─ WatchHub DO — watch fan-out over hibernating WebSockets
-
-nodes (TypeScript + Cloudflare Containers, optional, talks to apiserver directly)
-   └─ VirtualNode DO — registers cf-containers-<pool>, renews its Lease,
-      reconciles Pods onto PodContainerSmall/Medium/Large DOs
+   ├─ WatchHub DO — watch fan-out over hibernating WebSockets
+   ├─ Controllers DO — hosts the real kube-controller-manager (Go/WASM) as a
+   │      Loader dynamic worker (same Assets-chunks supply channel)
+   └─ CFContainersScheduler + NodeVM DOs (Cloudflare Containers) — optional
+        per-Pod microVM node backend
 ```
 
-**Components** — 5 Cloudflare Workers, each its own deploy unit with its own
-`wrangler.jsonc` (`workers/gateway`, `workers/apiserver`, `workers/storage`,
-`workers/runtime`, `workers/nodes`):
+**One Worker, one `wrangler.jsonc`** (`workers/k8flare`). The former
+6-Worker split (gateway/apiserver/storage/runtime/controllers/nodes)
+was consolidated 2026-07-06 — same components, now subtrees of one
+script (`workers/k8flare/src/{gateway,storage,runtime,controllers,nodes}`),
+with the cross-Worker service bindings replaced by direct calls and the
+Go binaries loaded through the Worker Loader (see
+[`docs/platform-verification.md`](docs/platform-verification.md)'s S19
+section for the feasibility gates):
 
-- **gateway** — the only public Worker: authentication, watch streaming, kubelet proxying
-- **apiserver** — Go compiled to WASM; a table-driven API server built from real `k8s.io/kubernetes` types, not a hand-rolled subset of the wire format
-- **storage** — the `Cluster` Durable Object (kine-compatible revision log, per-namespace storage via Durable Object Facets) and the `WatchHub` Durable Object (watch fan-out, hibernating WebSockets)
-- **runtime** — CRDs, `DynamicWorker`/`WorkerTrigger` custom resources
-- **nodes** — optional virtual-kubelet-style Pod backend on Cloudflare Containers, for clusters that don't want to run a BYO VM agent just to try a Pod. See "Node backends" below for its allowlist and networking limitations.
+- **gateway/** — the public routing: authentication, watch streaming, kubelet proxying
+- **apiserver** (`cmd/apiserver-wasm` + `pkg/apiserver`) — Go compiled to WASM; a table-driven API server built from real `k8s.io/kubernetes` types, not a hand-rolled subset of the wire format. Ships as ≤24MiB Static Assets chunks and runs as a Loader dynamic worker (no more 10MiB-gzip script budget).
+- **storage/** — the `Cluster` Durable Object (kine-compatible revision log, per-namespace storage via Durable Object Facets) and the `WatchHub` Durable Object (watch fan-out, hibernating WebSockets)
+- **runtime/** — CRDs, `DynamicWorker`/`WorkerTrigger` custom resources
+- **nodes/** — optional virtual-kubelet-style Pod backend on Cloudflare Containers, for clusters that don't want to run a BYO VM agent just to try a Pod. See "Node backends" below.
 
 **`cmd/agent`** is an unmodified k3s agent (kubelet + containerd + flannel) you run yourself (EC2 or any Linux host) — see Agent Setup below.
 
@@ -43,16 +47,14 @@ for Cloudflare's Go/WASM target at all. See
 [`docs/platform-verification.md`](docs/platform-verification.md)'s S8
 section for the full investigation.
 
-**Workload controllers run inside Workers** (`workers/controllers`): the
-real, unmodified `kube-controller-manager` compiled to Go/WASM. Its
-binary is far larger than a Worker's 10MiB gzip deploy budget, so the
-Worker script ships only thin TypeScript glue — the WASM itself is
-served from the Worker's own Static Assets in ≤24MiB chunks and loaded
-at runtime through the Worker Loader (which imposes its own 64MiB cap,
-met via `wasm-opt`; see platform-verification.md's S14 section).
-Endpoints/EndpointSlice generation and Node lifecycle don't need it,
-though: those run as synchronous Go inside `apiserver` itself, not as a
-controller-manager controller. See the Controllers table below.
+**Workload controllers run inside the Worker**: the real, unmodified
+`kube-controller-manager` compiled to Go/WASM (`cmd/kcm-wasm`), served
+from Static Assets in ≤24MiB chunks and loaded at runtime through the
+Worker Loader (which imposes its own 64MiB cap, met via `wasm-opt`; see
+platform-verification.md's S14 section). Endpoints/EndpointSlice
+generation and Node lifecycle don't need it, though: those run as
+synchronous Go inside the apiserver itself. See the Controllers table
+below.
 
 ## Kubernetes API Support
 
@@ -158,10 +160,10 @@ and serves, not scheduler limitations.
 
 Two ways to get Pods actually running, mix-and-match per cluster:
 
-| Backend                                                        | Setup                                                                 | Image                                                              | Networking                                                                 |
-| -------------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------- |
-| **BYO VM** (`cmd/agent`)                                       | Run the real, unmodified k3s agent yourself (EC2 or any Linux host)   | Any OCI image, pulled by containerd like any other Kubernetes node | Full — flannel/kube-proxy, `kubectl logs`/`exec` via the VPC kubelet proxy |
-| **`workers/nodes`** (Pod-on-Containers, virtual-kubelet-style) | `wrangler deploy --config workers/nodes/wrangler.jsonc`, no VM to run | **Allowlisted only** — see below                                   | Limited — see below                                                        |
+| Backend                                                                | Setup                                                               | Image                                                              | Networking                                                                 |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------- |
+| **BYO VM** (`cmd/agent`)                                               | Run the real, unmodified k3s agent yourself (EC2 or any Linux host) | Any OCI image, pulled by containerd like any other Kubernetes node | Full — flannel/kube-proxy, `kubectl logs`/`exec` via the VPC kubelet proxy |
+| **Containers node backend** (Pod-on-Containers, virtual-kubelet-style) | included in `npm run deploy` (workers/k8flare), no VM to run        | **Allowlisted only** — see below                                   | Limited — see below                                                        |
 
 ### `workers/nodes`: what it is and its hard limits
 
@@ -202,7 +204,7 @@ dev` — see `spikes/s3-containers/FINDINGS.md` item 5). A Pod that needs UDP
   does not get a real cluster-routable IP (Cloudflare Containers doesn't
   expose one to the hosting Durable Object) — Service traffic to a Pod on
   this backend is not proven end-to-end. `logs`/`exec`/`attach` are handled by
-  `workers/gateway`'s kubelet proxy today, which dials a real kubelet over a
+  the consolidated Worker's kubelet proxy today, which dials a real kubelet over a
   VPC service binding (port 10255) — it has no branch for a virtual node, so
   these subresources don't work against a `workers/nodes`-backed Pod in v1.
 - **Pod scheduling/deletion latency is ~10s, not sub-second.** `workers/nodes`
@@ -215,25 +217,17 @@ dev` — see `spikes/s3-containers/FINDINGS.md` item 5). A Pod that needs UDP
   the same ~10s tick: a container that exited is restarted, left stopped, or
   marked `Succeeded`/`Failed` accordingly.
 
-### Deploying `workers/nodes`
+### The Containers node backend and `npm run deploy`
 
-Separate from the 4-Worker `npm run deploy` above (it needs Docker/Containers
-support, so it isn't bundled into the default dev/deploy flow):
+The node backend ships inside the single Worker deploy (`npm run deploy`
+builds the node agent image input and deploys `workers/k8flare`, whose
+`containers[]` section covers the NodeVM classes). Its operator surface
+lives under the deployed Worker's `/nodes/*` routes (token-gated), e.g.:
 
 ```bash
-npx wrangler secret put K3S_TOKEN --config workers/nodes/wrangler.jsonc
-npx wrangler deploy --config workers/nodes/wrangler.jsonc
-
-# One-time bootstrap: any request wakes VirtualNode's alarm loop for the
-# first time (see workers/nodes/src/virtualnode.ts), registering the Node
-# and starting its Lease-renewal/Pod-reconcile cycle.
-curl https://k8flare-nodes.<your-subdomain>.workers.dev/healthz
+# Health poke (wakes the scheduler DO's reconcile loop if it was parked)
+curl -H "Authorization: Bearer $K3S_TOKEN" https://k8flare.<your-subdomain>.workers.dev/nodes/healthz
 ```
-
-`NODE_POOL` (defaults to `"default"`, registering `cf-containers-default`) can
-be set as a Worker variable in `workers/nodes/wrangler.jsonc` to run more than
-one pool — deploy a second copy of the Worker with a different `name` and
-`NODE_POOL` for each.
 
 ## Volumes (R2 PV/PVC)
 
@@ -509,19 +503,17 @@ single-writer shape as etcd itself), and every namespace gets its own Facet
 ### From Release
 
 ```bash
-# Download and extract the Workers bundle (gateway/apiserver/storage/runtime --
-# workers/controllers isn't included, see Architecture above)
+# Download and extract the Workers bundle (the single workers/k8flare
+# deploy unit, prebuilt WASM chunks included)
 gh release download -R k8flare/k8flare -p 'k8flare-workers-*.tar.gz'
 tar xzf k8flare-workers-*.tar.gz
 cd k8flare-workers
 pnpm install
 
-# Set your cluster token on every Worker that checks it (apiserver, gateway, runtime)
-for w in apiserver gateway runtime; do
-  npx wrangler secret put K3S_TOKEN --config "workers/$w/wrangler.jsonc"
-done
+# Set your cluster token (one Worker, one secret)
+npx wrangler secret put K3S_TOKEN --config workers/k8flare/wrangler.jsonc
 
-# Deploy all 4 (order matters -- see package.json's "deploy" script)
+# Deploy the single Worker
 npm run deploy
 ```
 
@@ -532,9 +524,9 @@ git clone https://github.com/k8flare/k8flare.git
 cd k8flare
 pnpm install  # plain `npm install` fails here -- package.json uses pnpm workspace:* deps
 
-# Build Go WASM (needs a local Go toolchain; skip this and use the release
-# tarball above if you'd rather not install one)
-npm run build:wasm:apiserver
+# Build Go WASM chunks (needs a local Go toolchain + binaryen's wasm-opt;
+# skip this and use the release tarball above if you'd rather not install one)
+npm run build:wasm
 
 # Deploy
 npm run deploy
@@ -555,15 +547,15 @@ chmod +x k8flare-agent-linux-* k8flare-scheduler-linux-* k8flare-controller-mana
 
 # Run all three against the same Worker deployment and token
 ./k8flare-agent-linux-arm64 \
-  --server https://your-k8flare-gateway.workers.dev \
+  --server https://your-k8flare.workers.dev \
   --token YOUR_K3S_TOKEN &
 
 ./k8flare-scheduler-linux-arm64 \
-  --server https://your-k8flare-gateway.workers.dev \
+  --server https://your-k8flare.workers.dev \
   --token YOUR_K3S_TOKEN &
 
 ./k8flare-controller-manager-linux-arm64 \
-  --server https://your-k8flare-gateway.workers.dev \
+  --server https://your-k8flare.workers.dev \
   --token YOUR_K3S_TOKEN &
 ```
 
@@ -590,7 +582,7 @@ Cloudflare Mesh for this purpose; see
 | `R2_SECRET_ACCESS_KEY` | Only for [R2 PV/PVC](#volumes-r2-pvpvc) | Secret Access Key of the same token — set via `wrangler secret put`, never `vars`                                                                 |
 | `R2_BUCKET`            | Only for [R2 PV/PVC](#volumes-r2-pvpvc) | The one shared R2 bucket every PVC provisions into (isolated per-PVC by key prefix, not by bucket — see [Volumes (R2 PV/PVC)](#volumes-r2-pvpvc)) |
 
-All four `R2_*` variables are set on `workers/apiserver` (the only Worker
+All four `R2_*` variables are set on `workers/k8flare` (the single Worker
 that signs credentials). Without them, PVCs still bind and mint
 syntactically valid credentials from fixed dev placeholder values — see
 `docs/cost-model.md`'s Phase 8 section — that simply won't authenticate
@@ -604,7 +596,7 @@ To enable `kubectl logs` and `kubectl exec`, set up a Cloudflare Tunnel + VPC Se
 ./scripts/setup-tunnel.sh
 ```
 
-Then add the VPC binding to `workers/gateway/wrangler.jsonc`:
+Then add the VPC binding to `workers/k8flare/wrangler.jsonc`:
 
 ```jsonc
 "vpc_services": [{ "binding": "KUBELET_VPC", "service_id": "YOUR_SERVICE_ID" }]

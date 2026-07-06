@@ -43,7 +43,7 @@ jobs:
       - name: Verify generated code is up to date
         run: |
           go run ./cmd/k8flare-gen
-          git diff --exit-code -- pkg/apiserver/zz_generated_*.go packages/k8s/src/gen workers/apiserver/assets/openapi || {
+          git diff --exit-code -- pkg/apiserver/zz_generated_*.go packages/k8s/src/gen workers/k8flare/assets/openapi || {
             echo "::error::cmd/k8flare-gen output differs from what's committed. Run 'go run ./cmd/k8flare-gen' and commit the result." >&2
             exit 1
           }
@@ -51,50 +51,29 @@ jobs:
       - name: TypeScript check
         run: vp check
 
-      # workers/nodes was found (2026-07-03, after merging Phase 7) to be
-      # invisible to `vp check`'s type-check pass -- its tsconfig.json is
-      # structurally identical to workers/storage's (which IS checked), but
-      # `vp check` reports the same file count whether workers/nodes exists
-      # or not. Root cause not fully understood (vp check's type-aware pass
-      # is powered by an internal "tsgolint" tool -- see
-      # node_modules/vite-plus/dist/init-config.js -- whose project
-      # discovery this wasn't worth fully reverse-engineering under time
-      # pressure); `tsc --noEmit` directly against its tsconfig.json is a
-      # direct, verified-working check that doesn't depend on understanding
-      # why. Real errors were caught this way that `vp check` missed (a
-      # bare `DurableObjectNamespace` return type erasing the RPC method
-      # types on the stub it returns).
-      - name: TypeScript check (workers/nodes, uncovered by vp check)
-        run: npx tsc --noEmit -p workers/nodes/tsconfig.json
+      # The former workers/nodes was found (2026-07-03) to be invisible to
+      # `vp check`'s type-check pass (root cause in its internal "tsgolint"
+      # project discovery, never fully chased). A direct `tsc --noEmit`
+      # against the consolidated worker's tsconfig keeps that
+      # belt-and-suspenders coverage for the whole merged src tree -- real
+      # errors were caught this way that `vp check` missed (a bare
+      # `DurableObjectNamespace` return type erasing RPC method types).
+      - name: TypeScript check (workers/k8flare, direct tsc)
+        run: npx tsc --noEmit -p workers/k8flare/tsconfig.json
 
-      # binaryen's wasm-opt is required by scripts/build-controllers-wasm.sh
-      # (workers/controllers' KCM WASM only fits under the Worker Loader's
-      # hard 64MiB cap after -Oz -- see the script's header comment).
+      # binaryen's wasm-opt is required by scripts/build-wasm-chunks.sh
+      # (the KCM WASM only fits under the Worker Loader's hard 64MiB cap
+      # after -Oz -- see the script's header comment).
       - name: Install binaryen (wasm-opt)
         run: sudo apt-get update && sudo apt-get install -y binaryen
 
-      - name: Build WASM
+      # Nothing bundles WASM into the script anymore (the old 10MiB-gzip
+      # apiserver budget is retired): both control-plane binaries ship as
+      # Static Assets chunks and load through the Worker Loader, whose
+      # hard 64MiB raw cap is enforced inside scripts/build-wasm-chunks.sh
+      # -- this step fails if either binary exceeds it.
+      - name: Build WASM (apiserver + KCM chunks, 64MiB Loader gate inside)
         run: npm run build:wasm
-
-      # workers/apiserver is the only Worker whose WASM ships inside the
-      # script bundle and is therefore bound by Cloudflare's 10MiB gzip
-      # deploy cap; the 3 plain-TypeScript Workers (gateway/storage/
-      # runtime) are nowhere near it. workers/controllers is NOT gated
-      # here because its KCM WASM is not part of the script bundle at all:
-      # it ships via Static Assets in <=24MiB chunks and loads through the
-      # Worker Loader at runtime (spikes/s14-loader-external-fetch), whose
-      # own hard 64MiB raw cap is already enforced inside
-      # scripts/build-controllers-wasm.sh (the Build WASM step above fails
-      # if it's exceeded).
-      - name: Check apiserver WASM gzip size budget
-        run: |
-          SIZE=$(gzip -c workers/apiserver/build/app.wasm | wc -c)
-          LIMIT=9961472 # 9.5 MiB (9.5 * 1024 * 1024). Actual as of Phase 6: ~7.85MB / 78.8% -- see docs/cost-model.md.
-          echo "workers/apiserver/build/app.wasm gzip size: $SIZE bytes (limit: $LIMIT bytes / 9.5MiB)"
-          if [ "$SIZE" -gt "$LIMIT" ]; then
-            echo "::error::workers/apiserver/build/app.wasm gzip size ($SIZE bytes) exceeds the 9.5MiB CI budget ($LIMIT bytes). See docs/cost-model.md and docs/platform-verification.md's S8 section for size history and precedent." >&2
-            exit 1
-          fi
 
       - name: Go vet
         run: go vet ./pkg/apiserver/...

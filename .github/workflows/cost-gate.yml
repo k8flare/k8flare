@@ -41,9 +41,7 @@ on:
     paths:
       - "pkg/apiserver/**"
       - "pkg/controllers/**"
-      - "workers/storage/**"
-      - "workers/apiserver/**"
-      - "workers/controllers/**"
+      - "workers/k8flare/**"
       - "go.mod"
       - "go.sum"
       - ".github/workflows/cost-gate.yml"
@@ -98,11 +96,8 @@ jobs:
       - name: Start wrangler dev (real Workers + Durable Object storage)
         run: |
           nohup npx wrangler dev \
-            -c workers/gateway/wrangler.jsonc \
-            -c workers/storage/wrangler.jsonc \
-            -c workers/apiserver/wrangler.jsonc \
-            -c workers/runtime/wrangler.jsonc \
-            -c workers/controllers/wrangler.jsonc \
+            -c workers/k8flare/wrangler.jsonc \
+            --enable-containers=false \
             --port 8787 \
             --persist-to .wrangler/state \
             --log-level info \
@@ -131,8 +126,8 @@ jobs:
       # mechanism before being committed here (not assumed from source).
       - name: Verify a fresh cluster starts fully parked
         run: |
-          CLUSTER_DB=".wrangler/state/v3/do/k8flare-storage-Cluster/metadata.sqlite"
-          CONTROLLERS_DB=".wrangler/state/v3/do/k8flare-controllers-Controllers/metadata.sqlite"
+          CLUSTER_DB=".wrangler/state/v3/do/k8flare-Cluster/metadata.sqlite"
+          CONTROLLERS_DB=".wrangler/state/v3/do/k8flare-Controllers/metadata.sqlite"
           CLUSTER_ALARMS=$(sqlite3 -cmd ".timeout 5000" "$CLUSTER_DB" "SELECT count(*) FROM _cf_ALARM;")
           CONTROLLERS_ALARMS=$(sqlite3 -cmd ".timeout 5000" "$CONTROLLERS_DB" "SELECT count(*) FROM _cf_ALARM;")
           echo "Cluster alarm rows: $CLUSTER_ALARMS, Controllers alarm rows: $CONTROLLERS_ALARMS"
@@ -155,8 +150,8 @@ jobs:
 
       - name: Verify the safety-net alarm arms in response to write activity
         run: |
-          CLUSTER_DB=".wrangler/state/v3/do/k8flare-storage-Cluster/metadata.sqlite"
-          CONTROLLERS_DB=".wrangler/state/v3/do/k8flare-controllers-Controllers/metadata.sqlite"
+          CLUSTER_DB=".wrangler/state/v3/do/k8flare-Cluster/metadata.sqlite"
+          CONTROLLERS_DB=".wrangler/state/v3/do/k8flare-Controllers/metadata.sqlite"
           for i in $(seq 1 15); do
             CLUSTER_ALARMS=$(sqlite3 -cmd ".timeout 5000" "$CLUSTER_DB" "SELECT count(*) FROM _cf_ALARM;")
             CONTROLLERS_ALARMS=$(sqlite3 -cmd ".timeout 5000" "$CONTROLLERS_DB" "SELECT count(*) FROM _cf_ALARM;")
@@ -185,8 +180,8 @@ jobs:
       # sleep, but budget for the full interval plus margin.
       - name: Verify the safety-net alarm parks once there is no live work (cost invariants #1/#3)
         run: |
-          CLUSTER_DB=".wrangler/state/v3/do/k8flare-storage-Cluster/metadata.sqlite"
-          CONTROLLERS_DB=".wrangler/state/v3/do/k8flare-controllers-Controllers/metadata.sqlite"
+          CLUSTER_DB=".wrangler/state/v3/do/k8flare-Cluster/metadata.sqlite"
+          CONTROLLERS_DB=".wrangler/state/v3/do/k8flare-Controllers/metadata.sqlite"
           for i in $(seq 1 18); do
             CLUSTER_ALARMS=$(sqlite3 -cmd ".timeout 5000" "$CLUSTER_DB" "SELECT count(*) FROM _cf_ALARM;")
             CONTROLLERS_ALARMS=$(sqlite3 -cmd ".timeout 5000" "$CONTROLLERS_DB" "SELECT count(*) FROM _cf_ALARM;")

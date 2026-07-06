@@ -5,23 +5,17 @@
 # this task asked for: kubectl-equivalent create -> Running, delete ->
 # container actually stops, and restartPolicy's three modes.
 #
-# Multi-config `wrangler dev` only exposes the FIRST-listed config's port
-# (verified empirically -- a later config's own "dev.port" is silently
-# ignored). workers/apiserver needs to be directly reachable to create/read
-# Pods, but workers/nodes also needs to be reachable once (to bootstrap
-# VirtualNode's alarm loop, see workers/nodes/src/virtualnode.ts's fetch()
-# doc comment). Rather than restart wrangler dev to swap which config is
-# first, this job starts a tiny inline proxy Worker (not part of the
-# k8flare repo/release -- generated into $RUNNER_TEMP, same spirit as this
-# repo's other CI-only generated fixtures) that forwards /nodes/* to
-# workers/nodes and everything else to workers/apiserver, so one wrangler
-# dev process can reach both.
+# Post-consolidation this runs against the single workers/k8flare config;
+# the /nodes/* operator surface the old CI-only debug proxy invented is
+# now a native route of the consolidated Worker (gateway/index.ts), so
+# the proxy -- and the multi-config first-port workaround it existed
+# for -- is gone.
 name: Smoke Test workers/nodes
 
 on:
   pull_request:
     paths:
-      - "workers/nodes/**"
+      - "workers/k8flare/**"
       - "pkg/apiserver/nodecidr.go"
   workflow_dispatch:
 
@@ -46,49 +40,20 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
-      - name: Build WASM
-        run: npm run build:wasm:apiserver
+      # Only the apiserver binary is needed here (the KCM never touches
+      # these bare Pods and its wasm-opt pass costs ~2min).
+      - name: Build WASM (apiserver only)
+        run: bash scripts/build-wasm-chunks.sh apiserver
 
-      # See this file's header comment for why this exists.
-      - name: Generate the debug proxy Worker
-        run: |
-          mkdir -p "$RUNNER_TEMP/debug-proxy/src"
-          cat > "$RUNNER_TEMP/debug-proxy/wrangler.jsonc" <<'EOF'
-          {
-            "name": "debug-proxy",
-            "main": "./src/index.ts",
-            "compatibility_date": "2026-07-01",
-            "services": [
-              { "binding": "APISERVER", "service": "k8flare-apiserver" },
-              { "binding": "NODES", "service": "k8flare-nodes" }
-            ]
-          }
-          EOF
-          cat > "$RUNNER_TEMP/debug-proxy/src/index.ts" <<'EOF'
-          export interface Env {
-            APISERVER: Fetcher;
-            NODES: Fetcher;
-          }
-          export default {
-            async fetch(request: Request, env: Env): Promise<Response> {
-              const url = new URL(request.url);
-              if (url.pathname.startsWith("/nodes")) {
-                const inner = new URL(request.url);
-                inner.pathname = inner.pathname.replace(/^\/nodes/, "") || "/";
-                return env.NODES.fetch(new Request(inner, request));
-              }
-              return env.APISERVER.fetch(request);
-            },
-          };
-          EOF
+      # The consolidated config's containers[] docker-builds images/node,
+      # whose Dockerfile COPYs the cross-compiled k8flare-agent.
+      - name: Build node agent (linux/amd64)
+        run: bash scripts/build-nodes-agent.sh
 
-      - name: Start wrangler dev (apiserver + storage + nodes, via debug proxy)
+      - name: Start wrangler dev (the consolidated k8flare Worker)
         run: |
           nohup npx wrangler dev \
-            -c "$RUNNER_TEMP/debug-proxy/wrangler.jsonc" \
-            -c workers/apiserver/wrangler.jsonc \
-            -c workers/storage/wrangler.jsonc \
-            -c workers/nodes/wrangler.jsonc \
+            -c workers/k8flare/wrangler.jsonc \
             --port 8930 \
             --persist-to .wrangler/state \
             --log-level info \

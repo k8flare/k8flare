@@ -14,12 +14,14 @@ import (
 	"github.com/k8flare/k8flare/pkg/apiserver/apidef"
 )
 
-// assetsDir is where workers/apiserver/wrangler.jsonc's "assets.directory"
+// assetsDir is where workers/k8flare/wrangler.jsonc's "assets.directory"
 // points -- Cloudflare serves any file placed here directly at the matching
-// URL path, without invoking the Go WASM Worker at all (confirmed via
-// wrangler dev; see cmd/k8flare-gen's git history / final report for the
+// URL path, without invoking the Worker at all (confirmed via wrangler
+// dev; see cmd/k8flare-gen's git history / final report for the
 // verification note), so no Go route handling is needed for /openapi/*.
-const assetsDir = "workers/apiserver/assets"
+// (The wasm/ subtree next to these is Loader chunk supply, owned by
+// scripts/build-wasm-chunks.sh and excluded via run_worker_first.)
+const assetsDir = "workers/k8flare/assets"
 
 // genOpenAPI copies the real upstream OpenAPI v2 (Swagger 2.0) and v3
 // documents for every apidef.Table GroupVersion out of the k8s.io/kubernetes

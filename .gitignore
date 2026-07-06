@@ -1,5 +1,8 @@
 node_modules/
 build/
+workers/k8flare/assets/wasm/
+# Preserved on-disk artifacts of the pre-consolidation layout (the
+# assets-backup dir is the OPEN REGRESSION safeguard -- see CLAUDE.md)
 workers/controllers/assets/
 workers/controllers/assets-backup-*/
 dist/
@@ -21,4 +24,5 @@ spikes/s2-loader/parent/goscript-klog-test/
 /apiserver
 /k8flare-gen
 spikes/s15-containers-node/worker/k8flare-agent
-workers/nodes/images/node/k8flare-agent
+workers/k8flare/images/node/k8flare-agent
+.DS_Store

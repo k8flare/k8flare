@@ -7,19 +7,11 @@
   ],
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev -c workers/gateway/wrangler.jsonc -c workers/storage/wrangler.jsonc -c workers/apiserver/wrangler.jsonc -c workers/runtime/wrangler.jsonc -c workers/controllers/wrangler.jsonc --persist-to .wrangler/state",
-    "deploy": "npm run deploy:storage && npm run deploy:apiserver && npm run deploy:runtime && npm run deploy:controllers && npm run deploy:gateway",
-    "deploy:nodes": "bash scripts/build-nodes-agent.sh && wrangler deploy --config workers/nodes/wrangler.jsonc",
-    "deploy:controllers": "wrangler deploy --config workers/controllers/wrangler.jsonc",
-    "deploy:storage": "wrangler deploy --config workers/storage/wrangler.jsonc",
-    "deploy:apiserver": "wrangler deploy --config workers/apiserver/wrangler.jsonc",
-    "deploy:runtime": "wrangler deploy --config workers/runtime/wrangler.jsonc",
-    "deploy:gateway": "wrangler deploy --config workers/gateway/wrangler.jsonc",
+    "dev": "wrangler dev -c workers/k8flare/wrangler.jsonc --persist-to .wrangler/state",
+    "deploy": "bash scripts/build-nodes-agent.sh && wrangler deploy --config workers/k8flare/wrangler.jsonc",
     "check": "vp check",
     "test": "vitest",
-    "build:wasm": "npm run build:wasm:apiserver && npm run build:wasm:controllers",
-    "build:wasm:apiserver": "go run github.com/syumai/workers/cmd/workers-assets-gen -mode=go -o workers/apiserver/build && GOOS=js GOARCH=wasm go build -o ./workers/apiserver/build/app.wasm ./workers/apiserver",
-    "build:wasm:controllers": "bash scripts/build-controllers-wasm.sh"
+    "build:wasm": "bash scripts/build-wasm-chunks.sh"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260317.1",
