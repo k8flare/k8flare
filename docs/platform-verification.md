@@ -1853,6 +1853,24 @@ controllers alarm-predicate / nodes image with backend label+taint):
   Docker node joined to production): a temporary entrypoint block that
   self-POSTs uname/ps/containerd.log as a `vmdebug-*` ConfigMap through
   the gateway using the node's own K3S_TOKEN.
+  - **CORRECTION (same day, ~1h later): SSH works once configured** —
+    the WebSocket 400 meant "no `authorized_keys` registered", nothing
+    else (docs: developers.cloudflare.com/containers/ssh/). Recipe now
+    proven live against a NodeVM: (1) add `authorized_keys: [{name,
+    public_key}]` (ssh-ed25519 ONLY) to each `containers[]` entry in
+    workers/nodes/wrangler.jsonc and `wrangler deploy`; (2) the key
+    only reaches instances on FRESH slots — an instance that existed
+    (even stopped/reused) before the deploy keeps 400ing, so cycle the
+    pod to get a new VM; (3) connect with the real ssh client:
+    `ssh -i ~/.ssh/id_ed25519 -o ProxyCommand="npx wrangler containers
+    ssh %h --stdio" cloudchamber@<instanceID>` (Cloudflare injects a
+    dropbear sshd; user is `cloudchamber`; interactive
+    `wrangler containers ssh` also works from a real TTY). Verified
+    from inside: guest kernel `6.18.36-cloudflare-firecracker`
+    (x86_64, seccomp available), k8flare-agent is PID 1, containerd
+    healthy, and `curl 127.0.0.1:80` returned the Pod's nginx welcome
+    page over hostNetwork — the first direct HTTP proof against a
+    per-Pod-node workload (pods/proxy bridge still pending, task #13).
 - **Local-Docker repro of the stall is a false lead**: on an ARM Mac,
   the amd64 node image under Rosetta fails every sandbox with
   `seccomp is not supported` (kubelet 1.36 hardcodes RuntimeDefault for

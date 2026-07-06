@@ -20,18 +20,21 @@
       "image": "./images/node/Dockerfile",
       "instance_type": "lite",
       "max_instances": 20,
+      "authorized_keys": [{ "name": "k2wanko", "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICeopuW/7TMRINQhFfBiOtwTOLExpogre8JW7uQT/DeT k2wanko@kiew8lei.local" }],
     },
     {
       "class_name": "NodeVMMedium",
       "image": "./images/node/Dockerfile",
       "instance_type": "basic",
       "max_instances": 20,
+      "authorized_keys": [{ "name": "k2wanko", "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICeopuW/7TMRINQhFfBiOtwTOLExpogre8JW7uQT/DeT k2wanko@kiew8lei.local" }],
     },
     {
       "class_name": "NodeVMLarge",
       "image": "./images/node/Dockerfile",
       "instance_type": "standard-1",
       "max_instances": 10,
+      "authorized_keys": [{ "name": "k2wanko", "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICeopuW/7TMRINQhFfBiOtwTOLExpogre8JW7uQT/DeT k2wanko@kiew8lei.local" }],
     },
   ],
   "durable_objects": {
