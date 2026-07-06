@@ -289,6 +289,26 @@ jobs:
             --ginkgo.no-color \
             --ginkgo.focus="$BASELINE_FOCUS"
 
+      # Promotion gate (Phase 1 close-out): the one conformance test the
+      # plan names as the real-traffic acceptance -- a client pod curling a
+      # ClusterIP and reaching the backing pods through kube-proxy. Run in
+      # isolation so its verdict is unambiguous; advisory until it proves
+      # green, then it moves into BASELINE_FOCUS (required) and this step
+      # is deleted.
+      - name: Run ClusterIP traffic candidate (Phase 1 promotion gate, advisory)
+        id: cluster-ip-traffic
+        continue-on-error: true
+        timeout-minutes: 10
+        run: |
+          echo "=== ClusterIP real-traffic candidate ==="
+          "$RUNNER_TEMP/kubernetes/test/bin/e2e.test" \
+            --kubeconfig="$RUNNER_TEMP/kubeconfig.yaml" \
+            --provider=skeleton \
+            --num-nodes=1 \
+            --disable-log-dump \
+            --ginkgo.no-color \
+            --ginkgo.focus='\[sig-network\] Services should serve a basic endpoint from pods \[Conformance\]'
+
       # Experimental group: broader Conformance tests for resources README.md
       # documents as implemented (ConfigMap/Secret/Namespace-cascade), but
       # which are not yet individually confirmed against this apiserver the
