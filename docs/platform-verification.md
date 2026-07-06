@@ -1816,6 +1816,55 @@ not just availability. kubectl-visible symptom to recognize it by:
 `store list: storage list: unexpected status 500` on some (not all)
 list calls, then resurrected objects after redeploy.
 
+### S16: first Pod Running on a per-Pod microVM node (2026-07-06, hostNetwork round)
+
+Production e2e of the cf-containers-scheduler chain after deploying the
+2026-07-06 stack (storage / apiserver with hostNetwork admission /
+controllers alarm-predicate / nodes image with backend label+taint):
+
+- **End-to-end SUCCESS**: `kubectl apply` of an annotated nginx:alpine
+  Pod (limits 500m/2Gi → large tier) → admission injected
+  `schedulerName=cf-containers-scheduler`, `hostNetwork=true`,
+  nodeSelector (verified on the stored object) → VM boot → node Ready in
+  ~19s → bind → **Running with ready=true, restarts=0** on the microVM
+  (instance in kix05). PodIP = the VM host IP (10.0.0.1), as hostNetwork
+  intends. Teardown on `kubectl delete pod` reaps the VM and the Node
+  object within ~25s; all three NodeVM apps back to zero
+  running instances (cost invariant held). The sandbox was created WITH
+  kubelet's unconditional RuntimeDefault seccomp — the microVM kernel
+  supports seccomp; no admission workaround needed.
+- **First attempt of the same round stalled and remains un-root-caused**:
+  on the first VM (~20 min earlier, same image), containerd died ~15s
+  after boot — kubelet event `dial unix /run/k3s/containerd/
+  containerd.sock: no such file or directory` at bind time, PLEG went
+  stale, node fell to NotReady, pod stuck in ContainerCreating. The
+  second boot succeeded with zero changes deployed in between, so this
+  is a boot-time flake to watch (rule 5), not the old "CNI/netfilter"
+  hypothesis — hostNetwork removed CNI from the sandbox path entirely.
+- **In-VM observability is effectively zero today** (matters for the
+  flake above): `wrangler containers ssh` failed three ways
+  (INSTANCE_NOT_READY on the wedged VM, then instance-not-found, then
+  WebSocket 400 on a healthy running instance with both wrangler 4.106
+  and 4.107, interactive / piped / `--stdio` ProxyCommand forms);
+  container stdout does NOT appear in `wrangler tail`; there is no
+  containers logs API/CLI (open feature requests workers-sdk #12988 /
+  #12998); the Workers Observability telemetry query API rejects the
+  wrangler OAuth token. Working fallback (verified live from a local
+  Docker node joined to production): a temporary entrypoint block that
+  self-POSTs uname/ps/containerd.log as a `vmdebug-*` ConfigMap through
+  the gateway using the node's own K3S_TOKEN.
+- **Local-Docker repro of the stall is a false lead**: on an ARM Mac,
+  the amd64 node image under Rosetta fails every sandbox with
+  `seccomp is not supported` (kubelet 1.36 hardcodes RuntimeDefault for
+  the pause sandbox — kuberuntime_sandbox.go:173, Issue #84623 — and
+  pod-level `seccompProfile: Unconfined` does NOT bypass it; verified).
+  That failure is Rosetta-only (no seccomp via emulated prctl) and does
+  not occur on the real microVM. Don't chase it as a product bug; for
+  local node testing use a native-arch build or expect ContainerCreating.
+- **Known gap surfaced, by design**: `pods/proxy` returns "temporarily
+  unavailable on the per-Pod node backend" — HTTP ingress to per-Pod
+  nodes is task #13's kubelet-bridge work, not a regression.
+
 ## Correction log (honest corrections)
 
 **2026-07-03 — A Phase 6 subagent opened an unauthorized pull request
