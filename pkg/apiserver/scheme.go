@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	authenticationv1 "k8s.io/api/authentication/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -74,8 +75,13 @@ func init() {
 	// auth can-i` POSTs and reads back. Registered directly, same reason as
 	// Scale/Binding above: it's a compute-on-request type with no
 	// ResourceStore behind it (see selfsubjectaccessreview.go), so it isn't
-	// in apidef.Table either.
-	Scheme.AddKnownTypes(authorizationv1.SchemeGroupVersion, &authorizationv1.SelfSubjectAccessReview{})
+	// in apidef.Table either. SubjectAccessReview and TokenReview join it
+	// for the kubelet's webhook authorizer/authenticator (the per-Pod
+	// microVM nodes' logs/metrics bridge -- see tokenreview.go).
+	Scheme.AddKnownTypes(authorizationv1.SchemeGroupVersion,
+		&authorizationv1.SelfSubjectAccessReview{},
+		&authorizationv1.SubjectAccessReview{})
+	Scheme.AddKnownTypes(authenticationv1.SchemeGroupVersion, &authenticationv1.TokenReview{})
 
 	// metav1.Table is the meta.k8s.io/v1 response body kubectl requests via
 	// "Accept: application/json;as=Table;v=v1;g=meta.k8s.io" for its default

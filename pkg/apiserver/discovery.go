@@ -143,6 +143,31 @@ func RegisterGroupDiscovery(mux *http.ServeMux) {
 		GroupVersion: "authorization.k8s.io/v1",
 		APIResources: []metav1.APIResource{
 			{Name: "selfsubjectaccessreviews", SingularName: "selfsubjectaccessreview", Namespaced: false, Kind: "SelfSubjectAccessReview", Verbs: metav1.Verbs{"create"}},
+			{Name: "subjectaccessreviews", SingularName: "subjectaccessreview", Namespaced: false, Kind: "SubjectAccessReview", Verbs: metav1.Verbs{"create"}},
+		},
+	}))
+
+	// authentication.k8s.io/v1: tokenreviews, the kubelet webhook token
+	// authenticator's endpoint (tokenreview.go). Hand-written for the same
+	// reason as authorization.k8s.io above.
+	authnGV := metav1.GroupVersionForDiscovery{GroupVersion: "authentication.k8s.io/v1", Version: "v1"}
+	groups = append(groups, metav1.APIGroup{
+		TypeMeta:         metav1.TypeMeta{Kind: "APIGroup"},
+		Name:             "authentication.k8s.io",
+		Versions:         []metav1.GroupVersionForDiscovery{authnGV},
+		PreferredVersion: authnGV,
+	})
+	mux.HandleFunc("GET /apis/authentication.k8s.io", writeJSONHandler(metav1.APIGroup{
+		TypeMeta:         metav1.TypeMeta{Kind: "APIGroup"},
+		Name:             "authentication.k8s.io",
+		Versions:         []metav1.GroupVersionForDiscovery{authnGV},
+		PreferredVersion: authnGV,
+	}))
+	mux.HandleFunc("GET /apis/authentication.k8s.io/v1", writeJSONHandler(metav1.APIResourceList{
+		TypeMeta:     metav1.TypeMeta{Kind: "APIResourceList"},
+		GroupVersion: "authentication.k8s.io/v1",
+		APIResources: []metav1.APIResource{
+			{Name: "tokenreviews", SingularName: "tokenreview", Namespaced: false, Kind: "TokenReview", Verbs: metav1.Verbs{"create"}},
 		},
 	}))
 

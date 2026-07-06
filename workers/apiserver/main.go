@@ -131,9 +131,13 @@ func main() {
 	apiserver.RegisterOpenAPIDiscovery(mux)
 
 	// authorization.k8s.io/v1 SelfSubjectAccessReview (`kubectl auth can-i`)
-	// -- not in apidef.Table, so not covered by the per-GroupVersion loop
-	// below. See selfsubjectaccessreview.go for why.
+	// + SubjectAccessReview, and authentication.k8s.io/v1 TokenReview (the
+	// kubelet's webhook authenticator/authorizer, used by the per-Pod node
+	// logs/metrics bridge) -- not in apidef.Table, so not covered by the
+	// per-GroupVersion loop below. See selfsubjectaccessreview.go /
+	// tokenreview.go for why.
 	apiserver.RegisterAuthorizationHandlers(mux, getToken)
+	apiserver.RegisterAuthenticationHandlers(mux, getToken)
 
 	// Supervisor endpoints (/cacerts, /v1-k3s/*)
 	apiserver.RegisterSupervisorHandlers(mux, cam, storage, getToken)
