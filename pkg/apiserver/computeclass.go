@@ -69,15 +69,28 @@ func MutatePodForComputeClass(pod *corev1.Pod) {
 		pod.Spec.NodeSelector = map[string]string{}
 	}
 	pod.Spec.NodeSelector[containersBackendLabel] = ComputeClassContainers
+	hasToleration := false
 	for _, t := range pod.Spec.Tolerations {
 		if t.Key == containersTaintKey {
-			return
+			hasToleration = true
+			break
 		}
 	}
-	pod.Spec.Tolerations = append(pod.Spec.Tolerations, corev1.Toleration{
-		Key:      containersTaintKey,
-		Operator: corev1.TolerationOpEqual,
-		Value:    "true",
-		Effect:   corev1.TaintEffectNoSchedule,
-	})
+	if !hasToleration {
+		pod.Spec.Tolerations = append(pod.Spec.Tolerations, corev1.Toleration{
+			Key:      containersTaintKey,
+			Operator: corev1.TolerationOpEqual,
+			Value:    "true",
+			Effect:   corev1.TaintEffectNoSchedule,
+		})
+	}
+	// hostNetwork: each pod gets a dedicated microVM node, so the host
+	// network namespace IS the pod's -- there is no cross-pod port or
+	// isolation concern, no CNI sandbox to set up (the microVM kernel has
+	// no netfilter, which stalled pods in ContainerCreating), and the
+	// pod's ports are directly reachable via containerFetch. dnsPolicy is
+	// left alone: kubelet treats ClusterFirst as Default for hostNetwork
+	// pods, so pods resolve through the VM's resolv.conf until the
+	// Worker-side cluster-DNS synthesizer lands.
+	pod.Spec.HostNetwork = true
 }
