@@ -17,8 +17,8 @@ jobs:
         with:
           node-version: "24"
 
-      - name: Enable corepack
-        run: corepack enable
+      - name: Enable corepack (installed from npm -- runner Node images stopped bundling it, 2026-07)
+        run: npm install -g corepack@latest && corepack enable
 
       - uses: actions/setup-go@v5
         with:
