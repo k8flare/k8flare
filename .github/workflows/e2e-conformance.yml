@@ -21,7 +21,9 @@ on:
 jobs:
   e2e-conformance:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    # Budget: setup (deps + wasm + binaries + cluster up) ~30min, baseline
+    # ~7min, experimental step-capped at 20min, teardown seconds.
+    timeout-minutes: 70
     steps:
       - name: Free disk space (remove unused preinstalled toolchains)
         run: |
@@ -292,9 +294,18 @@ jobs:
       # which are not yet individually confirmed against this apiserver the
       # way the baseline group above is. Advisory only, must never fail the
       # required check.
+      #
+      # The step carries its OWN timeout, well inside the job's: without it,
+      # a slow advisory run rides into the job-level timeout and the whole
+      # run -- required baseline success included -- is reported as
+      # cancelled (observed 2026-07-06, run 28806577705: baseline SUCCESS,
+      # job cancelled at 55min mid-experimental). continue-on-error only
+      # absorbs step failure, not job cancellation, so the step must be
+      # the thing that dies first.
       - name: Run experimental conformance tests (advisory, non-blocking)
         id: experimental
         continue-on-error: true
+        timeout-minutes: 20
         run: |
           echo "=== EXPERIMENTAL (advisory, not yet individually confirmed) conformance group ==="
           # Note: "Services should serve a basic endpoint from pods" is deliberately
@@ -329,7 +340,7 @@ jobs:
           # successful/failedJobsHistoryLimit GC -- see
           # docs/general-purpose-k8s-plan.md) but deliberately not added here:
           # its conformance tests need to observe real schedule ticks (two are
-          # explicitly [Slow]-tagged upstream), and this job's fixed 30-minute
+          # explicitly [Slow]-tagged upstream), and this step's 20-minute
           # timeout is a hard ceiling regardless of continue-on-error -- not
           # worth risking for an advisory-only signal. Same reasoning applies
           # regardless of which controller (hand-written or real) runs it.
