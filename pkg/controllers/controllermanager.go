@@ -5,7 +5,6 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"net"
 	"time"
 
 	restclient "k8s.io/client-go/rest"
@@ -17,14 +16,8 @@ import (
 	"k8s.io/kubernetes/pkg/controller/cronjob"
 	"k8s.io/kubernetes/pkg/controller/daemon"
 	"k8s.io/kubernetes/pkg/controller/deployment"
-	"k8s.io/kubernetes/pkg/controller/endpoint"
-	"k8s.io/kubernetes/pkg/controller/endpointslice"
 	"k8s.io/kubernetes/pkg/controller/job"
-	"k8s.io/kubernetes/pkg/controller/nodeipam"
-	"k8s.io/kubernetes/pkg/controller/nodeipam/ipam"
-	"k8s.io/kubernetes/pkg/controller/nodelifecycle"
 	"k8s.io/kubernetes/pkg/controller/replicaset"
-	"k8s.io/kubernetes/pkg/controller/tainteviction"
 )
 
 // clusterCIDR matches the /16 the deleted workers/storage/src/scheduler.ts
@@ -167,72 +160,16 @@ func RunControllerManager(ctx context.Context, restCfg *restclient.Config) (err 
 		return fmt.Errorf("controller-manager: new cronjob controller: %w", err)
 	}
 
-	ec := endpoint.NewEndpointController(
-		ctx,
-		factory.Pods(),
-		factory.Services(),
-		factory.Endpoints(),
-		client,
-		endpointUpdatesBatchPeriod,
-	)
-
-	esc := endpointslice.NewController(
-		ctx,
-		factory.Pods(),
-		factory.Services(),
-		factory.Nodes(),
-		factory.EndpointSlices(),
-		maxEndpointsPerSlice,
-		client,
-		endpointUpdatesBatchPeriod,
-	)
-
-	_, clusterCIDRNet, err := net.ParseCIDR(clusterCIDR)
-	if err != nil {
-		return fmt.Errorf("controller-manager: parse cluster CIDR: %w", err)
-	}
-	nic, err := nodeipam.NewNodeIpamController(
-		ctx,
-		factory.Nodes(),
-		nil, // cloud provider: none (matches --cloud-provider="" -- KEP-2395 removed in-tree cloud providers from KCM in v1.31)
-		client,
-		[]*net.IPNet{clusterCIDRNet},
-		nil, // serviceCIDR: unset, matches --service-cluster-ip-range="" (this repo doesn't pass it to cmd/controller-manager either)
-		nil, // secondaryServiceCIDR
-		[]int{nodeCIDRMaskSize},
-		ipam.RangeAllocatorType, // the only allocator type implemented once --cloud-provider is unavailable (KEP-2395)
-	)
-	if err != nil {
-		return fmt.Errorf("controller-manager: new nodeipam controller: %w", err)
-	}
-
-	nlc, err := nodelifecycle.NewNodeLifecycleController(
-		ctx,
-		factory.Leases(),
-		factory.Pods(),
-		factory.Nodes(),
-		factory.DaemonSets(),
-		client,
-		nodeMonitorPeriod,
-		nodeStartupGracePeriod,
-		nodeMonitorGracePeriod,
-		evictionLimiterQPS,
-		secondaryEvictionLimiterQPS,
-		largeClusterThreshold,
-		unhealthyZoneThreshold,
-	)
-	if err != nil {
-		return fmt.Errorf("controller-manager: new nodelifecycle controller: %w", err)
-	}
-
-	// Independent of nodelifecycle since v1.34 (SeparateTaintEvictionController
-	// is GA + LockToDefault -- nodelifecycle no longer runs its own private
-	// taint-eviction loop internally). See this repo's cmd/controller-manager/main.go
-	// comment for the exact canonical controller name this corresponds to.
-	tec, err := tainteviction.New(ctx, client, factory.Pods(), factory.Nodes(), "taint-eviction-controller")
-	if err != nil {
-		return fmt.Errorf("controller-manager: new taint-eviction controller: %w", err)
-	}
+	// endpoint/endpointslice/nodeipam/nodelifecycle/tainteviction are
+	// deliberately NOT run here anymore: pkg/apiserver already implements
+	// each of them server-side (TriggerEndpointsReconcile, AssignPodCIDR/
+	// ReleasePodCIDR, reconcileNodeLifecycle) for its own needs, so the
+	// WASM KCM carried five redundant controllers whose informer caches
+	// (every Node, every Lease, every EndpointSlice, ...) were pure memory
+	// overhead against production's 128MiB isolate limit -- under which
+	// the freshly loaded dynamic worker was observed dying mid informer
+	// sync and reload-looping (2026-07-06). The five workload controllers
+	// below are the ones with no server-side equivalent.
 
 	factory.Start(ctx.Done())
 
@@ -242,11 +179,6 @@ func RunControllerManager(ctx context.Context, restCfg *restclient.Config) (err 
 		func(ctx context.Context) { dsc.Run(ctx, daemonSetWorkers) },
 		func(ctx context.Context) { jc.Run(ctx, jobWorkers) },
 		func(ctx context.Context) { cjc.Run(ctx, cronJobWorkers) },
-		func(ctx context.Context) { ec.Run(ctx, endpointWorkers) },
-		func(ctx context.Context) { esc.Run(ctx, endpointSliceWorkers) },
-		func(ctx context.Context) { nic.Run(ctx) },
-		func(ctx context.Context) { nlc.Run(ctx) },
-		func(ctx context.Context) { tec.Run(ctx) },
 	} {
 		go runRecovered(ctx, run)
 	}
