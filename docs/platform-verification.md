@@ -1836,7 +1836,7 @@ controllers alarm-predicate / nodes image with backend label+taint):
 - **First attempt of the same round stalled and remains un-root-caused**:
   on the first VM (~20 min earlier, same image), containerd died ~15s
   after boot — kubelet event `dial unix /run/k3s/containerd/
-  containerd.sock: no such file or directory` at bind time, PLEG went
+containerd.sock: no such file or directory` at bind time, PLEG went
   stale, node fell to NotReady, pod stuck in ContainerCreating. The
   second boot succeeded with zero changes deployed in between, so this
   is a boot-time flake to watch (rule 5), not the old "CNI/netfilter"
@@ -1857,13 +1857,13 @@ controllers alarm-predicate / nodes image with backend label+taint):
     the WebSocket 400 meant "no `authorized_keys` registered", nothing
     else (docs: developers.cloudflare.com/containers/ssh/). Recipe now
     proven live against a NodeVM: (1) add `authorized_keys: [{name,
-    public_key}]` (ssh-ed25519 ONLY) to each `containers[]` entry in
+public_key}]` (ssh-ed25519 ONLY) to each `containers[]` entry in
     workers/nodes/wrangler.jsonc and `wrangler deploy`; (2) the key
     only reaches instances on FRESH slots — an instance that existed
     (even stopped/reused) before the deploy keeps 400ing, so cycle the
     pod to get a new VM; (3) connect with the real ssh client:
     `ssh -i ~/.ssh/id_ed25519 -o ProxyCommand="npx wrangler containers
-    ssh %h --stdio" cloudchamber@<instanceID>` (Cloudflare injects a
+ssh %h --stdio" cloudchamber@<instanceID>` (Cloudflare injects a
     dropbear sshd; user is `cloudchamber`; interactive
     `wrangler containers ssh` also works from a real TTY). Verified
     from inside: guest kernel `6.18.36-cloudflare-firecracker`
@@ -1882,6 +1882,49 @@ controllers alarm-predicate / nodes image with backend label+taint):
 - **Known gap surfaced, by design**: `pods/proxy` returns "temporarily
   unavailable on the per-Pod node backend" — HTTP ingress to per-Pod
   nodes is task #13's kubelet-bridge work, not a regression.
+
+### S16 addendum (2026-07-06 evening): logs/metrics bridge live, and three platform findings
+
+**`kubectl logs` (+ `-f`), `nodes/{name}/proxy/stats/summary` and
+`/metrics/resource` are live against per-Pod microVM nodes**, with the
+kubelet running STOCK k3s security: the bridge (gateway → nodes Worker →
+NodeVM DO → containerFetch :10256 → cmd/agent's plain-HTTP kubelet
+proxy) forwards the cluster bearer token and the kubelet webhook-
+authenticates it via our new TokenReview/SubjectAccessReview endpoints
+(commits 79d39cb/ac33765). Negative check: no token → the kubelet
+itself answers 401. First attempt used anonymous+AlwaysAllow kubelet
+config — replaced same-day after user review with the TokenReview path;
+also k3s pins `--read-only-port=0` as a kubelet CLI FLAG, which beats
+any kubelet config drop-in, so the softer read-only 10255 route is
+structurally unavailable (verified live: readOnlyPort in a drop-in
+never took).
+
+Findings recorded along the way:
+
+1. **The first-boot containerd death is a per-image-version phenomenon:
+   three for three.** Every first VM boot after a new image push died
+   the same way (containerd gone ~15s in, node NotReady, pod stuck in
+   ContainerCreating); every second boot of the same image succeeded
+   with zero changes in between. Working hypothesis: first-boot lazy
+   image loading I/O. The scheduler's 300s FailedScheduling timeout +
+   teardown + reboot path handles it (observed working live), making
+   this self-healing — but it exposed:
+2. **Scheduler park bug (fixed, ac33765): after a FailedScheduling
+   teardown the alarm predicate ("tracked VMs exist") parked the binder
+   while the pod was still unscheduled** — no further pod writes meant
+   no pokes, stuck forever. Same predicate class as the KCM liveness
+   bug (d1a9503): the work signal must be "pending pods OR live VMs",
+   not "VMs only". Unparked live via a pod annotation write; predicate
+   fixed and deployed.
+3. **Cluster DO wedge, occurrences 3 and 4** (see the 2026-07-06 entry
+   above): both fired right after a deploy followed immediately by
+   namespace-create + pod-create; occurrence 4 did NOT clear on a
+   single storage redeploy (previous recovery recipe) — it cleared a
+   few minutes later after the apiserver's bootstrap re-PUT storm
+   settled. Deleted objects resurfacing after recovery reproduced too
+   (a previously-deleted liveness-probe pod came back; re-deleted).
+   The InputGate-cascade follow-up keeps gaining evidence that the
+   trigger involves cold-apiserver bootstrap writes racing user writes.
 
 ## Correction log (honest corrections)
 
