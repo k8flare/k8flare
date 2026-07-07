@@ -125,16 +125,25 @@ func main() {
 
 	// Join Mesh before building agentConfig -- the discovered Mesh IP
 	// must be present in the very first Node registration, not patched
-	// in after the fact.
+	// in after the fact. Non-fatal on failure (log and keep going without
+	// Mesh membership, same posture as pkg/vkubeproxy/pkg/dnsshim's own
+	// optional enhancements) -- verified live (2026-07-08) that a hard
+	// log.Fatalf here can leave a per-Pod Containers-backend Pod stuck
+	// forever in Pending with no Node ever registered, since the whole
+	// agent process (kubelet+containerd embed included) exits before
+	// getting anywhere near Node registration. Mesh is an enhancement on
+	// top of a working cluster, not a precondition for one.
 	var meshIP string
 	if *meshConnectorToken != "" {
 		var err error
 		meshIP, err = meshconnector.Run(ctx, *meshConnectorToken)
 		if err != nil {
-			log.Fatalf("failed to join Cloudflare Mesh: %v", err)
+			log.Printf("failed to join Cloudflare Mesh, continuing without it: %v", err)
+			meshIP = ""
+		} else {
+			log.Printf("joined Cloudflare Mesh, IP: %s", meshIP)
+			*nodeExternalIP = meshIP
 		}
-		log.Printf("joined Cloudflare Mesh, IP: %s", meshIP)
-		*nodeExternalIP = meshIP
 	}
 
 	var wg sync.WaitGroup

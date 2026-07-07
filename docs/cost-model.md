@@ -788,6 +788,60 @@ call site, and it still did not touch a real running NodeVM, so "a real
 Pod's `status.podIP` becoming a live Mesh IP end-to-end" remains open,
 same as recorded above.
 
+**Update (2026-07-08, later same day): the remaining gap IS now closed --
+by deploying to real Cloudflare Containers and finding a real,
+platform-level blocker, not a code bug.** Per user authorization to
+deploy for this one verification pass (cleaning up every real resource
+created afterward -- see `spikes/s17-mesh-nodevm/FINDINGS.md`'s matching
+entry for the full transcript-backed writeup): real Pods were scheduled
+end-to-end against the live `k8flare` Worker. Two real, reproducible
+concurrency bugs were found and fixed in `cf-containers-scheduler` along
+the way (both leaked a Mesh connector against the 50-node cap under
+overlapping `reconcile()` invocations -- see the code comments in
+`workers/k8flare/src/nodes/scheduler.ts` for the exact mechanism), and
+`cmd/agent`'s hard `log.Fatalf` on Mesh-join failure was made non-fatal
+(matching this repo's existing "log and continue" posture for optional
+enhancements) after it was found to leave a Pod stuck in `Pending`
+forever with no Node ever registering, any time the Mesh connection
+itself failed.
+
+**With those three fixes in place, Pods now schedule successfully and
+degrade gracefully -- but the Mesh connection itself never succeeds on
+this backend.** Real diagnostic output pulled from a live container
+instance (`warp-cli status`, `warp-cli settings`, `ip addr show
+CloudflareWARP`) shows: the account's Zero Trust policy locks WARP to
+`WARP tunnel protocol: MASQUE` (QUIC/HTTP-3-based, not classic
+WireGuard-over-UDP); the `CloudflareWARP` interface is **never created at
+all** ("Device does not exist"); `warp-cli status` reports "Disconnected,
+Reason: Manual Disconnection" after the connect attempt; and warp-svc's
+own internal watchdog logs "Watchdog reports hung daemon
+(watchdog_name=main loop)". Meanwhile a plain `curl https://
+www.cloudflare.com` from inside the same container succeeds
+(`http_code=200`) -- ordinary HTTPS/TCP egress works fine. This matches
+Cloudflare's own Containers outbound-traffic documentation
+(`developers.cloudflare.com/containers/platform-details/outbound-traffic/`),
+which describes outbound handling in terms of HTTP/HTTPS on ports 80/443
+plus DNS, with no mention of UDP/QUIC egress at all. **Conclusion: this
+is very likely a platform-level networking constraint (Cloudflare
+Containers' egress model does not carry the QUIC/UDP-based MASQUE
+tunnel WARP requires), not a bug in this repo's code.** Recorded as the
+likely explanation rather than an absolutely certain one, since no
+Cloudflare support channel was consulted to confirm it directly --
+whoever revisits this should treat "file a question with Cloudflare
+about Containers + WARP/MASQUE egress" as the next step before assuming
+it can never work.
+
+**Net cost-model conclusion**: per-Pod Mesh membership for the Containers
+backend cannot currently be delivered as designed. The three shipped
+fixes are real, independent improvements (no connector leaks even under
+repeated `FailedScheduling` retries, verified live; Pods no longer get
+stuck forever when Mesh fails) and are kept regardless of whether Mesh
+itself ever works here, since they also apply to any future retry of
+this feature. No new billed component exists today because the feature
+does not functionally work yet -- Pods on this backend get a plain
+container-internal IP (e.g. `10.0.0.1`), identical in cost shape to
+before this feature was ever built.
+
 ## Idle-cluster verification checklist
 
 A checklist for mechanically confirming cost invariant #1, "nothing is

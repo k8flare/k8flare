@@ -193,16 +193,26 @@ export class CFContainersScheduler extends DurableObject<Env> {
         continue;
       }
       const nodeName = `cf-${pod.metadata.name}-${uid.slice(0, 8)}`;
-      // Mint this Pod's own Mesh connector before booting its NodeVM
-      // (spikes/s17-mesh-nodevm/FINDINGS.md's per-Pod-Mesh entry): the
-      // token must be present in the VM's very first env, same reasoning
-      // cmd/agent's own comment gives for joining Mesh before building
-      // agentConfig. Returns undefined (not an error) if
-      // CLOUDFLARE_API_TOKEN/ACCOUNT_ID aren't configured -- the Pod
-      // still boots, just without Mesh membership.
-      const mesh = await createMeshConnector(env, nodeName);
-      const stub = this.vmStub(tier, uid);
-      await stub.up(nodeName, mesh?.token);
+      // Claim this UID and persist it BEFORE any awaited network call
+      // below, not after. A DO's single-threaded execution can still
+      // interleave two reconcile() invocations at an await point (e.g. a
+      // pod-create poke and the safety-net alarm landing close
+      // together); both call trackedVMs() and see the same
+      // pre-this-loop storage snapshot, so the old code -- which only
+      // wrote `tracked[uid]` back at the very end of reconcile() --
+      // let both invocations pass the `if (tracked[uid]) continue`
+      // guard and independently call createMeshConnector/stub.up() for
+      // the same pod. Reproduced live (2026-07-08, real KOOFFICE
+      // account): the second, interleaved call's createMeshConnector
+      // 409'd (Cloudflare rejects a duplicate connector name), returned
+      // `mesh: undefined`, and then overwrote this entry's
+      // meshConnectorId with undefined when both invocations' dirty
+      // writes landed -- leaking the FIRST (successful) connector past
+      // teardown, since `if (vm.meshConnectorId)` saw nothing to
+      // delete. Persisting the claim immediately closes the race: the
+      // second invocation's trackedVMs() re-read now (once it resumes
+      // past its own earlier await) sees this UID already present and
+      // skips it via the same guard.
       tracked[uid] = {
         namespace: pod.metadata.namespace,
         podName: pod.metadata.name,
@@ -211,8 +221,30 @@ export class CFContainersScheduler extends DurableObject<Env> {
         tier,
         bound: false,
         bootedAt: Date.now(),
-        meshConnectorId: mesh?.id,
       };
+      await this.ctx.storage.put("vms", tracked);
+      // Mint this Pod's own Mesh connector before booting its NodeVM
+      // (spikes/s17-mesh-nodevm/FINDINGS.md's per-Pod-Mesh entry): the
+      // token must be present in the VM's very first env, same reasoning
+      // cmd/agent's own comment gives for joining Mesh before building
+      // agentConfig. Returns undefined (not an error) if
+      // CLOUDFLARE_API_TOKEN/ACCOUNT_ID aren't configured -- the Pod
+      // still boots, just without Mesh membership.
+      const mesh = await createMeshConnector(env, nodeName);
+      // Persist the real connector id immediately once known, before the
+      // next awaited call (stub.up(), which can take seconds waiting for
+      // the container's ports) -- not after. Reproduced live
+      // (2026-07-08): deleting the Pod while stub.up() was still
+      // in-flight let a second, interleaved reconcile() (triggered by
+      // the delete's own poke) see this uid's podGone with
+      // meshConnectorId still unset (the old code only wrote it after
+      // stub.up() returned), so teardown()'s `if (vm.meshConnectorId)`
+      // found nothing to delete and leaked the connector createMeshConnector
+      // had already created above.
+      tracked[uid].meshConnectorId = mesh?.id;
+      await this.ctx.storage.put("vms", tracked);
+      const stub = this.vmStub(tier, uid);
+      await stub.up(nodeName, mesh?.token);
       dirty = true;
       console.log(`cf-containers-scheduler: booting ${nodeName} for ${uid}`);
     }

@@ -49,7 +49,7 @@ fi
 # one-time boot-sequence wait, not a resident poll loop (cost invariant
 # #3 is about DO alarms, not process startup).
 if [ -n "$MESH_CONNECTOR_TOKEN" ]; then
-  warp-svc &
+  warp-svc >/var/log/warp-svc.log 2>&1 &
   i=0
   while [ "$i" -lt 10 ]; do
     warp-cli --accept-tos status >/dev/null 2>&1 && break
