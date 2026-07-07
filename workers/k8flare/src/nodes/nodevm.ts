@@ -26,21 +26,29 @@ export abstract class NodeVMBase extends Container<Env> {
     return error;
   }
 
-  /** Boots the node VM (idempotent) with its join parameters. */
-  async up(nodeName: string): Promise<void> {
+  /**
+   * Boots the node VM (idempotent) with its join parameters.
+   * meshConnectorToken (spikes/s17-mesh-nodevm/FINDINGS.md's per-Pod-Mesh
+   * entry, minted per-Pod by scheduler.ts via nodes/meshconnector.ts) is
+   * passed straight through as MESH_CONNECTOR_TOKEN -- cmd/agent already
+   * reads that env var as its --mesh-connector-token default, so no
+   * entrypoint.sh change was needed to wire it through, only to start
+   * warp-svc and pass --mesh-ip-as-node-ip.
+   */
+  async up(nodeName: string, meshConnectorToken?: string): Promise<void> {
     const state = await this.getState();
     if (state.status === "running" || state.status === "healthy") return;
     const serverURL = this.env.GATEWAY_URL;
     if (!serverURL) throw new Error("GATEWAY_URL is not configured on workers/nodes");
+    const envVars: Record<string, string> = {
+      SERVER_URL: serverURL,
+      NODE_NAME: nodeName,
+      K3S_TOKEN: this.env.K3S_TOKEN ?? "k8flare-dev-token",
+    };
+    if (meshConnectorToken) envVars.MESH_CONNECTOR_TOKEN = meshConnectorToken;
     await this.startAndWaitForPorts({
       ports: this.defaultPort,
-      startOptions: {
-        envVars: {
-          SERVER_URL: serverURL,
-          NODE_NAME: nodeName,
-          K3S_TOKEN: this.env.K3S_TOKEN ?? "k8flare-dev-token",
-        },
-      },
+      startOptions: { envVars },
     });
   }
 

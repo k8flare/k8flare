@@ -675,6 +675,102 @@ wall-clock container awake-time, no cold-start delay after idle,
 CPU-time-only billing per invariant #2) if and when it fits -- the
 entire remaining blocker is the 64MiB cap, not a cost-model concern.
 
+## Per-Pod Cloudflare Mesh membership (estimate + partial actual, 2026-07-08 -- pre-implementation per invariant #5, spikes/s17-mesh-nodevm/FINDINGS.md)
+
+Gives each Pod-on-Containers Pod its own Cloudflare Mesh IP
+(`100.96.0.0/12`), independent of whatever IP the underlying NodeVM has,
+by having `cmd/agent` join Mesh (already-shipped `pkg/meshconnector`,
+reused unmodified) as part of its own boot sequence, with the connector
+token minted FRESH per Pod at schedule time (`nodes/meshconnector.ts`,
+new) instead of a human pre-provisioning one long-lived connector per
+BYO VM. No sidecar container, no shared-network-namespace Pod sandbox
+work needed: `hostNetwork: true` already merges every process on this
+backend's one-Pod-per-microVM into one network namespace, and real
+kubelet source (`k3s-io/kubernetes@v1.36.2-k3s1`'s
+`pkg/kubelet/kubelet_pods.go`'s `getHostIPsAnyWay`, read directly to
+confirm this, not assumed) inherits hostNetwork Pods' `status.PodIP`
+from the Node's own InternalIP -- which k3s's `--node-ip` (not
+`--node-external-ip`, the flag the already-shipped BYO-VM Mesh feature
+uses for a different purpose) feeds. See FINDINGS.md's dated entry for
+the full design/verification writeup this summarizes.
+
+**New cost surfaces, none of which add a new billed Cloudflare
+component (matches the "Cluster DNS" and "Virtual kube-proxy" sections
+above's shape: reuse of infrastructure the Pod already pays for):**
+
+1. **`warp-svc` running inside the same already-wall-clock-billed
+   Containers instance.** Adds real vCPU/memory to what each NodeVM's
+   size tier must fit, on top of the k3s agent (kubelet+containerd) and
+   the Pod's own container this instance already runs. Not yet measured
+   against a live NodeVM (this session could not deploy one -- same
+   ARM-Mac/no-real-Containers-runtime gap already on record for the
+   virtual-kube-proxy section above); measure per-tier headroom before
+   enabling this by default on the `small` tier (63 milliCPU / 256MiB,
+   images.ts) in particular, since that is the tightest fit already.
+   **New, surprising finding this pass**: the `cloudflare-warp` Debian
+   package pulls in a large GUI dependency tree (GTK3/WebKit/GStreamer,
+   `--no-install-recommends` notwithstanding) that is very likely dead
+   weight for a headless connector-only use -- confirmed by actually
+   building the switched-to-`debian:bookworm-slim` node image
+   (`workers/k8flare/images/node/Dockerfile`) locally: the image grew to
+   **1.48GB** (vs. the prior Alpine base's much smaller footprint,
+   effectively all statically-linked Go + a bare k3s binary). This is a
+   one-time-per-deploy image pull cost, not a per-Pod cost, but it likely
+   lengthens the FIRST NodeVM cold start after any node-image deploy
+   (Containers pulls/caches the image once, not per instance) -- not
+   measured this pass; worth a follow-up to see whether a slimmer
+   packaging (e.g. hand-extracting just the `warp-svc`/`warp-cli`
+   binaries and their actual runtime library deps, skipping `apt`
+   entirely) is worth the added maintenance.
+2. **Cloudflare API calls to mint/delete `warp_connector` resources**
+   (`nodes/meshconnector.ts`'s `createMeshConnector`/`deleteMeshConnector`,
+   one POST+GET pair per Pod schedule, one DELETE per Pod teardown).
+   Checked this pass, not assumed (invariant #5): Cloudflare's
+   [account-limits docs](https://developers.cloudflare.com/cloudflare-one/account-limits/)
+   and [Mesh docs](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-mesh/)
+   list no per-connector price and no API-call price for
+   create/list/token/delete -- consistent with the existing "Cloudflare
+   Mesh for kubelet proxy" section's already-recorded finding for the
+   BYO-VM path. The calls themselves cost only the calling Worker's own
+   ordinary request/CPU-time billing (`cf-containers-scheduler`'s
+   `reconcile()`, already running regardless). No Cloudflare-documented
+   rate limit specific to `warp_connector` was found either; the
+   account-wide general API rate limit (not warp_connector-specific)
+   would be the only throttling concern at very high Pod
+   churn -- not expected to matter at this project's current scale, not
+   measured against real sustained throughput.
+3. **The 50-Mesh-nodes/account cap now bounds concurrent PODS on this
+   backend, not concurrent NodeVMs (FINDINGS.md, honestly recorded, not
+   new but re-scoped by this change).** Before this feature, Mesh wasn't
+   used per-Pod at all, so the cap was irrelevant to this backend. After:
+   the 51st simultaneously-scheduled Pod on the Containers backend would
+   fail to get a connector -- `createMeshConnector` degrades gracefully
+   (the Pod still boots, just without Mesh membership, matching
+   `pkg/vkubeproxy`/`pkg/dnsshim`'s existing "log and continue" posture
+   for their own optional enhancements), so this is a **quality
+   degradation under the cap, not a hard scheduling failure** -- but it
+   is a real, load-bearing capacity ceiling for any deployment that wants
+   more than 50 concurrent Pods on this backend all Mesh-connected,
+   worth surfacing to an operator (e.g. a metric/log line) rather than
+   only discovering it silently, a follow-up not yet built.
+
+**Not yet measured / verified against real infrastructure this pass**
+(no `CLOUDFLARE_API_TOKEN` was available in this sandbox to exercise
+`nodes/meshconnector.ts` against the real KOOFFICE account, only a
+`wrangler`-OAuth session whose reuse outside `wrangler`'s own CLI
+surface this session declined, same reservation FINDINGS.md's own
+2026-07-07 correction already recorded): a real Pod's `status.podIP`
+actually becoming a live Mesh IP end-to-end. `cmd/agent`'s
+`--mesh-ip-as-node-ip` wiring and the whole node-image boot sequence
+(warp-svc start, readiness wait, `meshconnector.Run`) WERE verified for
+real in a privileged Docker container built from the actual switched
+Dockerfile, using the actual entrypoint.sh and a real cross-compiled
+`k8flare-agent` binary -- with an intentionally-invalid connector token,
+which fails fast and cleanly (`Error: Failed to parse WARP Connector
+token`, propagated through `log.Fatalf` in well under a second, not a
+hang), proving the wiring reaches the real `warp-cli` call correctly.
+See FINDINGS.md for the full transcript-backed writeup.
+
 ## Idle-cluster verification checklist
 
 A checklist for mechanically confirming cost invariant #1, "nothing is

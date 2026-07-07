@@ -27,6 +27,7 @@ import {
   type PodObject,
 } from "./client.ts";
 import { resolveSizeTier, type SizeTier } from "./images.ts";
+import { createMeshConnector, deleteMeshConnector } from "./meshconnector.ts";
 
 export const SCHEDULER_NAME = "cf-containers-scheduler";
 const SAFETY_NET_INTERVAL_MS = 15_000;
@@ -40,6 +41,12 @@ interface TrackedVM {
   tier: SizeTier;
   bound: boolean;
   bootedAt: number;
+  // Per-Pod Cloudflare Mesh membership (spikes/s17-mesh-nodevm/FINDINGS.md's
+  // per-Pod-Mesh entry): the warp_connector id minted for this Pod's
+  // NodeVM, if CLOUDFLARE_API_TOKEN/ACCOUNT_ID are configured. Tracked so
+  // teardown() can delete it -- the 50-connectors/account cap must not
+  // leak per Pod.
+  meshConnectorId?: string;
 }
 
 // A VM whose kubelet hasn't registered within this window is considered
@@ -100,6 +107,9 @@ export class CFContainersScheduler extends DurableObject<Env> {
         } catch (err) {
           console.log(`cf-containers-scheduler destroy: ${vm.nodeName}: ${err}`);
         }
+        // Cluster teardown must not leak per-Pod Mesh connectors either
+        // (same 50-node cap concern as the normal per-Pod teardown()).
+        if (vm.meshConnectorId) await deleteMeshConnector(this.env, vm.meshConnectorId);
       }
       await this.ctx.storage.deleteAlarm();
       await this.ctx.storage.deleteAll();
@@ -183,8 +193,16 @@ export class CFContainersScheduler extends DurableObject<Env> {
         continue;
       }
       const nodeName = `cf-${pod.metadata.name}-${uid.slice(0, 8)}`;
+      // Mint this Pod's own Mesh connector before booting its NodeVM
+      // (spikes/s17-mesh-nodevm/FINDINGS.md's per-Pod-Mesh entry): the
+      // token must be present in the VM's very first env, same reasoning
+      // cmd/agent's own comment gives for joining Mesh before building
+      // agentConfig. Returns undefined (not an error) if
+      // CLOUDFLARE_API_TOKEN/ACCOUNT_ID aren't configured -- the Pod
+      // still boots, just without Mesh membership.
+      const mesh = await createMeshConnector(env, nodeName);
       const stub = this.vmStub(tier, uid);
-      await stub.up(nodeName);
+      await stub.up(nodeName, mesh?.token);
       tracked[uid] = {
         namespace: pod.metadata.namespace,
         podName: pod.metadata.name,
@@ -193,6 +211,7 @@ export class CFContainersScheduler extends DurableObject<Env> {
         tier,
         bound: false,
         bootedAt: Date.now(),
+        meshConnectorId: mesh?.id,
       };
       dirty = true;
       console.log(`cf-containers-scheduler: booting ${nodeName} for ${uid}`);
@@ -252,6 +271,10 @@ export class CFContainersScheduler extends DurableObject<Env> {
     } catch (err) {
       console.log(`cf-containers-scheduler: destroy ${vm.nodeName}: ${err}`);
     }
+    // Free this Pod's Mesh connector so the 50-connectors/account cap
+    // doesn't leak (spikes/s17-mesh-nodevm/FINDINGS.md's per-Pod-Mesh
+    // entry) -- best-effort, like the destroy/deleteNode calls around it.
+    if (vm.meshConnectorId) await deleteMeshConnector(env, vm.meshConnectorId);
     try {
       await deleteNode(env, vm.nodeName);
     } catch (err) {

@@ -630,13 +630,15 @@ Cloudflare Mesh for this purpose; see
 
 ### Worker Environment Variables
 
-| Variable               | Required                                | Description                                                                                                                                       |
-| ---------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `K3S_TOKEN`            | Yes                                     | Cluster authentication token. Generate with `openssl rand -hex 32`                                                                                |
-| `R2_ACCOUNT_ID`        | Only for [R2 PV/PVC](#volumes-r2-pvpvc) | Your Cloudflare account ID                                                                                                                        |
-| `R2_ACCESS_KEY_ID`     | Only for [R2 PV/PVC](#volumes-r2-pvpvc) | Access Key ID of a parent [R2 API token](https://developers.cloudflare.com/r2/api/tokens/) (Object Read & Write, scoped to `R2_BUCKET` below)     |
-| `R2_SECRET_ACCESS_KEY` | Only for [R2 PV/PVC](#volumes-r2-pvpvc) | Secret Access Key of the same token — set via `wrangler secret put`, never `vars`                                                                 |
-| `R2_BUCKET`            | Only for [R2 PV/PVC](#volumes-r2-pvpvc) | The one shared R2 bucket every PVC provisions into (isolated per-PVC by key prefix, not by bucket — see [Volumes (R2 PV/PVC)](#volumes-r2-pvpvc)) |
+| Variable                | Required                                                                                            | Description                                                                                                                                       |
+| ----------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `K3S_TOKEN`             | Yes                                                                                                 | Cluster authentication token. Generate with `openssl rand -hex 32`                                                                                |
+| `R2_ACCOUNT_ID`         | Only for [R2 PV/PVC](#volumes-r2-pvpvc)                                                             | Your Cloudflare account ID                                                                                                                        |
+| `R2_ACCESS_KEY_ID`      | Only for [R2 PV/PVC](#volumes-r2-pvpvc)                                                             | Access Key ID of a parent [R2 API token](https://developers.cloudflare.com/r2/api/tokens/) (Object Read & Write, scoped to `R2_BUCKET` below)     |
+| `R2_SECRET_ACCESS_KEY`  | Only for [R2 PV/PVC](#volumes-r2-pvpvc)                                                             | Secret Access Key of the same token — set via `wrangler secret put`, never `vars`                                                                 |
+| `R2_BUCKET`             | Only for [R2 PV/PVC](#volumes-r2-pvpvc)                                                             | The one shared R2 bucket every PVC provisions into (isolated per-PVC by key prefix, not by bucket — see [Volumes (R2 PV/PVC)](#volumes-r2-pvpvc)) |
+| `CLOUDFLARE_API_TOKEN`  | Only for [per-Pod Mesh membership](#optional-per-pod-cloudflare-mesh-membership-containers-backend) | A Zero Trust/Tunnel-scoped API token, used to mint one Mesh connector per Pod on the Containers backend                                           |
+| `CLOUDFLARE_ACCOUNT_ID` | Only for [per-Pod Mesh membership](#optional-per-pod-cloudflare-mesh-membership-containers-backend) | Your Cloudflare account ID (same value as `R2_ACCOUNT_ID` if both features are used)                                                              |
 
 All four `R2_*` variables are set on `workers/k8flare` (the single Worker
 that signs credentials). Without them, PVCs still bind and mint
@@ -679,6 +681,23 @@ Alpine/musl has no build, see the S17 findings) and pass the token to
 the Node's `ExternalIP` automatically — the gateway then reaches this
 node's kubelet directly at that IP through the `MESH` binding, no
 per-node Tunnel/VPC Service resource required.
+
+### Optional: per-Pod Cloudflare Mesh membership (Containers backend)
+
+A different, automated use of the same Mesh mechanism
+(`spikes/s17-mesh-nodevm/FINDINGS.md`'s per-Pod-Mesh entry): each Pod
+scheduled onto the Pod-on-Containers backend
+(`k8flare.com/compute: containers`) gets its OWN Mesh IP, decoupled from
+the underlying NodeVM's own address — no manual per-node connector
+minting, no dashboard step, no sidecar container. Set `CLOUDFLARE_API_TOKEN`
+(Zero Trust/Tunnel-scoped) and `CLOUDFLARE_ACCOUNT_ID` on
+`workers/k8flare`; `cf-containers-scheduler` mints and tears down one
+`warp_connector` per Pod automatically as Pods are scheduled/deleted.
+Absent either variable, Pods on this backend boot exactly as before this
+feature existed (no Mesh membership, no error). **Known cap**: every
+Mesh connector counts against the account's 50-node limit — with this
+feature on, that limit bounds concurrent Pods on this backend, not just
+BYO VM nodes.
 
 ### Legacy: Cloudflare Tunnel + VPC Service
 
