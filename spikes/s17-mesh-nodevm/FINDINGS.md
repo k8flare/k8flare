@@ -77,6 +77,25 @@ shape). The node is left connected for follow-on gates 3-5.
 - TLS posture unchanged either way (Workers fetch has no custom-CA
   support): the :10256 in-VM shim + TokenReview webhook auth stays.
 
+### Shipped instead (2026-07-07): the narrower BYO-VM kubelet-proxy replacement, not this spike's full scope
+
+A *different, smaller* piece of what this document envisions landed as
+a real feature: the `MESH` `vpc_networks` binding (`network_id:
+"cf1:network"`) now exists in `workers/k8flare/wrangler.jsonc`, and
+`workers/k8flare/src/gateway/proxy/target.ts` reaches a **BYO VM**
+node's kubelet through it (replacing Cloudflare Tunnel + VPC Service
+for `kubectl logs`/`exec`) -- see `pkg/meshconnector`,
+`cmd/agent`'s `--mesh-connector-token` flag, and
+`docs/cloudflare-mesh-networking.md`'s 2026-07-07 addendum. This is
+**not** this spike's "per-Pod microVM gets a Mesh IP" goal (that's
+Containers-backed NodeVMs joining Mesh individually, a much larger
+change to `workers/nodes`) -- it's the same connector mechanism
+(gate 1/2), applied to the one node this project already runs
+(`cmd/agent`'s BYO VM), for a narrower purpose (kubelet reachability,
+not pod-level routing). Gates 3-5's actual questions (latency,
+throughput, per-Pod Mesh membership) remain open for the full
+NodeVM-Mesh vision below.
+
 ## Status: DEFERRED (2026-07-06, user decision)
 
 Parked after gate 1 (pass) and gate 2 method confirmation, in favor of

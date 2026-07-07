@@ -632,9 +632,47 @@ syntactically valid credentials from fixed dev placeholder values — see
 `docs/cost-model.md`'s Phase 8 section — that simply won't authenticate
 against real R2 until real values are set.
 
-### Optional: VPC Service (for kubelet proxy)
+### Optional: Cloudflare Mesh (for kubelet proxy)
 
-To enable `kubectl logs` and `kubectl exec`, set up a Cloudflare Tunnel + VPC Service:
+To enable `kubectl logs` and `kubectl exec`, join each BYO VM node to
+Cloudflare Mesh (`spikes/s17-mesh-nodevm/FINDINGS.md`) — this is the
+recommended path, replacing the Tunnel+VPC Service setup below
+(user decision 2026-07-07). The `MESH` binding (`network_id:
+"cf1:network"`, an account-wide Mesh network) is already declared in
+`workers/k8flare/wrangler.jsonc`; nothing to add there.
+
+Per node, mint a connector via the Cloudflare API — no dashboard step
+needed:
+
+```bash
+# Create the mesh node and fetch its connector token
+curl -X POST "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/warp_connector" \
+  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name": "my-node"}'
+# -> note the returned "id", then:
+curl "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/warp_connector/$ID/token" \
+  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+# -> the "result" field is the connector token
+```
+
+Install `cloudflare-warp` on the node image (Ubuntu/Debian/RHEL —
+Alpine/musl has no build, see the S17 findings) and pass the token to
+`cmd/agent`:
+
+```bash
+./k8flare-agent --server=... --token=... --mesh-connector-token=<TOKEN>
+```
+
+`cmd/agent` joins Mesh, discovers its Mesh IP, and advertises it as
+the Node's `ExternalIP` automatically — the gateway then reaches this
+node's kubelet directly at that IP through the `MESH` binding, no
+per-node Tunnel/VPC Service resource required.
+
+### Legacy: Cloudflare Tunnel + VPC Service
+
+The original setup, still supported as a fallback
+(`workers/k8flare/src/gateway/proxy/target.ts` tries `MESH` first,
+then `KUBELET_VPC`):
 
 ```bash
 ./scripts/setup-tunnel.sh

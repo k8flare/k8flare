@@ -1,4 +1,5 @@
 import { dwError } from "@k8flare/k8s";
+import { resolveKubeletTarget } from "./target.ts";
 
 /**
  * Handle kubectl exec/attach via WebSocket upgrade.
@@ -36,10 +37,6 @@ export async function handleExecAttach(
     );
   }
 
-  if (!env.KUBELET_VPC) {
-    return dwError(501, "kubelet proxy not available (KUBELET_VPC binding not configured)");
-  }
-
   // Build kubelet URL for exec/attach.
   // Kubelet endpoint: /exec/{namespace}/{pod}/{container}?command=...&stdin=...&stdout=...&stderr=...&tty=...
   const kubeletParams = new URLSearchParams();
@@ -69,7 +66,17 @@ export async function handleExecAttach(
     return dwError(400, `pod ${podName} is not assigned to a node`);
   }
 
-  // Attempt WebSocket upgrade to kubelet via VPC Service binding.
+  // Reach the node's kubelet via Mesh (preferred) or the legacy
+  // Tunnel+VPC Service binding -- see target.ts.
+  const kubeletTarget = await resolveKubeletTarget(env, goFetch, token, nodeName);
+  if (!kubeletTarget) {
+    return dwError(
+      501,
+      "kubelet proxy not available (neither MESH nor KUBELET_VPC binding configured)",
+    );
+  }
+
+  // Attempt WebSocket upgrade to kubelet via the resolved binding.
   let kubeletResp: Response;
   try {
     const kubeletWsHeaders = new Headers();
@@ -78,8 +85,8 @@ export async function handleExecAttach(
       kubeletWsHeaders.set("Sec-WebSocket-Protocol", clientSubprotocol);
     }
 
-    kubeletResp = await env.KUBELET_VPC.fetch(
-      new Request(`http://${nodeName}:10255${kubeletPath}`, {
+    kubeletResp = await kubeletTarget.fetcher.fetch(
+      new Request(`http://${kubeletTarget.host}:10255${kubeletPath}`, {
         headers: kubeletWsHeaders,
       }),
     );
@@ -89,10 +96,10 @@ export async function handleExecAttach(
 
   const kubeletWs: WebSocket | null = kubeletResp.webSocket;
   if (!kubeletWs) {
-    // VPC Service binding did not return a WebSocket -- not supported.
+    // Binding did not return a WebSocket -- not supported.
     return dwError(
       501,
-      `${subresource} WebSocket proxy failed: kubelet did not upgrade to WebSocket (VPC Service binding may not support WebSocket passthrough)`,
+      `${subresource} WebSocket proxy failed: kubelet did not upgrade to WebSocket (binding may not support WebSocket passthrough)`,
     );
   }
 

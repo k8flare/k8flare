@@ -42,6 +42,35 @@ not by reading docs alone:
    `README.md`'s own "Service networking" gap row), not something Mesh would
    have avoided.
 
+### Addendum (2026-07-07): adopted for the kubelet-proxy path specifically; the pod-network question above is unchanged
+
+**Scope check first:** the Final Decision above is about Mesh as a
+**pod-network/CNI underlay** (a flannel replacement) -- that question
+is untouched by this addendum. What changed is a narrower, different
+use this document's own "Where Mesh fits" table already scoped
+separately: **the kubelet-proxy path for `kubectl logs`/`kubectl
+exec`**, previously served by Cloudflare Tunnel + Workers VPC Service
+(`scripts/setup-tunnel.sh`). User decision 2026-07-07: replace that
+path with Mesh (`spikes/s17-mesh-nodevm/FINDINGS.md` gates 1-2, closed
+that day) -- README's setup section and
+`workers/k8flare/src/gateway/proxy/target.ts` reflect this (Mesh
+preferred, Tunnel+VPC Service kept as a fallback for existing
+deployments).
+
+**Point 1 above is now factually superseded, recorded not deleted:**
+"neither [dashboard nor API token] was available... no Mesh network
+could be created" was true of the credentials on hand in Phase 9. On
+2026-07-07, with a properly-scoped `CLOUDFLARE_API_TOKEN`, a real Mesh
+node was created and connected purely via the Cloudflare REST API --
+`POST /accounts/{id}/warp_connector`, `GET .../token`, then `warp-cli
+connector new`/`connect` on the target host -- no Zero Trust dashboard
+step at any point. Mesh IP assignment (`100.96.0.1/32`) and healthy
+status were verified on a real node. Whether this changes the
+CNI-underlay calculus in the Final Decision above (its point 1's NAT-
+traversal hypothesis was never actually tested, only blocked on
+access) is an open question for whoever revisits pod-networking --
+not answered by this addendum.
+
 **Recommendation**: nodes that don't share a VPC/subnet should use k3s's
 built-in `--flannel-backend=wireguard-native` plus `--node-external-ip` (now
 wired end-to-end: `cmd/agent`'s `--node-external-ip` flag, plus a

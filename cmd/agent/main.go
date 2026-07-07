@@ -25,6 +25,7 @@ import (
 	"github.com/k3s-io/k3s/pkg/executor/embed"
 	"github.com/k8flare/k8flare/pkg/cacert"
 	"github.com/k8flare/k8flare/pkg/dnsshim"
+	"github.com/k8flare/k8flare/pkg/meshconnector"
 	cli "github.com/urfave/cli/v2"
 )
 
@@ -92,8 +93,8 @@ func main() {
 	token := flag.String("token", os.Getenv("K3S_TOKEN"), "Cluster token")
 	nodeName := flag.String("node-name", "", "Node name (default: hostname)")
 	dataDir := flag.String("data-dir", "/var/lib/rancher/k3s", "Data directory")
-	tunnelToken := flag.String("tunnel-token", os.Getenv("TUNNEL_TOKEN"), "Cloudflare tunnel token")
-	nodeExternalIP := flag.String("node-external-ip", "", "Node external IP to advertise (needed for flannel wireguard-native across networks that don't share L2; see docs/cloudflare-mesh-networking.md)")
+	meshConnectorToken := flag.String("mesh-connector-token", os.Getenv("MESH_CONNECTOR_TOKEN"), "Cloudflare Mesh connector token (mint via POST /accounts/{id}/warp_connector then GET .../token -- no dashboard needed, see spikes/s17-mesh-nodevm/FINDINGS.md gate 2). If set, this node joins Mesh and advertises its Mesh IP as --node-external-ip automatically; requires the cloudflare-warp package pre-installed on the node image")
+	nodeExternalIP := flag.String("node-external-ip", "", "Node external IP to advertise (needed for flannel wireguard-native across networks that don't share L2; see docs/cloudflare-mesh-networking.md). Overridden by --mesh-connector-token's discovered Mesh IP if both are set")
 	nodeLabels := flag.String("node-labels", "", "Comma-separated key=value labels the kubelet registers its Node with (k3s --node-label). Per-Pod microVM nodes use this for the k8flare.com/backend selector label")
 	nodeTaints := flag.String("node-taints", "", "Comma-separated key=value:Effect taints the kubelet registers its Node with (k3s --node-taint). Per-Pod microVM nodes use this for the pod-on-containers NoSchedule taint")
 	withNodeID := flag.Bool("with-node-id", true, "Append a unique ID suffix to the node name (k3s --with-node-id). Disable for per-Pod microVM nodes, whose names must match exactly what workers/nodes' cf-containers-scheduler registered and will later bind to / tear down")
@@ -111,8 +112,6 @@ func main() {
 		*nodeName = hostname
 	}
 
-	_ = *tunnelToken // TODO: use for cloudflared tunnel
-
 	// Prepare k3s data directory and set PATH for CNI plugins.
 	if err := prepareK3sDataDir(*dataDir); err != nil {
 		log.Fatalf("failed to prepare k3s data dir: %v", err)
@@ -120,6 +119,18 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
+
+	// Join Mesh before building agentConfig -- the discovered Mesh IP
+	// must be present in the very first Node registration, not patched
+	// in after the fact.
+	if *meshConnectorToken != "" {
+		meshIP, err := meshconnector.Run(ctx, *meshConnectorToken)
+		if err != nil {
+			log.Fatalf("failed to join Cloudflare Mesh: %v", err)
+		}
+		log.Printf("joined Cloudflare Mesh, IP: %s", meshIP)
+		*nodeExternalIP = meshIP
+	}
 
 	var wg sync.WaitGroup
 

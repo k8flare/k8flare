@@ -509,6 +509,24 @@ loader eviction cadence (cold frequency — S14 open item), actual
 per-request CPU-ms of the loader-path apiserver vs today, Registry DO
 rows/month under real cluster-resolution traffic.
 
+## Cloudflare Mesh for kubelet proxy (actual, 2026-07-07)
+
+Replaces Cloudflare Tunnel + Workers VPC Service for the `kubectl
+logs`/`kubectl exec` path (`spikes/s17-mesh-nodevm/FINDINGS.md`,
+`docs/cloudflare-mesh-networking.md`'s 2026-07-07 addendum). No
+additional Cloudflare-side billing surface found in Workers VPC's own
+pricing docs beyond what a `vpc_networks` binding already costs
+(request/CPU time on the Worker side, same as any other fetch — this
+binding type has no documented per-request premium as of 2026-07,
+unlike Containers). The `cloudflare-warp` client on each BYO VM node is
+free software running on infrastructure the cluster already needed
+(the node itself); no new billed Cloudflare resource per node (a
+`warp_connector` tunnel resource has no listed price, unlike a
+Containers instance). Numbers to replace with measurements: actual
+Worker CPU-ms per kubelet-proxy request via `MESH.fetch()` vs. the
+prior `KUBELET_VPC.fetch()` (Tunnel-relayed) path, and whether Workers
+VPC exits its public beta with a different pricing model.
+
 ## Cluster DNS (actual, 2026-07-07)
 
 `pkg/dnsshim` (cmd/agent) + `pkg/apiserver`'s `/dns-query` DoH endpoint

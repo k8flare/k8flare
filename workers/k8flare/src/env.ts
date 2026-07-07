@@ -29,7 +29,16 @@ export interface Env {
 
   // Optional Workers VPC binding for BYO-node kubelet access
   // (logs/exec); attached per deployment, absent in dev.
+  // Legacy: Cloudflare Tunnel + VPC Service (scripts/setup-tunnel.sh),
+  // being phased out in favor of MESH below (user decision 2026-07-07)
+  // -- kept as a fallback for existing deployments, not removed.
   KUBELET_VPC?: Fetcher;
+  // Cloudflare Mesh (spikes/s17-mesh-nodevm/FINDINGS.md): a
+  // vpc_networks binding to the account-wide Mesh ("cf1:network").
+  // Reaches a BYO VM node directly at its Mesh IP -- no per-node Tunnel
+  // config, no VPC Service resource. Preferred over KUBELET_VPC when
+  // both are present (gateway/proxy/kubelet.ts).
+  MESH?: Fetcher;
 
   K3S_TOKEN?: string;
   // Management-API auth (clusters/adminauth.ts): comma-separated
