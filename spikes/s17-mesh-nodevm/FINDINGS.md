@@ -40,6 +40,36 @@ when this spike concludes).
   enrollment policy, plus an API token with Zero Trust Devices scopes
   for teardown-time device deletion.
 
+## Gate 2 — CLOSED (2026-07-07): unattended API enrollment verified end-to-end on real infrastructure
+
+Full loop executed for real, against the KOOFFICE Cloudflare account
+and a real OrbStack Ubuntu 24.04 arm64 VM (`k8flare-agent`) -- the same
+node this project's local dev already uses, no new infrastructure
+created:
+
+1. `POST /accounts/{id}/warp_connector {"name": "k8flare-mesh-node1"}`
+   -- created mesh node `9a4f1c4a-2091-478a-8bc5-67d5549a4210`, zero
+   dashboard interaction.
+2. `GET /accounts/{id}/warp_connector/{id}/token` -- fetched the
+   connector token via API.
+3. `apt install cloudflare-warp` (arm64 package exists on
+   `pkg.cloudflareclient.com`'s `noble` suite -- gate 1's finding was
+   from an amd64 Docker probe and didn't confirm arm64; now confirmed
+   too).
+4. `warp-cli --accept-tos connector new <TOKEN>` (the `--accept-tos`
+   flag is required non-interactively; bare `connector new` demands a
+   TTY otherwise) then `warp-cli --accept-tos connect`.
+5. Verified: `warp-cli status` reports "Connected" / "Network: healthy";
+   `ip addr show` confirms a real Mesh IP,
+   `100.96.0.1/32` on a `CloudflareWARP` interface (the documented
+   100.96.0.0/12 Mesh CIDR, exactly as this doc's goal section
+   predicted).
+
+**Gate 2's original blocker (no unattended per-VM enrollment) is
+resolved**, both the method (API-only, no dashboard) and the
+mechanism (arm64-compatible, works on this project's existing dev VM
+shape). The node is left connected for follow-on gates 3-5.
+
 ## Gates 3-5 — pending
 
 - vpc_networks Mesh on-ramp from the gateway (latency vs containerFetch)
