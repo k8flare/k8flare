@@ -30,16 +30,34 @@ type defaulterPackage struct {
 
 var defaulterPackages = []defaulterPackage{
 	{schema.GroupVersion{Group: "", Version: "v1"}, "corev1defaults", "k8s.io/kubernetes/pkg/apis/core/v1"},
-	{schema.GroupVersion{Group: "coordination.k8s.io", Version: "v1"}, "coordinationv1defaults", "k8s.io/kubernetes/pkg/apis/coordination/v1"},
-	{schema.GroupVersion{Group: "storage.k8s.io", Version: "v1"}, "storagev1defaults", "k8s.io/kubernetes/pkg/apis/storage/v1"},
-	{schema.GroupVersion{Group: "resource.k8s.io", Version: "v1"}, "resourcev1defaults", "k8s.io/kubernetes/pkg/apis/resource/v1"},
 	{schema.GroupVersion{Group: "apps", Version: "v1"}, "appsv1defaults", "k8s.io/kubernetes/pkg/apis/apps/v1"},
-	{schema.GroupVersion{Group: "discovery.k8s.io", Version: "v1"}, "discoveryv1defaults", "k8s.io/kubernetes/pkg/apis/discovery/v1"},
-	{schema.GroupVersion{Group: "networking.k8s.io", Version: "v1"}, "networkingv1defaults", "k8s.io/kubernetes/pkg/apis/networking/v1"},
 	{schema.GroupVersion{Group: "batch", Version: "v1"}, "batchv1defaults", "k8s.io/kubernetes/pkg/apis/batch/v1"},
 	// policy/v1 (PodDisruptionBudget) and node.k8s.io/v1 (RuntimeClass)
 	// have no versioned defaulting package upstream -- both are
 	// omitted deliberately, not by oversight.
+	//
+	// coordination.k8s.io/v1 (Lease), storage.k8s.io/v1 (StorageClass/
+	// CSIDriver/CSINode), resource.k8s.io/v1 (DRA, stub types),
+	// discovery.k8s.io/v1 (EndpointSlice), and networking.k8s.io/v1
+	// (Ingress/IngressClass/NetworkPolicy/ServiceCIDR) are deliberately
+	// NOT in this list, even though upstream has a versioned defaulters
+	// package for each: every write path that creates one of these types
+	// in this apiserver already produces a fully-formed object without
+	// relying on Scheme.Default() to fill anything in (Leases are written
+	// by the k3s agent/kubelet with explicit HolderIdentity/RenewTime;
+	// StorageClass is bootstrapped as a complete literal,
+	// pkg/apiserver/pvcbind.go's BootstrapStorageClasses; EndpointSlice is
+	// written by the real endpointslice controller, which sets its own
+	// fields explicitly; the Ingress/NetworkPolicy/ServiceCIDR/DRA types
+	// have no controller in this project acting on them at all yet -- see
+	// apidef.Table's comments). Measured
+	// (docs/platform-verification.md, apiserver Loader-cap headroom
+	// investigation): importing all 8 upstream defaulters packages costs
+	// ~4.4MiB of the Loader's 64MiB cap; dropping just these 5 unused
+	// ones recovers ~1.84MiB of that with `go test ./pkg/apiserver/...`
+	// still green, at effectively zero behavioral cost. If a future real
+	// controller starts relying on one of these five groups' server-side
+	// defaulting, add it back here.
 }
 
 // genDefaulters writes pkg/apiserver/zz_generated_defaulters.go: one import

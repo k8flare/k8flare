@@ -2662,3 +2662,149 @@ more, smaller Loader dynamic workers (task #23 as re-scoped 2026-07-07)
 does not change this conclusion: the blocker is a structural type
 dependency at the informer-factory injection point, not overall binary
 size pressure elsewhere in the control plane.
+
+## S20: apiserver Loader-cap headroom -- splitting into multiple dynamic workers investigated and abandoned; a real ~1.84MiB win found instead (2026-07-07)
+
+Task #23 (re-scoped 2026-07-07, see S19 tail above): today's RBAC/DNS/
+ServiceAccountToken additions left `cmd/apiserver-wasm` at 64,795,202
+bytes raw -- **2,259 KiB (2.21MiB) of headroom** under the Loader's
+67,108,864-byte (64MiB) cap (measured with `GOOS=js GOARCH=wasm go
+build -ldflags="-s -w" -trimpath`, matching `scripts/build-wasm-chunks.sh`
+exactly). The ask was to split `cmd/apiserver-wasm` (and/or
+`cmd/kcm-wasm`) by GroupVersion/feature into several smaller Loader
+dynamic workers, explicitly **not** to touch the kube-scheduler
+question (separate, structural, tracked above). Per CLAUDE.md rule 2,
+every claim below is from an actual `go build` + `wc -c`, not source
+reading.
+
+**Baseline attribution, incremental (same method this doc's S19/KCM
+sections already used):**
+
+| Build content | raw wasm size | delta over previous |
+| --- | --- | --- |
+| Empty `main()` + `github.com/syumai/workers` only | 5,495,081 | -- |
+| + `apidef.Table` (all 12 GroupVersions, ~35 ResourceDefs), no `pkg/apiserver` | 18,108,238 | +12.6 MiB |
+| + `k8s.io/apimachinery/pkg/util/strategicpatch` alone (PATCH support, subresource.go) | 18,595,354 | **+13.1 MiB over empty baseline -- larger than the entire 12-GroupVersion type table** |
+| `cmd/apiserver-wasm` today (full, real main.go) | 64,795,202 | -- |
+| Same, minus all 8 `zz_generated_defaulters.go` upstream packages (stubbed) | 60,381,997 | -4.4 MiB |
+| Same, minus RBAC/SA-token/DNS/R2/supervisor registration (defaulters still stubbed) | 56,988,785 | -7.8 MiB combined; RBAC alone -1.0 MiB, SA-token+certmanager alone -1.3 MiB, DNS alone -0.8 MiB, R2/supervisor/internal remainder -0.25 MiB |
+| Full main.go, `apidef.Table` trimmed to core/v1+rbac.authorization.k8s.io/v1 only (10 of 12 GroupVersions removed), defaulters left stale (still importing all 8 groups) | 64,754,918 | **-40 KiB only** -- a false signal, see below |
+| Same trim, `zz_generated_defaulters.go` *correctly* regenerated for the trimmed table (drops to just corev1defaults) | 62,196,552 | **-2.48 MiB**, the real, consistent cost of removing 10 of 12 GroupVersions' types |
+
+**Why the first trim looked like it saved almost nothing:**
+`zz_generated_defaulters.go` is a committed, generated file
+(`cmd/k8flare-gen/defaulters.go`'s `genDefaulters`) that imports one
+upstream `k8s.io/kubernetes/pkg/apis/<group>/v1` package per
+`apidef.Table` GroupVersion *at generation time* -- editing
+`table.go` by hand without re-running `go run ./cmd/k8flare-gen`
+leaves it stale, so the 10 removed GroupVersions' upstream defaulter
+packages (and therefore their `k8s.io/api/<group>/v1` types, pulled in
+transitively) stayed linked regardless of what `apidef.Table` said.
+Re-running the generator after the same trim is what surfaced the
+real, still-small, 2.48MiB figure. This is itself a useful, generally
+applicable correction for anyone hand-editing `apidef/table.go` during
+experimentation: measure only after `go run ./cmd/k8flare-gen`, never
+before.
+
+**Conclusion: a GroupVersion/feature-based split of `cmd/apiserver-wasm`
+into multiple Loader dynamic workers does not achieve the stated goal
+(headroom) and was abandoned, per this task's explicit "abandon and
+record why" clause.** Reasons, all measured, not assumed:
+
+1. **The per-GroupVersion type surface is not the dominant cost.**
+   Removing 10 of the 12 served GroupVersions (apps, batch, storage,
+   node, resource, policy, discovery, networking, coordination,
+   autoscaling -- everything except core/v1 and rbac.authorization.k8s.io/v1)
+   saves only 2.48MiB out of 64.8MiB, once measured correctly. This
+   matches the same pattern this doc's KCM/client-go section already
+   found ("registering the other ~53 groups... costs only +0.03 MiB"):
+   the shared `k8s.io/apimachinery` serializer/scheme/runtime
+   infrastructure absorbs almost the entire per-type cost once paid for
+   any one group, and `k8s.io/api`'s own types are cheap to add on top.
+2. **The dominant costs are cross-cutting and would have to be
+   duplicated into every split binary anyway.** `k8s.io/apimachinery/pkg/util/strategicpatch`
+   (PATCH support for `kubectl apply`/`kubectl patch`, used by
+   `subresource.go` for every resource and subresource with a "patch"
+   verb -- i.e. every resource in `apidef.Table`) alone measures
+   **~13.1MiB**, more than the entire 12-GroupVersion type table. It
+   cannot be scoped to one split binary: every GroupVersion advertises
+   "patch" in `apidef.StandardVerbs`, and removing PATCH support for
+   any resource would be a real conformance/behavioral regression, out
+   of scope here. Likewise RBAC authorization (`AuthzMiddleware`) and
+   ServiceAccount token authentication (`AuthMiddleware`'s token path)
+   gate **every** request on **every** route today; splitting by
+   GroupVersion would require either (a) duplicating the RBAC
+   authorizer + rbac.authorization.k8s.io/v1 stores + the
+   ServiceAccount JWT authenticator + corev1 stores into every single
+   split binary (each already measured at +1.0MiB and +1.3MiB
+   respectively -- not free, and now paid N times instead of once), or
+   (b) a cross-binary authentication/authorization delegation design
+   (e.g. every non-"core" binary calling the "core" binary's already-
+   existing TokenReview endpoint instead of authenticating locally) --
+   a materially larger, higher-risk redesign of the auth path than this
+   task's budget or its "abandon rather than risk regression" mandate
+   allows.
+3. **Namespace cascade delete is a genuine cross-GroupVersion
+   dependency, confirmed by reading (not yet by trying to break it):**
+   `pkg/apiserver/handler.go`'s DELETE case and `pkg/apiserver/gc.go`'s
+   owner-reference cascade both take `namespacedStores
+   []*ResourceStore`, built by `NamespacedResourceStores` as the union
+   of **every** GroupVersion's namespaced stores (main.go's comment:
+   "deleting an apps/v1 Deployment must be able to find and delete the
+   ReplicaSets (apps/v1) and Pods (core/v1) it owns"). A GroupVersion
+   split would need this cascade to reach across separate Loader
+   dynamic worker instances -- either a shared storage-key-based
+   (not typed-`ResourceStore`-based) rewrite of `namespacedelete.go`/
+   `gc.go`, or cross-binary HTTP calls per cascade step. Given finding
+   1 above already shows the split isn't worth pursuing on its own
+   merits, this risk was not attempted (per this task's explicit
+   instruction not to risk regressing today's just-landed cascading
+   delete behavior).
+
+**What was actually done instead: a real, verified ~1.84MiB win with
+none of the above risk.** `zz_generated_defaulters.go` unconditionally
+registers upstream versioned defaulters for 8 groups
+(`cmd/k8flare-gen/defaulters.go`'s `defaulterPackages`). Of those, 5
+(coordination.k8s.io/v1 Lease, storage.k8s.io/v1 StorageClass/
+CSIDriver/CSINode, resource.k8s.io/v1 DRA stub types,
+discovery.k8s.io/v1 EndpointSlice, networking.k8s.io/v1
+Ingress/IngressClass/NetworkPolicy/ServiceCIDR) are never actually
+defaulting-dependent in this codebase: Leases are written by the k3s
+agent/kubelet with explicit fields, StorageClass is bootstrapped as a
+complete literal (`pvcbind.go`'s `BootstrapStorageClasses`),
+EndpointSlice is written by the real endpointslice controller which
+sets its own fields, and the networking/DRA types have no controller
+acting on them at all yet. Removed those 5 from
+`cmd/k8flare-gen/defaulters.go` (the hand-maintained source, not the
+generated file) and regenerated with `go run ./cmd/k8flare-gen`
+(confirmed via `git diff --stat` that only
+`pkg/apiserver/zz_generated_defaulters.go` changed -- no drift in the
+other 5 generated artifacts). Result:
+
+- `cmd/apiserver-wasm` raw size: 64,795,202 -> **62,863,479 bytes**
+  (-1,931,723 bytes, ~1.84MiB). Loader-cap headroom: 2,259 KiB ->
+  **4,145 KiB** (2.21MiB -> 4.05MiB), verified by
+  `scripts/build-wasm-chunks.sh`'s own gate output.
+- `go test ./pkg/apiserver/...` green, including the exact tests that
+  exercise the 5 affected groups end-to-end against real `wrangler
+  dev` (`TestLeaseCRUD`, `TestNewlyRegisteredResources/NetworkPolicy`,
+  `TestResourceAPIGroup` (DRA), `TestStorageClassBootstrap_R2ExistsAndIsDefault`)
+  -- all still PASS, confirming the removed defaulters were never
+  observably exercised.
+- `cmd/kcm-wasm` unaffected (this change is apiserver-only): still
+  64,019,374 bytes / 3,017 KiB headroom, unchanged from before this
+  investigation.
+
+`workers/k8flare/wrangler.jsonc`, the Loader routing in
+`workers/k8flare/src/loader/apiserver.ts` /
+`workers/k8flare/src/controllers/index.ts`, and
+`scripts/build-wasm-chunks.sh` are all unchanged -- this stays a
+single apiserver Loader dynamic worker, same as before. If apiserver's
+headroom becomes tight again, the next-highest-leverage lever found
+during this investigation (not attempted here, out of scope) would be
+revisiting whether `strategicpatch`'s ~13MiB is fully load-bearing for
+every resource (e.g. a narrower merge-patch implementation for
+resources kubectl rarely `apply`s to with array-merge semantics) --
+NOT another attempt at a GroupVersion-based Loader-worker split, which
+this section's measurements show is not where apiserver's size
+actually comes from.

@@ -706,3 +706,25 @@ touches the relevant paths (`.github/workflows/cost-gate.yml`), not just
 verified once by hand. WebSocket hibernation remains the one open item,
 blocked on the client-go transport gap documented above and in the
 WatchHub redesign commit -- unrelated to what Phase 6 added.
+
+## apiserver Loader-cap headroom: split investigated, not implemented (2026-07-07)
+
+Task #23 (see `docs/platform-verification.md`'s S20 section for the full
+investigation) considered splitting `cmd/apiserver-wasm` into multiple
+Loader dynamic workers by GroupVersion to relieve the Loader's 64MiB
+cap (apiserver was at 2.21MiB headroom). **No split was implemented**
+-- measurement showed the per-GroupVersion type surface is not the
+dominant cost (removing 10 of 12 GroupVersions saved only 2.48MiB),
+while the actually-dominant costs (a ~13MiB `strategicpatch` PATCH
+dependency, RBAC authorization, ServiceAccount token authentication)
+would have to be duplicated into every split binary anyway, since they
+gate every request/every resource today. **Cost-model consequence:
+none** -- `workers/k8flare` still loads exactly one apiserver Loader
+dynamic worker id per active cluster-day, same as the "Single-Worker
+consolidation" estimate above; this investigation did not add a second
+one.
+
+The headroom problem was instead relieved by dropping 5 unused
+upstream defaulters packages from `cmd/k8flare-gen/defaulters.go`
+(zero cost-model impact -- pure binary-size change, no new Loader id,
+no new request path): apiserver headroom went from 2.21MiB to 4.05MiB.
