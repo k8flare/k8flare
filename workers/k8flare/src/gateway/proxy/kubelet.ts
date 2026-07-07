@@ -1,6 +1,7 @@
 import { dwAuth, dwError } from "@k8flare/k8s";
 import { handleExecAttach } from "./exec.ts";
 import { resolveKubeletTarget } from "./target.ts";
+import { handleNodes } from "../../nodes/index.ts";
 
 /**
  * Detect if a request needs kubelet proxying.
@@ -82,24 +83,28 @@ export async function handleKubeletProxy(
   // Per-Pod Containers-backed node (workers/nodes microVM): the compute-
   // class admission stamps this nodeSelector, so it reliably marks pods
   // whose kubelet lives inside a NodeVM. Reach it through the nodes
-  // Worker's kubelet bridge (port 10256 = cmd/agent's plain-HTTP front
+  // handler's kubelet bridge (port 10256 = cmd/agent's plain-HTTP front
   // for the authenticated kubelet API) instead of the VPC binding, which
-  // only dials BYO VMs.
+  // only dials BYO VMs. Post-consolidation (S19) this is a direct
+  // function call, not a service binding -- there is no `env.NODES`
+  // anymore (single-Worker `env.ts` never declared it; found stale here
+  // while implementing task #13, which touches this same branch -- this
+  // silently 503'd every logs/metrics request to a Containers-backed pod
+  // since the consolidation, not something this pass could leave broken
+  // while adding more code beside it).
   if (pod.spec?.nodeSelector?.["k8flare.com/backend"] === "containers") {
-    if (!env.NODES) {
-      return dwError(503, "workers/nodes is not deployed on this cluster");
-    }
     if (!kubeletPath) {
       return dwError(501, `${subresource} is not yet supported on the per-Pod node backend`);
     }
     const target = new URL(url);
     target.pathname = `/kubelet/${pod.metadata.uid}/10256${kubeletPath.split("?")[0]}`;
     target.search = kubeletPath.includes("?") ? `?${kubeletPath.split("?")[1]}` : "";
-    return env.NODES.fetch(
+    return handleNodes(
       new Request(target.toString(), {
         method: req.method,
         headers: { Authorization: `Bearer ${token}`, Accept: req.headers.get("Accept") || "*/*" },
       }),
+      env,
     );
   }
 

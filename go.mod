@@ -1,6 +1,6 @@
 module github.com/k8flare/k8flare
 
-go 1.26.2
+go 1.26.3
 
 replace (
 	github.com/Microsoft/hcsshim => github.com/Microsoft/hcsshim v0.14.0-rc.1
@@ -86,14 +86,15 @@ require (
 	github.com/miekg/dns v1.1.72
 	github.com/syumai/workers v0.32.0
 	github.com/urfave/cli/v2 v2.27.7
+	golang.org/x/sys v0.46.0
 	google.golang.org/grpc v1.81.1
 	gopkg.in/evanphx/json-patch.v4 v4.13.0
+	gvisor.dev/gvisor v0.0.0-20260706222844-e29951214cf7
 	k8s.io/api v0.36.2
 	k8s.io/apimachinery v0.36.2
 	k8s.io/apiserver v0.36.2
 	k8s.io/client-go v0.36.2
 	k8s.io/component-base v0.36.2
-	k8s.io/controller-manager v0.35.2
 	k8s.io/endpointslice v0.0.0
 	k8s.io/klog/v2 v2.140.0
 	k8s.io/kube-controller-manager v0.0.0
@@ -442,7 +443,6 @@ require (
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260508192327-42602be52be6 // indirect
 	golang.org/x/term v0.44.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
@@ -463,6 +463,7 @@ require (
 	k8s.io/cloud-provider v0.35.2 // indirect
 	k8s.io/cluster-bootstrap v0.35.2 // indirect
 	k8s.io/component-helpers v0.36.2 // indirect
+	k8s.io/controller-manager v0.35.2 // indirect
 	k8s.io/cri-api v0.36.2 // indirect
 	k8s.io/cri-client v0.36.2 // indirect
 	k8s.io/cri-streaming v0.36.2 // indirect

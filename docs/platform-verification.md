@@ -1870,7 +1870,9 @@ ssh %h --stdio" cloudchamber@<instanceID>` (Cloudflare injects a
     (x86_64, seccomp available), k8flare-agent is PID 1, containerd
     healthy, and `curl 127.0.0.1:80` returned the Pod's nginx welcome
     page over hostNetwork — the first direct HTTP proof against a
-    per-Pod-node workload (pods/proxy bridge still pending, task #13).
+    per-Pod-node workload (pods/proxy bridge still pending, task #13;
+    implemented and Worker-side-verified as of S20 below, last hop to a
+    live NodeVM still open).
 - **Local-Docker repro of the stall is a false lead**: on an ARM Mac,
   the amd64 node image under Rosetta fails every sandbox with
   `seccomp is not supported` (kubelet 1.36 hardcodes RuntimeDefault for
@@ -1881,7 +1883,8 @@ ssh %h --stdio" cloudchamber@<instanceID>` (Cloudflare injects a
   local node testing use a native-arch build or expect ContainerCreating.
 - **Known gap surfaced, by design**: `pods/proxy` returns "temporarily
   unavailable on the per-Pod node backend" — HTTP ingress to per-Pod
-  nodes is task #13's kubelet-bridge work, not a regression.
+  nodes is task #13's kubelet-bridge work, not a regression. (Closed by
+  `handlePodProxy`/`handleVKubeProxy`, S20 below.)
 
 ### S16 addendum (2026-07-06 evening): logs/metrics bridge live, and three platform findings
 
@@ -1984,6 +1987,101 @@ multi-cluster plan, run against the real 43MB apiserver WASM in
   the apiserver bootstrap must mirror syumai's per-request
   `worker.mjs` shape — the KCM resident shape dies on dispatch 2 with
   "Go program has already exited" (observed live).
+
+## S20: virtual kube-proxy TCP intercept — real bug found and fixed, node-half end-to-end proven (2026-07-07, task #13)
+
+Continuation of the WIP `pkg/vkubeproxy` (node-side TUN + gVisor
+`pkg/tcpip` userspace forwarder) and `workers/k8flare/src/nodes/podproxy.ts`
+(`handlePodProxy`/`handleVKubeProxy`) from the previous session. That pass
+had wired the routes but never actually run the TUN intercept against a
+real kernel — this pass did, per CLAUDE.md rule 2 ("実際に動かして検証す
+る"), and it did not work on the first try.
+
+**Bug found and fixed**: `vkubeproxy.Run` originally called
+`s.SetRouteTable([]tcpip.Route{{Destination: subnet, NIC: nicID}})` with
+`subnet` scoped to `serviceCIDR` (`10.43.0.0/16`). Driven against a real
+`/dev/net/tun` device in a privileged Linux container (`golang:1.26-alpine`,
+`--cap-add=NET_ADMIN --device=/dev/net/tun`), every intercepted connection's
+`ForwarderRequest.CreateEndpoint` failed with `network is unreachable`. Root
+cause: that route only tells gVisor's own userspace stack how to route
+packets **addressed to** `serviceCIDR` — but every reply this stack sends
+(SYN-ACK, data, FIN) is addressed back to the real caller's own address
+(e.g. the microVM's real interface IP), which is never itself inside
+`serviceCIDR`. With only one NIC in the whole stack (the TUN device), the
+correct route is `header.IPv4EmptySubnet` (0.0.0.0/0) → `nicID` — this
+governs only which NIC the stack's own replies go out on, not what traffic
+reaches it in the first place (that scoping is the real Linux kernel route,
+`ip route add 10.43.0.0/16 dev k8flare0`, unchanged and correctly narrow).
+This is the same shape every tun2socks-style transparent proxy uses and
+would have shipped broken — every ClusterIP connection from inside a
+Pod-on-Containers Pod would have hung until client timeout — without
+actually exercising a real TUN device rather than just reading the gVisor
+API. Fixed in `pkg/vkubeproxy/vkubeproxy.go`.
+
+Also fixed in this pass: the package's `//go:build !js` tag (copied from
+`pkg/dnsshim`/`pkg/meshconnector`) does not hold here — those two packages
+only shell out to CLI tools (compiles anywhere, runs correctly only on
+Linux), but this package links `gvisor.dev/gvisor/pkg/tcpip/link/{tun,fdbased}`,
+whose own build constraints are unconditionally Linux-only (raw AF_PACKET
+sockets, TUN ioctls). `go vet ./pkg/...` on a non-Linux dev machine failed
+to even *compile* the package, not just fail to run it. Changed to
+`//go:build linux`.
+
+**What was verified, against real kernel primitives (not read-and-assumed)**:
+
+- Node-side intercept, standalone (privileged `golang:1.26-alpine`
+  container, `/dev/net/tun` + `CAP_NET_ADMIN`, real `ip` commands via
+  `iproute2`): a `GET` and a `POST` with a body, both issued from a plain
+  `net/http` client against a fabricated ClusterIP (`10.43.0.55:8080`) not
+  otherwise routable, were transparently intercepted by the TUN + netstack
+  forwarder and re-issued as real HTTP requests against a mock
+  `/nodes/vkubeproxy` endpoint, correctly carrying `X-K8flare-Target-IP:
+  10.43.0.55`, `X-K8flare-Target-Port: 8080`, `Authorization: Bearer
+  test-token`, and (for the POST) the original request body verbatim. The
+  mock's response flowed back through the same connection to the original
+  client unmodified. Confirms the core "capture ClusterIP TCP, reissue as
+  HTTP" mechanism actually functions on a real Linux kernel — not merely
+  that the Go code compiles against gVisor's API.
+- Worker-side resolution (`handleVKubeProxy`/`handlePodProxy`,
+  `podproxy.ts`), against a real local `wrangler dev` (single consolidated
+  config, `--enable-containers=false`, real `CLOUDFLARE_ACCOUNT_ID` needed
+  non-interactively — see note below): created a real `Service` with a
+  fixed `clusterIP` and a matching `EndpointSlice` via direct API calls,
+  then called `/nodes/vkubeproxy/hello` with `X-K8flare-Target-IP`/`-Port`
+  headers matching that Service. Confirmed correct for the whole resolution
+  chain: ClusterIP → Service (`spec.clusterIP` field selector) → Service
+  port match → EndpointSlice (`kubernetes.io/service-name` label selector)
+  → ready endpoint's `targetRef.uid` → `forwardToPod`'s
+  `scheduler.lookupVM`, which correctly 404s ("no live NodeVM for pod
+  ...") since no real Pod is scheduled. Negative paths also confirmed:
+  unknown ClusterIP → 502, wrong Service port → 502, missing headers → 400,
+  `pods/proxy` on a nonexistent Pod → 404.
+
+**What remains unverified**: the last hop — an actual `containerFetch` to
+a live NodeVM answering on its container port — because that requires a
+running per-Pod microVM, which this session could not produce locally.
+Local Docker on this ARM Mac cannot boot the real (amd64) node image at
+all (pre-existing Rosetta/seccomp limitation, S16 above); the real
+Firecracker microVM only exists once deployed to the actual Cloudflare
+account (`wrangler deploy`), which this session's constraints forbid
+running. `pkg/vkubeproxy`'s own TCP-layer correctness (multi-request
+keep-alive over one intercepted connection, DNS bridging via the tun
+device, the secure/TokenReview'd 10250 path) is also still unverified
+end-to-end for the same reason — v1 scope per the approved design remains
+HTTP/1.x request-response only.
+
+**Local-environment note, not specific to this feature**: this session's
+first `go test ./pkg/apiserver/...` run failed entirely with `connection
+refused` on every test — `wrangler dev`'s non-interactive `npx wrangler
+dev` silently exits when the logged-in Cloudflare account has more than
+one available account and `CLOUDFLARE_ACCOUNT_ID` isn't set (confirmed by
+running `wrangler dev` directly and reading its actual stderr instead of
+the test harness's redirected-to-`/dev/null` stream). Setting
+`CLOUDFLARE_ACCOUNT_ID` in the shell environment before `go test` fixed it
+with zero code changes. Recording here since the test harness's own
+`devCmd.Stderr = devNull` means this failure mode produces no diagnostic
+output at all from the Go side — worth knowing before concluding the
+whole suite is broken.
 
 ## Correction log (honest corrections)
 

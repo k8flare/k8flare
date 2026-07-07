@@ -3,6 +3,7 @@ export { NodeVMLarge, NodeVMMedium, NodeVMSmall } from "./nodevm.ts";
 
 import type { Env } from "./env.ts";
 import { vmBinding } from "./scheduler.ts";
+import { handlePodProxy, handleVKubeProxy } from "./podproxy.ts";
 
 // workers/nodes hosts the cf-containers-scheduler (per-Pod microVM node
 // binder, scheduler.ts) and the NodeVM container classes it manages. The
@@ -38,13 +39,20 @@ export async function handleNodes(request: Request, env: Env): Promise<Response>
     target.pathname = portAndPath;
     return ns.get(ns.idFromName(vm.podUID)).fetch(new Request(target.toString(), request));
   }
+  // pods/proxy subresource (task #13): HTTP ingress against per-Pod
+  // NodeVMs, reusing hostNetwork's direct container-port reachability
+  // (podproxy.ts). Replaces the old VirtualNode-backed pod proxy that
+  // died with that backend.
   if (url.pathname.startsWith("/podproxy/")) {
-    // The old VirtualNode-backed pod proxy died with that backend.
-    // Reinstating HTTP ingress against per-Pod NodeVMs (via the real
-    // kubelet API) is tracked as follow-up work.
-    return new Response("pods/proxy is temporarily unavailable on the per-Pod node backend", {
-      status: 501,
-    });
+    return handlePodProxy(request, env, url.pathname);
+  }
+  // Virtual kube-proxy backend (task #13): pkg/vkubeproxy (node-side tun
+  // + userspace TCP forwarder) re-issues a Pod's ClusterIP-bound
+  // connection here as a plain HTTP request, resolved to a backing Pod
+  // via Service+EndpointSlice (podproxy.ts).
+  const vkubeMatch = url.pathname.match(/^\/vkubeproxy(\/.*)?$/);
+  if (vkubeMatch) {
+    return handleVKubeProxy(request, env, vkubeMatch[1] || "/");
   }
   const stub = env.SCHEDULER.get(env.SCHEDULER.idFromName("default"));
   return stub.fetch(request);

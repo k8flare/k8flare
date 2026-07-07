@@ -200,14 +200,23 @@ dev` — see `spikes/s3-containers/FINDINGS.md` item 5). A Pod that needs UDP
   needs a UDP:53 listener, so CoreDNS deployments should target a BYO VM node
   (tracked as an open design question for clusters with no BYO VM node at
   all, see `docs/platform-verification.md`'s Phase 9 section).
-- **No routable Pod IP, no `kubectl logs`/`exec`/`attach`.** A Pod's `status`
-  reports `Running` with container statuses once its container starts, but
-  does not get a real cluster-routable IP (Cloudflare Containers doesn't
-  expose one to the hosting Durable Object) — Service traffic to a Pod on
-  this backend is not proven end-to-end. `logs`/`exec`/`attach` are handled by
-  the consolidated Worker's kubelet proxy today, which dials a real kubelet over a
-  VPC service binding (port 10255) — it has no branch for a virtual node, so
-  these subresources don't work against a `workers/nodes`-backed Pod in v1.
+- **No routable Pod IP; `kubectl logs`/metrics work, `exec`/`attach` don't
+  yet.** These Pods run `hostNetwork: true` (injected at admission,
+  `pkg/apiserver/computeclass.go`) because the microVM sandbox has no
+  working netfilter, so there is no separate Pod IP distinct from the
+  node's own. `kubectl logs` (+ `-f`) and the kubelet's read-only
+  stats/metrics endpoints are bridged through the consolidated Worker →
+  NodeVM DO → `containerFetch` on `cmd/agent`'s plain-HTTP kubelet proxy
+  (port 10256), TokenReview-authenticated like a real cluster
+  (`docs/platform-verification.md` S16). `pods/proxy`/`services/proxy`
+  ingress and a Pod's own outbound `ClusterIP` traffic are bridged the same
+  way (`pkg/vkubeproxy`'s node-local TUN + userspace TCP forwarder,
+  `workers/k8flare/src/nodes/podproxy.ts`; task #13) — the node-side
+  intercept and the Worker-side Service/EndpointSlice resolution are both
+  verified against real primitives, but a live end-to-end run against a
+  deployed NodeVM is still open (`docs/platform-verification.md` S20: local
+  Docker on an ARM Mac cannot boot this node image at all). `exec`/`attach`
+  (secure kubelet port 10250) are not implemented for this backend yet.
 - **Pod scheduling/deletion latency is ~10s, not sub-second.** `workers/nodes`
   discovers Pods bound to its node by listing them on its own Lease-renewal
   alarm (every ~10s) rather than via a push/watch — see `virtualnode.ts`'s

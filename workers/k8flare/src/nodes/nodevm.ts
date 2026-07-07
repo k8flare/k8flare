@@ -53,18 +53,28 @@ export abstract class NodeVMBase extends Container<Env> {
     await this.destroy();
   }
 
-  // Kubelet bridge: the nodes Worker forwards gateway requests here as
-  // /{port}/{kubelet path}. Only 10256 is reachable -- cmd/agent's
-  // plain-HTTP proxy in front of the authenticated kubelet API
-  // (/containerLogs, /stats/summary, /metrics/resource; k3s pins the
-  // read-only 10255 off via CLI flag). Streams straight through, so
-  // `kubectl logs -f` follows for as long as the client stays connected
-  // (CPU-time billing only -- idle stream time is I/O wait).
+  // Generic port bridge: the nodes Worker forwards gateway requests here
+  // as /{port}/{path}. Two callers, same shape: the kubelet bridge (port
+  // 10256 -- cmd/agent's plain-HTTP proxy in front of the authenticated
+  // kubelet API, /containerLogs, /stats/summary, /metrics/resource; k3s
+  // pins the read-only 10255 off via CLI flag) and, since `hostNetwork:
+  // true` (computeclass.go) makes every container port directly
+  // reachable on the VM's own network stack, task #13's pods/proxy and
+  // virtual-kube-proxy bridges (arbitrary Pod container ports -- verified
+  // directly reachable this way over SSH, docs/platform-verification.md
+  // S16: `curl 127.0.0.1:80` returned the Pod's own nginx page). No
+  // allowlist beyond "numeric port": containerFetch only ever reaches
+  // this one VM's own loopback-equivalent network, so there is no
+  // cross-Pod traffic to gate here -- callers (nodes/index.ts) are the
+  // ones responsible for authorizing the request before it gets here.
+  // Streams straight through, so `kubectl logs -f` follows for as long as
+  // the client stays connected (CPU-time billing only -- idle stream time
+  // is I/O wait).
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    const match = url.pathname.match(/^\/(10256)(\/.*)$/);
+    const match = url.pathname.match(/^\/(\d+)(\/.*)$/);
     if (!match) {
-      return new Response("NodeVM: expected /10256/...", { status: 400 });
+      return new Response("NodeVM: expected /{port}/...", { status: 400 });
     }
     const [, port, rest] = match;
     url.pathname = rest;
