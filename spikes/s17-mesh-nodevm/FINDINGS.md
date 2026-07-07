@@ -69,17 +69,35 @@ Gate 2's actual finding stands for what it tested — Zero Trust
 Mesh membership without a human) returned auth errors — but plain
 **Tunnel** management is not blocked the way this entry implied.
 
-**Mesh specifically (the Zero Trust Networks > Mesh L3 CIDR resource,
-distinct from a Tunnel) still has no documented API/CLI creation
-path** (official docs read 2026-07-07,
-`developers.cloudflare.com/cloudflare-one/networks/connectors/
-cloudflare-mesh/get-started/`): both the network itself and each
-node's `warp-cli connector new <TOKEN>` token are dashboard-only
-("Networking > Mesh > Add a node"). `warp-cli` is the client that
-*consumes* that token, not something that creates the resource --
-matching this entry's own gate 1 finding, just restated precisely.
-This means gate 2's blocker (no unattended per-VM enrollment) is
-unchanged; what's now confirmed is that a human doing the one-time
-dashboard step and handing over the resulting connector token remains
-the only path, for either the narrow (Tunnel replacement) or the full
-Mesh-as-standard-network scope.
+**Correction 2: Mesh DOES have a documented API creation path after
+all — the get-started guide's dashboard steps are simplified onboarding
+UX, not the only path.** Mesh is the rebrand of WARP Connector, and
+WARP Connector tunnels are a first-class, documented Cloudflare API
+resource:
+
+- `POST /accounts/{account_id}/warp_connector` `{"name": "..."}` →
+  creates the mesh node, returns its tunnel `id`.
+- `GET /accounts/{account_id}/warp_connector/{id}/token` → returns the
+  connector token (`result` is the token string) that
+  `warp-cli connector new <TOKEN>` needs.
+- `GET /accounts/{account_id}/warp_connector` lists existing ones.
+
+(Cloudflare API reference, read 2026-07-07:
+`developers.cloudflare.com/api/resources/zero_trust/subresources/
+tunnels/subresources/warp_connector/methods/{create,list}/` and
+`.../subresources/token/methods/get/`.) This means **unattended
+per-VM Mesh enrollment IS possible via the standard Cloudflare API** —
+gate 2's blocker may be resolved, contingent on one still-unverified
+fact: whether an API token can be scoped with the right permission
+group for this endpoint (the "Cloudflare Tunnel" permission group is
+the likely candidate, unconfirmed), and whether the currently
+available `connectivity (admin)` OAuth scope on the wrangler-issued
+token (confirmed sufficient for regular `cfd_tunnel` management via
+`wrangler tunnel`) extends to `warp_connector` too. Not tested end-to-
+end this session: doing so means either extracting wrangler's stored
+OAuth token for use outside wrangler's own CLI surface (not attempted,
+feels like the wrong way to use that credential) or the account owner
+minting a purpose-scoped Cloudflare API token for this. Whoever
+resumes this: mint a token with the Tunnel/Zero Trust Networks
+permission group, `curl -X POST .../warp_connector` with it, and this
+gate closes definitively either way.
