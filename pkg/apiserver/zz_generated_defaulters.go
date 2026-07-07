@@ -6,12 +6,7 @@ import (
 
 	appsv1defaults "k8s.io/kubernetes/pkg/apis/apps/v1"
 	batchv1defaults "k8s.io/kubernetes/pkg/apis/batch/v1"
-	coordinationv1defaults "k8s.io/kubernetes/pkg/apis/coordination/v1"
 	corev1defaults "k8s.io/kubernetes/pkg/apis/core/v1"
-	discoveryv1defaults "k8s.io/kubernetes/pkg/apis/discovery/v1"
-	networkingv1defaults "k8s.io/kubernetes/pkg/apis/networking/v1"
-	resourcev1defaults "k8s.io/kubernetes/pkg/apis/resource/v1"
-	storagev1defaults "k8s.io/kubernetes/pkg/apis/storage/v1"
 )
 
 // registerVersionedDefaults registers every API group's real upstream
@@ -27,23 +22,8 @@ func registerVersionedDefaults() error {
 	if err := batchv1defaults.RegisterDefaults(Scheme); err != nil {
 		return fmt.Errorf("register batch/v1 defaults: %w", err)
 	}
-	if err := coordinationv1defaults.RegisterDefaults(Scheme); err != nil {
-		return fmt.Errorf("register coordination.k8s.io/v1 defaults: %w", err)
-	}
 	if err := corev1defaults.RegisterDefaults(Scheme); err != nil {
 		return fmt.Errorf("register v1 defaults: %w", err)
-	}
-	if err := discoveryv1defaults.RegisterDefaults(Scheme); err != nil {
-		return fmt.Errorf("register discovery.k8s.io/v1 defaults: %w", err)
-	}
-	if err := networkingv1defaults.RegisterDefaults(Scheme); err != nil {
-		return fmt.Errorf("register networking.k8s.io/v1 defaults: %w", err)
-	}
-	if err := resourcev1defaults.RegisterDefaults(Scheme); err != nil {
-		return fmt.Errorf("register resource.k8s.io/v1 defaults: %w", err)
-	}
-	if err := storagev1defaults.RegisterDefaults(Scheme); err != nil {
-		return fmt.Errorf("register storage.k8s.io/v1 defaults: %w", err)
 	}
 	return nil
 }
