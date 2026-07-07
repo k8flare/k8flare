@@ -95,6 +95,7 @@ func main() {
 	nodeName := flag.String("node-name", "", "Node name (default: hostname)")
 	dataDir := flag.String("data-dir", "/var/lib/rancher/k3s", "Data directory")
 	meshConnectorToken := flag.String("mesh-connector-token", os.Getenv("MESH_CONNECTOR_TOKEN"), "Cloudflare Mesh connector token (mint via POST /accounts/{id}/warp_connector then GET .../token -- no dashboard needed, see spikes/s17-mesh-nodevm/FINDINGS.md gate 2). If set, this node joins Mesh and advertises its Mesh IP as --node-external-ip automatically; requires the cloudflare-warp package pre-installed on the node image")
+	meshIPAsNodeIP := flag.Bool("mesh-ip-as-node-ip", false, "When --mesh-connector-token is set, ALSO set the discovered Mesh IP as kubelet's --node-ip (k3s --node-ip), not just --node-external-ip. Per-Pod microVM nodes only (images/node/entrypoint.sh passes this): hostNetwork:true Pods inherit their PodIP from the Node's InternalIP, which real kubelet sources from --node-ip, not --node-external-ip (verified against k3s-io/kubernetes's kubelet_pods.go getHostIPsAnyWay + pkg/daemons/agent/agent_linux.go's node-ip arg wiring -- see spikes/s17-mesh-nodevm/FINDINGS.md's per-Pod-Mesh entry). BYO VM nodes must leave this false: flannel wireguard-native needs the real internal IP undisturbed and only reads --node-external-ip for cross-cloud reachability")
 	nodeExternalIP := flag.String("node-external-ip", "", "Node external IP to advertise (needed for flannel wireguard-native across networks that don't share L2; see docs/cloudflare-mesh-networking.md). Overridden by --mesh-connector-token's discovered Mesh IP if both are set")
 	nodeLabels := flag.String("node-labels", "", "Comma-separated key=value labels the kubelet registers its Node with (k3s --node-label). Per-Pod microVM nodes use this for the k8flare.com/backend selector label")
 	nodeTaints := flag.String("node-taints", "", "Comma-separated key=value:Effect taints the kubelet registers its Node with (k3s --node-taint). Per-Pod microVM nodes use this for the pod-on-containers NoSchedule taint")
@@ -125,8 +126,10 @@ func main() {
 	// Join Mesh before building agentConfig -- the discovered Mesh IP
 	// must be present in the very first Node registration, not patched
 	// in after the fact.
+	var meshIP string
 	if *meshConnectorToken != "" {
-		meshIP, err := meshconnector.Run(ctx, *meshConnectorToken)
+		var err error
+		meshIP, err = meshconnector.Run(ctx, *meshConnectorToken)
 		if err != nil {
 			log.Fatalf("failed to join Cloudflare Mesh: %v", err)
 		}
@@ -151,6 +154,9 @@ func main() {
 	}
 	if *nodeExternalIP != "" {
 		agentConfig.NodeExternalIP.Set(*nodeExternalIP)
+	}
+	if *meshIPAsNodeIP && meshIP != "" {
+		agentConfig.NodeIP.Set(meshIP)
 	}
 
 	log.Printf("Starting k3s-cf-agent: server=%s node=%s", *serverURL, *nodeName)

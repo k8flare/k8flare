@@ -40,6 +40,16 @@ export interface Env {
   // both are present (gateway/proxy/kubelet.ts).
   MESH?: Fetcher;
 
+  // Per-Pod Cloudflare Mesh membership on the Containers backend
+  // (spikes/s17-mesh-nodevm/FINDINGS.md's per-Pod-Mesh entry):
+  // cf-containers-scheduler mints one warp_connector per scheduled Pod
+  // via these credentials (nodes/meshconnector.ts, the same
+  // POST/GET/DELETE .../warp_connector API gate 2 proved by hand for
+  // the BYO-VM path). Both optional -- absent either, Pods on this
+  // backend boot without Mesh membership.
+  CLOUDFLARE_API_TOKEN?: string;
+  CLOUDFLARE_ACCOUNT_ID?: string;
+
   K3S_TOKEN?: string;
   // Management-API auth (clusters/adminauth.ts): comma-separated
   // rotatable admin secrets, and/or Cloudflare Access JWT verification

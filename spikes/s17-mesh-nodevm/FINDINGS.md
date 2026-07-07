@@ -150,3 +150,194 @@ minting a purpose-scoped Cloudflare API token for this. Whoever
 resumes this: mint a token with the Tunnel/Zero Trust Networks
 permission group, `curl -X POST .../warp_connector` with it, and this
 gate closes definitively either way.
+
+## Per-Pod Mesh membership on the Containers backend (2026-07-08, user decision, implemented)
+
+User decision: for the Fargate-style per-Pod microVM node model
+(`workers/k8flare/src/nodes/`, one dedicated NodeVM per Pod,
+`cf-containers-scheduler`), Mesh membership should be **Pod-scoped, not
+Node-scoped** -- each Pod gets its own Mesh IP, decoupled from whatever
+IP the underlying NodeVM has, so a future move to packing multiple Pods
+onto one NodeVM (if that ever happens) wouldn't require re-architecting
+Mesh membership.
+
+**Design correction mid-task (recorded, not hidden):** the initial brief
+for this proposed an Istio-style WARP sidecar container sharing the
+Pod's network namespace. The user corrected this before implementation
+started, with a better mental model: **AWS Fargate's ENI attachment, not
+a sidecar** -- "サイドカーというよりは、FargateのENIみたいな感じかな。
+透過的に自然と参加できる状態が理想" (more like Fargate's ENI than a
+sidecar; the ideal is transparent, natural participation). This is a
+better fit for THIS specific backend because, unlike a general
+multi-tenant Kubernetes cluster, `workers/nodes` already runs the SAME
+unmodified `cmd/agent` binary (full k3s embed: kubelet + containerd)
+inside each per-Pod microVM as the BYO-VM path does on a bare host --
+the BYO-VM Mesh-join mechanism (`pkg/meshconnector`, gate 2, already
+shipped for the kubelet-proxy use case, commit `b6d4340`) already exists
+in that exact binary and needed to be wired on for this backend, not
+reinvented as a new sidecar image/container. No sidecar container was
+built or evaluated further once this correction landed.
+
+**What actually shipped:**
+
+1. `pkg/meshconnector` (Go, `cmd/agent`) is REUSED UNMODIFIED -- exactly
+   the same `warp-cli --accept-tos connector new <TOKEN>` /
+   `warp-cli --accept-tos connect` / poll-`CloudflareWARP`-interface
+   sequence gate 2 already proved. The only `cmd/agent` change is a new
+   flag, `--mesh-ip-as-node-ip` (`cmd/agent/main.go`): when set, the
+   discovered Mesh IP is ALSO applied to `agentConfig.NodeIP` (k3s's
+   `--node-ip`), not just `agentConfig.NodeExternalIP` (the field the
+   already-shipped BYO-VM feature sets).
+2. **A genuine, source-verified correction to the "reuse `--node-external-ip`"
+   assumption the task's own coordinating message proposed**: read the
+   exact pinned kubelet source
+   (`github.com/k3s-io/kubernetes@v1.36.2-k3s1`, fetched and inspected
+   directly, not guessed from memory) to confirm which flag actually
+   determines a `hostNetwork: true` Pod's `status.PodIP`.
+   `pkg/kubelet/kubelet_pods.go`'s `generateAPIPodStatus` calls
+   `kl.getHostIPsAnyWay(ctx)` -> `utilnode.GetNodeHostIPs(node)`, and for
+   `IsHostNetworkPod(pod)`, sets `s.PodIP = hostIPs[0].String()` when
+   unset -- i.e. hostNetwork PodIP mirrors the NODE'S InternalIP as
+   recorded in its own Node object. Tracing k3s's own flag wiring
+   (`pkg/daemons/agent/agent_linux.go`: `argsMap["node-ip"] = cfg.NodeIP`)
+   confirms kubelet's real `--node-ip` argument -- fed by
+   `agentConfig.NodeIP`, NOT `agentConfig.NodeExternalIP` -- is what
+   becomes that InternalIP. **`NodeExternalIP` (what the already-shipped
+   BYO-VM Mesh feature sets) has NO effect on hostNetwork PodIP at
+   all** -- it feeds a separate `ExternalIP` node-status field and
+   annotation, used by `target.ts`'s `resolveKubeletTarget` for a
+   completely different purpose (the gateway dialing a BYO VM's kubelet
+   through the `MESH` vpc_networks binding), which this Containers
+   backend doesn't use in the first place (it reaches kubelet through
+   `containerFetch`, never through `MESH`). Reusing `NodeExternalIP`
+   alone, as literally described, would have shipped a Mesh-joined NodeVM
+   whose Pod's `status.PodIP` was silently UNCHANGED (still the VM's
+   plain internal IP) -- a plausible, easy-to-miss bug this session
+   avoided only by reading the real upstream mechanism rather than
+   assuming behavior would "just carry over." Recorded per rule 4 as a
+   correction to a design point that was proposed but not yet
+   implemented, not a shipped regression.
+3. Also confirmed (same read): the fix is scoped so it does NOT touch the
+   already-shipped BYO-VM behavior. `--mesh-ip-as-node-ip` is a new,
+   separate, default-`false` flag; BYO-VM's `--mesh-connector-token`
+   usage (README's documented recipe) is untouched, so flannel
+   `wireguard-native`'s reliance on the real internal IP staying the VM's
+   own address (a DIFFERENT, already-working use of
+   `NodeIP`/`NodeExternalIP`'s split) is undisturbed.
+4. `workers/k8flare/src/nodes/meshconnector.ts` (new, Worker-side TS):
+   mints a FRESH `warp_connector` per Pod at schedule time
+   (`scheduler.ts`'s `reconcile()`, right before booting that Pod's
+   NodeVM) via the exact same two API calls gate 2 proved by hand --
+   `POST /accounts/{id}/warp_connector`, `GET .../token` -- this runs
+   Worker-side (not inside the microVM) because only the Worker holds
+   the Cloudflare API credentials (`CLOUDFLARE_API_TOKEN`/
+   `CLOUDFLARE_ACCOUNT_ID`, new optional `env.ts` fields; absent either,
+   `createMeshConnector` returns `undefined` and the Pod boots without
+   Mesh membership -- graceful degradation, matching
+   `pkg/vkubeproxy`/`pkg/dnsshim`'s own posture for their optional
+   enhancements, not a hard scheduling failure). The resulting token is
+   passed to the NodeVM as `MESH_CONNECTOR_TOKEN` (`nodevm.ts`'s `up()`),
+   which `cmd/agent` already reads as its `--mesh-connector-token`
+   default -- no entrypoint.sh wiring was needed for the token itself,
+   only for starting `warp-svc` (see below) and passing
+   `--mesh-ip-as-node-ip=true`.
+5. **Teardown wired to Pod deletion**, so the 50-connectors/account cap
+   doesn't leak per Pod: `TrackedVM` (`scheduler.ts`) gained a
+   `meshConnectorId` field; `teardown()` (called from the normal
+   pod-gone path AND the FailedScheduling/NODE_READY_TIMEOUT_MS path)
+   calls `deleteMeshConnector`; the `/admin/destroy` whole-cluster
+   teardown path also deletes every tracked Pod's connector before
+   dropping DO state.
+6. **Node image**: `workers/k8flare/images/node/Dockerfile` moved from
+   `alpine:3.21` to `debian:bookworm-slim` (gate 1's finding: no
+   Alpine/musl `cloudflare-warp` build) and installs `cloudflare-warp`
+   via gate 1/2's own proven apt recipe, reused verbatim from
+   `spikes/s17-mesh-nodevm/Dockerfile`. Debian's `iptables` package
+   already provides `ip6tables` (no separate package needed, unlike
+   Alpine) -- found by actually building the image, not assumed.
+   `entrypoint.sh`'s cgroup-evacuation line used `busybox xargs`
+   (Alpine-only); switched to plain `xargs` (GNU findutils, present on
+   Debian by default).
+7. **New in this backend, absent from the BYO-VM path**: since this
+   microVM's entrypoint IS PID 1 with no init system, `warp-svc` (the
+   daemon `warp-cli`/`pkg/meshconnector` talk to -- on a real BYO VM
+   host, the `cloudflare-warp` .deb's postinst enables a systemd unit
+   automatically) must be started and waited-on explicitly.
+   `entrypoint.sh` now does, conditionally on `MESH_CONNECTOR_TOKEN`
+   being set: `warp-svc &`, then a bounded (10s) poll of
+   `warp-cli --accept-tos status` before `exec`-ing `k8flare-agent` --
+   same one-time-bounded-wait style as `meshconnector.go`'s own 30s
+   `waitForMeshIP` poll, not a resident poll loop (cost invariant #3 is
+   about DO alarms, not a boot-sequence wait).
+
+**What was verified, and how (rule 2 -- actually run, not read-and-conclude):**
+
+- Go: `GOOS=linux GOARCH=amd64 go build`/`go vet` on `cmd/agent` and
+  `pkg/meshconnector` clean; `gofmt -l` clean;
+  `CLOUDFLARE_ACCOUNT_ID=ed17c5c18eb6052e70234ec181709fba go test -count=1
+./pkg/apiserver/...` (after `rm -rf .wrangler/state`) passes unchanged
+  (this suite runs with Containers disabled, so it does not exercise
+  `cf-containers-scheduler`'s runtime behavior either before or after
+  this change -- a pre-existing ceiling on what it can catch here, not
+  new).
+- `bash scripts/build-wasm-chunks.sh`: apiserver 62,863,479 bytes / kcm
+  64,019,330 bytes -- byte-for-byte unchanged from the confirmed-clean
+  baseline (expected: this change touches `cmd/agent`, which neither
+  wasm target's build graph reaches).
+- TypeScript: `npx tsc --noEmit -p workers/k8flare/tsconfig.json` and
+  `vp check` both clean for the new/changed files (`nodes/meshconnector.ts`,
+  `nodes/scheduler.ts`, `nodes/nodevm.ts`, `env.ts`).
+- **`nodes/meshconnector.ts`'s control flow was exercised for real**
+  against a mocked `fetch` (this repo has no existing TS unit-test
+  harness for `workers/k8flare/src` -- its own convention is `go test`
+  driving a real `wrangler dev` instead, so this was a throwaway
+  scratchpad script, not a committed test): confirmed the
+  unconfigured-credentials no-op path, the happy-path POST+GET request
+  shapes and returned `{id, token}`, that a failed create makes no
+  further calls, and that a failed token-fetch triggers a cleanup DELETE
+  of the half-created connector (leak prevention) rather than silently
+  dropping it.
+- **The full node-image boot sequence was exercised for real** in a
+  privileged local Docker container (this sandbox's ARM-Mac +
+  no-real-Containers-runtime limitation is pre-existing and unchanged --
+  see S16 -- so this is the same "isolated container environment"
+  substitute gate 1 already used, not a full `wrangler dev
+--enable-containers` run): built the actual switched `Dockerfile`
+  (image grew to 1.48GB, see cost-model.md), ran the actual
+  `entrypoint.sh` with a real cross-compiled `k8flare-agent` binary
+  (`scripts/build-nodes-agent.sh`) and `--privileged --cgroupns=host`,
+  and confirmed: `k3s check-config` runs, the cgroup dance and PATH setup
+  complete, `warp-svc` starts headless and the readiness loop detects it
+  ready (~1s), and `k8flare-agent` reaches `meshconnector.Run` and fails
+  fast and cleanly on an intentionally-invalid token (`warp-cli
+connector new`: `Error: Failed to parse WARP Connector token`, `exit
+  status 1`, surfaced through `log.Fatalf` in well under a second -- not
+  a hang, not silently stuck waiting on a not-yet-ready `warp-svc`).
+- **Real Cloudflare API resources**: none created or deleted this
+  session. No `CLOUDFLARE_API_TOKEN` (Zero Trust/Tunnel-scoped) was
+  available in this sandbox. A `wrangler`-OAuth session WAS available
+  (KOOFFICE account `ed17c5c18eb6052e70234ec181709fba`, `connectivity
+  (admin)` scope, confirmed via `wrangler whoami`), but this session
+  declined to extract/repurpose that token for raw `warp_connector` API
+  calls outside `wrangler`'s own CLI surface (`wrangler` itself has no
+  `warp_connector`/Mesh subcommand, only `wrangler tunnel`, a different
+  resource type) -- the same reservation this doc's own 2026-07-07
+  correction already recorded ("feels like the wrong way to use that
+  credential"), applied consistently rather than relaxed under this
+  task's time pressure.
+
+**Open gap, honestly recorded (not a blocker, a follow-up):** the one
+thing NOT verified end-to-end is a real Pod's `status.podIP` actually
+becoming a live Mesh IP against the real KOOFFICE account and a real
+Cloudflare Containers instance. Everything upstream of that (the Go flag
+wiring, the exact kubelet mechanism it targets, the Worker-side API call
+shapes, the full node-image boot sequence up to the point a real
+connector token would be consumed) was verified for real by the methods
+above; only "mint one real connector, boot one real NodeVM against it,
+`kubectl get pod -o wide` and see the Mesh IP" remains, gated on
+`CLOUDFLARE_API_TOKEN` access this sandbox didn't have. Whoever resumes
+with that access: run one real Pod through this backend with
+`CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` set, confirm the Pod's
+`status.podIP` is a `100.96.0.0/12` address, then `DELETE` the connector
+and confirm via `GET /accounts/{id}/warp_connector` that it's gone (this
+task's own instruction for how to close this gap cleanly).

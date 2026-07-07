@@ -6,7 +6,7 @@
 set -e
 if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
   mkdir -p /sys/fs/cgroup/init
-  busybox xargs -rn1 < /sys/fs/cgroup/cgroup.procs > /sys/fs/cgroup/init/cgroup.procs || true
+  xargs -rn1 < /sys/fs/cgroup/cgroup.procs > /sys/fs/cgroup/init/cgroup.procs || true
   sed -e 's/ / +/g' -e 's/^/+/' < /sys/fs/cgroup/cgroup.controllers > /sys/fs/cgroup/cgroup.subtree_control || true
 fi
 # Task #13's virtual kube-proxy (pkg/vkubeproxy) needs /dev/net/tun.
@@ -33,4 +33,28 @@ fi
 # (pkg/dnsshim's NodeLocalDNSIP is the precedent: cmd/agent and
 # pkg/apiserver are different Go build targets, one js/wasm, with no
 # shared-constant seam between them).
-exec k8flare-agent -server "$SERVER_URL" -node-name "$NODE_NAME" -token "$K3S_TOKEN" -with-node-id=false -node-labels "k8flare.com/backend=containers" -node-taints "k8flare.com/pod-on-containers=true:NoSchedule" -kubelet-plain-proxy-port 10256 -virtual-kube-proxy-cidr 10.43.0.0/16
+#
+# Per-Pod Cloudflare Mesh membership (spikes/s17-mesh-nodevm/FINDINGS.md's
+# per-Pod-Mesh entry): MESH_CONNECTOR_TOKEN is set per-Pod by
+# scheduler.ts's createMeshConnector() via nodevm.ts's up() -- absent on
+# a deployment without CLOUDFLARE_API_TOKEN/ACCOUNT_ID configured, in
+# which case this whole block is a no-op and the Pod boots exactly as
+# before this feature existed. `warp-svc` (the daemon `warp-cli`/
+# pkg/meshconnector talk to) has no init system to start it under here
+# (unlike a real BYO VM, where the `cloudflare-warp` .deb's postinst
+# enables a systemd unit) -- this microVM's entrypoint IS PID 1, so it
+# must start and wait for the daemon itself before k8flare-agent's
+# meshconnector.Run tries to talk to it. Bounded 10s readiness wait, same
+# style as meshconnector.go's own bounded 30s waitForMeshIP poll -- a
+# one-time boot-sequence wait, not a resident poll loop (cost invariant
+# #3 is about DO alarms, not process startup).
+if [ -n "$MESH_CONNECTOR_TOKEN" ]; then
+  warp-svc &
+  i=0
+  while [ "$i" -lt 10 ]; do
+    warp-cli --accept-tos status >/dev/null 2>&1 && break
+    i=$((i + 1))
+    sleep 1
+  done
+fi
+exec k8flare-agent -server "$SERVER_URL" -node-name "$NODE_NAME" -token "$K3S_TOKEN" -with-node-id=false -node-labels "k8flare.com/backend=containers" -node-taints "k8flare.com/pod-on-containers=true:NoSchedule" -kubelet-plain-proxy-port 10256 -virtual-kube-proxy-cidr 10.43.0.0/16 -mesh-ip-as-node-ip=true
