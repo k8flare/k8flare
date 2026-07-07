@@ -2991,3 +2991,211 @@ resources kubectl rarely `apply`s to with array-merge semantics) --
 NOT another attempt at a GroupVersion-based Loader-worker split, which
 this section's measurements show is not where apiserver's size
 actually comes from.
+
+## S21: kube-scheduler VolumeBinding/NodeVolumeLimits/DynamicResources delegate-Worker investigated and rejected -- these plugins are under 1% of the size gap, not the cause (2026-07-07)
+
+Task ask: instead of deleting VolumeBinding/NodeVolumeLimits(CSI)/
+DynamicResources from the WASM scheduler outright (rejected by the user
+because a future hybrid BYO-VM-plus-real-CSI cluster might need them to
+stay correct), delegate just those three plugins to a second, lazily
+Loader-loaded WASM worker, invoked only for the rare Pod that actually
+triggers them, so the common case (no DRA, R2-only storage) costs
+nothing. This entry records why that plan was not implemented, backed
+by fresh builds and measurements (not a re-read of the existing S8
+"kube-scheduler-wasm-fork" entry or S20's tail above, both of which
+this entry independently corroborates rather than supersedes).
+
+**Finding 0 (changes the premise): these plugins are already disabled
+today, identically, on both the host-process scheduler and the WASM
+one -- not because of the WASM size cap.** `pkg/controllers/sched/
+sched.go`'s `RunScheduler` sets `cfg.Profiles[0].Plugins.MultiPoint.
+Disabled` to `VolumeBinding`, `VolumeRestrictions`, `NodeVolumeLimits`,
+`VolumeZone`, and `DynamicResources`, with a comment stating this
+"[m]atches `cmd/scheduler/main.go`'s `writeSchedulerConfig`: disable
+the PV/PVC/StorageClass-touching plugins this apiserver can't back."
+That is the **host-process** scheduler binary (`cmd/scheduler`, used
+for BYO-VM nodes today, entirely unconstrained by any Loader byte cap)
+disabling the exact same four volume plugins for the exact same
+reason: this repo's PV/PVC/StorageClass backend is an R2 shim with no
+real CSI provisioner anywhere yet (`pkg/apiserver/pvcbind.go`'s
+`BootstrapStorageClasses`). So there is no currently-working BYO-VM +
+real-CSI functionality for a delegate-Worker to "restore" -- building
+one would add net-new, speculative functionality for a hybrid
+configuration that does not exist in this codebase today, on either
+execution shape.
+
+**Finding 1, extension points (confirmed by grepping the resolved
+`.build/k8s-js-mirror` source, not assumed):**
+
+- `VolumeBinding`: `PreFilter`, `PreFilterExtensions`, `Filter`,
+  `PreScore`, `Score`, `ScoreExtensions`, `Reserve`,
+  `PreBindPreFlight`, `PreBind`, `Unreserve`.
+- `NodeVolumeLimits` (`CSILimits`): only `PreFilter`,
+  `PreFilterExtensions`, `Filter` -- no `Reserve`/`PreBind`/
+  `Unreserve`, and its `PreFilter`/`Filter` signatures don't even bind
+  the `fwk.CycleState` parameter (`_ fwk.CycleState`). This one plugin
+  really is a stateless, read-only node filter with no side effects --
+  cleanly delegatable in principle, mechanically speaking.
+- `DynamicResources`: `PreEnqueue`, `PreFilter`, `PreFilterExtensions`,
+  `Filter`, `PostFilter`, `Score`, `ScoreExtensions`,
+  `NormalizeScore`, `Reserve`, `PreBindPreFlight`, `PreBind`,
+  `Unreserve`.
+- A repo-wide grep (`grep -rl "^func.*) Reserve(ctx context.Context" pkg/scheduler/framework/plugins`)
+  found **only** `volumebinding` and `dynamicresources` implement
+  `Reserve` among every in-tree plugin. Both pair it with `PreBind`
+  (the real, side-effecting API write -- actually binding a PV to a
+  PVC, or a ResourceClaim to a device) and `Unreserve` (rollback if a
+  *different* plugin's `Reserve` fails later in the same cycle). This
+  is a two-phase-commit protocol coordinated by the framework's own
+  scheduling loop across possibly-concurrent pods sharing one
+  in-process `assumecache.AssumeCache`/`SharedDRAManager` for mutual
+  exclusion -- not a single stateless decision. Splitting it across an
+  RPC boundary means either reimplementing that concurrency-safe
+  assume/bind protocol remotely (a large, correctness-critical
+  undertaking, and a reimplementation this repo's own rule 3 says to
+  avoid), or relaying the *entire* plugin lifecycle (every extension
+  point above, not just the rare PreBind trigger) to the remote side
+  with a custom CycleState bridge keyed by (schedulingCycle, podUID)
+  across every PreFilter/Filter/Score/Reserve/PreBind/Unreserve round
+  trip for that pod's cycle -- because `Reserve`/`PreBind` read state
+  (`cs.Read(stateKey)`) written by that *same plugin's own* earlier
+  PreFilter/Filter/Score calls in the same cycle. "Delegate only the
+  rare trigger case" does not hold up mechanically for these two.
+
+**Finding 2, CycleState privacy (a non-issue, confirmed by grep):**
+both plugins key their `CycleState` entries with `stateKey fwk.StateKey
+= Name` (their own package name, e.g. `"VolumeBinding"`) and no other
+in-tree plugin reads either key. So cross-plugin CycleState sharing is
+not an additional blocker here -- Finding 1's Reserve/PreBind/Unreserve
+protocol is the real structural concern, not state leakage to other
+plugins.
+
+**Finding 3, the DRA feature gate and scheduler.go's unconditional
+construction (confirmed exactly as the task's premise stated, plus one
+more instance the premise didn't name):** `pkg/features/kube_features.go`
+locks `DynamicResourceAllocation` to `Default: true` /
+`LockToDefault: true` starting v1.35 in this k3s pin -- it cannot be
+turned off via feature-gate flags. `pkg/scheduler/scheduler.go`'s own
+body (not the pluggable registry) gates ResourceClaim/ResourceSlice/
+DeviceClass informer and `SharedDRAManager` construction behind
+`feature.DefaultFeatureGate.Enabled(features.DynamicResourceAllocation)`
+-- unconditional in practice because the gate is locked. **New finding
+this session:** the very next line, `sharedCSIManager :=
+nodevolumelimits.NewCSIManager(informerFactory.Storage().V1().CSINodes().Lister())`,
+has **no feature-gate or plugin-enabled guard of any kind** -- it runs
+regardless of whether `NodeVolumeLimits` is even in the registry. The
+task's brief only asked about DRA's informers; the same
+"`scheduler.go`'s own body, not the registry" pattern turns out to
+apply to `NodeVolumeLimits`'s CSI manager too.
+
+**Finding 4, decisive and measured (same session, same environment,
+fresh from-scratch builds -- not read from the existing S8/S20 entries):**
+built three variants from a freshly regenerated `.build/k8s-js-mirror`,
+identical toolchain and `wasm-opt` flags to `scripts/build-wasm-chunks.sh`
+(`GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath` +
+`wasm-opt -Oz --strip-debug --strip-producers --enable-bulk-memory
+--enable-nontrapping-float-to-int --enable-sign-ext
+--enable-mutable-globals`), all disposable (no committed file was
+touched; edits were made directly to the gitignored `.build/`
+mirror copy and discarded afterward):
+
+| Variant | wasm-opt bytes | Delta from baseline | Still over 64MiB cap by |
+| --- | --- | --- | --- |
+| Clean baseline, unmodified overlays (this environment) | 103,067,345 | -- | 35,958,481 (~34.3MiB) |
+| Registry-only: drop `VolumeBinding`/`VolumeRestrictions`/`VolumeZone`/`NodeVolumeLimits.CSIName` from the js registry map (exact same pattern as the already-shipped `DynamicResources` drop; no `scheduler.go` changes) | 102,499,335 | -568,010 bytes (~555KiB) | 35,390,471 (~33.8MiB) |
+| Full removal: registry change above + a disposable `scheduler.go` fork skipping the DRA-gated informer/`SharedDRAManager` construction *and* the unconditional `sharedCSIManager` construction | 102,050,604 | -1,016,741 bytes (~993KiB, ~0.97MiB) | 34,941,740 (~33.3MiB) |
+
+(Note on the baseline number itself: 103,067,345 differs from the
+existing S8 entry's 101,110,390 by ~1.96MiB. Both were built the same
+way from the same pinned upstream module and this session did not
+change any overlay before taking the baseline measurement -- the
+difference is attributed to Go/wasm-opt toolchain version drift
+between sessions, not a code change, and is flagged here rather than
+silently reconciled, per this repo's honest-correction convention.
+Either baseline leads to the same conclusion below.)
+
+Removing all three plugins as cleanly as this session could manage --
+registry entries dropped *and* `scheduler.go`'s two unconditional
+construction sites neutralized -- saves under 1MiB out of a ~34-35MiB
+gap. **These three plugins collectively account for under 1% of why
+the real kube-scheduler doesn't fit the Loader's 64MiB cap.** This is
+an independent, from-scratch re-confirmation (not a restatement) of
+the 2026-07-07 S8 "kube-scheduler-wasm-fork" entry's conclusion that
+`kubernetes.Interface`'s global width -- forced on every group's
+informer files across the *entire* client-go tree, not scoped to
+whichever plugins are actually enabled -- is the dominant, structural
+cost, not any individual plugin's own implementation code.
+
+**Conclusion: did not implement the delegate-Worker (or facet-hosted)
+plumbing.** Two independently sufficient reasons, either one alone
+enough to stop here per this task's own branch condition:
+
+1. **Size is dispositive on its own.** Even a fully-working delegate
+   for all three plugins would leave the main scheduler binary
+   ~33-34MiB over the Loader's cap -- it would not achieve the actual
+   goal (shipping a WASM scheduler for pure-Cloudflare-native, no-BYO-VM
+   clusters). Building the delegation plumbing first and finding this
+   out afterward would have been backwards; Finding 4 was checked
+   before writing any product code specifically to avoid that.
+2. **Correctness/complexity is disproportionate to what little size it
+   would save.** Finding 1 above means a clean delegation of
+   `VolumeBinding`/`DynamicResources` is not "ship a decision over the
+   wire" -- it is "reimplement or fully relay a concurrency-sensitive,
+   multi-callback assume/bind protocol," for well under 1MiB of benefit,
+   in service of a configuration (Finding 0) nothing in this codebase
+   supports today even on the unconstrained host-process path.
+
+**On the coordinator's Facets-based hosting suggestion, evaluated at
+the design level but not prototyped:** mid-investigation, the
+orchestrating session correctly pointed out that `workers/k8flare/src/
+storage/facets.ts`'s `ctx.facets.get(name, factory)` mechanism (a
+Durable-Object-owned, lazily-created, independently-stateful facet
+instance, backed by the same `env.LOADER.get(...).getDurableObjectClass(...)`
+delivery already used for `cmd/apiserver-wasm`/`cmd/kcm-wasm`) is the
+right-shaped existing primitive for a lazy delegate, not a bare new
+Loader-worker binding -- and that `workers/k8flare/src/controllers/
+index.ts`'s `Controllers` DO already has a stubbed, gracefully-handled
+`"sched"` `loadComponent` case and a `GATEWAY` fetcher
+(`dynamicEnv.GATEWAY = this.env.SELF`) in the shape that
+`pkg/vkubeproxy`/`podproxy.ts` already use for WASM-to-Worker
+callbacks. Both of those facts were confirmed by reading the actual
+files (not taken on faith) and are accurate, and this is the correct
+mechanism to reach for **if** this delegation is revisited later. It
+was not prototyped end-to-end this session because Finding 4 (size)
+already made the whole delegation moot before reaching the hosting
+question -- there was nothing left worth hosting. Recorded here so the
+next attempt at this doesn't have to re-derive it.
+
+**What would actually help close the ~34MiB gap instead** (pointer, not
+new work this entry): the existing S8 "kube-scheduler-wasm-fork"
+entry's own scoped follow-up -- pruning `informers/{apps,storage,
+resource,scheduling,policy}/<unused version>/*.go` and each group's own
+`interface.go` tree-wide so `kubernetes.Interface` itself can narrow,
+not another plugin-by-plugin pass. If that follow-up ever lands and the
+gap closes enough that these three plugins' <1MiB starts to matter
+again, Finding 0-2 above (already disabled everywhere, correctness
+complexity concentrated in `VolumeBinding`/`DynamicResources`'s
+Reserve/PreBind/Unreserve trio, `NodeVolumeLimits` alone is cleanly
+stateless) is the starting point, not this entry's rejection of the
+whole idea.
+
+**Verification performed this session**: three `GOOS=js GOARCH=wasm go
+build` + `wasm-opt -Oz` measurements above, all from disposable edits
+to the gitignored `.build/k8s-js-mirror` copy -- `git status --short`
+confirmed zero tracked files touched by any of them.
+`bash scripts/build-wasm-chunks.sh` (the real CI gate, run after
+regenerating a clean mirror) re-confirmed apiserver and KCM unchanged
+at **62,863,479** and **64,019,330** bytes respectively, matching this
+branch's existing baselines exactly. `go vet ./pkg/... ./cmd/...`
+(host; pre-existing, unrelated `cmd/agent`/`pkg/vkubeproxy` build-tag
+exclusions on darwin, not caused by anything here), `GOOS=js GOARCH=wasm
+go vet ./pkg/leanclient/... ./pkg/controllers/...` (untagged), and
+`GOOS=js GOARCH=wasm GOFLAGS=-modfile=go.wasm.mod go vet -tags leanwidth
+./cmd/kcm-wasm ./pkg/controllers ./pkg/leanclient/...` all clean.
+`CLOUDFLARE_ACCOUNT_ID=... go test -count=1 ./pkg/apiserver/...` (after
+`rm -rf .wrangler/state`) passed. No new Go typed clients were added, so
+`cmd/k8flare-gen` was not re-run. No `docs/cost-model.md` entry was
+added, since no new component was built or shipped -- the task's cost-
+accounting requirement was conditional on actually implementing the
+delegate, and this entry's conclusion is the negative-finding branch
+instead.
