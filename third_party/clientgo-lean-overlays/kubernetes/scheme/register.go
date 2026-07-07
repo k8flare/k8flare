@@ -31,10 +31,14 @@ limitations under the License.
 // serialize at runtime: the five leanclient groups (core/apps/batch/
 // coordination/discovery v1), events/v1 (the scheduler's
 // EventBroadcasterAdapter sink), policy/v1 (PDB informers), storage/v1
-// (CSI informers), and scheduling/v1 (PriorityClass). A type outside
-// this list would fail encode/decode at runtime with a "no kind
-// registered" error -- loud, not silent -- and fixing it means adding
-// one import + one AddToScheme line here.
+// (CSI informers), scheduling/v1 (PriorityClass), and resource/v1
+// (DeviceClass/ResourceClaim/ResourceSlice -- the real, unmodified
+// upstream scheduler's DynamicResources/DRA machinery, GA and
+// LockToDefault:true in v1.36.2-k3s1, see docs/platform-verification.md's
+// S8 kube-scheduler-wasm-fork entry). A type outside this list would
+// fail encode/decode at runtime with a "no kind registered" error --
+// loud, not silent -- and fixing it means adding one import + one
+// AddToScheme line here.
 //
 // Host builds (cmd/agent, cmd/scheduler, go test) never see this file:
 // it is only swapped into .build/clientgo-lean-mirror by
@@ -51,6 +55,7 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 	eventsv1 "k8s.io/api/events/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -71,6 +76,7 @@ var localSchemeBuilder = runtime.SchemeBuilder{
 	discoveryv1.AddToScheme,
 	eventsv1.AddToScheme,
 	policyv1.AddToScheme,
+	resourcev1.AddToScheme,
 	schedulingv1.AddToScheme,
 	storagev1.AddToScheme,
 }

@@ -576,6 +576,30 @@ Numbers to replace with measurements: actual awake-fraction under the
 poke cadence, actual active-CPU per reconcile burst, cold-start delay
 (typical 1–3 s) added to first Pod schedule after idle.
 
+### Scheduler-as-Loader-dynamic-worker: cost shape if it ever fits (2026-07-07)
+
+Recorded alongside `docs/platform-verification.md`'s S8
+kube-scheduler-wasm-fork entry (2026-07-07): a session narrowed
+`informers.SharedInformerFactory` from 19 to 6 groups, closing the wasm
+binary from 102.8MB to 101.1MB opt -- still ~34MB over the Worker
+Loader's 64MiB cap, so **this remains a size question, not yet a cost
+question** (the Containers-based estimate above, "basic instance", still
+applies as the only currently-fitting execution shape). If a future
+session closes the remaining gap (see that doc entry's scoped follow-up),
+the cost shape would be **identical to KCM's already-measured Loader
+dynamic-worker profile** (`controllers` row, cost table top of this
+file): Worker Loader's flat $0.002/unique-code/day (one more unique
+`sched.wasm` hash alongside `kcm.wasm`/`apiserver.wasm`'s existing
+per-hash charges) plus ordinary Workers CPU-time billing for the
+resident scheduling loop, pumped by the same event-armed
+poke/`waitUntil`-window discipline already governing KCM (invariant #3)
+-- no new cost primitive, since a Loader-loaded WASM binary is billed
+identically regardless of which control-plane component it runs. This
+would be strictly cheaper than the Containers alternative above (no
+wall-clock container awake-time, no cold-start delay after idle,
+CPU-time-only billing per invariant #2) if and when it fits -- the
+entire remaining blocker is the 64MiB cap, not a cost-model concern.
+
 ## Idle-cluster verification checklist
 
 A checklist for mechanically confirming cost invariant #1, "nothing is

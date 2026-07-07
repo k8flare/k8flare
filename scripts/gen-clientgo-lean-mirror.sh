@@ -100,11 +100,36 @@ cp "$OVERLAY_DIR/kubernetes/scheme/register.go" "$DST/kubernetes/scheme/register
 
 # informers/<group>/<version> and listers/<group>/<version> are NOT
 # pruned, deliberately -- see third_party/clientgo-lean-overlays/README.md's
-# "correction" note. pkg/scheduler.New's informerFactory parameter is
-# fixed to k8s.io/client-go/informers.SharedInformerFactory (an external
-# interface spanning all ~54 groups); passing anything through that
-# parameter requires the *real*, unpruned informers/listers tree (and,
-# above, kubernetes.Interface's full width) regardless of how few groups
-# pkg/controllers' own code touches directly.
+# "correction" note. kubernetes.Interface (above) stays full width because
+# it's an *external* fixed contract (client-go/tools/leaderelection/
+# resourcelock, and every informers/<group>/<version>'s own
+# NewFilteredXInformer, hardcode a parameter of that exact type -- narrowing
+# it broke compilation the same way narrowing kubernetes.Interface itself
+# did, per that same correction note).
+#
+# informers/factory.go (the SharedInformerFactory *aggregate*) is
+# different: nothing external requires its 19-group width, only
+# pkg/scheduler.New's own call site (this repo's fork of it) -- so it's
+# pruned to the 5 groups (Core/Apps/Storage/Resource/Scheduling) the real,
+# unmodified upstream kube-scheduler actually calls. See
+# third_party/clientgo-lean-overlays/informers/factory.go's doc comment
+# for the full accounting. Drift-checked like scheme/register.go above.
+UPSTREAM_INFORMERS_FACTORY="$SRC/informers/factory.go"
+EXPECTED_IF_SHA="$(awk '{print $1}' "$OVERLAY_DIR/upstream-informers-factory.go.sha256")"
+ACTUAL_IF_SHA="$(shasum -a 256 "$UPSTREAM_INFORMERS_FACTORY" | awk '{print $1}')"
+if [[ "$ACTUAL_IF_SHA" != "$EXPECTED_IF_SHA" ]]; then
+  echo "gen-clientgo-lean-mirror: upstream informers/factory.go changed since the overlay was last reviewed." >&2
+  echo "  expected sha256 $EXPECTED_IF_SHA, got $ACTUAL_IF_SHA" >&2
+  echo "  Review the new upstream file, update $OVERLAY_DIR/informers/factory.go if the" >&2
+  echo "  group accessor set changed, then refresh upstream-informers-factory.go.sha256." >&2
+  exit 1
+fi
+cp "$OVERLAY_DIR/informers/factory.go" "$DST/informers/factory.go"
+# generic.go implements ForResource via a switch spanning every API type
+# in all ~54 groups (the mechanism that would silently re-widen the
+# pruned factory back out) -- deleted; the pruned factory.go above
+# redeclares GenericInformer and stubs ForResource itself (confirmed
+# unused by pkg/scheduler's own call sites).
+rm -f "$DST/informers/generic.go"
 
 echo "gen-clientgo-lean-mirror: done ($(find "$DST" -type f | wc -l | tr -d ' ') files at $DST)"

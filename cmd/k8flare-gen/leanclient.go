@@ -225,7 +225,126 @@ var leanClientGroups = []leanClientGroup{
 				ApplyConfigPackageAlias: "applyconfigurationscoordinationv1", ApplyConfigPackagePath: "k8s.io/client-go/applyconfigurations/coordination/v1"},
 		},
 	},
+	{
+		// storagev1 exists for the real, unmodified upstream kube-scheduler
+		// (pkg/scheduler.New unconditionally builds a nodevolumelimits.
+		// NewCSIManager(informerFactory.Storage().V1().CSINodes().Lister())
+		// -- confirmed by reading scheduler.go, not gated behind any
+		// feature flag), not for this repo's controllers -- see
+		// docs/platform-verification.md's S8 kube-scheduler-wasm-fork
+		// entry. VolumeAttributesClasses is upstream's StorageV1Interface's
+		// only Getter beyond the 5 implemented here; confirmed unused by
+		// grep, permanent panic stub like every other *OtherGetterStubs.
+		GoPackage:         "storagev1",
+		APIPath:           "/apis",
+		GroupVersion:      `schema.GroupVersion{Group: "storage.k8s.io", Version: "v1"}`,
+		TypedPackageAlias: "storagev1client",
+		TypedPackagePath:  "k8s.io/client-go/kubernetes/typed/storage/v1",
+		GroupInterface:    "StorageV1Interface",
+		OtherGetterStubs:  storageV1OtherGetterStubs,
+		Types: []leanClientType{
+			{Kind: "CSIDriver", Receiver: "cSIDrivers", Resource: "csidrivers", Namespaced: false, HasUpdateStatus: false,
+				APIPackageAlias: "storagev1", APIPackagePath: "k8s.io/api/storage/v1",
+				ApplyConfigPackageAlias: "applyconfigurationsstoragev1", ApplyConfigPackagePath: "k8s.io/client-go/applyconfigurations/storage/v1"},
+			{Kind: "CSINode", Receiver: "cSINodes", Resource: "csinodes", Namespaced: false, HasUpdateStatus: false,
+				APIPackageAlias: "storagev1", APIPackagePath: "k8s.io/api/storage/v1",
+				ApplyConfigPackageAlias: "applyconfigurationsstoragev1", ApplyConfigPackagePath: "k8s.io/client-go/applyconfigurations/storage/v1"},
+			{Kind: "CSIStorageCapacity", Receiver: "cSIStorageCapacities", Resource: "csistoragecapacities", Namespaced: true, HasUpdateStatus: false,
+				APIPackageAlias: "storagev1", APIPackagePath: "k8s.io/api/storage/v1",
+				ApplyConfigPackageAlias: "applyconfigurationsstoragev1", ApplyConfigPackagePath: "k8s.io/client-go/applyconfigurations/storage/v1"},
+			{Kind: "StorageClass", Receiver: "storageClasses", Resource: "storageclasses", Namespaced: false, HasUpdateStatus: false,
+				APIPackageAlias: "storagev1", APIPackagePath: "k8s.io/api/storage/v1",
+				ApplyConfigPackageAlias: "applyconfigurationsstoragev1", ApplyConfigPackagePath: "k8s.io/client-go/applyconfigurations/storage/v1"},
+			{Kind: "VolumeAttachment", Receiver: "volumeAttachments", Resource: "volumeattachments", Namespaced: false, HasUpdateStatus: true,
+				APIPackageAlias: "storagev1", APIPackagePath: "k8s.io/api/storage/v1",
+				ApplyConfigPackageAlias: "applyconfigurationsstoragev1", ApplyConfigPackagePath: "k8s.io/client-go/applyconfigurations/storage/v1"},
+		},
+	},
+	{
+		// resourcev1 exists for the real, unmodified upstream kube-scheduler's
+		// DynamicResources/DRA machinery: DynamicResourceAllocation is GA
+		// and LockToDefault:true in v1.36.2-k3s1 (verified by reading
+		// pkg/features/kube_features.go, not assumed), so scheduler.go's DRA
+		// construction block always runs, unconditionally constructing
+		// ResourceClaim/ResourceSlice/DeviceClass informers -- see
+		// docs/platform-verification.md's S8 kube-scheduler-wasm-fork
+		// entry. ResourceClaimTemplates is upstream's ResourceV1Interface's
+		// only Getter beyond the 3 implemented here; confirmed unused by
+		// grep (the scheduler never expands templates -- that's the
+		// resourceclaim controller's job, not scheduled by this repo's
+		// wasm KCM), permanent panic stub.
+		GoPackage:         "resourcev1",
+		APIPath:           "/apis",
+		GroupVersion:      `schema.GroupVersion{Group: "resource.k8s.io", Version: "v1"}`,
+		TypedPackageAlias: "resourcev1client",
+		TypedPackagePath:  "k8s.io/client-go/kubernetes/typed/resource/v1",
+		GroupInterface:    "ResourceV1Interface",
+		OtherGetterStubs:  resourceV1OtherGetterStubs,
+		Types: []leanClientType{
+			{Kind: "DeviceClass", Receiver: "deviceClasses", Resource: "deviceclasses", Namespaced: false, HasUpdateStatus: false,
+				APIPackageAlias: "resourcev1", APIPackagePath: "k8s.io/api/resource/v1",
+				ApplyConfigPackageAlias: "applyconfigurationsresourcev1", ApplyConfigPackagePath: "k8s.io/client-go/applyconfigurations/resource/v1"},
+			{Kind: "ResourceClaim", Receiver: "resourceClaims", Resource: "resourceclaims", Namespaced: true, HasUpdateStatus: true,
+				APIPackageAlias: "resourcev1", APIPackagePath: "k8s.io/api/resource/v1",
+				ApplyConfigPackageAlias: "applyconfigurationsresourcev1", ApplyConfigPackagePath: "k8s.io/client-go/applyconfigurations/resource/v1"},
+			{Kind: "ResourceSlice", Receiver: "resourceSlices", Resource: "resourceslices", Namespaced: false, HasUpdateStatus: false,
+				APIPackageAlias: "resourcev1", APIPackagePath: "k8s.io/api/resource/v1",
+				ApplyConfigPackageAlias: "applyconfigurationsresourcev1", ApplyConfigPackagePath: "k8s.io/client-go/applyconfigurations/resource/v1"},
+		},
+	},
+	{
+		// policyv1 exists for the real, unmodified upstream kube-scheduler:
+		// framework/preemption/{preemption,podgrouppreemption,executor}.go
+		// unconditionally build a PodDisruptionBudget lister
+		// (DefaultPreemption is not in sched.go's disabled-plugins list --
+		// confirmed by reading pkg/controllers/sched/sched.go). Evictions
+		// is upstream's PolicyV1Interface's only other Getter; confirmed
+		// unused (the scheduler never evicts Pods itself -- that's
+		// kubectl drain/the eviction API's client side), permanent panic
+		// stub.
+		GoPackage:         "policyv1",
+		APIPath:           "/apis",
+		GroupVersion:      `schema.GroupVersion{Group: "policy", Version: "v1"}`,
+		TypedPackageAlias: "policyv1client",
+		TypedPackagePath:  "k8s.io/client-go/kubernetes/typed/policy/v1",
+		GroupInterface:    "PolicyV1Interface",
+		OtherGetterStubs:  policyV1OtherGetterStubs,
+		Types: []leanClientType{
+			{Kind: "PodDisruptionBudget", Receiver: "podDisruptionBudgets", Resource: "poddisruptionbudgets", Namespaced: true, HasUpdateStatus: true,
+				APIPackageAlias: "policyv1", APIPackagePath: "k8s.io/api/policy/v1",
+				ApplyConfigPackageAlias: "applyconfigurationspolicyv1", ApplyConfigPackagePath: "k8s.io/client-go/applyconfigurations/policy/v1"},
+		},
+	},
 }
+
+// policyV1OtherGetterStubs panic-stubs PolicyV1Interface's one Getter
+// beyond PodDisruptionBudgets (Evictions) -- confirmed unused by the
+// real, unmodified upstream scheduler this repo embeds.
+const policyV1OtherGetterStubs = `
+func (c *Client) Evictions(namespace string) policyv1client.EvictionInterface {
+	panic("leanclient: Evictions not implemented (unused by this repo's scheduler)")
+}
+`
+
+// storageV1OtherGetterStubs panic-stubs StorageV1Interface's one Getter
+// beyond CSIDrivers/CSINodes/CSIStorageCapacities/StorageClasses/
+// VolumeAttachments (VolumeAttributesClasses) -- confirmed unused by the
+// real, unmodified upstream scheduler this repo embeds.
+const storageV1OtherGetterStubs = `
+func (c *Client) VolumeAttributesClasses() storagev1client.VolumeAttributesClassInterface {
+	panic("leanclient: VolumeAttributesClasses not implemented (unused by this repo's scheduler)")
+}
+`
+
+// resourceV1OtherGetterStubs panic-stubs ResourceV1Interface's one Getter
+// beyond DeviceClasses/ResourceClaims/ResourceSlices
+// (ResourceClaimTemplates) -- confirmed unused by the real, unmodified
+// upstream scheduler this repo embeds.
+const resourceV1OtherGetterStubs = `
+func (c *Client) ResourceClaimTemplates(namespace string) resourcev1client.ResourceClaimTemplateInterface {
+	panic("leanclient: ResourceClaimTemplates not implemented (unused by this repo's scheduler)")
+}
+`
 
 // podExtras implements PodExpansion. Bind is the only one of these
 // coreV1OtherGetterStubs panic-stubs CoreV1Interface's remaining Getters

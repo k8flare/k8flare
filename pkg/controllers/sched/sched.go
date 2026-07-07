@@ -60,7 +60,7 @@ func RunScheduler(ctx context.Context, restCfg *restclient.Config) (err error) {
 		}
 	}()
 
-	client, err := leanclientset.NewForConfig(restclient.AddUserAgent(restCfg, "kube-scheduler"))
+	client, err := leanclientset.NewSchedulerClientsetForConfig(restclient.AddUserAgent(restCfg, "kube-scheduler"))
 	if err != nil {
 		return fmt.Errorf("scheduler: build client: %w", err)
 	}
