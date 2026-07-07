@@ -217,7 +217,7 @@ func (c *Clientset) RbacV1alpha1() rbacv1alpha1.RbacV1alpha1Interface {
 }
 
 func (c *Clientset) ResourceV1() resourcev1.ResourceV1Interface {
-	panic("leanclient: ResourceV1() not implemented -- unused by workers/controllers' enabled controllers")
+	panic("leanclient: ResourceV1() not implemented -- unused by workers/controllers' enabled controllers (real for pkg/scheduler via clientset.SchedulerClientset)")
 }
 
 func (c *Clientset) ResourceV1beta2() resourcev1beta2.ResourceV1beta2Interface {
@@ -244,12 +244,12 @@ func (c *Clientset) SchedulingV1() schedulingv1.SchedulingV1Interface {
 	panic("leanclient: SchedulingV1() not implemented -- unused by workers/controllers' enabled controllers")
 }
 
-func (c *Clientset) StorageV1beta1() storagev1beta1.StorageV1beta1Interface {
-	panic("leanclient: StorageV1beta1() not implemented -- unused by workers/controllers' enabled controllers")
+func (c *Clientset) StorageV1() storagev1.StorageV1Interface {
+	panic("leanclient: StorageV1() not implemented -- unused by workers/controllers' enabled controllers (real for pkg/scheduler via clientset.SchedulerClientset)")
 }
 
-func (c *Clientset) StorageV1() storagev1.StorageV1Interface {
-	panic("leanclient: StorageV1() not implemented -- unused by workers/controllers' enabled controllers")
+func (c *Clientset) StorageV1beta1() storagev1beta1.StorageV1beta1Interface {
+	panic("leanclient: StorageV1beta1() not implemented -- unused by workers/controllers' enabled controllers")
 }
 
 func (c *Clientset) StorageV1alpha1() storagev1alpha1.StorageV1alpha1Interface {

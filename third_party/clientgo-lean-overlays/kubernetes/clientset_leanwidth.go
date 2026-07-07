@@ -16,6 +16,22 @@ Licensed under the Apache License, Version 2.0 (the "License");
 // raw for the KCM binary, this narrow width 78MB (2026-07-05). Only the
 // `-tags leanwidth` KCM build against go.wasm.mod ever sees this file;
 // the scheduler binary and all host builds use the full-width variant.
+//
+// A `-tags leanwidth,schedwidth` variant (widening this Interface with
+// Storage/Resource/Policy for the scheduler) was attempted and reverted
+// 2026-07-07: kubernetes.Interface is one global type, so widening it
+// with real methods for those 3 groups made every OTHER, still-unpruned
+// sibling API version (Apps V1beta1/V1beta2, Storage V1alpha1/V1beta1,
+// Resource V1alpha3/V1beta1, Scheduling V1/V1beta1, Policy V1beta1,
+// plus a newly-discovered EventsV1 requirement from
+// client-go/tools/events) fail to compile too -- each of those
+// informers/<group>/<version> packages' own NewFilteredXInformer
+// hardcodes a `client kubernetes.Interface` parameter, so ANY narrowing
+// of the type requires pruning literally every sibling version
+// transitively reachable, not just the ones this repo calls. See
+// docs/platform-verification.md's S8 kube-scheduler-wasm-fork entry for
+// the full account; this is exactly the "Phase 10" finding this file's
+// own doc comment already predicted, now re-confirmed by attempting it.
 
 package kubernetes
 

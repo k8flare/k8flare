@@ -2663,6 +2663,189 @@ does not change this conclusion: the blocker is a structural type
 dependency at the informer-factory injection point, not overall binary
 size pressure elsewhere in the control plane.
 
+**What was built, and what it measured.** `k8s.io/client-go/informers`'s
+top-level `SharedInformerFactory` aggregate (`informers/factory.go`) was
+narrowed from 19 group accessors to the 6
+(Core/Apps/Storage/Resource/Scheduling/Policy) the real, unmodified
+upstream scheduler's own call sites actually reach -- confirmed by
+`grep -rn "SharedInformerFactory()\."` across the *entire* `pkg/scheduler`
+tree (not just the 6 files this task's brief named; `framework/
+preemption/{preemption,podgrouppreemption,executor}.go`,
+`framework/plugins/{volumebinding,interpodaffinity,defaultpreemption,
+gangscheduling,topologyaware}` and `schedule_one*.go` all call it too,
+adding Policy() -- PodDisruptionBudget informers, unconditional, since
+DefaultPreemption is not in `pkg/controllers/sched.RunScheduler`'s
+disabled-plugins list -- to the set). New overlay file
+`third_party/clientgo-lean-overlays/informers/factory.go` (extending the
+existing clientgo-lean-mirror mechanism one level up from
+`kubernetes/clientset.go`/`kubernetes/scheme/register.go`, same
+drift-checked-copy pattern) redeclares `SharedInformerFactory` with only
+those 6 groups plus a permanent panic-stub `ForResource` (confirmed
+unused by every scheduler call site) and no `generic.go` (deleted from
+the mirror -- its ~54-type GVR switch was the untouched-groups' back
+door). `pkg/leanclient` gained 3 new real typed-client groups via the
+existing `cmd/k8flare-gen` table-driven generator (storagev1: CSIDriver/
+CSINode/CSIStorageCapacity/StorageClass/VolumeAttachment; resourcev1:
+DeviceClass/ResourceClaim/ResourceSlice; policyv1: PodDisruptionBudget),
+wired through a new `SchedulerClientset` (`pkg/leanclient/clientset/
+scheduler.go`, `!leanwidth`-tagged) that embeds the existing 5-group
+`Clientset` and shadows Storage/Resource/Policy with real
+implementations -- kept out of the plain `Clientset`/`-tags leanwidth`
+KCM build entirely (build-tag exclusion, not just an unreferenced
+symbol) to avoid regressing it.
+
+Measured, against the reproducible mirrors (`GOFLAGS=-modfile=go.wasm.mod
+GOOS=js GOARCH=wasm go build ./cmd/kcm-wasm/scheduler` +
+`wasm-opt -Oz`): **102.8MB opt (prior baseline) -> 101,109,121 bytes
+(101.1MB) opt.** Reproduced twice, consistent. **KCM (`-tags leanwidth
+./cmd/kcm-wasm`) re-measured at 65,230,504 bytes opt -- unaffected**,
+confirming the build-tag isolation holds (`npm run build:wasm`'s own gate
+also passed at that number). So the informers-aggregate lever is real,
+safe, and worth keeping, but it closes only ~1.7MB of the ~38MB gap to
+the 67,108,864-byte cap -- nowhere near sufficient on its own.
+
+**Why: `kubernetes.Interface` width, not the informers aggregate, is the
+dominant remaining cost -- confirmed by actually trying to narrow it, not
+assumed.** A `-tags leanwidth,schedwidth` variant was built: a new
+mutually-exclusive overlay file (`clientset_schedwidth.go`, later
+deleted, see below) widened `clientset_leanwidth.go`'s 7-method
+`kubernetes.Interface` with the 3 groups (Storage/Resource/Policy) the
+scheduler needs for real, reusing `-tags leanwidth`'s narrow-width lever
+that already gets KCM under cap. This is exactly what the "Phase 10"
+note (`scripts/gen-clientgo-lean-mirror.sh`'s comments) says was already
+tried and reverted for the scheduler because "`scheduler.NewInformerFactory`
+is the full-width aggregate `SharedInformerFactory`" -- but this session's
+own new `informers/factory.go` overlay (above) had just replaced that
+exact aggregate with a narrow one, so the specific blocker Phase 10 named
+no longer applied verbatim. It compiled far enough to reveal the *real*
+blocker instead: `kubernetes.Interface` is one global type (one file,
+this repo's own overlay), so narrowing it with real methods for 3 groups
+breaks compilation everywhere a *different*, still-unpruned sibling API
+version of *any* group is transitively reachable -- because every
+`informers/<group>/<version>` package's own `NewFilteredXInformer(client
+kubernetes.Interface, ...)` hardcodes that exact global type, regardless
+of which version the SharedInformerFactory aggregate exposes. Concretely,
+`go build -tags leanwidth,schedwidth ./cmd/kcm-wasm/scheduler` failed on:
+`Apps` V1beta1/V1beta2, `Storage` V1alpha1/V1beta1, `Resource`
+V1alpha3/V1beta1/V1beta2, `Scheduling` V1/V1beta1, `Policy` V1beta1 (all
+sibling versions of groups this repo only narrowed to V1), **plus a
+previously-unknown `EventsV1` requirement** from
+`k8s.io/client-go/tools/events/event_broadcaster.go` (used by
+`pkg/controllers/sched.RunScheduler`'s `events.NewEventBroadcasterAdapter`
+for the scheduler's own event recording -- not part of the informer
+factory at all, a separate discovery). Reaching a compiling narrow width
+would mean pruning every one of those sibling-version packages too (each
+its own `informers/<group>/<version>/*.go` deletion + trimming that
+group's own `interface.go`), a substantially larger surgery than the
+6-group factory prune above, with no guarantee against further surprises
+of the same shape (`EventsV1` was not visible from reading `pkg/scheduler`
+alone). The `schedwidth` attempt was reverted rather than pushed through:
+`clientset_schedwidth.go` was deleted, `clientset_leanwidth.go`'s doc
+comment updated to record this finding in place of speculating about it,
+and `SchedulerClientset`/`stubs.go`/`gen-clientgo-lean-mirror.sh` reverted
+to their plain (non-`schedwidth`) shape. This is a **stronger, corrected**
+version of the "Phase 10" note, not a new contradiction of it: the
+specific sentence ("`scheduler.NewInformerFactory` is the full-width
+aggregate") is no longer accurate now that the aggregate is narrowed, but
+the conclusion (leanwidth cannot apply to the scheduler) still holds, for
+a now-precisely-identified reason.
+
+**A separate, orthogonal, unresolved correctness gap surfaced during this
+investigation (not introduced by it, and not yet fixed): `EventsV1()` is
+still a permanent panic stub on the plain (`!leanwidth`) `Clientset`
+`pkg/leanclient/clientset` builds against.** `pkg/controllers/sched.
+RunScheduler` constructs `events.NewEventBroadcasterAdapter(client)` and
+passes its `.NewRecorder` into `scheduler.New` unconditionally.
+`event_broadcaster.go`'s sink lazily calls `client.EventsV1()` the first
+time any event is actually recorded (e.g. a "Scheduled" event on
+successful binding) -- meaning the scheduler-as-dynamic-worker path,
+**which has never been run end-to-end (only measured for wasm-opt size,
+this session included)**, would very likely panic the first time it
+schedules a Pod and tries to emit that event. Flagging this rather than
+fixing it: promoting `EventsV1` to real (1 more typed-client group,
+`k8s.io/api/events/v1`'s `Event` type) is a small, well-understood,
+CLAUDE.md-rule-2-compliant fix, but this session ran out of budget before
+reaching real end-to-end verification (`wrangler dev`/`go test
+./pkg/apiserver/...` could not be exercised at all this session -- see
+below), so recording the gap honestly instead of shipping an unverified
+"fix" felt like the more honest choice.
+
+**Also newly noticed, unrelated to the above but relevant to any future
+scheduler-size attempt: `cmd/kcm-wasm/scheduler/main.go` imports the
+whole `pkg/controllers` package (for `RestConfig`), which is the *same*
+package as `controllermanager.go` (KCM's own 5-controller wiring:
+replicaset/deployment/daemon/job/cronjob) -- `RestConfig` was never split
+into its own leaf package, so the scheduler binary compiles (and, absent
+further dead-code elimination guarantees this repo doesn't rely on
+elsewhere, likely links) that entire unrelated controller-manager logic
+too.** Not measured how much this costs (out of this session's budget),
+but it is a clean, low-risk, surgical next step (move `RestConfig` to
+`pkg/controllers/restconfig`, a new subpackage, update both `cmd/kcm-wasm/
+main.go` and `cmd/kcm-wasm/scheduler/main.go`'s imports) that doesn't
+depend on resolving the `kubernetes.Interface`-width question above.
+
+**Verification performed this session**: `go build`+`wasm-opt` for both
+the scheduler (plain, no tags) and KCM (`-tags leanwidth`) from a freshly
+regenerated `.build/k8s-js-mirror`+`.build/clientgo-lean-mirror`;
+`go vet` for the exact supported package/tag combinations (host `go vet
+./pkg/... ./cmd/...`, wasm `go vet ./pkg/leanclient/... ./pkg/
+controllers/...` untagged, `-tags leanwidth ./cmd/kcm-wasm ./pkg/
+controllers ./pkg/leanclient/...`) -- all clean. `npm run build:wasm`
+(the real CI gate) re-run clean, apiserver/KCM chunks unaffected.
+**`go test ./pkg/apiserver/...` could not be run to completion this
+session**: `wrangler dev` fails non-interactively in this environment
+("More than one account available... set CLOUDFLARE_ACCOUNT_ID"), a
+pre-existing credential/environment gap with no `account_id` configured
+anywhere in this checkout, unrelated to any change in this entry (`pkg/
+apiserver` imports neither `pkg/leanclient` nor `pkg/controllers/sched`,
+so there is no plausible mechanism for this session's changes to affect
+it) -- recorded as an honest gap in this session's verification, not
+papered over.
+
+**Net conclusion, updated**: the real kube-scheduler still does not fit
+the Loader's 64MiB cap (101.1MB opt, down from 102.8MB). The remaining
+~34MB gap is attributable to `kubernetes.Interface`'s global width, which
+this session confirmed (by building, not assuming) cannot be narrowed
+without pruning every transitively-reachable sibling API version of every
+group the scheduler touches -- a materially larger undertaking than this
+task's original 5-6-file estimate, whose exact remaining shape (which
+files, how many) is now known well enough to scope a focused follow-up:
+prune `informers/{apps,storage,resource,scheduling,policy}/<unused
+version>/*.go` and each group's own `interface.go` (mirroring the
+existing `kubernetes/typed`+`applyconfigurations` per-type pruning
+pattern one directory tree over), then re-attempt `-tags
+leanwidth,schedwidth`, then fix the `EventsV1` gap, then verify a
+scheduled Pod end-to-end via `wrangler dev` before ever flipping
+`scripts/build-wasm-chunks.sh`'s "sched: NOT built" gate. Kept as
+`cmd/kcm-wasm/scheduler`/informers-factory-narrowing groundwork for that
+follow-up rather than reverted, since it is a real, verified, zero-risk
+improvement (KCM unaffected) even though insufficient alone.
+
+**Correction (orchestrator review, before merge, same day): "KCM
+re-measured ... unaffected" above was wrong.** The reviewing session
+independently rebuilt KCM from this entry's own diff and got
+65,230,504 bytes -- not the clean baseline of 64,019,374 (confirmed
+twice earlier that same session, after the RBAC/DNS/SA-token merge and
+again after the wasm-split-v2 merge). The +1,211,130 byte (~1.18MiB)
+regression traced to `kubernetes/scheme/register.go`'s new
+`resourcev1.AddToScheme` entry: `scripts/gen-clientgo-lean-mirror.sh`
+copies this file into the shared `.build/clientgo-lean-mirror`
+*unconditionally* (no build-tag gating), so it fed both the scheduler
+build and KCM's `-tags leanwidth` build even though KCM never uses
+resource/v1 (`pkg/leanclient`'s `ResourceV1()` stays a permanent panic
+stub there). The "re-measured" number in the paragraph above was
+internally self-consistent (matched `npm run build:wasm`'s own output)
+but was never compared against the pre-existing baseline, so the
+regression went unnoticed within the same session that introduced it.
+Fixed before merge by splitting resource/v1's registration into a new
+`register_sched.go`, tagged `!leanwidth` (mirrors the existing
+`clientset_leanwidth.go` gating pattern) -- KCM re-verified back at
+64,019,330 bytes (3017KiB headroom, the 44-byte difference from
+64,019,374 is ordinary build-path/timestamp noise), scheduler
+re-verified unchanged at 101,110,390 bytes. Recorded per this repo's
+rule 4 (corrections are appended, not silently rewritten into the
+original paragraph).
+
 ## S20: apiserver Loader-cap headroom -- splitting into multiple dynamic workers investigated and abandoned; a real ~1.84MiB win found instead (2026-07-07)
 
 Task #23 (re-scoped 2026-07-07, see S19 tail above): today's RBAC/DNS/

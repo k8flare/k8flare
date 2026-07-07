@@ -98,8 +98,14 @@ if want "$@"; then
   GOFLAGS=-modfile=go.wasm.mod build_one kcm ./cmd/kcm-wasm yes -tags leanwidth
 fi
 # sched: NOT built (the Controllers DO tolerates the missing manifest).
-# kube-scheduler measures 102.8MB opt against the reproducible mirrors --
-# far over the Loader cap; it remains host-process/BYO-VM (cmd/scheduler).
-# cmd/kcm-wasm/scheduler stays as the ready entrypoint for the day it
-# gets its own width answer. Re-enable with:
+# kube-scheduler measures 101.1MB opt against the reproducible mirrors
+# (2026-07-07: narrowing informers.SharedInformerFactory from 19 to 6
+# groups closed ~1.7MB of the prior 102.8MB figure; still far over the
+# Loader cap -- see docs/platform-verification.md's S8
+# kube-scheduler-wasm-fork entry for why kubernetes.Interface's global
+# width, not the informers aggregate, is the dominant remaining cost,
+# and the scoped follow-up needed to close it). It remains
+# host-process/BYO-VM (cmd/scheduler). cmd/kcm-wasm/scheduler stays as
+# the ready entrypoint for the day it gets its own width answer.
+# Re-enable with:
 #   build_one sched ./cmd/kcm-wasm/scheduler yes
