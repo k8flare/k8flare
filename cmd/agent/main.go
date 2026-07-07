@@ -26,6 +26,7 @@ import (
 	"github.com/k8flare/k8flare/pkg/cacert"
 	"github.com/k8flare/k8flare/pkg/dnsshim"
 	"github.com/k8flare/k8flare/pkg/meshconnector"
+	"github.com/k8flare/k8flare/pkg/vkubeproxy"
 	cli "github.com/urfave/cli/v2"
 )
 
@@ -99,6 +100,7 @@ func main() {
 	nodeTaints := flag.String("node-taints", "", "Comma-separated key=value:Effect taints the kubelet registers its Node with (k3s --node-taint). Per-Pod microVM nodes use this for the pod-on-containers NoSchedule taint")
 	withNodeID := flag.Bool("with-node-id", true, "Append a unique ID suffix to the node name (k3s --with-node-id). Disable for per-Pod microVM nodes, whose names must match exactly what workers/nodes' cf-containers-scheduler registered and will later bind to / tear down")
 	kubeletPlainProxyPort := flag.Int("kubelet-plain-proxy-port", 0, "Serve the kubelet's HTTPS API (10250) over plain HTTP on this port for the Workers logs/metrics bridge (0 = disabled). Per-Pod microVM nodes only; pair with the node image's kubelet auth drop-in")
+	virtualKubeProxyCIDR := flag.String("virtual-kube-proxy-cidr", "", "Service CIDR (e.g. 10.43.0.0/16) to intercept and forward via pkg/vkubeproxy's TUN+userspace-TCP bridge (empty = disabled). Per-Pod microVM nodes only: hostNetwork:true means the real embedded kube-proxy has no netfilter to route ClusterIP traffic with there, unlike a BYO VM node, which never needs this")
 	flag.Parse()
 
 	if *serverURL == "" {
@@ -174,6 +176,13 @@ func main() {
 	// Containers/CoreDNS Deployment dependency. kubelet's --cluster-dns
 	// is set to the same address via supervisor.go's clusterConfig.
 	go dnsshim.Run(ctx, *serverURL, *token, "cluster.local")
+
+	// Virtual kube-proxy (task #13): only set on the Containers node
+	// image's entrypoint.sh, never for BYO VM nodes (see the flag's own
+	// help text above).
+	if *virtualKubeProxyCIDR != "" {
+		go vkubeproxy.Run(ctx, *serverURL, *token, *virtualKubeProxyCIDR)
+	}
 
 	embedded, err := embed.New(ctx, &agentConfig)
 	if err != nil {

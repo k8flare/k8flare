@@ -74,6 +74,9 @@ export interface PodObject {
       name: string;
       image: string;
       resources?: { requests?: Record<string, string>; limits?: Record<string, string> };
+      // Task #13 (podproxy.ts): the default target port for pods/proxy
+      // when the caller doesn't specify one via pods/{name}:{port}/proxy.
+      ports?: Array<{ containerPort: number; name?: string; protocol?: string }>;
       // Phase 8 (R2 PV/PVC backend): only volumeMounts[].name is needed, to
       // cross-reference against spec.volumes[].name below and find which
       // (if any) of this Pod's volumes is actually mounted by its one
@@ -401,6 +404,96 @@ export async function createSchedulingEvent(
     }),
   });
   if (!resp.ok) console.log(`createSchedulingEvent: ${resp.status} ${await resp.text()}`);
+}
+
+// ---- Task #13: virtual kube-proxy (ClusterIP -> backing Pod resolution) ----
+//
+// Minimal read-only shapes this module needs from real corev1.Service and
+// discoveryv1.EndpointSlice -- same "just enough fields" approach as
+// PodObject/NodeObject above.
+
+export interface ServiceObject {
+  apiVersion: "v1";
+  kind: "Service";
+  metadata: { name: string; namespace: string };
+  spec?: {
+    clusterIP?: string;
+    ports?: Array<{ name?: string; port: number; protocol?: string }>;
+  };
+}
+
+export interface ServiceList {
+  items: ServiceObject[];
+}
+
+export interface EndpointSliceEndpoint {
+  addresses: string[];
+  conditions?: { ready?: boolean };
+  targetRef?: { kind?: string; name?: string; namespace?: string; uid?: string };
+}
+
+export interface EndpointSlicePort {
+  name?: string;
+  port?: number;
+  protocol?: string;
+}
+
+export interface EndpointSliceObject {
+  apiVersion: "discovery.k8s.io/v1";
+  kind: "EndpointSlice";
+  metadata: { name: string; namespace: string };
+  endpoints?: EndpointSliceEndpoint[];
+  ports?: EndpointSlicePort[];
+}
+
+export interface EndpointSliceList {
+  items: EndpointSliceObject[];
+}
+
+/**
+ * GET /api/v1/services?fieldSelector=spec.clusterIP=<ip> (all namespaces --
+ * pkg/apiserver/store.go allows spec.clusterIP as a real field selector,
+ * added for kube-proxy's own Service informer). ClusterIPs are unique
+ * cluster-wide, so at most one Service ever matches. Returns null if none
+ * do (a stale/unknown ClusterIP -- the caller's proxied connection should
+ * fail, not synthesize a fake target).
+ */
+export async function getServiceByClusterIP(
+  env: Env,
+  clusterIP: string,
+): Promise<ServiceObject | null> {
+  const resp = await apiFetch(
+    env,
+    `/api/v1/services?fieldSelector=${encodeURIComponent(`spec.clusterIP=${clusterIP}`)}`,
+  );
+  if (!resp.ok)
+    throw new Error(`getServiceByClusterIP ${clusterIP}: ${resp.status} ${await resp.text()}`);
+  const list: ServiceList = await resp.json();
+  return list.items?.[0] ?? null;
+}
+
+/**
+ * GET .../endpointslices?labelSelector=kubernetes.io/service-name=<name>,
+ * the standard EndpointSlice-to-Service label (pkg/apiserver/endpoints.go's
+ * buildEndpointSlice sets it; this project builds exactly one combined
+ * slice per Service, so at most one item is ever returned in practice, but
+ * the caller still handles a list for forward compatibility).
+ */
+export async function listEndpointSlicesForService(
+  env: Env,
+  namespace: string,
+  serviceName: string,
+): Promise<EndpointSliceObject[]> {
+  const resp = await apiFetch(
+    env,
+    `/apis/discovery.k8s.io/v1/namespaces/${namespace}/endpointslices?labelSelector=${encodeURIComponent(`kubernetes.io/service-name=${serviceName}`)}`,
+  );
+  if (!resp.ok)
+    throw new Error(
+      `listEndpointSlicesForService ${namespace}/${serviceName}: ${resp.status} ${await resp.text()}`,
+    );
+  const list: EndpointSliceList = await resp.json();
+  return list.items ?? [];
 }
 
 export async function deleteNode(env: Env, name: string): Promise<void> {

@@ -576,6 +576,68 @@ Numbers to replace with measurements: actual awake-fraction under the
 poke cadence, actual active-CPU per reconcile burst, cold-start delay
 (typical 1–3 s) added to first Pod schedule after idle.
 
+## Virtual kube-proxy + pods/proxy bridge (estimate, 2026-07-07 — pre-implementation per invariant #5, task #13)
+
+Pod-on-Containers Pods run `hostNetwork: true` (`pkg/apiserver/computeclass.go`,
+shipped 2026-07-06) because the microVM sandbox has no working netfilter, so
+the real k3s kube-proxy embedded in `cmd/agent` cannot program NAT rules for
+these nodes even though it's enabled cluster-wide
+(`DisableKubeProxy: false`). Two request-driven bridges close the resulting
+gaps, neither of which adds a resident process or a poll loop:
+
+1. **`pods/proxy` / `services/proxy`-style ingress** (Worker-side only): the
+   gateway already routes `/api/v1/namespaces/{ns}/pods/{name}/proxy/...`
+   into `nodes/index.ts`'s `handleNodes` (`gateway/index.ts`); this task
+   replaces its `501` stub with a real resolve-and-`containerFetch` path
+   (Pod → tracked NodeVM → its container port). **Cost: zero new
+   components.** This is exactly the same Worker request + DO `fetch()` +
+   Containers `containerFetch()` shape the already-measured kubelet
+   logs/metrics bridge uses (see "Phase 7 (nodes) implementation" below) —
+   billed as ordinary Worker/DO request CPU time, no new alarm, no new
+   Container instance (it reuses the Pod's own already-running NodeVM).
+2. **ClusterIP traffic from inside a Pod-on-Containers Pod** (`10.43.0.0/16`,
+   `ServiceCIDR`): a new node-image-only component,
+   `pkg/vkubeproxy` (linked into `cmd/agent`, gated behind a CLI flag only
+   passed on the Containers node image's entrypoint — BYO VM nodes keep
+   using the real kube-proxy, unaffected). It owns a TUN device inside the
+   microVM's own network namespace (shared with the Pod under
+   `hostNetwork`), terminates TCP connections addressed to `ServiceCIDR`
+   with an embedded userspace TCP/IP stack
+   (`gvisor.dev/gvisor/pkg/tcpip`, the same "real library, don't
+   reimplement TCP" call this project already made for
+   kube-scheduler/kube-controller-manager — rule #3), and forwards each
+   HTTP request over an ordinary outbound HTTPS call to the new
+   `/nodes/vkubeproxy` Worker endpoint (Service+EndpointSlice resolution,
+   same `containerFetch` backend path as bridge 1 above).
+
+   **Cost: no new Cloudflare-billed component at all.** This process runs
+   _inside_ the Containers instance the Pod's own NodeVM already pays for
+   (cost invariant #6: that instance's vCPU/GiB-second billing is the
+   user's workload cost regardless of whether this forwarder exists) — it
+   adds a small amount of CPU time to that already-running instance per
+   connection, and it is entirely demand-driven (a TCP SYN triggers work;
+   no idle-timer, no poll). On the Worker side, each proxied HTTP request
+   is exactly one more `containerFetch`-shaped request/DO-fetch, same unit
+   cost as bridge 1. Idle Pods (no ClusterIP traffic) cost nothing beyond
+   what their NodeVM already costs today.
+
+   **What this does NOT do**: no new DO, no new alarm, no persistent
+   WebSocket from the node (each proxied request is a plain outbound
+   HTTPS call — no hibernating connection to keep warm, so cost invariant
+   #4 doesn't even apply here). v1 scope is HTTP/1.x request-response only
+   (matches the design's explicit deferral of raw TCP passthrough to a
+   later v2); TokenReview-gated secure kubelet (10250, `exec`/`attach`) and
+   raw-TCP Services are both out of scope for this pass, same as bridge 1.
+
+Numbers to replace with measurements: incremental container CPU-ms per
+proxied HTTP request (netstack TCP handling + one outbound fetch),
+`containerFetch` request count added per Service call. Not yet measured —
+see the "what's verified" note this task's implementation commit records
+in `docs/general-purpose-k8s-plan.md` and `docs/platform-verification.md`
+for what could and couldn't be exercised end-to-end on this pass (ARM Mac
+local Docker cannot boot this node image at all, a pre-existing limitation
+recorded in S16 — ​not specific to this feature).
+
 ## Idle-cluster verification checklist
 
 A checklist for mechanically confirming cost invariant #1, "nothing is

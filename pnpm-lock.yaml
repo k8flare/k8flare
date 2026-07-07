@@ -47,22 +47,6 @@ importers:
         specifier: workspace:*
         version: link:../k8s
 
-  workers/apiserver: {}
-
-  workers/controllers: {}
-
-  workers/gateway:
-    dependencies:
-      '@k8flare/crd':
-        specifier: workspace:*
-        version: link:../../packages/crd
-      '@k8flare/dynamic-worker':
-        specifier: workspace:*
-        version: link:../../packages/dynamic-worker
-      '@k8flare/k8s':
-        specifier: workspace:*
-        version: link:../../packages/k8s
-
   workers/k8flare:
     dependencies:
       '@cloudflare/containers':
@@ -80,29 +64,6 @@ importers:
       '@k8flare/worker-trigger':
         specifier: workspace:*
         version: link:../../packages/worker-trigger
-
-  workers/nodes:
-    dependencies:
-      '@cloudflare/containers':
-        specifier: ^0.3.7
-        version: 0.3.7
-
-  workers/runtime:
-    dependencies:
-      '@k8flare/crd':
-        specifier: workspace:*
-        version: link:../../packages/crd
-      '@k8flare/dynamic-worker':
-        specifier: workspace:*
-        version: link:../../packages/dynamic-worker
-      '@k8flare/k8s':
-        specifier: workspace:*
-        version: link:../../packages/k8s
-      '@k8flare/worker-trigger':
-        specifier: workspace:*
-        version: link:../../packages/worker-trigger
-
-  workers/storage: {}
 
 packages:
 
