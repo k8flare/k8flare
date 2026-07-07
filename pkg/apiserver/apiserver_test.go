@@ -2172,13 +2172,14 @@ func TestBasicAuth(t *testing.T) {
 		t.Fatalf("NewForConfig with basic auth: %v", err)
 	}
 
-	// Should be able to list namespaces
-	nsList, err := basicClient.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		t.Fatalf("List namespaces with basic auth: %v", err)
+	// The node identity reads what the system:node role grants (RBAC
+	// enforcement, 2026-07-07): nodes yes...
+	if _, err := basicClient.CoreV1().Nodes().List(ctx, metav1.ListOptions{}); err != nil {
+		t.Fatalf("List nodes with basic auth: %v", err)
 	}
-
-	if len(nsList.Items) == 0 {
-		t.Error("Expected at least 1 namespace")
+	// ...namespaces no -- the kubelet has no business listing them, and
+	// under the real bootstrap policy it can't.
+	if _, err := basicClient.CoreV1().Namespaces().List(ctx, metav1.ListOptions{}); !errors.IsForbidden(err) {
+		t.Fatalf("List namespaces with basic auth: got %v, want Forbidden", err)
 	}
 }

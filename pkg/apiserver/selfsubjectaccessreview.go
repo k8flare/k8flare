@@ -1,43 +1,77 @@
 package apiserver
 
 import (
+	"context"
 	"io"
 	"net/http"
 
 	authorizationv1 "k8s.io/api/authorization/v1"
+	"k8s.io/apiserver/pkg/authentication/user"
+	"k8s.io/apiserver/pkg/authorization/authorizer"
 )
 
 // RegisterAuthorizationHandlers registers POST
 // /apis/authorization.k8s.io/v1/selfsubjectaccessreviews -- the request
-// `kubectl auth can-i` sends -- behind the same AuthMiddleware every other
-// API route uses.
+// `kubectl auth can-i` sends -- and subjectaccessreviews (what the
+// kubelet's Webhook authorizer POSTs after its webhook token
+// authenticator accepted a request, see tokenreview.go), behind the same
+// AuthMiddleware every other API route uses.
 //
-// This project's authorization is still all-or-nothing per bearer token
-// (see auth.go's AuthMiddleware: a request either has a valid token, in
-// which case it can do anything, or it's rejected before reaching here at
-// all) -- there is no per-verb/per-resource authorizer to consult. So
-// handleSelfSubjectAccessReview always answers Allowed: true, which is the
-// accurate answer for this project's actual access model, not a stub
-// standing in for unimplemented enforcement. This unblocks `kubectl auth
-// can-i` (and anything else that gates a codepath on a SelfSubjectAccessReview
-// first) from failing outright, matching CLAUDE.md's "cost-sensitive/behavior
-// changes get recorded, not silently patched over" spirit: the day this
-// project gets real per-subject RBAC enforcement, this handler is exactly
-// where that decision needs to be wired in.
-func RegisterAuthorizationHandlers(mux *http.ServeMux, tokensFn TokensFunc) {
+// Both answer from the SAME real RBACAuthorizer (rbac.go) that gates
+// live traffic, so `kubectl auth can-i` and enforcement can never
+// disagree. The history here: until RBAC enforcement landed these
+// handlers hardcoded Allowed:true, which was the accurate answer for the
+// then all-or-nothing token model -- kept in git history, replaced (not
+// papered over) the day the real authorizer arrived.
+func RegisterAuthorizationHandlers(mux *http.ServeMux, tokensFn TokensFunc, authz authorizer.Authorizer) {
 	mux.Handle("POST /apis/authorization.k8s.io/v1/selfsubjectaccessreviews",
-		AuthMiddleware(tokensFn, http.HandlerFunc(handleSelfSubjectAccessReview)))
-	// subjectaccessreviews: the kubelet's Webhook authorizer POSTs this
-	// after its webhook token authenticator accepted a request (see
-	// tokenreview.go). Same all-or-nothing model as the SSAR above -- the
-	// only identity TokenReview ever authenticates is the cluster token's
-	// "admin" (system:masters), so Allowed:true is the accurate verdict,
-	// and this handler is where a real RBAC authorizer would plug in.
+		AuthMiddleware(tokensFn, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handleSelfSubjectAccessReview(w, r, authz)
+		})))
 	mux.Handle("POST /apis/authorization.k8s.io/v1/subjectaccessreviews",
-		AuthMiddleware(tokensFn, http.HandlerFunc(handleSubjectAccessReview)))
+		AuthMiddleware(tokensFn, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handleSubjectAccessReview(w, r, authz)
+		})))
 }
 
-func handleSelfSubjectAccessReview(w http.ResponseWriter, r *http.Request) {
+// evaluateReviewSpec runs one SubjectAccessReviewSpec-shaped question
+// through the authorizer for the given identity. The system:masters
+// bypass mirrors authorizeRequest (rbac.go).
+func evaluateReviewSpec(ctx context.Context, authz authorizer.Authorizer, info *user.DefaultInfo,
+	res *authorizationv1.ResourceAttributes, nonRes *authorizationv1.NonResourceAttributes,
+) authorizationv1.SubjectAccessReviewStatus {
+	for _, g := range info.Groups {
+		if g == user.SystemPrivilegedGroup {
+			return authorizationv1.SubjectAccessReviewStatus{Allowed: true, Reason: "system:masters bypass"}
+		}
+	}
+	attrs := authorizer.AttributesRecord{User: info}
+	if res != nil {
+		attrs.Verb = res.Verb
+		attrs.Namespace = res.Namespace
+		attrs.APIGroup = res.Group
+		attrs.APIVersion = res.Version
+		attrs.Resource = res.Resource
+		attrs.Subresource = res.Subresource
+		attrs.Name = res.Name
+		attrs.ResourceRequest = true
+	} else if nonRes != nil {
+		attrs.Verb = nonRes.Verb
+		attrs.Path = nonRes.Path
+	} else {
+		return authorizationv1.SubjectAccessReviewStatus{
+			Allowed: false,
+			Reason:  "spec.resourceAttributes or spec.nonResourceAttributes is required",
+		}
+	}
+	decision, reason, err := authz.Authorize(ctx, attrs)
+	if err != nil {
+		return authorizationv1.SubjectAccessReviewStatus{Allowed: false, Reason: reason, EvaluationError: err.Error()}
+	}
+	return authorizationv1.SubjectAccessReviewStatus{Allowed: decision == authorizer.DecisionAllow, Reason: reason}
+}
+
+func handleSelfSubjectAccessReview(w http.ResponseWriter, r *http.Request, authz authorizer.Authorizer) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to read request body")
@@ -56,14 +90,17 @@ func handleSelfSubjectAccessReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ssar.Status = authorizationv1.SubjectAccessReviewStatus{
-		Allowed: true,
-		Reason:  "k8flare authorizes every request from a valid bearer token (all-or-nothing token model, no per-subject RBAC enforcement yet)",
+	u := UserFromContext(r.Context())
+	if u == nil {
+		writeStatusError(w, http.StatusUnauthorized, "Unauthorized", "no authenticated user")
+		return
 	}
+	info := &user.DefaultInfo{Name: u.Name, Groups: u.Groups}
+	ssar.Status = evaluateReviewSpec(r.Context(), authz, info, ssar.Spec.ResourceAttributes, ssar.Spec.NonResourceAttributes)
 	writeRuntimeObject(w, http.StatusCreated, ssar)
 }
 
-func handleSubjectAccessReview(w http.ResponseWriter, r *http.Request) {
+func handleSubjectAccessReview(w http.ResponseWriter, r *http.Request, authz authorizer.Authorizer) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to read request body")
@@ -82,9 +119,7 @@ func handleSubjectAccessReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sar.Status = authorizationv1.SubjectAccessReviewStatus{
-		Allowed: true,
-		Reason:  "k8flare authorizes every request from a valid bearer token (all-or-nothing token model, no per-subject RBAC enforcement yet)",
-	}
+	info := &user.DefaultInfo{Name: sar.Spec.User, Groups: sar.Spec.Groups}
+	sar.Status = evaluateReviewSpec(r.Context(), authz, info, sar.Spec.ResourceAttributes, sar.Spec.NonResourceAttributes)
 	writeRuntimeObject(w, http.StatusCreated, sar)
 }

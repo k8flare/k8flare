@@ -31,6 +31,88 @@ function isUnauthenticatedPath(url: URL): boolean {
   );
 }
 
+// Watch streams are served in TS (Go WASM cannot stream), which means
+// they bypass the Go apiserver's AuthzMiddleware -- so derived
+// identities (X-Remote-User; the cluster token itself is
+// system:masters and bypasses RBAC in Go too) are authorized here by
+// asking the Go authorizer the same question via SubjectAccessReview.
+// One extra apiserver round-trip per watch OPEN (not per event), and
+// only for derived identities -- kubectl-as-admin, the KCM, and the
+// kubelet pay nothing.
+function watchResourceAttributes(
+  pathname: string,
+): { group: string; resource: string; namespace: string; name: string } | null {
+  const parts = pathname.split("/").filter(Boolean);
+  let group = "";
+  let rest: string[];
+  if (parts[0] === "api" && parts[1] === "v1") {
+    rest = parts.slice(2);
+  } else if (parts[0] === "apis" && parts.length >= 3) {
+    group = parts[1];
+    rest = parts.slice(3);
+  } else {
+    return null;
+  }
+  let namespace = "";
+  if (rest[0] === "namespaces" && rest.length >= 3) {
+    namespace = rest[1];
+    rest = rest.slice(2);
+  }
+  if (!rest[0]) return null;
+  return { group, resource: rest[0], namespace, name: rest[1] ?? "" };
+}
+
+async function authorizeWatchRBAC(req: Request, env: Env, url: URL): Promise<Response | null> {
+  const remoteUser = req.headers.get("X-Remote-User");
+  if (!remoteUser) return null;
+  const forbidden = (message: string) =>
+    Response.json(
+      {
+        kind: "Status",
+        apiVersion: "v1",
+        status: "Failure",
+        message,
+        reason: "Forbidden",
+        code: 403,
+      },
+      { status: 403 },
+    );
+  const attrs = watchResourceAttributes(url.pathname);
+  if (!attrs) return forbidden(`forbidden: cannot resolve watch path ${url.pathname}`);
+  const groups = ["system:authenticated"];
+  const remoteGroups = req.headers.get("X-Remote-Group");
+  if (remoteGroups) groups.unshift(...remoteGroups.split(","));
+  const sar = {
+    apiVersion: "authorization.k8s.io/v1",
+    kind: "SubjectAccessReview",
+    spec: {
+      user: remoteUser,
+      groups,
+      resourceAttributes: {
+        verb: "watch",
+        group: attrs.group,
+        resource: attrs.resource,
+        namespace: attrs.namespace,
+        name: attrs.name,
+      },
+    },
+  };
+  const resp = await apiserverFetch(
+    env,
+    new Request("http://internal/apis/authorization.k8s.io/v1/subjectaccessreviews", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.K3S_TOKEN || "k8flare-dev-token"}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(sar),
+    }),
+  );
+  const body = (await resp.json().catch(() => null)) as { status?: { allowed?: boolean } } | null;
+  if (resp.ok && body?.status?.allowed) return null;
+  return forbidden(`forbidden: User "${remoteUser}" cannot watch resource "${attrs.resource}"`);
+}
+
 // The consolidated Worker's public routing -- the former gateway Worker's
 // fetch handler, with the cross-Worker service bindings replaced:
 // APISERVER -> apiserverFetch (Loader dynamic worker), RUNTIME/NODES ->
@@ -173,6 +255,8 @@ export async function handleGateway(
 
   // Handle watch requests in JS (Go WASM cannot do streaming)
   if (url.searchParams.get("watch") === "true") {
+    const denied = await authorizeWatchRBAC(req, env, url);
+    if (denied) return denied;
     return handleWatch(req, env, url, ctx);
   }
 

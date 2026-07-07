@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -223,13 +224,21 @@ func main() {
 	apiserver.RegisterGroupDiscovery(mux)
 	apiserver.RegisterOpenAPIDiscovery(mux)
 
+	// RBAC: the real upstream RBACAuthorizer over this apiserver's own
+	// rbac/v1 stores + the real bootstrap policy (pkg/apiserver/rbac.go).
+	// The cluster token's system:masters identity bypasses it (zero
+	// storage reads on today's hot paths); derived identities
+	// (X-Remote-User, future ServiceAccount tokens) get real decisions.
+	authz := apiserver.NewRBACAuthorizer(storesByGV[rbacv1.SchemeGroupVersion])
+
 	// authorization.k8s.io/v1 SelfSubjectAccessReview (`kubectl auth can-i`)
 	// + SubjectAccessReview, and authentication.k8s.io/v1 TokenReview (the
 	// kubelet's webhook authenticator/authorizer, used by the per-Pod node
 	// logs/metrics bridge) -- not in apidef.Table, so not covered by the
-	// per-GroupVersion loop below. See selfsubjectaccessreview.go /
-	// tokenreview.go for why.
-	apiserver.RegisterAuthorizationHandlers(mux, getTokens)
+	// per-GroupVersion loop below. Both answer from the same authorizer
+	// that gates live traffic. See selfsubjectaccessreview.go /
+	// tokenreview.go for why they live outside the table.
+	apiserver.RegisterAuthorizationHandlers(mux, getTokens, authz)
 	apiserver.RegisterAuthenticationHandlers(mux, getTokens)
 
 	// Supervisor endpoints (/cacerts, /v1-k3s/*)
@@ -262,7 +271,7 @@ func main() {
 		isCore := gv == corev1.SchemeGroupVersion
 		isStorage := gv == storagev1.SchemeGroupVersion
 
-		mux.Handle(prefix, apiserver.AuthMiddleware(getTokens, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.Handle(prefix, apiserver.AuthMiddleware(getTokens, apiserver.AuthzMiddleware(authz, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if isCore {
 				apiserver.BootstrapCluster(r.Context(), stores)
 			}
@@ -270,7 +279,7 @@ func main() {
 				apiserver.BootstrapStorageClasses(r.Context(), stores)
 			}
 			apiserver.HandleResource(w, r, prefix, stores, namespacedStores)
-		})))
+		}))))
 	}
 
 	workers.Serve(mux)

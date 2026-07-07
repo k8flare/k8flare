@@ -75,7 +75,7 @@ func AuthMiddleware(tokensFn TokensFunc, next http.Handler) http.Handler {
 					}
 					user = &UserInfo{Name: remoteUser, Groups: groups}
 				} else {
-					user = &UserInfo{Name: "admin", Groups: []string{"system:masters"}}
+					user = &UserInfo{Name: "admin", Groups: []string{"system:masters", "system:authenticated"}}
 				}
 			}
 		}
@@ -85,9 +85,9 @@ func AuthMiddleware(tokensFn TokensFunc, next http.Handler) http.Handler {
 			if username, password, ok := r.BasicAuth(); ok && tokenMatches(tokens, password) {
 				authenticated = true
 				if username == "node" {
-					user = &UserInfo{Name: "node", Groups: []string{"k3s:agent", "system:nodes"}}
+					user = &UserInfo{Name: "node", Groups: []string{"k3s:agent", "system:nodes", "system:authenticated"}}
 				} else {
-					user = &UserInfo{Name: username, Groups: []string{"system:masters"}}
+					user = &UserInfo{Name: username, Groups: []string{"system:masters", "system:authenticated"}}
 				}
 			}
 		}

@@ -11,8 +11,11 @@ import (
 
 // The kubelet's webhook authenticator/authorizer path used by the
 // per-Pod microVM logs/metrics bridge: TokenReview must authenticate
-// exactly the cluster token, and SubjectAccessReview must allow (the
-// all-or-nothing token model). Driven through real client-go against
+// exactly the cluster token, and SubjectAccessReview -- fed the user
+// AND groups TokenReview returned, exactly as the kubelet's webhook
+// authorizer does -- must allow via the system:masters identity (RBAC
+// enforcement landed 2026-07-07; a bare username with no groups is no
+// longer allowed by default). Driven through real client-go against
 // wrangler dev, like every other integration test here.
 func TestTokenReviewAndSubjectAccessReview(t *testing.T) {
 	client := setupWranglerDev(t)
@@ -48,7 +51,8 @@ func TestTokenReviewAndSubjectAccessReview(t *testing.T) {
 	t.Run("SubjectAccessReview_Allows", func(t *testing.T) {
 		sar, err := client.AuthorizationV1().SubjectAccessReviews().Create(ctx, &authorizationv1.SubjectAccessReview{
 			Spec: authorizationv1.SubjectAccessReviewSpec{
-				User: "admin",
+				User:   "admin",
+				Groups: []string{"system:masters", "system:authenticated"},
 				ResourceAttributes: &authorizationv1.ResourceAttributes{
 					Verb: "get", Resource: "nodes", Subresource: "proxy",
 				},
@@ -59,6 +63,26 @@ func TestTokenReviewAndSubjectAccessReview(t *testing.T) {
 		}
 		if !sar.Status.Allowed {
 			t.Fatalf("SAR not allowed: %+v", sar.Status)
+		}
+	})
+
+	// A bare username with no groups gets a real RBAC decision now:
+	// nothing binds "admin"-the-user (only the system:masters group), so
+	// this must be denied -- the counterpart of the Allows case above.
+	t.Run("SubjectAccessReview_DeniesUngroupedUser", func(t *testing.T) {
+		sar, err := client.AuthorizationV1().SubjectAccessReviews().Create(ctx, &authorizationv1.SubjectAccessReview{
+			Spec: authorizationv1.SubjectAccessReviewSpec{
+				User: "admin",
+				ResourceAttributes: &authorizationv1.ResourceAttributes{
+					Verb: "get", Resource: "nodes", Subresource: "proxy",
+				},
+			},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("SubjectAccessReview create: %v", err)
+		}
+		if sar.Status.Allowed {
+			t.Fatalf("SAR for ungrouped user unexpectedly allowed: %+v", sar.Status)
 		}
 	})
 }
