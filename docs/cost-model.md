@@ -509,6 +509,42 @@ loader eviction cadence (cold frequency — S14 open item), actual
 per-request CPU-ms of the loader-path apiserver vs today, Registry DO
 rows/month under real cluster-resolution traffic.
 
+## Demand-start Containers control plane (estimate, 2026-07-07 — pre-implementation per invariant #5, GATED on this estimate per user decision)
+
+Containers GA (2026-04-13 changelog) changed the billing split this
+document's older sections assume: **CPU is now billed on active usage
+only** ($0.000020/vCPU-s, 10ms granularity); **memory and disk stay
+provisioned-wall-clock while the instance is awake** ($0.0000025/GiB-s,
+$0.00000007/GB-s); **a sleeping container is billed nothing**. Workers
+Paid includes 375 vCPU-min + 25 GiB-h + 200 GB-h per month.
+CLAUDE.md's cost invariant #2/#7 wording ("Containers are wall-clock
+billed") predates this and should be read as "memory/disk are
+wall-clock while awake" — corrected here, not silently.
+
+Proposal being estimated (task #23): run the real linux kube-scheduler
+
+- kube-controller-manager binaries in ONE demand-start container per
+  active cluster, replacing the 64MiB-capped KCM WASM and the BYO-VM
+  scheduler requirement, reusing the existing poke/park machinery to
+  start the container on work and `stop()` it on drain.
+
+| Scenario ("basic" 1 GiB / 0.25 vCPU / 4 GB disk instance)       | Memory (wall-clock while awake)        | CPU (active only)                          | Monthly $/active cluster                                 |
+| --------------------------------------------------------------- | -------------------------------------- | ------------------------------------------ | -------------------------------------------------------- |
+| Awake ~1 h/day (event-armed start/stop, typical active cluster) | 108,000 GiB-s ≈ allowance +$0.05       | ~1,350 vCPU-s, inside allowance            | **~$0.05–0.30**                                          |
+| Awake ~6 h/day (busy cluster)                                   | 648,000 GiB-s ≈ $1.40 beyond allowance | still pennies (CPU is idle-waiting mostly) | **~$1.5**                                                |
+| Always-on (informers pin it awake — the failure mode)           | 2.63M GiB-s ≈ $6.4 + disk $0.7         | ~$0.3                                      | **~$7.4 — VIOLATES invariant #1/#2, must not ship this** |
+
+The decisive design constraint: the scheduler/KCM hold long-lived
+watches, which keep the container awake indefinitely if left alone —
+the event-armed pump-window discipline the WASM KCM already follows
+must map onto container start/stop (start on poke, drain, `stop()`;
+`onActivityExpired` ask-before-sleep as the safety net). Idle cluster
+= container stopped = $0, preserving invariant #1. Hot paths stay off
+Containers (invariant #7 intact: scheduler/KCM are async reconcilers).
+Numbers to replace with measurements: actual awake-fraction under the
+poke cadence, actual active-CPU per reconcile burst, cold-start delay
+(typical 1–3 s) added to first Pod schedule after idle.
+
 ## Idle-cluster verification checklist
 
 A checklist for mechanically confirming cost invariant #1, "nothing is

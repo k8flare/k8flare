@@ -134,6 +134,30 @@ traffic routing) remain unverified pending the watch-delivery follow-up.
 
 ### Open follow-ups from this phase
 
+- **The ClusterIP real-traffic promotion attempt (2026-07-07) found a
+  DIFFERENT blocker than expected, before ever reaching kube-proxy.**
+  `[sig-network] Services should serve a basic endpoint from pods
+[Conformance]` was run in isolation in CI
+  (`.github/workflows/e2e-conformance.yml`'s advisory "ClusterIP traffic
+  candidate" step) and failed: `service is not reachable within 2m0s
+timeout`. The actual cause, from the ginkgo log, is that upstream's
+  reachability check drives itself via `kubectl exec <pod> -- nc ...`,
+  and every attempt got `error: unable to upgrade connection: exec
+requires a WebSocket upgrade (Upgrade: websocket header missing)` —
+  i.e. `kubectl exec` itself never worked in this CI run, which matches
+  README's documented gap ("`kubectl logs`/`kubectl exec` — Off by
+  default — requires the optional Cloudflare Tunnel + VPC Service
+  setup") that `e2e-conformance.yml` does not configure. **Whether
+  kube-proxy actually routes ClusterIP packets to a pod was never
+  exercised** — the test never got past its own connectivity-check
+  plumbing. Recorded per rule #4 instead of quietly reverting the
+  candidate step: it stays in CI as a advisory, continuously-run probe
+  (harmless, capped at 10 minutes) until either (a) the Tunnel+VPC path
+  is wired into the CI harness so `kubectl exec` actually works there,
+  or (b) a non-exec verification method is found. Do not promote this
+  test to `BASELINE_FOCUS` based on this run's green-looking CI status
+  — that greenness comes entirely from `continue-on-error: true`
+  absorbing the step's real failure, not from the test passing.
 - **CI environment hang** (`e2e-conformance.yml` on GitHub-hosted
   `ubuntu-latest`): reproduces on a bare `main` checkout, so it blocks _any_
   future phase's CI verification, not just this one. Next step: reproduce

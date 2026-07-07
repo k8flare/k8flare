@@ -292,9 +292,17 @@ jobs:
       # Promotion gate (Phase 1 close-out): the one conformance test the
       # plan names as the real-traffic acceptance -- a client pod curling a
       # ClusterIP and reaching the backing pods through kube-proxy. Run in
-      # isolation so its verdict is unambiguous; advisory until it proves
-      # green, then it moves into BASELINE_FOCUS (required) and this step
-      # is deleted.
+      # isolation so its verdict is unambiguous.
+      #
+      # FIRST RUN (2026-07-06) FAILED -- see docs/general-purpose-k8s-plan.md
+      # Phase 1's open follow-ups for the ginkgo detail. It never reached
+      # kube-proxy: upstream's own reachability check drives itself via
+      # `kubectl exec <pod> -- nc ...`, and exec itself doesn't work in this
+      # CI harness (README's documented gap -- exec needs the optional
+      # Tunnel+VPC setup, not configured here). continue-on-error means a
+      # RED ginkgo run still shows as a green GitHub Actions step -- read the
+      # step's own log, not its conclusion, before deciding whether to
+      # promote this focus string into BASELINE_FOCUS.
       - name: Run ClusterIP traffic candidate (Phase 1 promotion gate, advisory)
         id: cluster-ip-traffic
         continue-on-error: true
