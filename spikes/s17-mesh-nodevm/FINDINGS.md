@@ -341,3 +341,39 @@ with that access: run one real Pod through this backend with
 `status.podIP` is a `100.96.0.0/12` address, then `DELETE` the connector
 and confirm via `GET /accounts/{id}/warp_connector` that it's gone (this
 task's own instruction for how to close this gap cleanly).
+
+### Update (2026-07-08): the Worker-side API call shapes are now verified for real
+
+A real `CLOUDFLARE_API_TOKEN` was made available for one verification
+pass (outside this repo's own dev config/CI, per the operator directly).
+`nodes/meshconnector.ts`'s exact three request shapes were run against
+the real KOOFFICE account (same account as gate 2), independent of any
+Worker/DO code -- plain `curl`, mirroring gate 2's own original proof
+method:
+
+1. `POST /accounts/{id}/warp_connector {"name": "k8flare-verify-test-<ts>"}`
+   -- `"success":true`, a real connector id returned
+   (`3ef26518-24d4-4ff9-a8b6-09cb5a4d12e1`).
+2. `GET /accounts/{id}/warp_connector/{id}/token` -- `"success":true`.
+3. `DELETE /accounts/{id}/warp_connector/{id}` -- `"success":true`,
+   `deleted_at` set.
+4. Follow-up `GET /accounts/{id}/warp_connector` (list) confirmed the
+   connector no longer appears -- no leaked capacity against the
+   50-node cap from this verification.
+
+**Operational note, recorded honestly:** the verification script's own
+output-redaction (meant to hide the connector's secret/token fields
+before they reached the terminal/transcript) targeted the wrong JSON key
+(`"secret"` instead of the API's actual `"TunnelSecret"`/`"token"`
+fields), so both were briefly printed in full during step 1's output.
+The connector was deleted moments later in step 3 and confirmed gone in
+step 4, so the exposed credential is no longer valid against any real
+Mesh network -- but the redaction logic itself should be fixed (match
+the real response shape above) before reusing this script for a
+non-cleanup-scoped test.
+
+**Still open**: this only closes the Worker-side API client half of the
+gap above. `cf-containers-scheduler`'s actual `reconcile()` call site,
+a real booted NodeVM, and confirming a real Pod's `status.podIP` becomes
+a live Mesh IP remain unverified -- the same remaining gap described
+just above this update, not yet closed.

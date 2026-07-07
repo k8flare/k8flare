@@ -642,14 +642,15 @@ recorded in S16 — ​not specific to this feature).
 bridge 2's mechanism are both implemented and functionally proven against
 real primitives (a real `/dev/net/tun` device + gVisor netstack in a
 privileged Linux container for bridge 2's intercept; a real `wrangler dev`
-+ real Service/EndpointSlice objects for the Worker-side resolution both
-bridges share) — see S20 for what exactly was and wasn't exercised. This
-confirms the cost shape reasoned about above (no new DO, no new alarm, no
-persistent connection) is what actually got built, not just what was
-planned. Per-request CPU-ms numbers are still not measured — that requires
-a real deployed NodeVM, which this pass could not produce (same ARM
-Mac/Rosetta local-Docker limitation as before; `wrangler deploy` is outside
-this session's constraints).
+
+- real Service/EndpointSlice objects for the Worker-side resolution both
+  bridges share) — see S20 for what exactly was and wasn't exercised. This
+  confirms the cost shape reasoned about above (no new DO, no new alarm, no
+  persistent connection) is what actually got built, not just what was
+  planned. Per-request CPU-ms numbers are still not measured — that requires
+  a real deployed NodeVM, which this pass could not produce (same ARM
+  Mac/Rosetta local-Docker limitation as before; `wrangler deploy` is outside
+  this session's constraints).
 
 ### Scheduler-as-Loader-dynamic-worker: cost shape if it ever fits (2026-07-07)
 
@@ -770,6 +771,22 @@ which fails fast and cleanly (`Error: Failed to parse WARP Connector
 token`, propagated through `log.Fatalf` in well under a second, not a
 hang), proving the wiring reaches the real `warp-cli` call correctly.
 See FINDINGS.md for the full transcript-backed writeup.
+
+**Update (2026-07-08): the Worker-side API calls ARE now verified for
+real**, closing part of the gap above. With a real `CLOUDFLARE_API_TOKEN`
+made available for this one verification pass, `nodes/meshconnector.ts`'s
+exact three calls were run directly against the real KOOFFICE account
+(`POST /accounts/{id}/warp_connector`, `GET .../token`,
+`DELETE /accounts/{id}/warp_connector/{id}`), matching gate 2's original
+proof method: create succeeded (`"success":true`, real connector id
+returned), token fetch succeeded (`"success":true`), delete succeeded
+(`deleted_at` set), and a follow-up list call confirmed the connector no
+longer exists -- no leaked capacity against the 50-node cap. **Still not
+verified**: this test only proves the Worker's own API client code path;
+it did not exercise `cf-containers-scheduler`'s actual `reconcile()`
+call site, and it still did not touch a real running NodeVM, so "a real
+Pod's `status.podIP` becoming a live Mesh IP end-to-end" remains open,
+same as recorded above.
 
 ## Idle-cluster verification checklist
 
