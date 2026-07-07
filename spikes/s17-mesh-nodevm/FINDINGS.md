@@ -55,3 +55,31 @@ one-time Mesh setup wizard, mint a Tunnel/Mesh-scoped API token, then
 gates 3-5 on a single NodeVM. The 50-nodes/account cap is the standing
 design constraint to re-check (Mesh Docker image availability may have
 changed the calculus by then).
+
+### Correction (2026-07-07): gate 2's "no Zero Trust scopes" finding was too broad
+
+Re-checked while scoping a *narrower* ask (replacing the kubectl
+logs/exec Tunnel+VPC Service setup with Mesh, not the full Mesh-as-
+standard-NodeVM-network vision above): the wrangler OAuth token DOES
+carry a `connectivity (admin)` scope, and `wrangler tunnel list` /
+`wrangler tunnel create` / `wrangler tunnel delete` work against the
+real account today (confirmed by deleting a stale tunnel this session).
+Gate 2's actual finding stands for what it tested — Zero Trust
+**Devices/orgs** enrollment APIs (needed to automate per-ephemeral-VM
+Mesh membership without a human) returned auth errors — but plain
+**Tunnel** management is not blocked the way this entry implied.
+
+**Mesh specifically (the Zero Trust Networks > Mesh L3 CIDR resource,
+distinct from a Tunnel) still has no documented API/CLI creation
+path** (official docs read 2026-07-07,
+`developers.cloudflare.com/cloudflare-one/networks/connectors/
+cloudflare-mesh/get-started/`): both the network itself and each
+node's `warp-cli connector new <TOKEN>` token are dashboard-only
+("Networking > Mesh > Add a node"). `warp-cli` is the client that
+*consumes* that token, not something that creates the resource --
+matching this entry's own gate 1 finding, just restated precisely.
+This means gate 2's blocker (no unattended per-VM enrollment) is
+unchanged; what's now confirmed is that a human doing the one-time
+dashboard step and handing over the resulting connector token remains
+the only path, for either the narrow (Tunnel replacement) or the full
+Mesh-as-standard-network scope.
