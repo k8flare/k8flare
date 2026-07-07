@@ -1,4 +1,4 @@
-//go:build !js
+//go:build linux
 
 // Package vkubeproxy is the node-side half of task #13's virtual
 // kube-proxy. Pod-on-Containers Pods run `hostNetwork: true`
@@ -24,6 +24,15 @@
 // v1 scope, matching the approved design: HTTP/1.x request-response only.
 // Raw TCP passthrough and a secure/TokenReview'd path are deferred (see
 // docs/general-purpose-k8s-plan.md).
+//
+// Build tag is `linux`, not this project's usual cross-platform `!js`
+// (pkg/dnsshim, pkg/meshconnector): those packages only shell out to CLI
+// tools, which still compiles anywhere even though it only runs on Linux
+// at cmd/agent's actual deploy target. This package instead links
+// gvisor.dev/gvisor/pkg/tcpip/link/{tun,fdbased}, whose own build
+// constraints are unconditionally Linux-only (raw AF_PACKET sockets, TUN
+// ioctls) -- `go vet ./pkg/...` from a non-Linux dev machine fails to even
+// compile the package otherwise, not just to run it.
 package vkubeproxy
 
 import (
@@ -41,6 +50,7 @@ import (
 	"golang.org/x/sys/unix"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
+	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/link/fdbased"
 	"gvisor.dev/gvisor/pkg/tcpip/link/tun"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
@@ -97,12 +107,24 @@ func Run(ctx context.Context, serverURL, token, serviceCIDR string) {
 	s.SetPromiscuousMode(nicID, true)
 	s.SetSpoofing(nicID, true)
 
-	subnet, err := subnetFromCIDR(serviceCIDR)
-	if err != nil {
+	if _, err := subnetFromCIDR(serviceCIDR); err != nil {
 		log.Printf("vkubeproxy: invalid service CIDR %q: %v", serviceCIDR, err)
 		return
 	}
-	s.SetRouteTable([]tcpip.Route{{Destination: subnet, NIC: nicID}})
+	// A default (0.0.0.0/0) route, not one scoped to serviceCIDR: this
+	// governs only which NIC gvisor's *own* userspace stack uses to
+	// originate a packet, and there is exactly one NIC in this whole
+	// stack (the TUN device) -- every reply this stack ever sends
+	// (SYN-ACK, data, FIN) is addressed to the real client's own address
+	// (e.g. the microVM's real interface IP), which is never itself
+	// inside serviceCIDR, so a subnet-scoped route here made every
+	// CreateEndpoint fail with "network is unreachable" (caught only by
+	// actually running this against a real TUN device in a Linux
+	// container -- see docs/platform-verification.md). The Linux kernel
+	// route configured below is what actually scopes interception to
+	// serviceCIDR; this stack-internal route does not need to repeat
+	// that scoping.
+	s.SetRouteTable([]tcpip.Route{{Destination: header.IPv4EmptySubnet, NIC: nicID}})
 
 	if err := configureHostRoute(tunDeviceName, serviceCIDR); err != nil {
 		log.Printf("vkubeproxy: failed to configure host route (ClusterIP routing will not be available): %v", err)

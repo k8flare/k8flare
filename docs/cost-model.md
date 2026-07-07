@@ -638,6 +638,19 @@ for what could and couldn't be exercised end-to-end on this pass (ARM Mac
 local Docker cannot boot this node image at all, a pre-existing limitation
 recorded in S16 — ​not specific to this feature).
 
+**Update (2026-07-07, docs/platform-verification.md S20)**: bridge 1 and
+bridge 2's mechanism are both implemented and functionally proven against
+real primitives (a real `/dev/net/tun` device + gVisor netstack in a
+privileged Linux container for bridge 2's intercept; a real `wrangler dev`
++ real Service/EndpointSlice objects for the Worker-side resolution both
+bridges share) — see S20 for what exactly was and wasn't exercised. This
+confirms the cost shape reasoned about above (no new DO, no new alarm, no
+persistent connection) is what actually got built, not just what was
+planned. Per-request CPU-ms numbers are still not measured — that requires
+a real deployed NodeVM, which this pass could not produce (same ARM
+Mac/Rosetta local-Docker limitation as before; `wrangler deploy` is outside
+this session's constraints).
+
 ## Idle-cluster verification checklist
 
 A checklist for mechanically confirming cost invariant #1, "nothing is
