@@ -24,6 +24,7 @@ import (
 	"github.com/k3s-io/k3s/pkg/daemons/executor"
 	"github.com/k3s-io/k3s/pkg/executor/embed"
 	"github.com/k8flare/k8flare/pkg/cacert"
+	"github.com/k8flare/k8flare/pkg/dnsshim"
 	cli "github.com/urfave/cli/v2"
 )
 
@@ -157,6 +158,11 @@ func main() {
 	// The k3s flannel informer often fails to sync during startup because the
 	// Go WASM API handler is temporarily overloaded. This bypasses the informer.
 	go cacert.WriteSubnetEnv(ctx, *serverURL, *token, *nodeName)
+
+	// Cluster DNS: node-local shim (NodeLocal DNSCache address), no
+	// Containers/CoreDNS Deployment dependency. kubelet's --cluster-dns
+	// is set to the same address via supervisor.go's clusterConfig.
+	go dnsshim.Run(ctx, *serverURL, *token, "cluster.local")
 
 	embedded, err := embed.New(ctx, &agentConfig)
 	if err != nil {

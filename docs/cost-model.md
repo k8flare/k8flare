@@ -509,6 +509,19 @@ loader eviction cadence (cold frequency — S14 open item), actual
 per-request CPU-ms of the loader-path apiserver vs today, Registry DO
 rows/month under real cluster-resolution traffic.
 
+## Cluster DNS (actual, 2026-07-07)
+
+`pkg/dnsshim` (cmd/agent) + `pkg/apiserver`'s `/dns-query` DoH endpoint
+(docs/general-purpose-k8s-plan.md's Phase 4). No new resident process on
+the Cloudflare side, no Containers, no CoreDNS Deployment Pod — the
+Worker-side half is just another apiserver request, same billing shape
+as every other API call (Worker CPU-time-only, zero cost while idle).
+The node-local shim runs on infrastructure the cluster already needed
+(the BYO VM's own `cmd/agent` process) rather than adding a new billed
+component, so this feature has **no incremental Cloudflare cost** at
+any traffic level. Idle invariant #1 holds trivially (nothing new to be
+idle).
+
 ## Demand-start Containers control plane (estimate, 2026-07-07 — pre-implementation per invariant #5, GATED on this estimate per user decision)
 
 Containers GA (2026-04-13 changelog) changed the billing split this

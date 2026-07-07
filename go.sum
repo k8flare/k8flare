@@ -1091,8 +1091,6 @@ github.com/k3s-io/klog/v2 v2.140.0-k3s1 h1:Z6S9oqaxcKtLaTcQNgWsaZNE5a+qJmCrTI+La
 github.com/k3s-io/klog/v2 v2.140.0-k3s1/go.mod h1:o+/RWfJ6PwpnFn7OyAG3QnO47BFsymfEfrz6XyYSSp0=
 github.com/k3s-io/kube-router/v2 v2.6.3-k3s1 h1:RZjUBIuitXCuYoCzm1aM6p5EgQFC5k3N72j4pBIc2j4=
 github.com/k3s-io/kube-router/v2 v2.6.3-k3s1/go.mod h1:RaxDc+SBKB33+fjao+LeDue4CaUajk02eCHXVK/V4YE=
-github.com/k3s-io/kubernetes v1.36.2-k3s1 h1:wUxs5EGkg5grHgf4wURTwjIxcYzmPC3r4g1KZegPARs=
-github.com/k3s-io/kubernetes v1.36.2-k3s1/go.mod h1:MLdeJ3qw2CWH9BFml5GvptxQVQckz54fJOZ/WuixpFE=
 github.com/k3s-io/kubernetes/staging/src/k8s.io/api v1.36.2-k3s1 h1:0M9CyxD8MNWWkJuT+31fgxUKllfHMaMrT/TAeE9cYNw=
 github.com/k3s-io/kubernetes/staging/src/k8s.io/api v1.36.2-k3s1/go.mod h1:yMp9wCLUur7nsqZMiITwcrC52SBqLL5dz6CFwDDfRSA=
 github.com/k3s-io/kubernetes/staging/src/k8s.io/apiextensions-apiserver v1.36.2-k3s1 h1:38hcXnxdBIS3Sw5gy9xRaP41RaUkDaPu65H/N6tYsgo=
@@ -1615,8 +1613,6 @@ github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD
 github.com/subosito/gotenv v1.2.0/go.mod h1:N0PQaV/YGNqwC0u51sEeR/aUtSLEXKX9iv69rRypqCw=
 github.com/syndtr/goleveldb v1.0.0 h1:fBdIW9lB4Iz0n9khmH8w27SJ3QEJ7+IgjPEwGSZiFdE=
 github.com/syndtr/goleveldb v1.0.0/go.mod h1:ZVVdQEZoIme9iO1Ch2Jdy24qqXrMMOU6lpPAyBWyWuQ=
-github.com/syumai/workers v0.32.0 h1:nL7c6d52YgHUDFiYxRffmJCK60yVkzTb2YtBPmHZOxQ=
-github.com/syumai/workers v0.32.0/go.mod h1:ZnqmdiHNBrbxOLrZ/HJ5jzHy6af9cmiNZk10R9NrIEA=
 github.com/t4db/t4 v1.0.3 h1:2flb5uixIP4uN6TdTRaX00Eoc4jnmdzXPlGcQLN7Rrc=
 github.com/t4db/t4 v1.0.3/go.mod h1:j/5by/iUcGJlPUXIbT5zOrEuB0k+XQ4Xg2dHU75+loc=
 github.com/tidwall/btree v1.8.1 h1:27ehoXvm5AG/g+1VxLS1SD3vRhp/H7LuEfwNvddEdmA=

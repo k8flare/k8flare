@@ -17,6 +17,7 @@ import (
 // The agent handles nil/zero values for these fields gracefully.
 type clusterConfig struct {
 	ClusterDomain      string    `json:"ClusterDomain,omitempty"`
+	ClusterDNS         net.IP    `json:"ClusterDNS,omitempty"`
 	ClusterIPRange     net.IPNet `json:"ClusterIPRange"`
 	ServiceIPRange     net.IPNet `json:"ServiceIPRange"`
 	HTTPSPort          int       `json:"HTTPSPort,omitempty"`
@@ -55,7 +56,18 @@ func mustParseCIDR(s string) *net.IPNet {
 // automatically using the PodCIDR allocated by the control plane.
 func defaultClusterConfig() clusterConfig {
 	return clusterConfig{
-		ClusterDomain:    "cluster.local",
+		ClusterDomain: "cluster.local",
+		// The kubelet setting this in every Pod's /etc/resolv.conf is the
+		// entire integration point with the embedded k3s agent -- no
+		// agent-side code change needed for kubelet to pick it up
+		// (config.Control.ClusterDNS unmarshals straight off this JSON
+		// field, k3s-io/k3s's pkg/agent/config/config.go). Must match
+		// pkg/dnsshim's bind address (cmd/agent); duplicated as a literal
+		// rather than shared, matching PodCIDR/ServiceCIDR below (which
+		// agent learns via this same response, but the DNS shim binds a
+		// socket before any config round-trip could apply, so there is
+		// no discovery step to hook into here).
+		ClusterDNS:       net.ParseIP(NodeLocalDNSIP),
 		ClusterIPRange:   *PodCIDR,
 		ServiceIPRange:   *ServiceCIDR,
 		HTTPSPort:        6443,

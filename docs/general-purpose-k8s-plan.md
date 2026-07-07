@@ -413,20 +413,53 @@ largest single jump in official conformance coverage.
 
 ## Phase 4 — Cluster DNS
 
-The `MissingClusterDNS` kubelet warning, observed on every real pod today.
-Standard shape, k3s-style:
+**Shipped 2026-07-07, in a different shape than the CoreDNS-as-Deployment
+plan below** (user decision: no Containers dependency for DNS). The
+`MissingClusterDNS` kubelet warning is resolved without ever needing a
+`kube-dns` Service or ClusterIP routing to reach it:
 
-1. CoreDNS as a Deployment (Phase 3) with a `kube-dns` Service pinned to
-   `10.43.0.10` (Phase 1).
-2. CoreDNS authenticates to the apiserver with a mounted kubeconfig Secret
-   carrying a scoped token initially; upgraded to a projected ServiceAccount
-   token when Phase 5 lands TokenRequest.
-3. Only then flip the supervisor to advertise `cluster-dns=10.43.0.10` to
-   kubelets — advertising a dead DNS IP earlier would break pod DNS, so this
-   is strictly last.
+1. `cmd/agent` runs `pkg/dnsshim`, a node-local UDP/TCP DNS listener
+   bound to `169.254.20.10` — the NodeLocal DNSCache convention
+   address (link-local, so identical on every node, no cross-host
+   collision, no ClusterIP/kube-proxy dependency at all).
+2. `supervisor.go`'s `/v1-k3s/config` advertises
+   `ClusterDNS: 169.254.20.10`, which the embedded k3s agent code
+   applies to kubelet's `--cluster-dns` with zero agent-side wiring
+   (`config.Control.ClusterDNS` unmarshals directly off that JSON
+   field) — every ClusterFirst Pod's `/etc/resolv.conf` points here.
+3. The shim forwards `*.cluster.local` queries over DNS-over-HTTPS
+   (RFC 8484) to `pkg/apiserver`'s new `/dns-query` endpoint, which
+   synthesizes A records from live Service objects (ClusterIP) and
+   EndpointSlice objects (headless Services → backing Pod IPs) —
+   token-authenticated like every other apiserver route. Everything
+   else forwards to the node's own upstream resolvers (read once from
+   the host's real, untouched `/etc/resolv.conf`).
 
-Verify: `nslookup kubernetes.default.svc.cluster.local` from a pod;
-conformance `[sig-network] DNS` basics.
+**Deviation from "embed the real thing" (rule #3), recorded not
+hidden:** CoreDNS itself was considered first — its `kubernetes`
+plugin needs nothing but a real Kubernetes API, which this apiserver
+is. Not embedded because CoreDNS's build is driven by `plugin.cfg`
+code generation, not a plain `go build` of a versioned command the way
+`cmd/scheduler`/`cmd/controller-manager` embed real
+`k8s.io/kubernetes` binaries — a meaningfully different integration
+shape than this project's existing embedding pattern. Revisit if full
+DNS conformance coverage (SRV records, Pod hostname/subdomain records,
+`dnsConfig`/search-domain customization) becomes a priority; the
+current handler only does Service A-record resolution.
+
+**Verified** (`pkg/apiserver/dns_test.go`, against real `wrangler dev`):
+ClusterIP Service resolves correctly, headless Service resolves to its
+backing Pod's IP via EndpointSlice, unknown Service names NXDOMAIN,
+and the endpoint is token-gated (401 without auth). **Not yet
+verified**: actual resolution from inside a real Pod end-to-end — that
+additionally needs Phase 1's real ClusterIP traffic proof for Pods to
+reach anything by the resolved IP in the first place (DNS answering
+correctly and packets actually routing are separate, both-required
+problems). Cost: request-driven, so idle cost is zero — no resident
+DNS process, unlike a CoreDNS Pod (`docs/cost-model.md`).
+
+Verify (once Phase 1 unblocks it): `nslookup kubernetes.default.svc.cluster.local`
+from a real pod; conformance `[sig-network] DNS` basics.
 
 ## Phase 5 — API machinery & auth parity
 

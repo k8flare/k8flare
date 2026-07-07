@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -223,6 +224,16 @@ func main() {
 	apiserver.RegisterDiscovery(mux)
 	apiserver.RegisterGroupDiscovery(mux)
 	apiserver.RegisterOpenAPIDiscovery(mux)
+
+	// Cluster DNS (DoH synthesis half; the other half is cmd/agent's
+	// node-local shim, see dns.go). No Containers/CoreDNS Deployment.
+	apiserver.RegisterDNSHandlers(
+		mux,
+		storesByGV[corev1.SchemeGroupVersion],
+		storesByGV[discoveryv1.SchemeGroupVersion],
+		getTokens,
+		"cluster.local",
+	)
 
 	// RBAC: the real upstream RBACAuthorizer over this apiserver's own
 	// rbac/v1 stores + the real bootstrap policy (pkg/apiserver/rbac.go).
