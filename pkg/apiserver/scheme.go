@@ -81,7 +81,13 @@ func init() {
 	Scheme.AddKnownTypes(authorizationv1.SchemeGroupVersion,
 		&authorizationv1.SelfSubjectAccessReview{},
 		&authorizationv1.SubjectAccessReview{})
-	Scheme.AddKnownTypes(authenticationv1.SchemeGroupVersion, &authenticationv1.TokenReview{})
+	// TokenRequest joins TokenReview here for the same reason -- the
+	// ServiceAccount TokenRequest subresource (serviceaccounttoken.go),
+	// not part of apidef.Table since it's a subresource of ServiceAccount
+	// rather than its own top-level resource.
+	Scheme.AddKnownTypes(authenticationv1.SchemeGroupVersion,
+		&authenticationv1.TokenReview{},
+		&authenticationv1.TokenRequest{})
 
 	// metav1.Table is the meta.k8s.io/v1 response body kubectl requests via
 	// "Accept: application/json;as=Table;v=v1;g=meta.k8s.io" for its default

@@ -206,6 +206,15 @@ func main() {
 	// CA Manager for supervisor protocol
 	cam := apiserver.NewCAManager(storage)
 
+	// ServiceAccount tokens: the real upstream JWT authenticator (lazy --
+	// only reads the signing key from storage the first time a non-
+	// cluster-token bearer is actually presented, see
+	// serviceaccounttoken.go's lazyServiceAccountAuthenticator).
+	apiserver.SetServiceAccountAuthenticator(
+		apiserver.NewServiceAccountTokenAuthenticator(cam, storesByGV[corev1.SchemeGroupVersion]),
+	)
+	apiserver.RegisterServiceAccountTokenHandler(mux, cam, storesByGV[corev1.SchemeGroupVersion], getTokens)
+
 	// R2Config (Phase 8): resolved lazily, same reason as getToken -- see
 	// r2.go's currentR2Config doc comment for why this is a settable
 	// func-var rather than a parameter threaded through HandleResource.

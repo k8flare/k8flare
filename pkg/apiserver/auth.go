@@ -5,7 +5,27 @@ import (
 	"crypto/subtle"
 	"net/http"
 	"strings"
+
+	"k8s.io/apiserver/pkg/authentication/authenticator"
 )
+
+// currentSAAuthenticator is the real JWT ServiceAccount token
+// authenticator (serviceaccounttoken.go), installed via
+// SetServiceAccountAuthenticator once CAManager.Initialize has run --
+// same settable-func-var pattern as r2.go's currentR2Config, for the
+// same reason (this apiserver's per-request instantiation means the key
+// is only readable during request handling, not at package init). Nil
+// until installed, in which case AuthMiddleware simply never tries it
+// (e.g. supervisor/discovery endpoints registered before main's SA
+// authenticator wiring runs, or a build that never calls it).
+var currentSAAuthenticator authenticator.Token
+
+// SetServiceAccountAuthenticator installs authn as the second identity
+// source AuthMiddleware tries when a presented bearer token isn't the
+// cluster token.
+func SetServiceAccountAuthenticator(authn authenticator.Token) {
+	currentSAAuthenticator = authn
+}
 
 // contextKey is an unexported type used for context value keys to avoid collisions.
 type contextKey int
@@ -76,6 +96,13 @@ func AuthMiddleware(tokensFn TokensFunc, next http.Handler) http.Handler {
 					user = &UserInfo{Name: remoteUser, Groups: groups}
 				} else {
 					user = &UserInfo{Name: "admin", Groups: []string{"system:masters", "system:authenticated"}}
+				}
+			} else if currentSAAuthenticator != nil {
+				// Not the cluster token -- try it as a real
+				// ServiceAccount JWT (TokenRequest, serviceaccounttoken.go).
+				if u, ok := AuthenticateServiceAccountToken(r.Context(), currentSAAuthenticator, bearerToken); ok {
+					authenticated = true
+					user = u
 				}
 			}
 		}

@@ -29,6 +29,9 @@ type CAManager struct {
 	clientKey   *ecdsa.PrivateKey
 	serverCA    *x509.Certificate
 	serverKey   *ecdsa.PrivateKey
+	// saSigningKey signs ServiceAccount tokens (TokenRequest, serviceaccount.go).
+	// No certificate -- just a keypair, persisted the same way as the CAs above.
+	saSigningKey *ecdsa.PrivateKey
 }
 
 // NewCAManager creates a new CAManager that uses the given storage for
@@ -44,12 +47,13 @@ const (
 	clientCAKeyKey  = "/ca/client-ca.key"
 	serverCACertKey = "/ca/server-ca.crt"
 	serverCAKeyKey  = "/ca/server-ca.key"
+	saSigningKeyKey = "/ca/sa-signing.key"
 
 	clientCACN = "k3s-client-ca"
 	serverCACN = "k3s-server-ca"
 
 	caValidityDuration   = 10 * 365 * 24 * time.Hour // 10 years
-	certValidityDuration = 365 * 24 * time.Hour       // 1 year
+	certValidityDuration = 365 * 24 * time.Hour      // 1 year
 
 	// serialNumberMax is the upper bound for random serial numbers.
 	// Using 128-bit random serial numbers as recommended by CA/Browser Forum.
@@ -78,12 +82,65 @@ func (m *CAManager) Initialize(ctx context.Context) error {
 		return fmt.Errorf("initialize server CA: %w", err)
 	}
 
+	saKey, err := m.loadOrCreateSAKey(ctx)
+	if err != nil {
+		return fmt.Errorf("initialize ServiceAccount signing key: %w", err)
+	}
+
 	m.clientCA = clientCert
 	m.clientKey = clientKey
 	m.serverCA = serverCert
 	m.serverKey = serverKey
+	m.saSigningKey = saKey
 	m.initialized = true
 	return nil
+}
+
+// loadOrCreateSAKey mirrors loadOrCreateCA's load-or-create-with-race-
+// handling shape, for a bare keypair with no certificate.
+func (m *CAManager) loadOrCreateSAKey(ctx context.Context) (*ecdsa.PrivateKey, error) {
+	if keyObj, err := m.storage.Get(ctx, saSigningKeyKey); err == nil {
+		return parseECDSAKey(keyObj.Value)
+	} else if !errors.Is(err, ErrNotFound) {
+		return nil, fmt.Errorf("get key: %w", err)
+	}
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("generate key: %w", err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return nil, fmt.Errorf("marshal key: %w", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+
+	if _, err := m.storage.Create(ctx, saSigningKeyKey, keyPEM); err != nil {
+		if errors.Is(err, ErrKeyExists) {
+			// Race: another instance created it first, re-read.
+			keyObj, err := m.storage.Get(ctx, saSigningKeyKey)
+			if err != nil {
+				return nil, fmt.Errorf("re-read key after race: %w", err)
+			}
+			return parseECDSAKey(keyObj.Value)
+		}
+		return nil, fmt.Errorf("store key: %w", err)
+	}
+	return key, nil
+}
+
+// SAJWTSigningKey returns the ECDSA private key TokenRequest signs with.
+// Initialize must be called before this method.
+func (m *CAManager) SAJWTSigningKey() *ecdsa.PrivateKey {
+	return m.saSigningKey
+}
+
+func parseECDSAKey(keyPEM []byte) (*ecdsa.PrivateKey, error) {
+	block, _ := pem.Decode(keyPEM)
+	if block == nil {
+		return nil, fmt.Errorf("failed to decode PEM block")
+	}
+	return x509.ParseECPrivateKey(block.Bytes)
 }
 
 // loadOrCreateCA attempts to load a CA from storage. If not found, it generates
