@@ -2729,3 +2729,28 @@ scheduled Pod end-to-end via `wrangler dev` before ever flipping
 `cmd/kcm-wasm/scheduler`/informers-factory-narrowing groundwork for that
 follow-up rather than reverted, since it is a real, verified, zero-risk
 improvement (KCM unaffected) even though insufficient alone.
+
+**Correction (orchestrator review, before merge, same day): "KCM
+re-measured ... unaffected" above was wrong.** The reviewing session
+independently rebuilt KCM from this entry's own diff and got
+65,230,504 bytes -- not the clean baseline of 64,019,374 (confirmed
+twice earlier that same session, after the RBAC/DNS/SA-token merge and
+again after the wasm-split-v2 merge). The +1,211,130 byte (~1.18MiB)
+regression traced to `kubernetes/scheme/register.go`'s new
+`resourcev1.AddToScheme` entry: `scripts/gen-clientgo-lean-mirror.sh`
+copies this file into the shared `.build/clientgo-lean-mirror`
+*unconditionally* (no build-tag gating), so it fed both the scheduler
+build and KCM's `-tags leanwidth` build even though KCM never uses
+resource/v1 (`pkg/leanclient`'s `ResourceV1()` stays a permanent panic
+stub there). The "re-measured" number in the paragraph above was
+internally self-consistent (matched `npm run build:wasm`'s own output)
+but was never compared against the pre-existing baseline, so the
+regression went unnoticed within the same session that introduced it.
+Fixed before merge by splitting resource/v1's registration into a new
+`register_sched.go`, tagged `!leanwidth` (mirrors the existing
+`clientset_leanwidth.go` gating pattern) -- KCM re-verified back at
+64,019,330 bytes (3017KiB headroom, the 44-byte difference from
+64,019,374 is ordinary build-path/timestamp noise), scheduler
+re-verified unchanged at 101,110,390 bytes. Recorded per this repo's
+rule 4 (corrections are appended, not silently rewritten into the
+original paragraph).

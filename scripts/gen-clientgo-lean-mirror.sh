@@ -97,6 +97,10 @@ if [[ "$ACTUAL_SR_SHA" != "$EXPECTED_SR_SHA" ]]; then
   exit 1
 fi
 cp "$OVERLAY_DIR/kubernetes/scheme/register.go" "$DST/kubernetes/scheme/register.go"
+# register_sched.go: resource/v1 (DRA) scheme registration, `!leanwidth`-
+# tagged so it only applies to the scheduler build, never KCM's -- see
+# register.go's doc comment for why this must not be unconditional.
+cp "$OVERLAY_DIR/kubernetes/scheme/register_sched.go" "$DST/kubernetes/scheme/register_sched.go"
 
 # informers/<group>/<version> and listers/<group>/<version> are NOT
 # pruned, deliberately -- see third_party/clientgo-lean-overlays/README.md's
