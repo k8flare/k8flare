@@ -2504,3 +2504,63 @@ assertion — no debug HTTP endpoint added to either Worker, and no
 production deployment required for this specific check. See that
 workflow's header comment for the full mechanism and what it does and
 doesn't prove.
+
+**2026-07-07 — Re-confirmed, by actually building it, that narrowing
+`kubernetes.Interface` cannot bring the real scheduler under the
+Loader's 64MiB cap; this independently corroborates
+`scripts/gen-clientgo-lean-mirror.sh`'s existing "Phase 10" note rather
+than superseding it.** Prompted by a user question ("build a scheduler
+that doesn't depend on `syscall.SIGUSR2`, use reflection/codegen/
+whatever magic it takes") that, on investigation, turned out to rest on
+a premise already resolved: `third_party/k8s-js-overlays` had _already_
+patched the one `signal.go` file blocking `k8s.io/kubernetes/pkg/
+scheduler` from compiling for GOOS=js at all (S8's original hard
+blocker, above) — `cmd/kcm-wasm/scheduler` already exists and compiles.
+The open question was therefore purely about SIZE, not compilability.
+Verified today, against the current mirrors:
+
+- `-tags leanwidth` (KCM's narrow `kubernetes.Interface`, 6 methods):
+  fails to compile at all --
+  `k8s.io/client-go/informers/{storage,resource,node,scheduling,policy,
+storagemigration}`'s per-version files reference `StorageV1alpha1()`,
+  `ResourceV1beta1()`/`ResourceV1beta2()`, `NodeV1beta1()`,
+  `SchedulingV1()`, `PolicyV1beta1()`, `StoragemigrationV1beta1()` --
+  none of which the narrow interface declares.
+- Without `-tags leanwidth` (`pkg/leanclient/clientset`'s full-width
+  panic-stub `Clientset`, satisfying the real, complete
+  `kubernetes.Interface`): compiles cleanly. `wasm-opt -Oz`: **102.7MB**
+  -- matching `scripts/build-wasm-chunks.sh`'s existing "102.8MB opt
+  against the reproducible mirrors" figure exactly, 35.6MB over the
+  67,108,864-byte cap.
+- Attempted to widen `clientset_leanwidth.go` with panic-stub methods
+  for just the ~8 missing group-versions (not full width) before
+  finding `gen-clientgo-lean-mirror.sh`'s own comment already documents
+  why this fails: `scheduler.New`'s `informerFactory` parameter type is
+  fixed to the real `k8s.io/client-go/informers.SharedInformerFactory`,
+  whose single `factory.go` declares one `Group() *group.Interface`
+  method per top-level API group (21 of them) -- referencing that type
+  at all requires every one of those 21 groups' typed and
+  applyconfigurations packages to compile, and those packages
+  cross-reference each other across group boundaries (e.g.
+  autoscaling's `HorizontalPodAutoscalerApplyConfiguration` embeds
+  core's `ObjectReferenceApplyConfiguration`), so no subset short of
+  "all of them" compiles. Did not re-attempt the partial-prune
+  experiment this implies would fail (rule 2 still applies, but a
+  clearly-reasoned prior failure with the exact mechanism identified
+  doesn't need re-disproving by hand every time it resurfaces) --
+  reported as re-confirmation of an existing finding, not a new one.
+
+**Conclusion, unchanged from before this re-check but now re-verified
+by two fresh, real `GOOS=js GOARCH=wasm go build` attempts**: the real
+kube-scheduler cannot fit the Loader's 64MiB cap without either (a)
+patching `scheduler.New`'s call site to accept a narrow, hand-rolled
+`SharedInformerFactory`-shaped type instead of the generic one --
+substantially larger surgery on upstream scheduling logic than the
+one-file `signal.go` swap, and one that would need re-verification on
+every future k8s version bump -- or (b) a non-WASM execution shape
+(BYO-VM host process, current; or Cloudflare Containers, task #23's
+original framing). Splitting `cmd/apiserver-wasm`/`cmd/kcm-wasm` into
+more, smaller Loader dynamic workers (task #23 as re-scoped 2026-07-07)
+does not change this conclusion: the blocker is a structural type
+dependency at the informer-factory injection point, not overall binary
+size pressure elsewhere in the control plane.
