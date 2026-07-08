@@ -26,7 +26,7 @@ const assetsDir = "workers/k8flare/assets"
 // genOpenAPI copies the real upstream OpenAPI v2 (Swagger 2.0) and v3
 // documents for every apidef.Table GroupVersion out of the k8s.io/kubernetes
 // module (resolved via go.mod's replace to the k3s-io/kubernetes fork) into
-// workers/apiserver's Static Assets directory, plus a generated v3
+// workers/k8flare's Static Assets directory, plus a generated v3
 // discovery index. This is real upstream content, copied byte-for-byte
 // (the v2 document verbatim; the v3 documents verbatim per-file) -- nothing
 // here hand-writes or hand-filters an OpenAPI schema, matching the "don't
@@ -44,7 +44,7 @@ const assetsDir = "workers/k8flare/assets"
 // (zz_generated_openapi.go) that pkg/apiserver serves directly for the one
 // exact "/openapi/v3" route; every per-group-version document, and all of
 // v2, stay pure static assets outside the WASM binary. See
-// workers/apiserver/main.go's registration of that one route.
+// pkg/apiserver/discovery.go's RegisterOpenAPIDiscovery, which registers that one route.
 func genOpenAPI(root string) error {
 	specDir, err := goListModuleDir(root, "k8s.io/kubernetes")
 	if err != nil {
@@ -132,7 +132,7 @@ package apiserver
 // RegisterOpenAPIDiscovery, openapi.go): a {"paths": {...}} map from each
 // served GroupVersion's OpenAPI v3 document path to its Static-Assets URL
 // and content hash. Generated from the real per-group-version documents
-// copied into workers/apiserver/assets/openapi/v3/ -- see
+// copied into workers/k8flare/assets/openapi/v3/ -- see
 // cmd/k8flare-gen/openapi.go.
 var OpenAPIV3Discovery = []byte(%s)
 `, generatedHeader, goRawOrQuoted(indexData))

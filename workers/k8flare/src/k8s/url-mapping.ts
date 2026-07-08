@@ -42,7 +42,7 @@ export function urlToStoragePrefix(pathname: string): string | null {
 // RESOURCE_KINDS (resource's plural name -> Kind, covering every resource
 // the Go apiserver serves) is generated from
 // pkg/apiserver/apidef.Table by cmd/k8flare-gen -- see
-// packages/k8s/src/gen/resource-kinds.gen.ts. It used to be hand-written
+// ./gen/resource-kinds.gen.ts. It used to be hand-written
 // here, which had already caused two separate watch-bookmark bugs (a
 // resource added to the Go apiserver but forgotten in this map) before the
 // generator existed.

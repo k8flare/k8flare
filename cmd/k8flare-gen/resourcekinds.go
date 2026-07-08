@@ -8,8 +8,9 @@ import (
 	"github.com/k8flare/k8flare/pkg/apiserver/apidef"
 )
 
-// genResourceKinds writes packages/k8s/src/gen/resource-kinds.gen.ts: the
-// resource-plural -> Kind lookup table packages/k8s/src/url-mapping.ts uses
+// genResourceKinds writes workers/k8flare/src/k8s/gen/resource-kinds.gen.ts:
+// the resource-plural -> Kind lookup table
+// workers/k8flare/src/k8s/url-mapping.ts uses
 // to build synthetic objects (e.g. watch bookmarks) that must decode as the
 // correct concrete type. Replaces the hand-written RESOURCE_KINDS map that
 // used to live directly in url-mapping.ts, which had already caused two
@@ -39,7 +40,7 @@ func genResourceKinds(root string) error {
 	}
 	b.WriteString("};\n")
 
-	return writeFile(root+"/packages/k8s/src/gen/resource-kinds.gen.ts", []byte(b.String()))
+	return writeFile(root+"/workers/k8flare/src/k8s/gen/resource-kinds.gen.ts", []byte(b.String()))
 }
 
 // tsKey returns key as a bare object-literal key when it's a valid

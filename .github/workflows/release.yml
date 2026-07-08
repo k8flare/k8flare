@@ -35,8 +35,7 @@ jobs:
       - name: Build WASM
         run: npm run build:wasm
 
-      # Package the single consolidated Worker plus the shared packages/*
-      # it depends on via pnpm workspace links, keeping `pnpm install &&
+      # Package the single consolidated Worker, keeping `pnpm install &&
       # npm run deploy` working unmodified from the extracted archive. The
       # prebuilt assets/wasm chunks ship inside workers/k8flare so
       # deploying doesn't require a local Go toolchain (only wrangler +
@@ -48,7 +47,7 @@ jobs:
           tar czf "dist/k8flare-workers-${{ github.ref_name }}.tar.gz" \
             --exclude=node_modules --exclude=.wrangler --exclude="*.tsbuildinfo" \
             workers/k8flare \
-            packages package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.json
+            package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.json
 
       - name: Build Agent (linux/arm64)
         run: |

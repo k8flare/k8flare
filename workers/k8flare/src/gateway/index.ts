@@ -3,7 +3,7 @@ import {
   handleKubeletProxy,
   handleRemotedialConnect,
 } from "./proxy/index.ts";
-import { dwAuth, handleWatch } from "@k8flare/k8s";
+import { dwAuth, handleWatch } from "../k8s/index.ts";
 import type { Env } from "../env.ts";
 import { apiserverFetch } from "../loader/apiserver.ts";
 import { handleNodes } from "../nodes/index.ts";

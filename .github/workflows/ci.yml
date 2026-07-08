@@ -43,7 +43,7 @@ jobs:
       - name: Verify generated code is up to date
         run: |
           go run ./cmd/k8flare-gen
-          git diff --exit-code -- pkg/apiserver/zz_generated_*.go packages/k8s/src/gen workers/k8flare/assets/openapi || {
+          git diff --exit-code -- pkg/apiserver/zz_generated_*.go workers/k8flare/src/k8s/gen workers/k8flare/assets/openapi workers/k8flare/assets/api workers/k8flare/assets/apis || {
             echo "::error::cmd/k8flare-gen output differs from what's committed. Run 'go run ./cmd/k8flare-gen' and commit the result." >&2
             exit 1
           }

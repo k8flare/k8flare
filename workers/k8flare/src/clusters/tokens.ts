@@ -109,7 +109,7 @@ function timingSafeEqualStr(a: string, b: string): boolean {
 }
 
 /**
- * Cluster-scoped replacement for packages/k8s's dwAuth: accepts Bearer
+ * Cluster-scoped replacement for k8s/auth.ts's dwAuth: accepts Bearer
  * <token> (kubectl/clients) or Basic <any>:<token> (the k3s agent join
  * path) against ANY currently-valid token of the cluster. Returns the
  * presented secret on success (the caller threads it into the derived

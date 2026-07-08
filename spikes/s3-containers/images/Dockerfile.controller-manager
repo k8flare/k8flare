@@ -1,3 +1,0 @@
-FROM scratch
-COPY k8flare-controller-manager-linux-amd64 /k8flare-controller-manager
-ENTRYPOINT ["/k8flare-controller-manager"]

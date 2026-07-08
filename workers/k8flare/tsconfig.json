@@ -1,21 +1,12 @@
 {
   "extends": "../../tsconfig.json",
   // Check-only config (ci.yml's direct `tsc --noEmit` belt-and-suspenders
-  // pass; wrangler bundles with its own esbuild pipeline). No rootDir/
-  // outDir/references: paths map the @k8flare/* workspace packages to
-  // their sources so the whole merged worker type-checks against live
-  // source, not stale dist/ declarations.
+  // pass; wrangler bundles with its own esbuild pipeline).
   "compilerOptions": {
     "noEmit": true,
     "composite": false,
     "declaration": false,
-    "emitDeclarationOnly": false,
-    "paths": {
-      "@k8flare/k8s": ["../../packages/k8s/src"],
-      "@k8flare/crd": ["../../packages/crd/src"],
-      "@k8flare/dynamic-worker": ["../../packages/dynamic-worker/src"],
-      "@k8flare/worker-trigger": ["../../packages/worker-trigger/src"]
-    }
+    "emitDeclarationOnly": false
   },
   "include": ["src"]
 }

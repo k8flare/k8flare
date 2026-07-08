@@ -20,7 +20,7 @@ process.
      `pkg/apiserver/zz_generated_version.go`, so `GET /version` reports the
      new version automatically.
    - Re-copies the new pin's real OpenAPI v2/v3 documents into
-     `workers/apiserver/assets/openapi/`.
+     `workers/k8flare/assets/openapi/`.
    - Re-emits `pkg/apiserver/zz_generated_defaulters.go` from
      `pkg/apiserver/apidef.Table` crossed with
      `cmd/k8flare-gen/defaulters.go`'s hand-maintained group->package map.
@@ -31,7 +31,7 @@ process.
    was renamed or removed upstream, this fails to compile right here,
    loudly, instead of silently at runtime — that's the point of the table
    being real Go code and not a YAML/JSON list. Also record the gzip size
-   (`gzip -c workers/apiserver/build/app.wasm | wc -c`) against the 9.5MiB
+   (`wc -c .build/wasm/apiserver.wasm`) against the 64MiB Worker Loader
    budget; a version bump can move it either way.
 
 4. **Check for a new or removed defaulters package.** If step 3 fails on

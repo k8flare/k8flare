@@ -1,4 +1,4 @@
-import { dwAuth, dwError } from "@k8flare/k8s";
+import { dwAuth, dwError } from "../../k8s/index.ts";
 import { handleExecAttach } from "./exec.ts";
 import { resolveKubeletTarget } from "./target.ts";
 import { handleNodes } from "../../nodes/index.ts";

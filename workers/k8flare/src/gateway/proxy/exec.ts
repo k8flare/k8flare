@@ -1,4 +1,4 @@
-import { dwError } from "@k8flare/k8s";
+import { dwError } from "../../k8s/index.ts";
 import { resolveKubeletTarget } from "./target.ts";
 
 /**

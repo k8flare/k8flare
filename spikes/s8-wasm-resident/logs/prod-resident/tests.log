@@ -1,8 +1,0 @@
-=== Thu Jul  2 10:32:22 UTC 2026 status ===
-{"variant":"prod-resident","instance_id":"prod-resident-aaad273b","goroutines":4,"uptime_s":0.000,"requests_served":1,"extend_ticker":0,"extend_started_ms":0,"now_ms":1782988342720,"outbound_self_ok":0,"outbound_self_err":"","outbound_ext_ok":0,"outbound_ext_err":""}
-=== outbound-self-test ===
-{"ok":true,"status":200,"body":"{\"variant\":\"prod-resident\",\"instance_id\":\"prod-resident-aaad273b\",\"goroutines\":6,\"uptime_s\":0.326,\"requests_served\":3,\"extend_ticker\":0,\"extend_started_ms\":0,\"now_ms\":1782988343046,\"outbound_self_ok\":0,\"outbound_self_err\":\"\",\"outbound_ext_ok\":0,\"outbound_ext_err\":\"\"}"}
-=== external-fetch-test ===
-{"ok":true,"status":200,"body_prefix":"<!doctype html><html lang=\"en\"><head><title>Example Domain</title><link rel=\"icon\" href=\"data:,\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><style>body{background:#eee;width:6"}
-=== status after ===
-{"variant":"prod-resident","instance_id":"prod-resident-aaad273b","goroutines":4,"uptime_s":0.761,"requests_served":5,"extend_ticker":0,"extend_started_ms":0,"now_ms":1782988343481,"outbound_self_ok":1,"outbound_self_err":"","outbound_ext_ok":1,"outbound_ext_err":""}

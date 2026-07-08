@@ -2,8 +2,8 @@ import type { Env } from "../env.ts";
 import type { ResolvedCluster } from "./resolve.ts";
 
 // clusterEnv: the multi-cluster seam that keeps every downstream module
-// (packages/k8s watch, packages/crd storage, runtime handlers, nodes)
-// single-cluster-shaped. Instead of threading a cluster parameter
+// (k8s/watch.ts, storage/, nodes/) single-cluster-shaped. Instead of
+// threading a cluster parameter
 // through every signature, the public routing derives a per-request env
 // whose DO namespaces transparently retarget:
 //

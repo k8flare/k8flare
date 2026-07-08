@@ -6,9 +6,9 @@
 //   - pkg/apiserver/zz_generated_version.go: the Major/Minor/GitVersion GET
 //     /version reports, read from the pinned k8s.io/kubernetes module
 //     version instead of a hand-maintained literal.
-//   - packages/k8s/src/gen/resource-kinds.gen.ts: the resource-plural ->
+//   - workers/k8flare/src/k8s/gen/resource-kinds.gen.ts: the resource-plural ->
 //     Kind lookup table the gateway/watch layer uses.
-//   - workers/apiserver/assets/openapi/**: the real upstream OpenAPI v2/v3
+//   - workers/k8flare/assets/openapi/**: the real upstream OpenAPI v2/v3
 //     documents for every group-version in apidef.Table, served as Static
 //     Assets so `kubectl apply` works without --validate=false.
 //

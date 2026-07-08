@@ -14,13 +14,13 @@ import (
 )
 
 // genDiscoveryAssets writes the per-group-version discovery documents
-// (APIResourceList) as Static Assets under workers/apiserver/assets/, so
+// (APIResourceList) as Static Assets under workers/k8flare/assets/, so
 // kubectl's parallel discovery fan-out (~30 concurrent requests on a
 // cold cache) is served by Cloudflare's asset handler without ever
 // touching the 43MB apiserver WASM -- instantiating that under the burst
 // intermittently blew the isolate startup CPU budget and surfaced as
 // kubectl's `couldn't get resource list ... ("unknown")` (see the
-// gateway's cold-start-retry comment in workers/gateway/src/index.ts;
+// gateway's cold-start-retry comment in workers/k8flare/src/loader/apiserver.ts;
 // this generator is the root fix, the retry stays as belt-and-braces).
 //
 // Only two-plus-segment paths are generated: `apis/<group>/<version>`
@@ -35,7 +35,7 @@ import (
 // of truth (plus the same hand-written authorization.k8s.io exception
 // documented there).
 func genDiscoveryAssets(root string) error {
-	assetsDir := filepath.Join(root, "workers", "apiserver", "assets")
+	assetsDir := filepath.Join(root, "workers", "k8flare", "assets")
 
 	docs := map[string]metav1.APIResourceList{
 		filepath.Join("api", "v1"): {
