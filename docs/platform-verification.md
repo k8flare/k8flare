@@ -624,6 +624,22 @@ Full detail in `spikes/p9-mesh/RESEARCH.md`; summary:
    networking... not yet proven end-to-end" gap row — recorded here as an
    honest correction/connection, not chased further (out of this phase's
    scope).
+
+   **Correction (2026-07-08):** the connection drawn above turned out to be
+   overstated. `docs/general-purpose-k8s-plan.md` Phase 1's real-traffic gap
+   is now closed — direct verification (single BYO-VM node, real kube-proxy
+   + flannel `host-gw`) proved a genuinely separate Pod reaching a Service's
+   `ClusterIP` and getting routed to the backing Pod works correctly; the
+   thing that had actually been blocking README's gap row the whole time was
+   the upstream conformance test's own `kubectl exec`-based reachability
+   check, not a networking or watch-delivery problem. This item's own
+   cross-node route/tunnel convergence gap (a **2-node** setup never
+   completing flannel backend-data exchange in ~7 minutes) is real and still
+   open, but it is a narrower, distinct, multi-node-specific issue — not the
+   same root cause as README's now-resolved single-node claim, and not
+   confirmed to share a root cause with the informer/watch-delivery
+   follow-ups either (that connection was speculative when written, per this
+   entry's own wording, and remains unconfirmed).
 4. **Decision**: Cloudflare Mesh is **not adopted**. Its one hypothesized
    advantage over wireguard-native (NAT traversal without an open inbound
    port) remains unverified and unverifiable within this task's access, while

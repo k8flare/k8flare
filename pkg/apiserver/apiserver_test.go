@@ -55,8 +55,8 @@ func setupWranglerDev(t *testing.T) *kubernetes.Clientset {
 		testPort = findFreePort(t)
 		projectRoot := findProjectRoot(t)
 
-		// Single consolidated config (workers/k8flare). Two flags keep the
-		// old 4-Worker harness semantics:
+		// Single consolidated config (workers/k8flare). Flags keep the old
+		// 4-Worker harness semantics:
 		//   --enable-containers=false -- no Docker needed (S19 G1); the
 		//     NodeVM containers are irrelevant to these tests.
 		//   KCM_DISABLED=1 -- the consolidated config always includes the
@@ -64,9 +64,23 @@ func setupWranglerDev(t *testing.T) *kubernetes.Clientset {
 		//     controller ever touches them (see CLAUDE.md's local-dev
 		//     pitfalls); the var short-circuits storage's pingControllers
 		//     and the Controllers DO itself.
+		//   --local -- required since wrangler.jsonc's vpc_networks MESH
+		//     binding (b6d4340) has no local-dev emulation at all: plain
+		//     `wrangler dev` tries to establish a real remote-proxy session
+		//     for it at STARTUP and hard-fails immediately if no Cloudflare
+		//     credentials are present, regardless of whether any test here
+		//     ever touches MESH (none do). This is easy to miss on a
+		//     developer machine with a cached `wrangler login` session (it
+		//     silently succeeds by proxying through real Cloudflare
+		//     infrastructure instead) -- confirmed broken on a genuinely
+		//     credential-less run, which is exactly ci.yml's "Go test" step
+		//     and e2e-conformance.yml's wrangler dev step's prior state.
+		//     --local disables remote bindings outright; nothing in this
+		//     suite needs MESH.
 		devCmd = exec.Command("npx", "wrangler", "dev",
 			"-c", "workers/k8flare/wrangler.jsonc",
 			"--enable-containers=false",
+			"--local",
 			"--var", "KCM_DISABLED:1",
 			"--port", fmt.Sprintf("%d", testPort),
 			"--persist-to", filepath.Join(projectRoot, ".wrangler", "state"),

@@ -20,7 +20,7 @@ alarms are the right primitive and
 [`multi-tenancy-and-hosting.md`](multi-tenancy-and-hosting.md) for where
 storage is heading around them.
 
-## Phase 1 — Service networking (object model done + verified; kube-proxy enabled; real traffic routing not yet proven end-to-end)
+## Phase 1 — Service networking (done: real traffic routing proven end-to-end 2026-07-08, see the update below; CI gate is a custom exec-free check, not the upstream exec-dependent test)
 
 `ClusterIP` Services must actually route. Three pieces, in dependency order:
 
@@ -200,6 +200,166 @@ requires a WebSocket upgrade (Upgrade: websocket header missing)` —
   block routine development, consider splitting `apiserver_test.go` into
   per-domain test binaries (each getting its own fresh `wrangler dev`
   instance) rather than one ever-growing shared one.
+
+### 2026-07-08 update: real ClusterIP traffic routing PROVEN, plus two real infra bugs found and fixed along the way
+
+Follow-up to the 2026-07-07 entry above, which established that `kubectl
+exec` (not networking) was blocking the upstream conformance test, and that
+Cloudflare Mesh (`b6d4340`, landed after that entry) was a candidate to
+unblock it. Investigated whether Mesh actually unblocks `kubectl exec` in
+`e2e-conformance.yml`, and — per rule 2 — verified the actual networking
+claim directly, in an environment fully under control, rather than trusting
+the CI-wiring question's answer to stand in for it.
+
+**Real ClusterIP routing works.** Verified directly with a real local
+`wrangler dev` (Go/WASM apiserver, real Durable Object storage) and a real
+`cmd/agent` (embedded kubelet + containerd + kube-proxy in iptables mode +
+flannel host-gw), run inside a privileged Docker container (containerd needs
+a real Linux kernel, unavailable on this session's macOS host) joining that
+`wrangler dev` instance exactly like a BYO VM would:
+
+1. Created a real `nginx:alpine` backend Pod (scheduled by the real,
+   unmodified `cmd/scheduler`) and a `ClusterIP` Service selecting it.
+   Confirmed `EndpointSlice` correctly populated with the Pod's real IP
+   (`10.42.1.2`).
+2. Created a second, separate `busybox` Pod (`10.42.1.3`, scheduled onto the
+   same node by the same real scheduler). Entered its network namespace via
+   `crictl exec` — the container-runtime level, deliberately bypassing this
+   project's own `kubectl exec` gap entirely, since that gap is exactly what
+   this investigation needed to route around to test networking in
+   isolation.
+3. From inside that separate Pod's network namespace: `wget
+http://10.43.90.196:80/` (the Service's real `ClusterIP`) returned nginx's
+   actual welcome page, exit code 0. Cross-checked the same ClusterIP from
+   the node's own host network namespace (same result) to confirm the
+   iptables `KUBE-SERVICES` DNAT chain kube-proxy installs is what's doing
+   the routing, not some other path.
+
+This directly confirms `[sig-network] Services should serve a basic endpoint
+from pods [Conformance]`'s actual subject matter — a Pod reaching another
+Pod through a Service's `ClusterIP` — works correctly end-to-end on this
+stack. The only thing that ever blocked this test was its own exec-based
+reachability check, exactly as the 2026-07-07 entry suspected but had not
+directly confirmed.
+
+**Two real, previously-undetected infrastructure bugs were found and fixed
+while setting up this verification** (both are genuine fixes, not workarounds
+specific to the Docker-based test rig):
+
+1. **`wrangler dev` startup now hard-fails with no Cloudflare credentials, a
+   silent regression from `b6d4340`.** `workers/k8flare/wrangler.jsonc`'s
+   `vpc_networks` MESH binding has zero local-dev emulation — confirmed
+   directly that `remote: true` vs `false` makes no difference, and that
+   even a syntactically-valid but wrong `CLOUDFLARE_API_TOKEN` still hard
+   fails (needs a genuinely valid, correctly-scoped token). `wrangler dev`
+   tries to establish a real remote-proxy session for this binding at
+   **startup**, not first use, and exits immediately if that fails — before
+   ever binding a port. Confirmed via `gh run list` that no
+   `e2e-conformance.yml` run has executed since `b6d4340` landed (2026-07-07
+   13:52 JST), so this was never caught. Worse: `pkg/apiserver/apiserver_test.go`'s
+   `setupWranglerDev` — the single choke point nearly every Go test in this
+   package uses — has the identical gap, and `ci.yml`'s "Go test" step (which
+   gates every PR to `main`) hasn't run since 2026-07-03, well before
+   `b6d4340`, so it's *also* never been caught. This is easy to miss on a
+   developer machine with a cached `wrangler login` session — it silently
+   succeeds by actually proxying that one binding through real Cloudflare
+   infrastructure instead of failing (confirmed by reproducing both the
+   failure, with a clean `HOME` and zero credentials, and the false-negative
+   "it works for me," with an ambient real OAuth session, on the same
+   machine). **Fix**: pass `--local` (disables remote bindings outright,
+   nothing in either harness needs `MESH`) — added to
+   `.github/workflows/e2e-conformance.yml`'s wrangler dev step and to
+   `setupWranglerDev`'s `exec.Command` args. Verified the fix directly: `go
+   test -count=1 ./pkg/apiserver/...` now passes with `HOME` pointed at an
+   empty directory and zero Cloudflare env vars set, which failed (hung at
+   wrangler dev startup) before the fix.
+2. **A real race condition in `pkg/cacert.ReplaceServerCA`** blocked the
+   local verification above before it ever got to test networking: the
+   goroutine that replaces k3s's self-signed `server-ca.crt` with the system
+   CA bundle (needed because Cloudflare terminates TLS with a publicly
+   trusted cert, not k3s's own) used a fixed 10ms poll, racing against k3s's
+   own bootstrap goroutine, which downloads and writes that same file and
+   then, in the same call chain, immediately builds a long-lived REST client
+   that reads it exactly once (`k3s-io/k3s/pkg/executor/embed`'s
+   `util.WaitForAPIServerReady`). Losing this race permanently wedges the
+   agent: a goroutine dump (`SIGQUIT`) showed
+   `(*Embedded).Kubelet.func1()` parked forever on
+   `<-e.APIServerReadyChan()`, because the captured client can never
+   validate the real server's TLS certificate. Real bare-metal CI runners
+   have so far reliably won this race (`e2e-conformance.yml`'s "Wait for
+   node to register as Ready" step consistently completes in ~11s across
+   the runs checked) — but a privileged Docker container on this session's
+   OrbStack-backed Linux VM reproducibly lost it across every clean restart
+   tried. This is a genuine, latent race regardless of which environment
+   currently wins it more often, per rule 5 (fix flaky infra, don't leave it
+   to chance) — a slower or more contended bare-metal runner could just as
+   easily lose it. **Fix**: replaced the fixed-interval poll with an
+   `fsnotify` watcher reacting to the actual file-write event (sub-
+   millisecond latency instead of up to 10ms of blind polling), plus an
+   immediate replace-if-present check right after the watcher is armed
+   (covers process restarts and the watcher-setup window). This cannot make
+   the race fully deterministic without a local fork of the vendored k3s
+   embed code to add a real synchronization point (out of scope here), but
+   narrows the window by roughly two orders of magnitude. Verified directly:
+   the exact same Docker-based repro that reliably hung before the fix
+   (across every attempt) reached `Node Ready` promptly and repeatably
+   after it.
+
+**CI wiring investigated and NOT adopted**: wiring Mesh into
+`e2e-conformance.yml` so the upstream `kubectl exec`-based test could pass
+there was investigated concretely, not just considered abstractly.
+`workers/k8flare/src/gateway/proxy/target.ts`'s `resolveKubeletTarget` —
+used by **both** `kubectl logs` and `kubectl exec` for BYO-VM nodes, a
+correction to this task's own premise that logs is exec-free for this node
+type — requires either the `MESH` binding (real Cloudflare infrastructure,
+see bug 1 above) or the legacy `KUBELET_VPC` Tunnel+VPC Service binding
+(same "no local emulation" property). Making this test pass in CI would mean
+minting a real Mesh connector token per ephemeral CI run (the same API calls
+`workers/k8flare/src/nodes/meshconnector.ts` already makes for per-Pod
+Mesh, verified against the real KOOFFICE account per
+`spikes/s17-mesh-nodevm/FINDINGS.md`), a new sensitive
+`CLOUDFLARE_API_TOKEN` CI secret (Zero Trust/Tunnel scope), and per-run
+cleanup to avoid leaking the account's 50-connector cap — all of which
+directly contradicts this workflow's own deliberate design property, stated
+in its header comment: "Everything runs local-only on the runner (127.0.0.1)
+-- this never touches the deployed Cloudflare Worker." Concretely, every
+real Cloudflare credential this session had access to belongs to this
+project's own KOOFFICE account (`.secrets/`), and minting even a
+throwaway, immediately-deleted resource against it on every future PR run
+is a materially different, ongoing security posture than what this harness
+was designed for — not something to switch to as a side effect of one
+promotion decision. **Not pursued.**
+
+**What was promoted instead**: a new REQUIRED step,
+`.github/workflows/e2e-conformance.yml`'s "Verify real ClusterIP traffic
+routing (Phase 1 promotion gate, exec-free)", proves the identical
+underlying claim the upstream test names (a separate Pod reaching another
+Pod through a Service's `ClusterIP`) through Pod `status.phase` /
+`containerStatuses[].state.terminated.exitCode` — kubelet reports both to
+the apiserver directly, over the same plain object-API path every other
+step in this job already polls with `curl`+`jq`, regardless of the
+kubelet-proxy gap. Verified by hand first, then by running the extracted
+step script itself (not just its logic) against the live local repro
+described above, real scheduler included. This is a deliberate departure
+from "grow `BASELINE_FOCUS`" — it is not a ginkgo focus string, because the
+specific upstream test named as this phase's acceptance criterion cannot run
+in this harness as designed (its reachability check is exec-driven, not a
+networking check) — but it is a new, required, blocking, real verification
+of the same underlying claim, which is what "growing the required set"
+means in spirit even where the literal mechanism doesn't apply. The upstream
+test itself stays in the advisory group, now clearly commented as a standing
+probe rather than a meaningful signal today.
+
+Also corrected in this pass: the Phase 2 entry below already noted that a
+recovered node's taint (`node.kubernetes.io/unreachable`, `NoExecute`)
+is never proactively cleared — hit this directly and unexpectedly during
+this session's own manual verification (a `wrangler dev` restart briefly
+starved the node of heartbeats, past the 40s grace period, tainting it; the
+taint stayed after the node recovered), confirming that documented gap is
+real and not just theoretical. Not fixed here (unrelated to this phase's
+scope), but the new required CI step above is unaffected in practice: a real
+CI job's node never goes stale mid-run the way a long manual test session
+restarting `wrangler dev` did.
 
 ## Phase 2 — Node lifecycle (self-healing, part 1) — done, end-to-end verified
 
