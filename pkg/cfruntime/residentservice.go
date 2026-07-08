@@ -16,9 +16,10 @@ import (
 // triggering request's own response closes (S8 finding: a single
 // WaitUntil call keeps every goroutine on the instance pumped, not just
 // the one that registered it). It serves /healthz reporting label's
-// status and blocks forever -- the shared shape behind cmd/kcm-wasm's
-// and cmd/kcm-wasm/scheduler's WASM entrypoints, which differ only in
-// which real upstream binary run starts.
+// status and blocks forever -- the shared shape behind
+// pkg/controllers/cmd/kcm-wasm's and its scheduler subdirectory's WASM
+// entrypoints, which differ only in which real upstream binary run
+// starts.
 func ResidentService(label string, run func(ctx context.Context) error) {
 	var (
 		startOnce sync.Once

@@ -3,8 +3,8 @@
 // Package fetch issues outbound HTTP requests through a Cloudflare
 // binding's fetch() method (a service binding, or -- via WithBinding
 // omitted -- the global fetch()). Used for exactly two things in this
-// repo: cmd/apiserver-wasm's STORAGE self-binding client, and
-// pkg/controllers/restconfig.go's client-go Transport for the same
+// repo: pkg/apiserver/cmd/apiserver-wasm's STORAGE self-binding client,
+// and pkg/controllers/restconfig.go's client-go Transport for the same
 // service-binding-backed request pattern.
 // https://developers.cloudflare.com/workers/runtime-apis/fetch/
 package fetch
@@ -93,7 +93,7 @@ func requestToJS(req *http.Request) (js.Value, error) {
 
 // responseFromJS reads the JS Response body in one shot via
 // arrayBuffer() -- every caller of this client in this repo
-// (pkg/apiserver/storage.go, cmd/apiserver-wasm's vault token read,
+// (pkg/apiserver/storage.go, pkg/apiserver/cmd/apiserver-wasm's vault token read,
 // client-go's own REST decoding via RestConfig) does
 // json.NewDecoder(resp.Body).Decode(...), which works identically over a
 // pre-buffered reader.

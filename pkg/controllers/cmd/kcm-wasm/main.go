@@ -1,7 +1,7 @@
 //go:build js && wasm
 
 // Command controllers is the Go WASM entrypoint hosted inside
-// workers/controllers' Controllers Durable Object (src/index.ts). It
+// workers/k8flare's Controllers Durable Object (src/controllers/index.ts). It
 // starts the real, unmodified upstream kube-controller-manager (via
 // pkg/controllers.RunControllerManager) once per DO instance and keeps it
 // running for as long as that instance stays resident -- see
@@ -29,7 +29,7 @@
 // docs/platform-verification.md's S8 section per CLAUDE.md's honest-
 // correction rule. cmd/scheduler is unchanged and still works as a BYO VM
 // / host-process binary (see .github/workflows/e2e-conformance.yml, which
-// runs it exactly that way); it is just not part of workers/controllers.
+// runs it exactly that way); it is just not part of the Controllers DO.
 package main
 
 import (
@@ -40,15 +40,9 @@ import (
 	"github.com/k8flare/k8flare/pkg/controllers"
 )
 
-func getToken() string {
-	if t := cloudflare.Getenv("K3S_TOKEN"); t != "" {
-		return t
-	}
-	return "k8flare-dev-token" // fallback for dev, matches every other Worker in this repo
-}
-
 func main() {
-	restCfg := controllers.RestConfig("GATEWAY", getToken(), cloudflare.Getenv("CLUSTER_BASE_PATH"))
+	token := cloudflare.GetenvDefault("K3S_TOKEN", "k8flare-dev-token")
+	restCfg := controllers.RestConfig("GATEWAY", token, cloudflare.Getenv("CLUSTER_BASE_PATH"))
 	workers.ResidentService("controllerManager", func(ctx context.Context) error {
 		return controllers.RunControllerManager(ctx, restCfg)
 	})

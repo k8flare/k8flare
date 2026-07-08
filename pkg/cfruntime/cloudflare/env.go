@@ -23,6 +23,17 @@ func Getenv(name string) string {
 	return ""
 }
 
+// GetenvDefault reads a Workers environment variable, falling back to
+// def if unset -- e.g. every cmd/*-wasm entrypoint's K3S_TOKEN ->
+// "k8flare-dev-token" fallback for local `wrangler dev` (see CLAUDE.md's
+// local-dev-pitfalls list).
+func GetenvDefault(name, def string) string {
+	if v := Getenv(name); v != "" {
+		return v
+	}
+	return def
+}
+
 // GetBinding reads a Workers environment binding (KV namespace, R2
 // bucket, service binding, ...) -- the same underlying env object Getenv
 // reads, just returned as a raw js.Value instead of coerced to a string.

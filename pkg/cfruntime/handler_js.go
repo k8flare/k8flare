@@ -255,9 +255,9 @@ func awaitPromise(promise js.Value) (js.Value, error) {
 
 // Serve registers handler and blocks until the current dispatch has been
 // fully resolved back to JS. Used by the per-request execution shape
-// (cmd/apiserver-wasm: a fresh Go program instance per request, see its
-// own doc comment) so main() doesn't return before its one response has
-// actually been handed off.
+// (pkg/apiserver/cmd/apiserver-wasm: a fresh Go program instance per
+// request, see its own doc comment) so main() doesn't return before its
+// one response has actually been handed off.
 func Serve(handler http.Handler) {
 	ServeNonBlock(handler)
 	Ready()

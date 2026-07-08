@@ -23,8 +23,8 @@ ASSETS := workers/k8flare/assets/wasm
 BUILD := .build/wasm
 CAP := 67108864 # the Worker Loader's 64MiB total-module-bytes cap (S14 Part 2)
 
-APISERVER_SRC := $(shell find pkg/apiserver cmd/apiserver-wasm -name '*.go') go.mod go.sum
-KCM_SRC := $(shell find pkg/controllers pkg/leanclient cmd/kcm-wasm -name '*.go') \
+APISERVER_SRC := $(shell find pkg/apiserver -name '*.go') go.mod go.sum
+KCM_SRC := $(shell find pkg/controllers pkg/leanclient -name '*.go') \
 	go.wasm.mod \
 	$(shell find pkg/clientgo-lean-overlays pkg/k8s-js-overlays -type f)
 NODES_AGENT_SRC := $(shell find pkg/agent cmd/agent -name '*.go') go.mod go.sum
@@ -61,8 +61,8 @@ wasm-kcm: $(ASSETS)/kcm.manifest.json
 $(ASSETS)/apiserver.manifest.json: $(APISERVER_SRC) $(ASSETS)/wasm_exec.js | gen-mirrors
 	@command -v wasm-opt >/dev/null 2>&1 || { echo "wasm-opt not found -- install binaryen (mise: aqua:web-assembly/binaryen, apt/brew: binaryen)" >&2; exit 1; }
 	@mkdir -p $(ASSETS) $(BUILD)
-	echo "== apiserver (./cmd/apiserver-wasm)"; \
-	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $(BUILD)/apiserver.wasm ./cmd/apiserver-wasm; \
+	echo "== apiserver (./pkg/apiserver/cmd/apiserver-wasm)"; \
+	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $(BUILD)/apiserver.wasm ./pkg/apiserver/cmd/apiserver-wasm; \
 	raw=$$(wc -c < $(BUILD)/apiserver.wasm | tr -d ' '); \
 	if [ "$$raw" -ge $(CAP) ]; then \
 		echo "::error::apiserver ($$raw bytes) exceeds the Worker Loader's 64MiB cap ($(CAP) bytes) -- the dynamic worker cannot load. Trim dependencies (see docs/platform-verification.md S14)." >&2; \
@@ -78,17 +78,18 @@ $(ASSETS)/apiserver.manifest.json: $(APISERVER_SRC) $(ASSETS)/wasm_exec.js | gen
 # Interface WIDTH is what keeps this binary under the cap -- full width
 # measured 98.6MB opt vs 66.1MB narrow (docs/platform-verification.md).
 #
-# sched (./cmd/kcm-wasm/scheduler) is NOT built here (the Controllers DO
-# tolerates the missing manifest): kube-scheduler measures 101.1MB opt
-# against the reproducible mirrors, still far over the Loader cap -- see
-# docs/platform-verification.md's S8 kube-scheduler-wasm-fork entry. It
-# remains host-process/BYO-VM (cmd/scheduler); cmd/kcm-wasm/scheduler
-# stays as the ready entrypoint for the day it gets its own width answer.
+# sched (./pkg/controllers/cmd/kcm-wasm/scheduler) is NOT built here
+# (the Controllers DO tolerates the missing manifest): kube-scheduler
+# measures 101.1MB opt against the reproducible mirrors, still far over
+# the Loader cap -- see docs/platform-verification.md's S8
+# kube-scheduler-wasm-fork entry. It remains host-process/BYO-VM
+# (cmd/scheduler); pkg/controllers/cmd/kcm-wasm/scheduler stays as the
+# ready entrypoint for the day it gets its own width answer.
 $(ASSETS)/kcm.manifest.json: $(KCM_SRC) $(ASSETS)/wasm_exec.js | gen-mirrors
 	@command -v wasm-opt >/dev/null 2>&1 || { echo "wasm-opt not found -- install binaryen (mise: aqua:web-assembly/binaryen, apt/brew: binaryen)" >&2; exit 1; }
 	@mkdir -p $(ASSETS) $(BUILD)
-	echo "== kcm (./cmd/kcm-wasm)"; \
-	GOFLAGS=-modfile=go.wasm.mod GOOS=js GOARCH=wasm go build -tags leanwidth -ldflags="-s -w" -trimpath -o $(BUILD)/kcm.wasm ./cmd/kcm-wasm; \
+	echo "== kcm (./pkg/controllers/cmd/kcm-wasm)"; \
+	GOFLAGS=-modfile=go.wasm.mod GOOS=js GOARCH=wasm go build -tags leanwidth -ldflags="-s -w" -trimpath -o $(BUILD)/kcm.wasm ./pkg/controllers/cmd/kcm-wasm; \
 	wasm-opt -Oz \
 		--strip-debug --strip-producers \
 		--enable-bulk-memory --enable-nontrapping-float-to-int \
@@ -120,7 +121,7 @@ check:
 ## the paths that are actually this module's own compilable packages.
 vet: | gen-mirrors
 	go vet ./pkg/apiserver/... ./pkg/agent/... ./cmd/k8flare-gen/...
-	GOOS=js GOARCH=wasm go vet ./pkg/cfruntime/... ./pkg/controllers/... ./cmd/apiserver-wasm/... ./cmd/kcm-wasm/...
+	GOOS=js GOARCH=wasm go vet ./pkg/apiserver/cmd/... ./pkg/cfruntime/... ./pkg/controllers/...
 
 ## test: apiserver integration tests (spins up its own wrangler dev; needs wasm built first)
 test: wasm

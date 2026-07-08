@@ -111,6 +111,45 @@ func SetR2ConfigFunc(fn func() R2Config) {
 	currentR2Config = fn
 }
 
+// r2DevAccountID/r2DevAccessKeyID/r2DevSecretAccessKey/r2DevBucket are
+// dev fallbacks for R2_ACCOUNT_ID/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY/
+// R2_BUCKET, mirroring K3S_TOKEN's "k8flare-dev-token" fallback: local
+// `wrangler dev` exercises the full PVC-bind -> mint-credential ->
+// JWT-signing mechanism end to end without a real R2 bucket or R2 API
+// token configured. A credential minted from these values will not
+// authenticate against real R2 (the "secret" isn't a real R2 API token's
+// secret) -- see docs/cost-model.md's R2 section and CLAUDE.md's
+// local-dev-pitfalls list.
+const (
+	r2DevAccountID       = "dev-account-id"
+	r2DevAccessKeyID     = "dev-access-key-id"
+	r2DevSecretAccessKey = "dev-secret-access-key"
+	r2DevBucket          = "k8flare-dev-bucket"
+)
+
+// ApplyR2DevFallback fills any empty field of cfg with the r2Dev*
+// placeholders above. This package's own cmd/apiserver-wasm/main.go's
+// getR2Config calls this after reading R2_ACCOUNT_ID/R2_ACCESS_KEY_ID/
+// R2_SECRET_ACCESS_KEY/R2_BUCKET from the Workers environment -- this
+// package owns the fallback logic (rather than each *-wasm entrypoint
+// duplicating it) because it must stay host-buildable/testable
+// regardless, per currentR2Config's doc comment above.
+func ApplyR2DevFallback(cfg R2Config) R2Config {
+	if cfg.AccountID == "" {
+		cfg.AccountID = r2DevAccountID
+	}
+	if cfg.AccessKeyID == "" {
+		cfg.AccessKeyID = r2DevAccessKeyID
+	}
+	if cfg.SecretAccessKey == "" {
+		cfg.SecretAccessKey = r2DevSecretAccessKey
+	}
+	if cfg.Bucket == "" {
+		cfg.Bucket = r2DevBucket
+	}
+	return cfg
+}
+
 // Endpoint returns this account's R2 S3-compatible endpoint URL, in the
 // form every S3 client (aws4fetch, boto3, aws-sdk-*, s3fs/tigrisfs FUSE
 // adapters) expects as its `endpoint`/`endpoint_url` configuration.
