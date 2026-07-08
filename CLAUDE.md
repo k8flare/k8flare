@@ -55,21 +55,27 @@ S19 の 3 ゲート検証を経て単一 Worker に統合。旧クラスタの D
 
 ## コマンド
 
+ローカル作業は `Makefile`(GNU Make のファイル依存関係で、Go ソースに差分が
+なければ `make wasm` はビルドをスキップする)を主な入口とする。CI は
+`git checkout` 直後で mtime が信用できないため Makefile を経由せず、
+`npm run build:wasm` 等を直接呼ぶ(`.github/workflows/*.yml` 参照)。
+
 ```
 pnpm install                     # 初回のみ
-npm run build:wasm               # Go を変更したら必須。apiserver+KCM のチャンクを
-                                 # workers/k8flare/assets/wasm/ に生成(scripts/build-wasm-chunks.sh、
-                                 # KCM の wasm-opt 込みで約2分。apiserver だけなら
-                                 # `bash scripts/build-wasm-chunks.sh apiserver`)
-npm run dev                      # wrangler dev(単一 config: workers/k8flare/wrangler.jsonc)。
-                                 # Docker なし環境は --enable-containers=false を付ける
-vp check                         # TypeScript 型チェック(vite-plus)
+make wasm                        # Go を変更したら必須。apiserver+KCM のチャンクを
+                                 # workers/k8flare/assets/wasm/ に生成(scripts/build-wasm-chunks.sh を
+                                 # 差分ベースで呼ぶ。KCM の wasm-opt 込みで約2分だが、対象バイナリの
+                                 # ソースが変わっていなければ即スキップ。強制再ビルドは `make clean-wasm wasm`)
+make dev                         # wrangler dev(単一 config: workers/k8flare/wrangler.jsonc)。
+                                 # Docker なし環境は `wrangler dev -c workers/k8flare/wrangler.jsonc
+                                 # --persist-to .wrangler/state --enable-containers=false` を直接叩く
+make check                       # TypeScript 型チェック(vp check)
 npx tsc --noEmit -p workers/k8flare/tsconfig.json   # vp check が拾わない型面の直接チェック
-go vet ./pkg/apiserver/...
-go test ./pkg/apiserver/...      # 自前で `npx wrangler dev` を起動して実 client-go で駆動する
-                                 # (単一 config + --enable-containers=false + KCM_DISABLED:1)。
-                                 # pnpm install と build:wasm を先に済ませておくこと
-go run ./cmd/k8flare-gen         # コード生成(存在する場合。生成後は git diff --exit-code で検証)
+make vet                         # go vet ./pkg/... ./cmd/k8flare-gen/...
+make test                        # go test ./pkg/apiserver/... (wasm ターゲットに依存、自動で先にビルドされる)
+                                 # 自前で `npx wrangler dev` を起動して実 client-go で駆動する
+                                 # (単一 config + --enable-containers=false + KCM_DISABLED:1)
+make gen                         # コード生成(cmd/k8flare-gen。生成後は git diff --exit-code で検証)
 ```
 
 CI ゲート(`.github/workflows/`): `ci.yml`(vp check / build:wasm / go vet+test)、
