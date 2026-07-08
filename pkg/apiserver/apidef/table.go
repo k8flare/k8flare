@@ -34,6 +34,7 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	resourcev1 "k8s.io/api/resource/v1"
+	schedulingv1 "k8s.io/api/scheduling/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -343,6 +344,25 @@ var Table = []ResourceDef{
 		New:        func() runtime.Object { return &nodev1.RuntimeClass{} },
 		NewList: func() runtime.Object {
 			return &nodev1.RuntimeClassList{TypeMeta: metav1.TypeMeta{Kind: "RuntimeClassList", APIVersion: "node.k8s.io/v1"}}
+		},
+	},
+
+	// ---- scheduling.k8s.io/v1 ----
+	{
+		// Phase 5 quick win (docs/general-purpose-k8s-plan.md). Cluster-scoped,
+		// like RuntimeClass above -- unlike RuntimeClass, this one is
+		// consumed for real: pkg/apiserver/priority.go resolves a Pod's
+		// spec.priorityClassName against this store at Pod-create admission
+		// (handler.go), the apiserver's job per real upstream's
+		// plugin/pkg/admission/priority/admission.go, not the scheduler's.
+		// The real, unmodified kube-scheduler binary (cmd/scheduler) then
+		// preempts on the resolved spec.priority exactly as it already does
+		// for a Pod that sets spec.priority directly.
+		GroupVersion: schedulingv1.SchemeGroupVersion, Kind: "PriorityClass", Resource: "priorityclasses",
+		Singular: "priorityclass", ShortNames: []string{"pc"}, Namespaced: false,
+		New: func() runtime.Object { return &schedulingv1.PriorityClass{} },
+		NewList: func() runtime.Object {
+			return &schedulingv1.PriorityClassList{TypeMeta: metav1.TypeMeta{Kind: "PriorityClassList", APIVersion: "scheduling.k8s.io/v1"}}
 		},
 	},
 

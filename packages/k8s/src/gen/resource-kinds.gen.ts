@@ -33,6 +33,7 @@ export const RESOURCE_KINDS: Record<string, string> = {
   persistentvolumes: "PersistentVolume",
   poddisruptionbudgets: "PodDisruptionBudget",
   pods: "Pod",
+  priorityclasses: "PriorityClass",
   replicasets: "ReplicaSet",
   replicationcontrollers: "ReplicationController",
   resourceclaims: "ResourceClaim",

@@ -10,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	schedulingv1 "k8s.io/api/scheduling/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -285,6 +286,14 @@ func main() {
 	// requires the union across every group, not just the deleted object's
 	// own. storage.k8s.io/v1 similarly bootstraps the "r2" StorageClass on
 	// first request (Phase 8).
+	// Pod is core/v1-only, but priority admission (priority.go) needs the
+	// scheduling.k8s.io/v1 priorityclasses store to resolve
+	// spec.priorityClassName -- threaded into every group's HandleResource
+	// call the same way namespacedStores is (see HandleResource's doc
+	// comment). storesByGV[schedulingv1.SchemeGroupVersion]["priorityclasses"]
+	// is always present once apidef.Table lists it.
+	priorityClassStore := storesByGV[schedulingv1.SchemeGroupVersion]["priorityclasses"]
+
 	for _, gv := range apidef.GroupVersions() {
 		prefix := apidef.APIPrefix(gv)
 		stores := storesByGV[gv]
@@ -298,7 +307,7 @@ func main() {
 			if isStorage {
 				apiserver.BootstrapStorageClasses(r.Context(), stores)
 			}
-			apiserver.HandleResource(w, r, prefix, stores, namespacedStores)
+			apiserver.HandleResource(w, r, prefix, stores, namespacedStores, priorityClassStore)
 		}))))
 	}
 

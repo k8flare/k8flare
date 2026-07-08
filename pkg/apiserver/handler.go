@@ -99,13 +99,19 @@ func decodeBody(body []byte) (runtime.Object, error) {
 // Deployment must reach ReplicaSets (apps/v1) and Pods (core/v1) alike, so
 // every group's HandleResource call passes the same full, cross-group slice.
 //
+// priorityClassStore, if non-nil, is the scheduling.k8s.io/v1 priorityclasses
+// store -- Pod is core/v1-only, but the store it needs to resolve
+// spec.priorityClassName against lives in a different GroupVersion's store
+// map, so it's threaded through the same way namespacedStores is (every
+// group's HandleResource call passes the same store; see priority.go).
+//
 // This single function replaces what used to be two near-identical
 // functions, HandleAPI and HandleGroupAPI: same CRUD switch, same path
 // grammar, differing only in how the group+version prefix got stripped
 // before parsing and in whether a watch query parameter was checked at all
 // (HandleGroupAPI's watch requests fell through to a duplicated list
 // pathway -- a real drift merging them fixes, not just a line-count cut).
-func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, stores map[string]*ResourceStore, namespacedStores []*ResourceStore) {
+func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, stores map[string]*ResourceStore, namespacedStores []*ResourceStore, priorityClassStore *ResourceStore) {
 	trimmed := strings.TrimPrefix(r.URL.Path, prefix)
 
 	if r.URL.Query().Get("watch") == "true" {
@@ -184,6 +190,19 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		// networking/batch), so this is a no-op there -- Pod is core/v1-only
 		// and always routes through the core/v1 registration.
 		if pod, ok := rObj.(*corev1.Pod); ok {
+			// Priority admission: resolve spec.priorityClassName -> a real
+			// spec.priority before the scheduler ever sees this Pod (see
+			// priority.go). priorityClassStore is nil in callers that don't
+			// have scheduling.k8s.io/v1 registered (none today, but this
+			// mirrors stores["limitranges"]'s existence check below rather
+			// than assuming non-nil).
+			if priorityClassStore != nil {
+				if err := ResolvePodPriority(ctx, priorityClassStore, pod); err != nil {
+					writeStatusError(w, http.StatusForbidden, "Forbidden", err.Error())
+					return
+				}
+			}
+
 			// Compute-class routing (namespace-first; see computeclass.go).
 			// stores["namespaces"] only exists in the core/v1 stores map,
 			// which is also the only map that can contain pods -- so the
