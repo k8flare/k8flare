@@ -2,8 +2,7 @@
 
 /**
  * Maps a resource's plural name to its Kind. Covers every resource the Go
- * apiserver serves (from pkg/apiserver/apidef.Table) plus the TypeScript-only
- * CRDs that never route through it (DynamicWorker, WorkerTrigger).
+ * apiserver serves (from pkg/apiserver/apidef.Table).
  */
 export const RESOURCE_KINDS: Record<string, string> = {
   clusterrolebindings: "ClusterRoleBinding",
@@ -16,7 +15,6 @@ export const RESOURCE_KINDS: Record<string, string> = {
   daemonsets: "DaemonSet",
   deployments: "Deployment",
   deviceclasses: "DeviceClass",
-  dynamicworkers: "DynamicWorker",
   endpoints: "Endpoints",
   endpointslices: "EndpointSlice",
   events: "Event",
@@ -48,5 +46,4 @@ export const RESOURCE_KINDS: Record<string, string> = {
   services: "Service",
   statefulsets: "StatefulSet",
   storageclasses: "StorageClass",
-  workertriggers: "WorkerTrigger",
 };

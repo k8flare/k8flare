@@ -4,11 +4,8 @@ import {
   handleRemotedialConnect,
 } from "./proxy/index.ts";
 import { dwAuth, handleWatch } from "@k8flare/k8s";
-import { injectCustomAPIGroup, injectOpenAPIV3Path } from "@k8flare/crd";
-import { DW_GROUP, DW_VERSION } from "@k8flare/dynamic-worker";
 import type { Env } from "../env.ts";
 import { apiserverFetch } from "../loader/apiserver.ts";
-import { handleRuntime } from "../runtime/index.ts";
 import { handleNodes } from "../nodes/index.ts";
 import { handleClustersAPI } from "../clusters/api.ts";
 import { clusterEnv } from "../clusters/clusterenv.ts";
@@ -267,26 +264,6 @@ export async function handleGateway(
     return handleRemotedialConnect(req, env);
   }
 
-  // Custom API group: DynamicWorker + WorkerTrigger CRUD, discovery,
-  // OpenAPI v3 document, and dispatch (the former runtime Worker).
-  const dwGroupPrefix = `/apis/${DW_GROUP}/${DW_VERSION}/`;
-  const dwOpenAPIPath = `/openapi/v3/apis/${DW_GROUP}/${DW_VERSION}`;
-  if (
-    url.pathname.startsWith(dwGroupPrefix) ||
-    url.pathname === `/apis/${DW_GROUP}/${DW_VERSION}` ||
-    url.pathname === `/apis/${DW_GROUP}/${DW_VERSION}/` ||
-    url.pathname === `/apis/${DW_GROUP}` ||
-    url.pathname === `/apis/${DW_GROUP}/` ||
-    url.pathname === dwOpenAPIPath
-  ) {
-    return handleRuntime(req, env, ctx);
-  }
-
-  // HTTP trigger dispatch, also handled by runtime.
-  if (url.pathname.startsWith("/trigger/")) {
-    return handleRuntime(req, env, ctx);
-  }
-
   // Operator-facing nodes surface (bootstrap/health pokes; token-gated
   // inside handleNodes) -- the former nodes Worker's workers.dev root,
   // absorbed under /nodes/* (the same convention smoke-nodes.yml's CI
@@ -301,21 +278,6 @@ export async function handleGateway(
   }
 
   // All other requests go to the Go apiserver dynamic worker (cold-start
-  // retry absorber lives inside apiserverFetch). For /apis and
-  // /openapi/v3, inject our custom group into the response (the Go
-  // apiserver only knows about its own build-time-baked per-group-version
-  // documents -- see pkg/apiserver/discovery.go).
-  const apiResp = await apiserverFetch(env, req);
-  if (url.pathname === "/apis" || url.pathname === "/apis/") {
-    return injectCustomAPIGroup(apiResp, DW_GROUP, DW_VERSION);
-  }
-  if (url.pathname === "/openapi/v3") {
-    return injectOpenAPIV3Path(
-      apiResp,
-      DW_GROUP,
-      DW_VERSION,
-      `${dwOpenAPIPath}?hash=k8flare-custom`,
-    );
-  }
-  return apiResp;
+  // retry absorber lives inside apiserverFetch).
+  return apiserverFetch(env, req);
 }

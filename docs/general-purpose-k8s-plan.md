@@ -845,6 +845,14 @@ can-i` requests, always with `allowed: true` — the accurate answer for
 > the Go apiserver would duplicate it. `scheduling.k8s.io/v1` `PriorityClass`
 > is still open too, but that one already has its own line item above (this
 > pass didn't newly decide against it — it's simply not done yet).
+>
+> **Correction (2026-07-08):** the `workers/runtime` premise above no
+> longer holds — `DynamicWorker`/`WorkerTrigger` and the bespoke
+> `packages/crd` framework backing them were deleted (proprietary,
+> non-standard custom-resource code, not real Kubernetes CRDs; see
+> CLAUDE.md rule 3). There is now no CRD mechanism of any kind in this
+> project. A real `apiextensions.k8s.io/v1` `CustomResourceDefinition`
+> mechanism is future work, not yet scheduled.
 
 ## Sequencing rationale
 
