@@ -3,106 +3,271 @@
 package workers
 
 import (
-	"context"
+	"bytes"
 	"fmt"
-	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"syscall/js"
-
-	"github.com/k8flare/k8flare/pkg/cfruntime/internal/jshttp"
-	"github.com/k8flare/k8flare/pkg/cfruntime/internal/jsutil"
-	"github.com/k8flare/k8flare/pkg/cfruntime/internal/runtimecontext"
 )
 
-var (
-	httpHandler http.Handler
-	doneCh      = make(chan struct{})
-	// doneOnce guards doneCh: upstream closed it unconditionally on every
-	// completed request/stream, which assumes exactly one request per
-	// WebAssembly.Instance. The S8 spike's resident glue reuses one
-	// instance across many requests, so a second (or Nth) request
-	// completing must not try to close doneCh again (close of a closed
-	// channel panics and is fatal to the whole Go runtime -- reproduced
-	// and logged in FINDINGS.md before this guard was added).
-	doneOnce sync.Once
-)
+var httpHandler http.Handler
 
 func init() {
-	var handleRequestCallback js.Func
-	handleRequestCallback = js.FuncOf(func(this js.Value, args []js.Value) any {
+	binding := js.Global().Get("context").Get("binding")
+	var handleRequestFn js.Func
+	handleRequestFn = js.FuncOf(func(this js.Value, args []js.Value) any {
 		reqObj := args[0]
-		var cb js.Func
-		cb = js.FuncOf(func(_ js.Value, pArgs []js.Value) any {
-			defer cb.Release()
-			resolve := pArgs[0]
-			reject := pArgs[1]
+		var executor js.Func
+		executor = js.FuncOf(func(_ js.Value, promiseArgs []js.Value) any {
+			defer executor.Release()
+			resolve, reject := promiseArgs[0], promiseArgs[1]
 			go func() {
-				if len(args) > 1 {
-					reject.Invoke(jsutil.Errorf("too many args given to handleRequest: %d", len(args)))
-					return
-				}
-				res, err := handleRequest(reqObj)
+				// signalDispatchDone must fire only after JS has actually
+				// finished delivering the resolved/rejected value to
+				// whoever is awaiting this promise (bootstrap.ts's `return
+				// binding.handleRequest(request)`, in turn awaited by
+				// apiserver.ts's `ep.fetch(...)`) -- Serve() blocks main()
+				// on dispatchDone closing, and once main() returns, Go's
+				// runtime treats this WASM instance as exited. resolve/
+				// reject.Invoke only *schedules* that delivery as a
+				// microtask; it does not run it synchronously, so calling
+				// signalDispatchDone right after Invoke returns races the
+				// still-pending continuation and intermittently (deterministically
+				// for a fast/synchronous handler with nothing else to
+				// interleave against) tears the instance down before the
+				// continuation runs -- observed live as a JS-side "Cannot
+				// read properties of undefined (reading 'exports')" crash
+				// on every retry, 100% reproducible for a zero-I/O handler
+				// like GET /version, absent for a handler that awaits real
+				// I/O (which incidentally gives the microtask queue time to
+				// drain first). yieldToEventLoop forces a macrotask
+				// boundary, which the JS spec guarantees fully drains the
+				// microtask queue first -- verified fixed live.
+				defer signalDispatchDone()
+				respObj, err := dispatch(reqObj)
 				if err != nil {
-					reject.Invoke(jsutil.Error(err.Error()))
+					reject.Invoke(js.Global().Get("Error").New(err.Error()))
+					yieldToEventLoop()
 					return
 				}
-				resolve.Invoke(res)
+				resolve.Invoke(respObj)
+				yieldToEventLoop()
 			}()
 			return js.Undefined()
 		})
-		return jsutil.NewPromise(cb)
+		return js.Global().Get("Promise").New(executor)
 	})
-	jsutil.Binding.Set("handleRequest", handleRequestCallback)
+	binding.Set("handleRequest", handleRequestFn)
 }
 
-type appCloser struct {
-	io.ReadCloser
+var (
+	dispatchDone     = make(chan struct{})
+	dispatchDoneOnce sync.Once
+)
+
+// signalDispatchDone marks one dispatch complete. Guarded by sync.Once
+// because dispatch is shared between the per-request shape (Serve, which
+// awaits this exactly once per WASM instance) and the resident shape
+// (ResidentService, which never reads it but still runs dispatch again on
+// every pump-window poke against the same instance) -- closing an
+// already-closed channel panics, and previously did exactly that in the
+// resident shape before an equivalent guard was added (S8 finding,
+// docs/platform-verification.md).
+func signalDispatchDone() {
+	dispatchDoneOnce.Do(func() { close(dispatchDone) })
 }
 
-func (c *appCloser) Close() error {
-	defer doneOnce.Do(func() { close(doneCh) })
-	return c.ReadCloser.Close()
+// yieldToEventLoop blocks the calling goroutine until a fresh JS
+// macrotask (setTimeout(..., 0), not a microtask/Promise callback) runs.
+// The JS spec guarantees the entire microtask queue -- including however
+// many .then() hops it takes to deliver a resolved/rejected value up
+// through bootstrap.ts's await and apiserver.ts's await -- fully drains
+// before any macrotask fires, so this is a reliable "I'm sure the caller
+// has the value now" barrier regardless of the exact number of promise
+// hops involved.
+func yieldToEventLoop() {
+	done := make(chan struct{})
+	var cb js.Func
+	cb = js.FuncOf(func(this js.Value, args []js.Value) any {
+		defer cb.Release()
+		close(done)
+		return nil
+	})
+	js.Global().Call("setTimeout", cb, 0)
+	<-done
 }
 
-// handleRequest accepts a Request object and returns Response object.
-func handleRequest(reqObj js.Value) (js.Value, error) {
+// dispatch converts a JS Request into an *http.Request, runs it through
+// httpHandler, and converts the result into a JS Response. Fully
+// buffered end to end (no ReadableStream/io.Pipe bridging): every
+// pkg/apiserver handler either io.ReadAll's its request body or writes
+// its response in one Encode+Write, and the one place a chunked response
+// would matter (watch) is a stub that returns immediately -- real watch
+// streaming happens over WebSocket in TypeScript, never through this Go
+// WASM entrypoint.
+func dispatch(reqObj js.Value) (js.Value, error) {
 	if httpHandler == nil {
-		return js.Value{}, fmt.Errorf("Serve must be called before handleRequest.")
+		return js.Value{}, fmt.Errorf("workers: Serve/ResidentService must be called before a request is dispatched")
 	}
-	req, err := jshttp.ToRequest(reqObj)
+
+	req, err := requestFromJS(reqObj)
 	if err != nil {
+		return js.Value{}, fmt.Errorf("workers: decode request: %w", err)
+	}
+
+	rec := &responseRecorder{header: make(http.Header), status: http.StatusOK}
+	httpHandler.ServeHTTP(rec, req)
+	return rec.toJSResponse(), nil
+}
+
+func requestFromJS(reqObj js.Value) (*http.Request, error) {
+	reqURL, err := url.Parse(reqObj.Get("url").String())
+	if err != nil {
+		return nil, err
+	}
+	header := headerFromJS(reqObj.Get("headers"))
+	body, err := readBody(reqObj)
+	if err != nil {
+		return nil, fmt.Errorf("read request body: %w", err)
+	}
+	return &http.Request{
+		Method:        reqObj.Get("method").String(),
+		URL:           reqURL,
+		Header:        header,
+		Body:          nopCloser{bytes.NewReader(body)},
+		ContentLength: int64(len(body)),
+		Host:          header.Get("Host"),
+		RemoteAddr:    header.Get("Cf-Connecting-Ip"),
+	}, nil
+}
+
+// readBody reads a JS Request/Response body (a nullable ReadableStream)
+// in one shot via arrayBuffer() rather than pulling a ReadableStream
+// reader chunk by chunk -- see dispatch's doc comment for why every
+// caller in this repo can tolerate that.
+func readBody(reqObj js.Value) ([]byte, error) {
+	if reqObj.Get("body").IsNull() {
+		return nil, nil
+	}
+	buf, err := awaitPromise(reqObj.Call("arrayBuffer"))
+	if err != nil {
+		return nil, err
+	}
+	data := make([]byte, buf.Get("byteLength").Int())
+	js.CopyBytesToGo(data, js.Global().Get("Uint8Array").New(buf))
+	return data, nil
+}
+
+type nopCloser struct{ *bytes.Reader }
+
+func (nopCloser) Close() error { return nil }
+
+// headerFromJS converts a JS Headers object into http.Header. Headers'
+// own entries() iterator already comma-joins repeated header names per
+// the Fetch spec, so splitting each value back out on "," reconstructs
+// the original multi-value header.
+func headerFromJS(headers js.Value) http.Header {
+	entries := js.Global().Get("Array").Call("from", headers.Call("entries"))
+	n := entries.Length()
+	h := make(http.Header, n)
+	for i := 0; i < n; i++ {
+		entry := entries.Index(i)
+		key, values := entry.Index(0).String(), entry.Index(1).String()
+		for _, v := range strings.Split(values, ",") {
+			h.Add(key, v)
+		}
+	}
+	return h
+}
+
+func headerToJS(header http.Header) js.Value {
+	h := js.Global().Get("Headers").New()
+	for key, values := range header {
+		for _, v := range values {
+			h.Call("append", key, v)
+		}
+	}
+	return h
+}
+
+// responseRecorder is a minimal buffered http.ResponseWriter -- see
+// dispatch's doc comment for why buffering the whole response is safe
+// here.
+type responseRecorder struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (w *responseRecorder) Header() http.Header         { return w.header }
+func (w *responseRecorder) Write(p []byte) (int, error) { return w.body.Write(p) }
+func (w *responseRecorder) WriteHeader(status int)      { w.status = status }
+
+// toJSResponse builds a JS Response. The four statuses the Fetch spec
+// forbids a body on (https://fetch.spec.whatwg.org/#null-body-status)
+// get Response(null, ...) even if something was written to them --
+// matches the Fetch API's own contract, not a choice made here.
+func (w *responseRecorder) toJSResponse() js.Value {
+	respInit := js.Global().Get("Object").New()
+	respInit.Set("status", w.status)
+	respInit.Set("statusText", http.StatusText(w.status))
+	respInit.Set("headers", headerToJS(w.header))
+
+	switch w.status {
+	case http.StatusSwitchingProtocols, http.StatusNoContent, http.StatusResetContent, http.StatusNotModified:
+		return js.Global().Get("Response").New(js.Null(), respInit)
+	}
+
+	body := w.body.Bytes()
+	jsBody := js.Global().Get("Uint8Array").New(len(body))
+	js.CopyBytesToJS(jsBody, body)
+	return js.Global().Get("Response").New(jsBody, respInit)
+}
+
+// awaitPromise blocks the calling goroutine until promise settles,
+// returning its resolved value or converting a rejection into a Go
+// error. Safe to call from any goroutine -- the then/catch callbacks run
+// on the single JS thread and hand off through a channel.
+func awaitPromise(promise js.Value) (js.Value, error) {
+	resultCh := make(chan js.Value, 1)
+	errCh := make(chan error, 1)
+	var then, catch js.Func
+	then = js.FuncOf(func(_ js.Value, args []js.Value) any {
+		defer then.Release()
+		resultCh <- args[0]
+		return js.Undefined()
+	})
+	catch = js.FuncOf(func(_ js.Value, args []js.Value) any {
+		defer catch.Release()
+		errCh <- fmt.Errorf("js promise rejected: %s", args[0].Call("toString").String())
+		return js.Undefined()
+	})
+	promise.Call("then", then).Call("catch", catch)
+	select {
+	case v := <-resultCh:
+		return v, nil
+	case err := <-errCh:
 		return js.Value{}, err
 	}
-	ctx := runtimecontext.New(context.Background(), reqObj)
-	req = req.WithContext(ctx)
-	reader, writer := io.Pipe()
-	w := &jshttp.ResponseWriter{
-		HeaderValue: http.Header{},
-		StatusCode:  http.StatusOK,
-		Reader:      &appCloser{reader},
-		Writer:      writer,
-		ReadyCh:     make(chan struct{}),
-	}
-	go func() {
-		defer w.Ready()
-		defer writer.Close()
-		httpHandler.ServeHTTP(w, req)
-	}()
-	<-w.ReadyCh
-	return w.ToJSResponse(), nil
 }
 
-// Serve serves http.Handler on a JS runtime.
-// if the given handler is nil, http.DefaultServeMux will be used.
+// Serve registers handler and blocks until the current dispatch has been
+// fully resolved back to JS. Used by the per-request execution shape
+// (cmd/apiserver-wasm: a fresh Go program instance per request, see its
+// own doc comment) so main() doesn't return before its one response has
+// actually been handed off.
 func Serve(handler http.Handler) {
 	ServeNonBlock(handler)
 	Ready()
-	<-Done()
+	<-dispatchDone
 }
 
-// ServeNonBlock sets the http.Handler to be served but does not signal readiness or block
-// indefinitely. The non-blocking form is meant to be used in conjunction with Ready and WaitForCompletion.
+// ServeNonBlock registers handler to serve every dispatched request but
+// does not block or signal readiness -- pair with Ready(). Used by the
+// resident execution shape (ResidentService: one long-lived instance
+// dispatches many requests over its lifetime).
 func ServeNonBlock(handler http.Handler) {
 	if handler == nil {
 		handler = http.DefaultServeMux
@@ -111,14 +276,12 @@ func ServeNonBlock(handler http.Handler) {
 }
 
 //go:wasmimport workers ready
-func ready()
+func readyImport()
 
-// Ready must be called after all setups of the Go side's handlers are done.
+// Ready signals the JS bootstrap (bootstrap.ts's `workers: { ready: ...
+// }` WASM import) that handleRequest registration (this file's init) has
+// completed and the JS-side `binding` object it populated is now safe to
+// call.
 func Ready() {
-	ready()
-}
-
-// Done returns a channel which is closed when the handler is done.
-func Done() <-chan struct{} {
-	return doneCh
+	readyImport()
 }

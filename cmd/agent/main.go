@@ -23,10 +23,7 @@ import (
 	"github.com/k3s-io/k3s/pkg/cli/cmds"
 	"github.com/k3s-io/k3s/pkg/daemons/executor"
 	"github.com/k3s-io/k3s/pkg/executor/embed"
-	"github.com/k8flare/k8flare/pkg/cacert"
-	"github.com/k8flare/k8flare/pkg/dnsshim"
-	"github.com/k8flare/k8flare/pkg/meshconnector"
-	"github.com/k8flare/k8flare/pkg/vkubeproxy"
+	k8fagent "github.com/k8flare/k8flare/pkg/agent"
 	cli "github.com/urfave/cli/v2"
 )
 
@@ -101,7 +98,7 @@ func main() {
 	nodeTaints := flag.String("node-taints", "", "Comma-separated key=value:Effect taints the kubelet registers its Node with (k3s --node-taint). Per-Pod microVM nodes use this for the pod-on-containers NoSchedule taint")
 	withNodeID := flag.Bool("with-node-id", true, "Append a unique ID suffix to the node name (k3s --with-node-id). Disable for per-Pod microVM nodes, whose names must match exactly what workers/nodes' cf-containers-scheduler registered and will later bind to / tear down")
 	kubeletPlainProxyPort := flag.Int("kubelet-plain-proxy-port", 0, "Serve the kubelet's HTTPS API (10250) over plain HTTP on this port for the Workers logs/metrics bridge (0 = disabled). Per-Pod microVM nodes only; pair with the node image's kubelet auth drop-in")
-	virtualKubeProxyCIDR := flag.String("virtual-kube-proxy-cidr", "", "Service CIDR (e.g. 10.43.0.0/16) to intercept and forward via pkg/vkubeproxy's TUN+userspace-TCP bridge (empty = disabled). Per-Pod microVM nodes only: hostNetwork:true means the real embedded kube-proxy has no netfilter to route ClusterIP traffic with there, unlike a BYO VM node, which never needs this")
+	virtualKubeProxyCIDR := flag.String("virtual-kube-proxy-cidr", "", "Service CIDR (e.g. 10.43.0.0/16) to intercept and forward via pkg/agent's TUN+userspace-TCP bridge (empty = disabled). Per-Pod microVM nodes only: hostNetwork:true means the real embedded kube-proxy has no netfilter to route ClusterIP traffic with there, unlike a BYO VM node, which never needs this")
 	flag.Parse()
 
 	if *serverURL == "" {
@@ -126,7 +123,7 @@ func main() {
 	// Join Mesh before building agentConfig -- the discovered Mesh IP
 	// must be present in the very first Node registration, not patched
 	// in after the fact. Non-fatal on failure (log and keep going without
-	// Mesh membership, same posture as pkg/vkubeproxy/pkg/dnsshim's own
+	// Mesh membership, same posture as pkg/agent's other
 	// optional enhancements) -- verified live (2026-07-08) that a hard
 	// log.Fatalf here can leave a per-Pod Containers-backend Pod stuck
 	// forever in Pending with no Node ever registered, since the whole
@@ -136,7 +133,7 @@ func main() {
 	var meshIP string
 	if *meshConnectorToken != "" {
 		var err error
-		meshIP, err = meshconnector.Run(ctx, *meshConnectorToken)
+		meshIP, err = k8fagent.RunMeshConnector(ctx, *meshConnectorToken)
 		if err != nil {
 			log.Printf("failed to join Cloudflare Mesh, continuing without it: %v", err)
 			meshIP = ""
@@ -176,27 +173,27 @@ func main() {
 
 	// Replace server-ca.crt with system CA bundle after k3s writes it.
 	// Cloudflare Workers uses a publicly trusted TLS cert, not our self-signed CA.
-	go cacert.ReplaceServerCA(ctx, *dataDir)
+	go k8fagent.ReplaceServerCA(ctx, *dataDir)
 
 	// Patch kubeconfigs to use token auth instead of client certificate auth.
 	// Cloudflare terminates TLS, so client certs never reach the Workers control plane.
-	go cacert.PatchKubeconfigs(ctx, *dataDir, *token)
+	go k8fagent.PatchKubeconfigs(ctx, *dataDir, *token)
 
 	// Write /run/flannel/subnet.env directly by querying the API for PodCIDR.
 	// The k3s flannel informer often fails to sync during startup because the
 	// Go WASM API handler is temporarily overloaded. This bypasses the informer.
-	go cacert.WriteSubnetEnv(ctx, *serverURL, *token, *nodeName)
+	go k8fagent.WriteSubnetEnv(ctx, *serverURL, *token, *nodeName)
 
 	// Cluster DNS: node-local shim (NodeLocal DNSCache address), no
 	// Containers/CoreDNS Deployment dependency. kubelet's --cluster-dns
 	// is set to the same address via supervisor.go's clusterConfig.
-	go dnsshim.Run(ctx, *serverURL, *token, "cluster.local")
+	go k8fagent.RunDNSShim(ctx, *serverURL, *token, "cluster.local")
 
 	// Virtual kube-proxy (task #13): only set on the Containers node
 	// image's entrypoint.sh, never for BYO VM nodes (see the flag's own
 	// help text above).
 	if *virtualKubeProxyCIDR != "" {
-		go vkubeproxy.Run(ctx, *serverURL, *token, *virtualKubeProxyCIDR)
+		go k8fagent.RunVKubeProxy(ctx, *serverURL, *token, *virtualKubeProxyCIDR)
 	}
 
 	embedded, err := embed.New(ctx, &agentConfig)

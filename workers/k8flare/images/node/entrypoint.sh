@@ -9,7 +9,7 @@ if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
   xargs -rn1 < /sys/fs/cgroup/cgroup.procs > /sys/fs/cgroup/init/cgroup.procs || true
   sed -e 's/ / +/g' -e 's/^/+/' < /sys/fs/cgroup/cgroup.controllers > /sys/fs/cgroup/cgroup.subtree_control || true
 fi
-# Task #13's virtual kube-proxy (pkg/vkubeproxy) needs /dev/net/tun.
+# Task #13's virtual kube-proxy (pkg/agent) needs /dev/net/tun.
 # Firecracker microVMs are expected to devtmpfs-populate it automatically
 # (unverified against a real deployment -- see
 # docs/platform-verification.md); this mknod is a defensive fallback,
@@ -30,7 +30,7 @@ fi
 # -virtual-kube-proxy-cidr must match pkg/apiserver/supervisor.go's
 # ServiceCIDR ("10.43.0.0/16") -- duplicated as a literal rather than
 # shared, same call as this project's other cross-binary constants
-# (pkg/dnsshim's NodeLocalDNSIP is the precedent: cmd/agent and
+# (pkg/agent's NodeLocalDNSIP is the precedent: cmd/agent and
 # pkg/apiserver are different Go build targets, one js/wasm, with no
 # shared-constant seam between them).
 #
@@ -40,7 +40,7 @@ fi
 # a deployment without CLOUDFLARE_API_TOKEN/ACCOUNT_ID configured, in
 # which case this whole block is a no-op and the Pod boots exactly as
 # before this feature existed. `warp-svc` (the daemon `warp-cli`/
-# pkg/meshconnector talk to) has no init system to start it under here
+# pkg/agent talk to) has no init system to start it under here
 # (unlike a real BYO VM, where the `cloudflare-warp` .deb's postinst
 # enables a systemd unit) -- this microVM's entrypoint IS PID 1, so it
 # must start and wait for the daemon itself before k8flare-agent's

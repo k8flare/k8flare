@@ -1,6 +1,6 @@
 //go:build !js
 
-// Package meshconnector runs this node as a Cloudflare Mesh node
+// RunMeshConnector runs this node as a Cloudflare Mesh node
 // (spikes/s17-mesh-nodevm/FINDINGS.md gate 2, closed 2026-07-07): joins
 // the account-wide Mesh network via the real `warp-cli` client and
 // returns the Mesh IP this node was assigned, so cmd/agent can advertise
@@ -9,10 +9,10 @@
 // a manually-configured one.
 //
 // Prerequisite: the `cloudflare-warp` package must already be installed
-// on the node image (this package does not install it -- matching how
+// on the node image (this doesn't install it -- matching how
 // cmd/agent doesn't install CNI plugins/containerd either, that's the
 // node image's job). See README's node setup section.
-package meshconnector
+package agent
 
 import (
 	"bytes"
@@ -31,7 +31,7 @@ import (
 // interaction required per gate 2's finding) and blocks until a Mesh IP
 // is assigned, returning it. Idempotent: a node already registered
 // (`connector new` on top of an existing registration) just re-connects.
-func Run(ctx context.Context, token string) (string, error) {
+func RunMeshConnector(ctx context.Context, token string) (string, error) {
 	if out, err := run(ctx, "warp-cli", "--accept-tos", "connector", "new", token); err != nil {
 		return "", fmt.Errorf("warp-cli connector new: %w (%s)", err, out)
 	}

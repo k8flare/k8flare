@@ -269,8 +269,7 @@ func (a *ClusterIPAllocator) save(ctx context.Context, bitmap *k8sallocator.Allo
 // serialization point, exactly like etcd's resourceVersion CAS on a real
 // cluster.
 func (a *ClusterIPAllocator) AllocateNext(ctx context.Context) (net.IP, error) {
-	var lastErr error
-	for i := 0; i < maxAllocatorRetries; i++ {
+	ip, err := casRetry(maxAllocatorRetries, func() (net.IP, error) {
 		bitmap, revision, err := a.load(ctx)
 		if err != nil {
 			return nil, err
@@ -285,16 +284,15 @@ func (a *ClusterIPAllocator) AllocateNext(ctx context.Context) (net.IP, error) {
 		}
 
 		if err := a.save(ctx, bitmap, revision); err != nil {
-			if errors.Is(err, ErrConflict) || errors.Is(err, ErrKeyExists) {
-				lastErr = err
-				continue // another allocation raced us; reload and retry
-			}
-			return nil, err
+			return nil, err // casRetry itself checks ErrConflict/ErrKeyExists
 		}
 
 		return netutils.AddIPOffset(a.base, offset), nil
+	})
+	if errors.Is(err, errRetriesExhausted) {
+		return nil, fmt.Errorf("allocate clusterip: %w", err)
 	}
-	return nil, fmt.Errorf("allocate clusterip: too many concurrent conflicts: %w", lastErr)
+	return ip, err
 }
 
 // Release returns ip to the pool so a future AllocateNext can reuse it.
@@ -308,25 +306,23 @@ func (a *ClusterIPAllocator) Release(ctx context.Context, ip net.IP) error {
 		return err
 	}
 
-	var lastErr error
-	for i := 0; i < maxAllocatorRetries; i++ {
+	_, err = casRetry(maxAllocatorRetries, func() (struct{}, error) {
 		bitmap, revision, err := a.load(ctx)
 		if err != nil {
-			return err
+			return struct{}{}, err
 		}
 
 		if err := bitmap.Release(offset); err != nil {
-			return fmt.Errorf("release clusterip %s: %w", ip, err)
+			return struct{}{}, fmt.Errorf("release clusterip %s: %w", ip, err)
 		}
 
 		if err := a.save(ctx, bitmap, revision); err != nil {
-			if errors.Is(err, ErrConflict) || errors.Is(err, ErrKeyExists) {
-				lastErr = err
-				continue
-			}
-			return err
+			return struct{}{}, err
 		}
-		return nil
+		return struct{}{}, nil
+	})
+	if errors.Is(err, errRetriesExhausted) {
+		return fmt.Errorf("release clusterip %s: %w", ip, err)
 	}
-	return fmt.Errorf("release clusterip %s: too many concurrent conflicts: %w", ip, lastErr)
+	return err
 }

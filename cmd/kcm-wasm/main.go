@@ -34,19 +34,10 @@ package main
 
 import (
 	"context"
-	"log"
-	"net/http"
-	"sync"
 
 	"github.com/k8flare/k8flare/pkg/cfruntime"
 	"github.com/k8flare/k8flare/pkg/cfruntime/cloudflare"
 	"github.com/k8flare/k8flare/pkg/controllers"
-)
-
-var (
-	startOnce sync.Once
-	kcmStatus = "not started"
-	mu        sync.Mutex
 )
 
 func getToken() string {
@@ -56,57 +47,9 @@ func getToken() string {
 	return "k8flare-dev-token" // fallback for dev, matches every other Worker in this repo
 }
 
-func setStatus(msg string) {
-	mu.Lock()
-	kcmStatus = msg
-	mu.Unlock()
-}
-
-// ensureStarted starts the resident controller-manager goroutine at most
-// once per WASM instance (idempotent -- every dispatched request, and the
-// DO's alarm() safety net, call this the same way). Wrapped in
-// cloudflare.WaitUntil so it keeps making real progress after this
-// triggering request's own response closes (S8 finding: a single
-// WaitUntil call keeps the whole shared scheduler pumped for every
-// goroutine on the instance, including the per-controller goroutines
-// RunControllerManager itself starts).
-func ensureStarted() {
-	startOnce.Do(func() {
-		restCfg := controllers.RestConfig("GATEWAY", getToken(), cloudflare.Getenv("CLUSTER_BASE_PATH"))
-		cloudflare.WaitUntil(func() {
-			ctx := context.Background()
-			setStatus("running")
-			err := controllers.RunControllerManager(ctx, restCfg)
-			log.Printf("controllers: controller-manager exited: %v", err)
-			setStatus("exited: " + errString(err))
-		})
-	})
-}
-
-func errString(err error) string {
-	if err == nil {
-		return "<nil>"
-	}
-	return err.Error()
-}
-
 func main() {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		ensureStarted()
-		mu.Lock()
-		status := kcmStatus
-		mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"controllerManager":"` + status + `"}`))
+	restCfg := controllers.RestConfig("GATEWAY", getToken(), cloudflare.Getenv("CLUSTER_BASE_PATH"))
+	workers.ResidentService("controllerManager", func(ctx context.Context) error {
+		return controllers.RunControllerManager(ctx, restCfg)
 	})
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		ensureStarted()
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"ok":true}`))
-	})
-
-	workers.ServeNonBlock(mux)
-	workers.Ready()
-	select {} // park forever; do not depend on any single request's Done() (S8 (a)/resident pattern)
 }

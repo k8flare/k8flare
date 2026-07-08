@@ -38,10 +38,13 @@ bash scripts/gen-k8s-js-mirror.sh
 bash scripts/gen-clientgo-lean-mirror.sh
 
 mkdir -p "$ASSETS" "$BUILD"
-# pkg/cfruntime's wasm_exec.js variant (globalThis.Go with runtimeCtx
-# support, absorbed from syumai/workers -- see pkg/cfruntime/README.md),
-# shared by every dynamic worker bootstrap.
-cp pkg/cfruntime/wasm_exec.js "$ASSETS/wasm_exec.js"
+# wasm_exec.js, patched fresh from this Go toolchain's own copy on every
+# build (scripts/patch-wasm-exec.mjs) rather than hand-maintained --
+# keeps it in lockstep with whatever Go version actually compiled the
+# WASM binaries, and the patch script fails loudly if upstream's file
+# structure moved out from under it. Shared by every dynamic worker
+# bootstrap.
+node scripts/patch-wasm-exec.mjs "$(go env GOROOT)/lib/wasm/wasm_exec.js" "$ASSETS/wasm_exec.js"
 
 # build_one <name> <pkg> <opt:yes|no> [extra go build args...]
 build_one() {

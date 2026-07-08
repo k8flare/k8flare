@@ -1,6 +1,6 @@
 //go:build !js
 
-package cacert
+package agent
 
 import (
 	"context"

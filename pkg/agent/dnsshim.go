@@ -1,6 +1,6 @@
 //go:build !js
 
-// Package dnsshim is the node-local half of cluster DNS (user decision
+// RunDNSShim is the node-local half of cluster DNS (user decision
 // 2026-07-07: no Containers/CoreDNS Deployment dependency). It binds the
 // NodeLocal DNSCache convention address on this node, forwards
 // cluster.local queries to the control plane over DNS-over-HTTPS (the
@@ -14,7 +14,7 @@
 // /etc/resolv.conf nameserver line points here with zero k3s/kubelet
 // code changes -- the embedded agent already applies whatever
 // /v1-k3s/config advertises.
-package dnsshim
+package agent
 
 import (
 	"bytes"
@@ -40,7 +40,7 @@ const dohTimeout = 5 * time.Second
 // are logged, not fatal -- a cluster still works without cluster DNS
 // (README's pre-existing documented gap), just as it did before this
 // package existed.
-func Run(ctx context.Context, serverURL, token, clusterDomain string) {
+func RunDNSShim(ctx context.Context, serverURL, token, clusterDomain string) {
 	if err := ensureLinkLocalAddress(); err != nil {
 		log.Printf("dnsshim: failed to configure %s (cluster DNS will not be available): %v", NodeLocalDNSIP, err)
 		return

@@ -15,18 +15,18 @@ import (
 
 // NodeLocalDNSIP is the address kubelet's --cluster-dns points at
 // (advertised via supervisor.go's clusterConfig.ClusterDNS) and the
-// address pkg/dnsshim (cmd/agent) binds on every node. The NodeLocal
+// address pkg/agent (cmd/agent) binds on every node. The NodeLocal
 // DNSCache convention address (link-local, so identical on every node
 // with no cross-host collision) -- not a shared Go constant with
 // cmd/agent since that would pull this whole package's dependency tree
 // into the agent binary for one literal; duplicated deliberately, see
-// pkg/dnsshim's matching comment.
+// pkg/agent's matching comment.
 const NodeLocalDNSIP = "169.254.20.10"
 
 // Cluster DNS, without a CoreDNS Deployment or any Containers dependency
 // (user decision 2026-07-07): this endpoint is the synthesis half of a
 // DNS-over-HTTPS (RFC 8484) resolver. The other half is
-// cmd/agent's pkg/dnsshim, a node-local UDP/TCP listener kubelet's
+// cmd/agent's pkg/agent, a node-local UDP/TCP listener kubelet's
 // --cluster-dns points at (the NodeLocal DNSCache convention address,
 // 169.254.20.10 -- link-local, so identical on every node with no
 // collision) that forwards cluster.local queries here over DoH and

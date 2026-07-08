@@ -1,17 +1,17 @@
 //go:build linux
 
-// Package vkubeproxy is the node-side half of task #13's virtual
+// RunVKubeProxy is the node-side half of task #13's virtual
 // kube-proxy. Pod-on-Containers Pods run `hostNetwork: true`
 // (pkg/apiserver/computeclass.go) because the microVM sandbox has no
 // working netfilter -- so even though the real k3s kube-proxy embedded in
 // this same binary is enabled cluster-wide (DisableKubeProxy: false in
 // pkg/apiserver/supervisor.go), it has no netfilter to program on this
-// backend and cannot route ClusterIP traffic here. This package
+// backend and cannot route ClusterIP traffic here. This file
 // substitutes a userspace forwarder scoped to exactly the cluster's
 // Service CIDR, using the same "don't reimplement TCP, use a real
 // embeddable stack" call this project already made for kube-scheduler and
 // kube-controller-manager (rule #3): gVisor's pkg/tcpip terminates each
-// ClusterIP-bound TCP connection a Pod opens, and this package re-issues
+// ClusterIP-bound TCP connection a Pod opens, and this file re-issues
 // it as a plain outbound HTTP request against the control plane's
 // /nodes/vkubeproxy endpoint (workers/k8flare/src/nodes/podproxy.ts),
 // which resolves the target Service via EndpointSlice and forwards to the
@@ -25,15 +25,15 @@
 // Raw TCP passthrough and a secure/TokenReview'd path are deferred (see
 // docs/general-purpose-k8s-plan.md).
 //
-// Build tag is `linux`, not this project's usual cross-platform `!js`
-// (pkg/dnsshim, pkg/meshconnector): those packages only shell out to CLI
-// tools, which still compiles anywhere even though it only runs on Linux
-// at cmd/agent's actual deploy target. This package instead links
+// Build tag is `linux`, not this package's other files' cross-platform
+// `!js` (cacert.go, dnsshim.go, meshconnector.go): those only shell out
+// to CLI tools, which still compiles anywhere even though it only runs
+// on Linux at cmd/agent's actual deploy target. This file instead links
 // gvisor.dev/gvisor/pkg/tcpip/link/{tun,fdbased}, whose own build
 // constraints are unconditionally Linux-only (raw AF_PACKET sockets, TUN
 // ioctls) -- `go vet ./pkg/...` from a non-Linux dev machine fails to even
-// compile the package otherwise, not just to run it.
-package vkubeproxy
+// compile this file otherwise, not just to run it.
+package agent
 
 import (
 	"bufio"
@@ -75,10 +75,10 @@ const (
 // network namespace opens to an address in that range by terminating it
 // locally and re-issuing it as an HTTP request against
 // serverURL+"/nodes/vkubeproxy". Errors setting up the TUN device are
-// logged, not fatal -- same posture as pkg/dnsshim.Run: a cluster still
+// logged, not fatal -- same posture as RunDNSShim: a cluster still
 // works without ClusterIP routing on this node, just as it did before
 // this package existed. Blocks until ctx is cancelled.
-func Run(ctx context.Context, serverURL, token, serviceCIDR string) {
+func RunVKubeProxy(ctx context.Context, serverURL, token, serviceCIDR string) {
 	fd, err := tun.Open(tunDeviceName)
 	if err != nil {
 		log.Printf("vkubeproxy: failed to open TUN device (ClusterIP routing will not be available): %v", err)
@@ -160,7 +160,7 @@ func subnetFromCIDR(cidr string) (tcpip.Subnet, error) {
 // hostNetwork's own removal of CNI works around, so this is expected to
 // work even where iptables-based NAT doesn't (unverified against a real
 // deployment -- see docs/platform-verification.md). Same
-// exec.Command("ip", ...) pattern pkg/dnsshim.ensureLinkLocalAddress
+// exec.Command("ip", ...) pattern pkg/agent.ensureLinkLocalAddress
 // already uses in this same binary.
 func configureHostRoute(name, cidr string) error {
 	if out, err := exec.Command("ip", "link", "set", "dev", name, "up").CombinedOutput(); err != nil {

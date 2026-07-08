@@ -174,8 +174,7 @@ func (a *PodCIDRAllocator) save(ctx context.Context, snap podCIDRRangeSnapshot, 
 // concurrent allocation raced it -- same CAS-retry shape as
 // ClusterIPAllocator.AllocateNext.
 func (a *PodCIDRAllocator) AllocateNext(ctx context.Context) (*net.IPNet, error) {
-	var lastErr error
-	for i := 0; i < maxPodCIDRAllocatorRetries; i++ {
+	cidr, err := casRetry(maxPodCIDRAllocatorRetries, func() (*net.IPNet, error) {
 		set, snap, revision, err := a.load(ctx)
 		if err != nil {
 			return nil, err
@@ -188,27 +187,25 @@ func (a *PodCIDRAllocator) AllocateNext(ctx context.Context) (*net.IPNet, error)
 
 		snap.Allocated = append(snap.Allocated, cidr.String())
 		if err := a.save(ctx, snap, revision); err != nil {
-			if errors.Is(err, ErrConflict) || errors.Is(err, ErrKeyExists) {
-				lastErr = err
-				continue // another allocation raced us; reload and retry
-			}
-			return nil, err
+			return nil, err // casRetry itself checks ErrConflict/ErrKeyExists
 		}
 
 		return cidr, nil
+	})
+	if errors.Is(err, errRetriesExhausted) {
+		return nil, fmt.Errorf("allocate podcidr: %w", err)
 	}
-	return nil, fmt.Errorf("allocate podcidr: too many concurrent conflicts: %w", lastErr)
+	return cidr, err
 }
 
 // Release returns cidrStr to the pool so a future AllocateNext can reuse it.
 // A no-op (not an error) if cidrStr wasn't actually allocated, matching
 // ClusterIPAllocator.Release's idempotent behavior.
 func (a *PodCIDRAllocator) Release(ctx context.Context, cidrStr string) error {
-	var lastErr error
-	for i := 0; i < maxPodCIDRAllocatorRetries; i++ {
+	_, err := casRetry(maxPodCIDRAllocatorRetries, func() (struct{}, error) {
 		_, snap, revision, err := a.load(ctx)
 		if err != nil {
-			return err
+			return struct{}{}, err
 		}
 
 		kept := snap.Allocated[:0]
@@ -221,18 +218,17 @@ func (a *PodCIDRAllocator) Release(ctx context.Context, cidrStr string) error {
 			kept = append(kept, s)
 		}
 		if !found {
-			return nil // never allocated -- nothing to do
+			return struct{}{}, nil // never allocated -- nothing to do
 		}
 		snap.Allocated = kept
 
 		if err := a.save(ctx, snap, revision); err != nil {
-			if errors.Is(err, ErrConflict) || errors.Is(err, ErrKeyExists) {
-				lastErr = err
-				continue
-			}
-			return err
+			return struct{}{}, err
 		}
-		return nil
+		return struct{}{}, nil
+	})
+	if errors.Is(err, errRetriesExhausted) {
+		return fmt.Errorf("release podcidr %s: %w", cidrStr, err)
 	}
-	return fmt.Errorf("release podcidr %s: too many concurrent conflicts: %w", cidrStr, lastErr)
+	return err
 }

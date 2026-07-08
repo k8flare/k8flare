@@ -24,20 +24,11 @@ package main
 
 import (
 	"context"
-	"log"
-	"net/http"
-	"sync"
 
 	"github.com/k8flare/k8flare/pkg/cfruntime"
 	"github.com/k8flare/k8flare/pkg/cfruntime/cloudflare"
 	"github.com/k8flare/k8flare/pkg/controllers"
 	"github.com/k8flare/k8flare/pkg/controllers/sched"
-)
-
-var (
-	startOnce   sync.Once
-	schedStatus = "not started"
-	mu          sync.Mutex
 )
 
 func getToken() string {
@@ -47,51 +38,9 @@ func getToken() string {
 	return "k8flare-dev-token" // fallback for dev, matches every other Worker in this repo
 }
 
-func setStatus(msg string) {
-	mu.Lock()
-	schedStatus = msg
-	mu.Unlock()
-}
-
-// ensureStarted starts the resident scheduler goroutine at most once per
-// WASM instance -- same idempotent shape as ../main.go's ensureStarted.
-func ensureStarted() {
-	startOnce.Do(func() {
-		restCfg := controllers.RestConfig("GATEWAY", getToken(), cloudflare.Getenv("CLUSTER_BASE_PATH"))
-		cloudflare.WaitUntil(func() {
-			ctx := context.Background()
-			setStatus("running")
-			err := sched.RunScheduler(ctx, restCfg)
-			log.Printf("scheduler: exited: %v", err)
-			setStatus("exited: " + errString(err))
-		})
-	})
-}
-
-func errString(err error) string {
-	if err == nil {
-		return "<nil>"
-	}
-	return err.Error()
-}
-
 func main() {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		ensureStarted()
-		mu.Lock()
-		status := schedStatus
-		mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"scheduler":"` + status + `"}`))
+	restCfg := controllers.RestConfig("GATEWAY", getToken(), cloudflare.Getenv("CLUSTER_BASE_PATH"))
+	workers.ResidentService("scheduler", func(ctx context.Context) error {
+		return sched.RunScheduler(ctx, restCfg)
 	})
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		ensureStarted()
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"ok":true}`))
-	})
-
-	workers.ServeNonBlock(mux)
-	workers.Ready()
-	select {} // park forever; do not depend on any single request's Done() (S8 (a)/resident pattern)
 }

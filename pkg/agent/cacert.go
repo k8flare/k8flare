@@ -1,6 +1,6 @@
 //go:build !js
 
-// Package cacert replaces the k3s server-ca.crt with the system CA bundle.
+// ReplaceServerCA replaces the k3s server-ca.crt with the system CA bundle.
 //
 // When k3s bootstraps, it downloads /v1-k3s/server-ca.crt (the k3s self-signed
 // CA) and stores it locally. All subsequent TLS connections (kubelet kubeconfig,
@@ -8,10 +8,10 @@
 //
 // In our architecture the control plane runs on Cloudflare Workers, which
 // terminates TLS with a publicly trusted certificate (not our self-signed CA).
-// This package watches for the server-ca.crt file to be created and replaces
+// This watches for the server-ca.crt file to be created and replaces
 // it with the system CA bundle so that kubelet and remotedialer can verify
 // Cloudflare's TLS certificate.
-package cacert
+package agent
 
 import (
 	"bytes"

@@ -15,7 +15,7 @@ import (
 )
 
 // dohQuery sends one DoH (RFC 8484) A-record query to /dns-query using
-// the cluster token, mirroring exactly what pkg/dnsshim's forwardDoH does.
+// the cluster token, mirroring exactly what pkg/agent's forwardDoH does.
 func dohQuery(t *testing.T, name string) *dns.Msg {
 	t.Helper()
 	m := new(dns.Msg)
@@ -50,7 +50,7 @@ func dohQuery(t *testing.T, name string) *dns.Msg {
 
 // TestClusterDNS drives the DoH synthesis endpoint (pkg/apiserver/dns.go)
 // against real Service/Pod/EndpointSlice objects -- the other half of
-// cluster DNS is pkg/dnsshim (cmd/agent), out of scope for this
+// cluster DNS is pkg/agent (cmd/agent), out of scope for this
 // wrangler-dev-backed suite.
 func TestClusterDNS(t *testing.T) {
 	client := setupWranglerDev(t)
