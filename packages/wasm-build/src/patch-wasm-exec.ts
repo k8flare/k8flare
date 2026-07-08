@@ -8,12 +8,12 @@
 // globalThis via a Proxy -- see pkg/cfruntime/README.md and
 // docs/platform-verification.md's S2/S8 sections for why.
 //
-// Usage: node scripts/patch-wasm-exec.mjs <input.js> <output.js>
+// Usage: node patch-wasm-exec.ts <input.js> <output.js>
 import * as fs from "node:fs";
 
 const [input, output] = process.argv.slice(2);
 if (!input || !output) {
-  console.error("usage: patch-wasm-exec.mjs <input.js> <output.js>");
+  console.error("usage: patch-wasm-exec.ts <input.js> <output.js>");
   process.exit(1);
 }
 
@@ -85,13 +85,13 @@ src = src.replace(valuesAnchor, proxyDecl + valuesAnchor);
 // method -- the _values array entry and its matching _refIds key --
 // must resolve through the proxy instead, so JS code holding "the global
 // object" via a Go-originated js.Value (js.Global()) sees `context` and
-// gets fetch() bound correctly. Every other globalThis reference in this
-// file (globalThis.fs, globalThis.process, globalThis.Go, ...) is
-// untouched -- those run before/outside Go.run and refer to the real
-// object on purpose.
+// gets fetch()/setTimeout() bound correctly. Every other globalThis
+// reference in this file (globalThis.fs, globalThis.process,
+// globalThis.Go, ...) is untouched -- those run before/outside Go.run
+// and refer to the real object on purpose.
 const beforeCount =
-  (src.match(/^\t\t\t\tglobalThis,$/m) || []).length +
-  (src.match(/^\t\t\t\t\[globalThis, 5\],$/m) || []).length;
+  (src.match(/^\t\t\t\tglobalThis,$/m) ?? []).length +
+  (src.match(/^\t\t\t\t\[globalThis, 5\],$/m) ?? []).length;
 if (beforeCount !== 2) {
   console.error(
     `patch-wasm-exec: expected exactly 2 globalThis references inside run() in ${input}, found ${beforeCount} -- upstream wasm_exec.js changed, review this patch`,

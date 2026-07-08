@@ -1,15 +1,3 @@
 # workers-assets-gen
 
-* `workers-assets-gen` command generates files needed to run `workers` package.
-  - e.g. wasm_exec.js, worker.mjs ...
-
-## Usage
-
-* See `Makefile` in [templates](https://github.com/syumai/workers/tree/main/_templates/cloudflare/worker-tinygo).
-
-## Supported options
-
-* `-mode`
-  - switch generated file depends on Go / TinyGo.
-* `-o`
-  - change output directory (default: `build`)
+Cleared 2026-07-08 (mid-refactor cleanup). Previous version is in git history (`git log -- spikes/s8-wasm-resident/vendor/syumai-workers-fork/cmd/workers-assets-gen/README.md`).

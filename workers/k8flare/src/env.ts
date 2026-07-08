@@ -29,7 +29,7 @@ export interface Env {
 
   // Optional Workers VPC binding for BYO-node kubelet access
   // (logs/exec); attached per deployment, absent in dev.
-  // Legacy: Cloudflare Tunnel + VPC Service (scripts/setup-tunnel.sh),
+  // Legacy: Cloudflare Tunnel + VPC Service (infra/setup-tunnel.sh),
   // being phased out in favor of MESH below (user decision 2026-07-07)
   // -- kept as a fallback for existing deployments, not removed.
   KUBELET_VPC?: Fetcher;

@@ -20,7 +20,7 @@ import (
 // dev; see cmd/k8flare-gen's git history / final report for the
 // verification note), so no Go route handling is needed for /openapi/*.
 // (The wasm/ subtree next to these is Loader chunk supply, owned by
-// scripts/build-wasm-chunks.sh and excluded via run_worker_first.)
+// `make wasm` and excluded via run_worker_first.)
 const assetsDir = "workers/k8flare/assets"
 
 // genOpenAPI copies the real upstream OpenAPI v2 (Swagger 2.0) and v3

@@ -33,7 +33,7 @@ workers/k8flare — 唯一のデプロイ単位・唯一の公開 Worker(6 Worke
    ├─ WatchHub DO: watch fan-out(hibernation 必須)
    ├─ Controllers DO: 実 kube-controller-manager(cmd/kcm-wasm)を同じ
    │    ASSETS+LOADER で起動(S14。64MiB raw Loader 上限、wasm-opt -Oz —
-   │    scripts/build-wasm-chunks.sh がゲート)。動的 Worker は poke
+   │    Makefile の kcm.manifest.json レシピがゲート)。動的 Worker は poke
    │    (Cluster DO の pingControllers 直呼び / event-armed 安全網 alarm)
    │    ごとに有界 waitUntil ウィンドウでのみポンプされる。
    │    **実 kube-scheduler は GOOS=js で構文コンパイル不可** — BYO VM /
@@ -63,8 +63,8 @@ S19 の 3 ゲート検証を経て単一 Worker に統合。旧クラスタの D
 ```
 pnpm install                     # 初回のみ
 make wasm                        # Go を変更したら必須。apiserver+KCM のチャンクを
-                                 # workers/k8flare/assets/wasm/ に生成(scripts/build-wasm-chunks.sh を
-                                 # 差分ベースで呼ぶ。KCM の wasm-opt 込みで約2分だが、対象バイナリの
+                                 # workers/k8flare/assets/wasm/ に生成(Make のファイル依存関係で
+                                 # 差分ベースにスキップ。KCM の wasm-opt 込みで約2分だが、対象バイナリの
                                  # ソースが変わっていなければ即スキップ。強制再ビルドは `make clean-wasm wasm`)
 make dev                         # wrangler dev(単一 config: workers/k8flare/wrangler.jsonc)。
                                  # Docker なし環境は `wrangler dev -c workers/k8flare/wrangler.jsonc

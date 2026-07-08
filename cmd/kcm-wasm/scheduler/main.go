@@ -6,8 +6,8 @@
 // real, unmodified upstream kube-scheduler, started via
 // pkg/controllers.RunScheduler. It is NOT a separately deployed Worker --
 // its wasm-opt'd binary ships in workers/controllers' Static Assets
-// (sched.* chunks, scripts/build-controllers-wasm.sh) and runs as a
-// Loader-loaded dynamic worker, exactly like the KCM binary.
+// (sched.* chunks, `make wasm`) and runs as a Loader-loaded dynamic
+// worker, exactly like the KCM binary.
 //
 // The scheduler and KCM cannot share one binary: the combined build is
 // 71.5MB after wasm-opt -Oz, over the Loader's hard 64MiB

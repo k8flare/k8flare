@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "module": "NodeNext",
+    "moduleResolution": "nodenext",
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "emitDeclarationOnly": false
+  },
+  "include": ["src"]
+}

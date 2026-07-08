@@ -43,12 +43,12 @@ jobs:
       # Only the apiserver binary is needed here (the KCM never touches
       # these bare Pods and its wasm-opt pass costs ~2min).
       - name: Build WASM (apiserver only)
-        run: bash scripts/build-wasm-chunks.sh apiserver
+        run: make -B wasm-apiserver
 
       # The consolidated config's containers[] docker-builds images/node,
       # whose Dockerfile COPYs the cross-compiled k8flare-agent.
       - name: Build node agent (linux/amd64)
-        run: bash scripts/build-nodes-agent.sh
+        run: make -B nodes-agent
 
       - name: Start wrangler dev (the consolidated k8flare Worker)
         run: |

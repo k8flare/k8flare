@@ -32,10 +32,10 @@ set -euo pipefail
 # Usage:
 #   export CLOUDFLARE_ACCOUNT_ID=<YOUR_ACCOUNT_ID>
 #   export NODE_INTERNAL_IP=192.168.1.100
-#   ./scripts/setup-tunnel.sh
+#   make setup-tunnel   (or: ./infra/setup-tunnel.sh)
 #
 # For step-by-step guided mode (prints commands without executing):
-#   DRY_RUN=1 ./scripts/setup-tunnel.sh
+#   DRY_RUN=1 make setup-tunnel
 
 # --- Configuration ---
 
@@ -45,7 +45,7 @@ SERVICE_NAME="${SERVICE_NAME:-kubelet-vpc}"
 KUBELET_PORT="${KUBELET_PORT:-10250}"
 NODE_INTERNAL_IP="${NODE_INTERNAL_IP:-}"
 DRY_RUN="${DRY_RUN:-0}"
-WRANGLER_CONFIG="${WRANGLER_CONFIG:-wrangler.jsonc}"
+WRANGLER_CONFIG="${WRANGLER_CONFIG:-workers/k8flare/wrangler.jsonc}"
 
 # Script directory (for resolving relative paths)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

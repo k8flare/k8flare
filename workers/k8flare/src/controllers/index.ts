@@ -10,8 +10,8 @@
 // `modules.wasm` field -- the platform's sanctioned route around both the
 // deploy cap and the dynamic-code-generation restriction (S14 Part 1).
 // The wasm-opt'd binary must stay under the Loader's own hard 64MiB
-// total-module-bytes cap (S14 Part 2) -- scripts/build-controllers-wasm.sh
-// enforces that at build time.
+// total-module-bytes cap (S14 Part 2) -- `make wasm` enforces that at
+// build time.
 //
 // The Controllers DO below keeps its previous role (single resident
 // instance, event-armed alarm safety net); it just dispatches into the
@@ -151,8 +151,8 @@ export class Controllers {
   private async loadComponent(name: ComponentName): Promise<Fetcher | null> {
     // Manifest absent = component not shipped in this deployment --
     // currently true for "sched" (no reproducible <64MiB build yet; see
-    // scripts/build-wasm-chunks.sh). Treated as absent, not an error, so
-    // pokes/alarms stay quiet about it.
+    // the Makefile's kcm.manifest.json recipe). Treated as absent, not an
+    // error, so pokes/alarms stay quiet about it.
     const manifest = await fetchWasmManifest(this.env.ASSETS, name);
     if (!manifest) return null;
     const doName = this.clusterName();

@@ -61,16 +61,16 @@ jobs:
       - name: TypeScript check (workers/k8flare, direct tsc)
         run: npx tsc --noEmit -p workers/k8flare/tsconfig.json
 
-      # binaryen's wasm-opt is required by scripts/build-wasm-chunks.sh
-      # (the KCM WASM only fits under the Worker Loader's hard 64MiB cap
-      # after -Oz -- see the script's header comment).
+      # binaryen's wasm-opt is required by the Makefile's kcm.manifest.json
+      # recipe (the KCM WASM only fits under the Worker Loader's hard
+      # 64MiB cap after -Oz -- see the Makefile's comment there).
       - name: Install binaryen (wasm-opt)
         run: sudo apt-get update && sudo apt-get install -y binaryen
 
       # Nothing bundles WASM into the script anymore (the old 10MiB-gzip
       # apiserver budget is retired): both control-plane binaries ship as
       # Static Assets chunks and load through the Worker Loader, whose
-      # hard 64MiB raw cap is enforced inside scripts/build-wasm-chunks.sh
+      # hard 64MiB raw cap is enforced inside the Makefile's wasm targets
       # -- this step fails if either binary exceeds it.
       - name: Build WASM (apiserver + KCM chunks, 64MiB Loader gate inside)
         run: npm run build:wasm

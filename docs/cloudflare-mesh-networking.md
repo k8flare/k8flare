@@ -50,7 +50,7 @@ is untouched by this addendum. What changed is a narrower, different
 use this document's own "Where Mesh fits" table already scoped
 separately: **the kubelet-proxy path for `kubectl logs`/`kubectl
 exec`**, previously served by Cloudflare Tunnel + Workers VPC Service
-(`scripts/setup-tunnel.sh`). User decision 2026-07-07: replace that
+(`infra/setup-tunnel.sh`). User decision 2026-07-07: replace that
 path with Mesh (`spikes/s17-mesh-nodevm/FINDINGS.md` gates 1-2, closed
 that day) -- README's setup section and
 `workers/k8flare/src/gateway/proxy/target.ts` reflect this (Mesh

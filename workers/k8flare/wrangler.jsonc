@@ -88,7 +88,7 @@
   // Cloudflare Mesh (spikes/s17-mesh-nodevm/FINDINGS.md): reaches any
   // BYO VM node joined to the account-wide Mesh directly at its Mesh IP
   // -- no per-node Tunnel/VPC Service resource, unlike the legacy
-  // KUBELET_VPC path (scripts/setup-tunnel.sh, still supported as a
+  // KUBELET_VPC path (infra/setup-tunnel.sh, still supported as a
   // fallback -- see gateway/proxy/target.ts). "cf1:network" is a fixed
   // literal meaning "this account's Mesh", not a per-node identifier.
   // remote:true makes plain `wrangler dev` proxy this one binding to

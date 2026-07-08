@@ -2,15 +2,16 @@
   "name": "k8flare",
   "private": true,
   "workspaces": [
+    "packages/*",
     "workers/*"
   ],
   "type": "module",
   "scripts": {
     "dev": "wrangler dev -c workers/k8flare/wrangler.jsonc --persist-to .wrangler/state",
-    "deploy": "bash scripts/build-nodes-agent.sh && wrangler deploy --config workers/k8flare/wrangler.jsonc",
+    "deploy": "make -B nodes-agent && wrangler deploy --config workers/k8flare/wrangler.jsonc",
     "check": "vp check",
     "test": "vitest",
-    "build:wasm": "bash scripts/build-wasm-chunks.sh"
+    "build:wasm": "make -B wasm"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260317.1",

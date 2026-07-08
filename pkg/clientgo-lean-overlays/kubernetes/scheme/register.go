@@ -48,8 +48,8 @@ limitations under the License.
 //
 // Host builds (cmd/agent, cmd/scheduler, go test) never see this file:
 // it is only swapped into .build/clientgo-lean-mirror by
-// scripts/gen-clientgo-lean-mirror.sh, which only go.wasm.mod's
-// k8s.io/client-go replace points at.
+// packages/wasm-build/src/gen-clientgo-lean-mirror.ts, which only
+// go.wasm.mod's k8s.io/client-go replace points at.
 
 package scheme
 
