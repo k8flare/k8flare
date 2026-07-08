@@ -260,7 +260,7 @@ specific to the Docker-based test rig):
    `setupWranglerDev` — the single choke point nearly every Go test in this
    package uses — has the identical gap, and `ci.yml`'s "Go test" step (which
    gates every PR to `main`) hasn't run since 2026-07-03, well before
-   `b6d4340`, so it's *also* never been caught. This is easy to miss on a
+   `b6d4340`, so it's _also_ never been caught. This is easy to miss on a
    developer machine with a cached `wrangler login` session — it silently
    succeeds by actually proxying that one binding through real Cloudflare
    infrastructure instead of failing (confirmed by reproducing both the
@@ -270,7 +270,7 @@ specific to the Docker-based test rig):
    nothing in either harness needs `MESH`) — added to
    `.github/workflows/e2e-conformance.yml`'s wrangler dev step and to
    `setupWranglerDev`'s `exec.Command` args. Verified the fix directly: `go
-   test -count=1 ./pkg/apiserver/...` now passes with `HOME` pointed at an
+test -count=1 ./pkg/apiserver/...` now passes with `HOME` pointed at an
    empty directory and zero Cloudflare env vars set, which failed (hung at
    wrangler dev startup) before the fix.
 2. **A real race condition in `pkg/cacert.ReplaceServerCA`** blocked the
@@ -541,14 +541,14 @@ strategy type: "`, since real clients rely on apiserver-side admission
      (the WASM Controllers DO's hand-wired controller set — it bypasses
      `kube-controller-manager`'s own `app` package entirely, see that file's
      doc comment for why) calls `k8s.io/kubernetes/pkg/controller/statefulset.
-     NewStatefulSetController(ctx, podInformer, setInformer, pvcInformer,
-     revInformer, kubeClient)` directly, which needs real (non-panicking)
+NewStatefulSetController(ctx, podInformer, setInformer, pvcInformer,
+revInformer, kubeClient)` directly, which needs real (non-panicking)
      `Client.StatefulSets(ns)` / `Client.PersistentVolumeClaims(ns)` and their
      informers. Added both as real `leanClientType` entries (CRUD + Watch +
      UpdateStatus + the same `ApplyScale`/`GetScale`/`UpdateScale` stub set
      ReplicaSet/Deployment already have) and regenerated via
      `go run ./cmd/k8flare-gen` — `third_party/clientgo-lean-overlays/kubernetes/
-     typed/{core,apps}/v1` did **not** need touching: a prior correction
+typed/{core,apps}/v1` did **not** need touching: a prior correction
      (Phase 10, see that mirror's README) already stopped pruning
      `kubernetes/typed/<group>/<version>` at all (the real scheduler's
      `SharedInformerFactory` needs it full-width), so the real, unmodified
@@ -559,7 +559,7 @@ strategy type: "`, since real clients rely on apiserver-side admission
      before investing), matching the daemon/job/deployment/replicaset/cronjob
      packages' own GOOS=js compatibility — unlike `pkg/scheduler` itself
      (`docs/platform-verification.md`'s S8), nothing in `pkg/controller/
-     statefulset`'s own import graph touches `mount-utils`/`probe`/
+statefulset`'s own import graph touches `mount-utils`/`probe`/
      `securitycontext`.
    - `cmd/controller-manager/main.go`'s `--controllers` default (the separate
      BYO-VM/host-process binary `.github/workflows/e2e-conformance.yml`
@@ -618,6 +618,7 @@ strategy type: "`, since real clients rely on apiserver-side admission
    works" here means "the controller's object-model orchestration is real
    and correct," not "you can run a real stateful database on this platform
    today."
+
 3. **OwnerReference GC** — cascading deletion (delete a Deployment, its
    ReplicaSets and Pods go too). The real `kube-controller-manager` has a
    `garbagecollector` controller that does exactly this generically for any
