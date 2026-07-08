@@ -137,6 +137,14 @@ var leanClientGroups = []leanClientGroup{
 			{Kind: "Endpoints", Receiver: "endpoints", Resource: "endpoints", Namespaced: true, HasUpdateStatus: false,
 				APIPackageAlias: "corev1", APIPackagePath: "k8s.io/api/core/v1",
 				ApplyConfigPackageAlias: "applyconfigurationscorev1", ApplyConfigPackagePath: "k8s.io/client-go/applyconfigurations/core/v1"},
+			// PersistentVolumeClaim: the real statefulset controller
+			// (pkg/controller/statefulset) creates/reads/deletes each
+			// replica's PVC directly from volumeClaimTemplates -- see
+			// docs/general-purpose-k8s-plan.md's Phase 3 StatefulSet entry.
+			// PersistentVolumeClaimExpansion is empty upstream (no extras).
+			{Kind: "PersistentVolumeClaim", Receiver: "persistentVolumeClaims", Resource: "persistentvolumeclaims", Namespaced: true, HasUpdateStatus: true,
+				APIPackageAlias: "corev1", APIPackagePath: "k8s.io/api/core/v1",
+				ApplyConfigPackageAlias: "applyconfigurationscorev1", ApplyConfigPackagePath: "k8s.io/client-go/applyconfigurations/core/v1"},
 			{Kind: "Event", Receiver: "events", Resource: "events", Namespaced: true, HasUpdateStatus: false,
 				APIPackageAlias: "corev1", APIPackagePath: "k8s.io/api/core/v1",
 				ApplyConfigPackageAlias: "applyconfigurationscorev1", ApplyConfigPackagePath: "k8s.io/client-go/applyconfigurations/core/v1",
@@ -155,7 +163,6 @@ var leanClientGroups = []leanClientGroup{
 		TypedPackageAlias: "appsv1client",
 		TypedPackagePath:  "k8s.io/client-go/kubernetes/typed/apps/v1",
 		GroupInterface:    "AppsV1Interface",
-		OtherGetterStubs:  appsV1OtherGetterStubs,
 		Types: []leanClientType{
 			{Kind: "ReplicaSet", Receiver: "replicaSets", Resource: "replicasets", Namespaced: true, HasUpdateStatus: true,
 				APIPackageAlias: "appsv1", APIPackagePath: "k8s.io/api/apps/v1",
@@ -181,6 +188,15 @@ var leanClientGroups = []leanClientGroup{
 			{Kind: "ControllerRevision", Receiver: "controllerRevisions", Resource: "controllerrevisions", Namespaced: true, HasUpdateStatus: false,
 				APIPackageAlias: "appsv1", APIPackagePath: "k8s.io/api/apps/v1",
 				ApplyConfigPackageAlias: "applyconfigurationsappsv1", ApplyConfigPackagePath: "k8s.io/client-go/applyconfigurations/apps/v1"},
+			{Kind: "StatefulSet", Receiver: "statefulSets", Resource: "statefulsets", Namespaced: true, HasUpdateStatus: true,
+				APIPackageAlias: "appsv1", APIPackagePath: "k8s.io/api/apps/v1",
+				ApplyConfigPackageAlias: "applyconfigurationsappsv1", ApplyConfigPackagePath: "k8s.io/client-go/applyconfigurations/apps/v1",
+				ExtraImports: []string{
+					`autoscalingv1 "k8s.io/api/autoscaling/v1"`,
+					`applyconfigurationsautoscalingv1 "k8s.io/client-go/applyconfigurations/autoscaling/v1"`,
+				},
+				Extras: applyScaleExtras("statefulSets", "StatefulSets"),
+			},
 		},
 	},
 	{
@@ -348,9 +364,9 @@ func (c *Client) ResourceClaimTemplates(namespace string) resourcev1client.Resou
 
 // podExtras implements PodExpansion. Bind is the only one of these
 // coreV1OtherGetterStubs panic-stubs CoreV1Interface's remaining Getters
-// beyond Pods/Nodes/Services/Endpoints/Events (ComponentStatuses,
-// ConfigMaps, LimitRanges, Namespaces, PersistentVolumes,
-// PersistentVolumeClaims, PodTemplates, ReplicationControllers,
+// beyond Pods/Nodes/Services/Endpoints/Events/PersistentVolumeClaims
+// (ComponentStatuses, ConfigMaps, LimitRanges, Namespaces,
+// PersistentVolumes, PodTemplates, ReplicationControllers,
 // ResourceQuotas, Secrets, ServiceAccounts) -- confirmed unused by every
 // controller/scheduler this repo enables. Events was moved out of this
 // list and into Types below: unlike these, it *is* called -- every
@@ -358,7 +374,10 @@ func (c *Client) ResourceClaimTemplates(namespace string) resourcev1client.Resou
 // Run()) calls client.CoreV1().Events(ns) via
 // client-go/tools/events.NewEventBroadcasterAdapter, so a panic stub here
 // crashed the GOOS=js wasm process immediately on startup (see
-// spikes/s14-loader-external-fetch/FINDINGS.md Part 5).
+// spikes/s14-loader-external-fetch/FINDINGS.md Part 5). PersistentVolumeClaims
+// moved out the same way once the statefulset controller (which reads/writes
+// PVCs directly, no informer beyond factory.PersistentVolumeClaims()) was
+// enabled -- see docs/general-purpose-k8s-plan.md's Phase 3 StatefulSet entry.
 const coreV1OtherGetterStubs = `
 func (c *Client) ComponentStatuses() corev1client.ComponentStatusInterface {
 	panic("leanclient: ComponentStatuses not implemented (unused by this repo's controllers/scheduler)")
@@ -374,9 +393,6 @@ func (c *Client) Namespaces() corev1client.NamespaceInterface {
 }
 func (c *Client) PersistentVolumes() corev1client.PersistentVolumeInterface {
 	panic("leanclient: PersistentVolumes not implemented (unused by this repo's controllers/scheduler)")
-}
-func (c *Client) PersistentVolumeClaims(namespace string) corev1client.PersistentVolumeClaimInterface {
-	panic("leanclient: PersistentVolumeClaims not implemented (unused by this repo's controllers/scheduler)")
 }
 func (c *Client) PodTemplates(namespace string) corev1client.PodTemplateInterface {
 	panic("leanclient: PodTemplates not implemented (unused by this repo's controllers/scheduler)")
@@ -395,14 +411,9 @@ func (c *Client) ServiceAccounts(namespace string) corev1client.ServiceAccountIn
 }
 `
 
-// appsV1OtherGetterStubs panic-stubs AppsV1Interface's one Getter beyond
-// ReplicaSets/Deployments/DaemonSets/ControllerRevisions (StatefulSets)
-// -- confirmed unused by every controller this repo enables.
-const appsV1OtherGetterStubs = `
-func (c *Client) StatefulSets(namespace string) appsv1client.StatefulSetInterface {
-	panic("leanclient: StatefulSets not implemented (unused by this repo's controllers)")
-}
-`
+// AppsV1Interface's Getter set is now fully covered by Types below
+// (ReplicaSets/Deployments/DaemonSets/ControllerRevisions/StatefulSets) --
+// no OtherGetterStubs remain for this group.
 
 // methods this repo's real, unmodified upstream scheduler ever calls
 // (pkg/scheduler/framework/plugins/defaultbinder -- confirmed by grep):

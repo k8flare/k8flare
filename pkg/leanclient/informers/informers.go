@@ -2,10 +2,11 @@
 
 // Package informers is a narrow stand-in for k8s.io/client-go/informers'
 // SharedInformerFactory: it lazily constructs and shares (never
-// duplicates) exactly the twelve SharedIndexInformers this repo's ten
-// enabled controllers (pkg/controller/{replicaset,deployment,daemon,job,
-// cronjob,endpoint,endpointslice,nodeipam,nodelifecycle,tainteviction})
-// and scheduler (pkg/scheduler) take as constructor parameters, by
+// duplicates) exactly the fourteen SharedIndexInformers this repo's
+// eleven enabled controllers (pkg/controller/{replicaset,deployment,
+// daemon,statefulset,job,cronjob,endpoint,endpointslice,nodeipam,
+// nodelifecycle,tainteviction}) and scheduler (pkg/scheduler) take as
+// constructor parameters, by
 // calling upstream's own per-resource NewFilteredXInformer constructor
 // for each directly (e.g. k8s.io/client-go/informers/core/v1.
 // NewFilteredPodInformer). Those constructors already build the actual
@@ -68,18 +69,20 @@ type Informers struct {
 	client kubernetes.Interface
 	resync time.Duration
 
-	pods                cache.SharedIndexInformer
-	nodes               cache.SharedIndexInformer
-	services            cache.SharedIndexInformer
-	endpoints           cache.SharedIndexInformer
-	replicaSets         cache.SharedIndexInformer
-	deployments         cache.SharedIndexInformer
-	daemonSets          cache.SharedIndexInformer
-	controllerRevisions cache.SharedIndexInformer
-	jobs                cache.SharedIndexInformer
-	cronJobs            cache.SharedIndexInformer
-	endpointSlices      cache.SharedIndexInformer
-	leases              cache.SharedIndexInformer
+	pods                   cache.SharedIndexInformer
+	nodes                  cache.SharedIndexInformer
+	services               cache.SharedIndexInformer
+	endpoints              cache.SharedIndexInformer
+	replicaSets            cache.SharedIndexInformer
+	deployments            cache.SharedIndexInformer
+	daemonSets             cache.SharedIndexInformer
+	statefulSets           cache.SharedIndexInformer
+	controllerRevisions    cache.SharedIndexInformer
+	jobs                   cache.SharedIndexInformer
+	cronJobs               cache.SharedIndexInformer
+	endpointSlices         cache.SharedIndexInformer
+	leases                 cache.SharedIndexInformer
+	persistentVolumeClaims cache.SharedIndexInformer
 }
 
 func New(client kubernetes.Interface, resync time.Duration) *Informers {
@@ -135,6 +138,20 @@ func (f *Informers) DaemonSets() appsv1informers.DaemonSetInformer {
 	return &daemonSetInformer{f.daemonSets}
 }
 
+func (f *Informers) StatefulSets() appsv1informers.StatefulSetInformer {
+	if f.statefulSets == nil {
+		f.statefulSets = appsv1informers.NewFilteredStatefulSetInformer(f.client, metav1.NamespaceAll, f.resync, namespaceIndexers, nil)
+	}
+	return &statefulSetInformer{f.statefulSets}
+}
+
+func (f *Informers) PersistentVolumeClaims() corev1informers.PersistentVolumeClaimInformer {
+	if f.persistentVolumeClaims == nil {
+		f.persistentVolumeClaims = corev1informers.NewFilteredPersistentVolumeClaimInformer(f.client, metav1.NamespaceAll, f.resync, namespaceIndexers, nil)
+	}
+	return &persistentVolumeClaimInformer{f.persistentVolumeClaims}
+}
+
 func (f *Informers) ControllerRevisions() appsv1informers.ControllerRevisionInformer {
 	if f.controllerRevisions == nil {
 		f.controllerRevisions = appsv1informers.NewFilteredControllerRevisionInformer(f.client, metav1.NamespaceAll, f.resync, namespaceIndexers, nil)
@@ -185,8 +202,8 @@ func (f *Informers) Leases() coordinationv1informers.LeaseInformer {
 func (f *Informers) Start(stopCh <-chan struct{}) {
 	for _, informer := range []cache.SharedIndexInformer{
 		f.pods, f.nodes, f.services, f.endpoints,
-		f.replicaSets, f.deployments, f.daemonSets, f.controllerRevisions,
-		f.jobs, f.cronJobs, f.endpointSlices, f.leases,
+		f.replicaSets, f.deployments, f.daemonSets, f.statefulSets, f.controllerRevisions,
+		f.jobs, f.cronJobs, f.endpointSlices, f.leases, f.persistentVolumeClaims,
 	} {
 		if informer != nil {
 			go informer.Run(stopCh)
@@ -243,6 +260,13 @@ func (i *daemonSetInformer) Lister() appsv1listers.DaemonSetLister {
 	return appsv1listers.NewDaemonSetLister(i.informer.GetIndexer())
 }
 
+type statefulSetInformer struct{ informer cache.SharedIndexInformer }
+
+func (i *statefulSetInformer) Informer() cache.SharedIndexInformer { return i.informer }
+func (i *statefulSetInformer) Lister() appsv1listers.StatefulSetLister {
+	return appsv1listers.NewStatefulSetLister(i.informer.GetIndexer())
+}
+
 type controllerRevisionInformer struct{ informer cache.SharedIndexInformer }
 
 func (i *controllerRevisionInformer) Informer() cache.SharedIndexInformer { return i.informer }
@@ -276,4 +300,11 @@ type leaseInformer struct{ informer cache.SharedIndexInformer }
 func (i *leaseInformer) Informer() cache.SharedIndexInformer { return i.informer }
 func (i *leaseInformer) Lister() coordinationv1listers.LeaseLister {
 	return coordinationv1listers.NewLeaseLister(i.informer.GetIndexer())
+}
+
+type persistentVolumeClaimInformer struct{ informer cache.SharedIndexInformer }
+
+func (i *persistentVolumeClaimInformer) Informer() cache.SharedIndexInformer { return i.informer }
+func (i *persistentVolumeClaimInformer) Lister() corev1listers.PersistentVolumeClaimLister {
+	return corev1listers.NewPersistentVolumeClaimLister(i.informer.GetIndexer())
 }

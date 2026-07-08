@@ -354,11 +354,110 @@ strategy type: "`, since real clients rely on apiserver-side admission
    `spec.nodeName` directly, they rely on the real scheduler to bind them
    via that affinity, exactly like any other Pod.
 
-2. **StatefulSet** — deliberately last; honest StatefulSet support needs the
-   storage story (below). Likely the same real-binary approach once
-   reached — `statefulset` is already one of the controllers the real
-   `kube-controller-manager` registers, just not yet added to
-   `--controllers=`.
+2. **StatefulSet** — done, end-to-end verified, via the same **real,
+   unmodified `kube-controller-manager` binary** approach as the five
+   controllers above. The storage prerequisite this phase was originally
+   waiting on (R2-backed PersistentVolume/PersistentVolumeClaim) landed
+   separately as its own Phase 8 (see README's Volumes (R2 PV/PVC)
+   section) well before this item was picked back up.
+
+   **What was actually needed, found by running the real binary against
+   this apiserver** — much less than the original five controllers, because
+   the apiserver had already moved from Phase 3's original per-type
+   `subresource.go` switch statement to a generic, table-driven
+   `pkg/apiserver/apidef.Table` (each `ResourceDef` declares its own
+   `Subresources`) by the time this item was picked back up. StatefulSet's
+   `apidef.Table` entry already had `statusSubresource()` and
+   `scaleSubresource()` wired generically, `appsv1defaults.RegisterDefaults`
+   already covers `SetObjectDefaults_StatefulSet` (StatefulSet is in the same
+   `apps/v1` package as Deployment/ReplicaSet, whose defaulting was already
+   registered), and the `ControllerRevision` stub type from the DaemonSet
+   work already existed — none of these needed new work. The one real gap:
+   - **`pkg/leanclient`'s narrow WASM-only client had no `StatefulSet` or
+     `PersistentVolumeClaim` type** (`cmd/k8flare-gen/leanclient.go`'s
+     `leanClientGroups` table, generating `pkg/leanclient/gen/{appsv1,corev1}`)
+     — both were permanent panic stubs ("unused by this repo's controllers"),
+     since nothing before this needed them. `pkg/controllers.RunControllerManager`
+     (the WASM Controllers DO's hand-wired controller set — it bypasses
+     `kube-controller-manager`'s own `app` package entirely, see that file's
+     doc comment for why) calls `k8s.io/kubernetes/pkg/controller/statefulset.
+     NewStatefulSetController(ctx, podInformer, setInformer, pvcInformer,
+     revInformer, kubeClient)` directly, which needs real (non-panicking)
+     `Client.StatefulSets(ns)` / `Client.PersistentVolumeClaims(ns)` and their
+     informers. Added both as real `leanClientType` entries (CRUD + Watch +
+     UpdateStatus + the same `ApplyScale`/`GetScale`/`UpdateScale` stub set
+     ReplicaSet/Deployment already have) and regenerated via
+     `go run ./cmd/k8flare-gen` — `third_party/clientgo-lean-overlays/kubernetes/
+     typed/{core,apps}/v1` did **not** need touching: a prior correction
+     (Phase 10, see that mirror's README) already stopped pruning
+     `kubernetes/typed/<group>/<version>` at all (the real scheduler's
+     `SharedInformerFactory` needs it full-width), so the real, unmodified
+     `StatefulSetInterface`/`PersistentVolumeClaimInterface` declarations were
+     already available to implement against. Confirmed
+     `k8s.io/kubernetes/pkg/controller/statefulset` itself compiles cleanly for
+     `GOOS=js GOARCH=wasm` standalone before wiring anything (rule: verify
+     before investing), matching the daemon/job/deployment/replicaset/cronjob
+     packages' own GOOS=js compatibility — unlike `pkg/scheduler` itself
+     (`docs/platform-verification.md`'s S8), nothing in `pkg/controller/
+     statefulset`'s own import graph touches `mount-utils`/`probe`/
+     `securitycontext`.
+   - `cmd/controller-manager/main.go`'s `--controllers` default (the separate
+     BYO-VM/host-process binary `.github/workflows/e2e-conformance.yml`
+     builds and runs alongside `wrangler dev` for CI) also got `statefulset`
+     added, for the "kept in sync by hand" reason
+     `pkg/controllers/controllermanager.go`'s doc comment already states.
+
+   **Verified end-to-end** against a real local `wrangler dev` instance
+   (`workers/k8flare/wrangler.jsonc`, `--enable-containers=false`) with the
+   real WASM Controllers DO controller-manager (not the BYO-VM binary —
+   the harder, more representative path since it's the actual production
+   code) driving a real `StatefulSet` created directly against the running
+   apiserver: admission defaulting (`podManagementPolicy: OrderedReady`,
+   `updateStrategy.type: RollingUpdate` with `rollingUpdate.partition: 0`,
+   `revisionHistoryLimit: 10`, `persistentVolumeClaimRetentionPolicy` all
+   filled in with zero extra code, confirming the apps/v1 defaulter
+   coverage claim above); ordered creation (`web-0` created alone, `web-1`
+   withheld until `web-0`'s Pod status was set to `Ready` — no real kubelet
+   in this environment, so Pod readiness was driven directly via the
+   `pods/status` subresource the same way a real kubelet would, and the
+   real statefulset controller reacted to the resulting watch event and
+   created `web-1` within the next poll); a real, separately-bound
+   `PersistentVolumeClaim` per replica from `volumeClaimTemplates`
+   (`www-web-0`, `www-web-1`, both `Bound` via the existing R2 PV bind path,
+   confirming StatefulSet's per-replica-PVC semantics work against this
+   apiserver's storage layer); ordered scale-down via the `/scale`
+   subresource (`replicas: 2 -> 1` deleted `web-1`, the highest ordinal,
+   and left `web-0` and both PVCs alone — matching
+   `persistentVolumeClaimRetentionPolicy`'s default `whenScaled: Retain`);
+   and a `RollingUpdate` (changing the Pod template's image recreated
+   `web-0` with a new UID and a new `controller-revision-hash` label
+   (`web-5486fd4f4c` -> `web-647bbbf899`), with `status.updateRevision`
+   moving ahead of `status.currentRevision` exactly as upstream's rollout
+   bookkeeping does). `/status` and `/scale` were confirmed to reflect real,
+   live state throughout (`readyReplicas`/`currentReplicas`/`availableReplicas`
+   tracked the manual readiness pokes above), not just accept writes.
+   `bash scripts/build-wasm-chunks.sh` stayed green: `apiserver` unchanged
+   at 62,863,479 bytes, `kcm` grew from 64,019,330 to 65,041,921 bytes
+   (+~1MB, from the real statefulset controller/informer/lister code now
+   linked in) — still comfortably under the Loader's 64MiB cap with ~2MB
+   headroom.
+
+   **What's still honestly not proven**: everything above ran without a
+   real kubelet in this environment (Pod readiness was driven by hand via
+   direct `pods/status` writes, the same technique this apiserver's own Go
+   test suite uses elsewhere), so a real container process never actually
+   ran — this exercises the statefulset controller's own reconciliation
+   logic for real, but not the full kubelet-in-the-loop path. And per the
+   Storage prerequisite's own README caveat, a StatefulSet's PVC is S3 API
+   access via injected env vars, not a real mounted POSIX filesystem — an
+   app that expects a real data directory at its `volumeMounts[].mountPath`
+   (the overwhelmingly common real-world StatefulSet use case: databases,
+   etc.) still won't find one on the `workers/nodes` Containers backend in
+   v1. This is not a StatefulSet-specific gap — it's the same gap every
+   other PVC-mounting workload already has — but it means "StatefulSet
+   works" here means "the controller's object-model orchestration is real
+   and correct," not "you can run a real stateful database on this platform
+   today."
 3. **OwnerReference GC** — cascading deletion (delete a Deployment, its
    ReplicaSets and Pods go too). The real `kube-controller-manager` has a
    `garbagecollector` controller that does exactly this generically for any
@@ -409,7 +508,12 @@ strategy type: "`, since real clients rely on apiserver-side admission
 
 Verify: conformance `[sig-apps]` ReplicaSet/Deployment basics move into the
 required set — these are Conformance-tagged upstream, so this phase is the
-largest single jump in official conformance coverage.
+largest single jump in official conformance coverage. StatefulSet's own
+`[sig-apps] StatefulSet` conformance tests are not yet added to
+`e2e-conformance.yml`'s advisory or required groups — the local verification
+above used direct API driving (no real kubelet in this session's
+environment), not the official e2e suite; adding those tests is a follow-up,
+not assumed to pass sight-unseen.
 
 ## Phase 4 — Cluster DNS
 
