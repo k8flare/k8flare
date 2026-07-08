@@ -29,8 +29,8 @@ package controllers
 import (
 	restclient "k8s.io/client-go/rest"
 
-	"github.com/syumai/workers/cloudflare"
-	cffetch "github.com/syumai/workers/cloudflare/fetch"
+	"github.com/k8flare/k8flare/pkg/cfruntime/cloudflare"
+	cffetch "github.com/k8flare/k8flare/pkg/cfruntime/cloudflare/fetch"
 )
 
 // RestConfig builds an in-memory *rest.Config that authenticates with

@@ -38,10 +38,10 @@ bash scripts/gen-k8s-js-mirror.sh
 bash scripts/gen-clientgo-lean-mirror.sh
 
 mkdir -p "$ASSETS" "$BUILD"
-# syumai/workers' wasm_exec.js variant (globalThis.Go with runtimeCtx
-# support), shared by every dynamic worker bootstrap.
-go run github.com/syumai/workers/cmd/workers-assets-gen -mode=go -o "$BUILD/assets-gen"
-cp "$BUILD/assets-gen/wasm_exec.js" "$ASSETS/wasm_exec.js"
+# pkg/cfruntime's wasm_exec.js variant (globalThis.Go with runtimeCtx
+# support, absorbed from syumai/workers -- see pkg/cfruntime/README.md),
+# shared by every dynamic worker bootstrap.
+cp pkg/cfruntime/wasm_exec.js "$ASSETS/wasm_exec.js"
 
 # build_one <name> <pkg> <opt:yes|no> [extra go build args...]
 build_one() {

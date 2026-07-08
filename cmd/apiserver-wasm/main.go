@@ -16,9 +16,9 @@ import (
 
 	"github.com/k8flare/k8flare/pkg/apiserver"
 	"github.com/k8flare/k8flare/pkg/apiserver/apidef"
-	"github.com/syumai/workers"
-	"github.com/syumai/workers/cloudflare"
-	cffetch "github.com/syumai/workers/cloudflare/fetch"
+	"github.com/k8flare/k8flare/pkg/cfruntime"
+	"github.com/k8flare/k8flare/pkg/cfruntime/cloudflare"
+	cffetch "github.com/k8flare/k8flare/pkg/cfruntime/cloudflare/fetch"
 )
 
 // clusterDOName / clusterBasePath: multi-cluster identity of THIS

@@ -49,36 +49,45 @@ is a module-level `replace` to a local, generated, pruned copy.
 
 ## What's pruned, and how
 
-For the 5 groups / 12 types this repo's controllers and scheduler actually
-use (`core/v1`: Pod, Node, Service, Endpoints; `apps/v1`: ReplicaSet,
-Deployment, DaemonSet, ControllerRevision; `batch/v1`: Job, CronJob;
-`discovery/v1`: EndpointSlice; `coordination/v1`: Lease):
+**Correction (2026-07-08, matching `docs/platform-verification.md`'s
+"Phase 10" note): per-type pruning of `kubernetes/typed/<group>/<version>/`
+and `applyconfigurations/<group>/<version>/` was tried and abandoned.**
+It broke the moment `pkg/scheduler.New`'s `informerFactory` parameter
+(fixed to the real, unmodified `k8s.io/client-go/informers.
+SharedInformerFactory`, which imports all ~54 groups' typed/
+applyconfigurations packages directly in its own `factory.go`) entered the
+same binary -- those packages cross-reference each other extensively
+(e.g. autoscaling's `HorizontalPodAutoscalerApplyConfiguration`
+references core's `ObjectReferenceApplyConfiguration`), so partial
+pruning cascades into compile errors across unrelated groups. The
+per-type overlay files this repo carried for those two directories (and a
+`listers/` overlay attempt) were only ever kept "for the record" per
+`scripts/gen-clientgo-lean-mirror.sh`'s own comment, were never actually
+copied into the generated mirror, and have since been deleted --
+`docs/platform-verification.md`'s Phase 10 section is the durable record
+of why. What's actually pruned today, still real and load-bearing:
 
-- **`kubernetes/typed/<group>/<version>/`**: kept files are trimmed to
-  *interface declarations only* -- `XGetter`/`XInterface`/`XExpansion`
-  (`kubernetes/typed/<group>/<version>/*.go` in this directory) -- with
-  client-go's own concrete implementation (the `gentype`-based `x struct`
-  and its methods, which this repo's `pkg/leanclient` + `cmd/k8flare-gen`'s
-  generated implementations replace) deleted. Files for types this repo
-  doesn't use (ConfigMap, Secret, StatefulSet, ...) are deleted entirely
-  from the mirror, not just left unreferenced -- that's the fix for
-  problem 2 above.
-- **`applyconfigurations/<group>/<version>/`**: kept files are reduced to
-  an empty `struct{}` + a one-line `IsApplyConfiguration()` method (enough
-  to satisfy `Apply`/`ApplyStatus`'s signature; this repo never
-  constructs a real one). Same file-deletion treatment for unrelated
-  types.
 - **`kubernetes/clientset.go`**: `Interface` is narrowed from ~54 group
   accessors to the 5 this repo uses. See that file's own doc comment for
   why this (not implementing the full 54-method interface with panic
   stubs, `third_party/leanclient-kcm`'s earlier approach) is both simpler
   and sufficient.
+- **`kubernetes/scheme/register.go`**: registers only the group-versions
+  the wasm control-plane binaries actually serialize, instead of
+  upstream's ~55 (its own doc comment covers why -- discovery pulled in
+  ~21MiB of generated API-type code otherwise). Drift-checked against
+  upstream via `upstream-scheme-register.go.sha256`.
+- **`informers/factory.go`**: `SharedInformerFactory` pruned to the 5
+  groups the real, unmodified upstream `kube-scheduler` actually calls
+  (nothing *external* requires the other 49, unlike `kubernetes.Interface`
+  and the per-group informers themselves, which is exactly why those stay
+  full width). Drift-checked via `upstream-informers-factory.go.sha256`.
 - Every other directory in `k8s.io/client-go` (rest/, tools/cache/,
-  informers/, listers/, discovery/, ...) is untouched -- a full APFS
-  clone, not copied by hand. `pkg/leanclient`'s watch/verb helpers and the
-  informer/lister wiring (`pkg/controllers`) both depend on this being
-  real, unmodified upstream code (CLAUDE.md rule 3): only the two
-  problem areas above are pruned.
+  the per-group `informers/<group>/<version>/`, `listers/`, discovery/,
+  ...) is untouched -- a full APFS clone, not copied by hand.
+  `pkg/leanclient`'s watch/verb helpers and the informer/lister wiring
+  (`pkg/controllers`) both depend on this being real, unmodified upstream
+  code (CLAUDE.md rule 3).
 
 ## Regenerating
 
@@ -93,11 +102,10 @@ this repository works, not just the WASM one. `npm run build:wasm`
 regenerates it automatically; run this script by hand first for a
 host-only build in a fresh checkout.
 
-A k8s/client-go version bump that adds a new required verb to one of
-these 12 types' `XInterface`, or changes `PodInterface`'s (etc.) exact
-method signatures, requires re-extracting the corresponding overlay
-file(s) by hand from the new upstream source -- there is no automated
-drift check here yet (unlike `third_party/k8s-js-overlays`'s sha256
-guard), since these files are hand-trimmed rather than a single verbatim
-file plus one small patch. Treat a `go build` failure after a client-go
-bump in one of the five groups above as the signal to re-diff.
+Both remaining pruned files are drift-checked the same way as
+`third_party/k8s-js-overlays/`: the generator compares each upstream
+source file's sha256 against `upstream-scheme-register.go.sha256` /
+`upstream-informers-factory.go.sha256` and fails loudly if upstream moved,
+rather than silently shipping a stale overlay. A k8s/client-go version
+bump that fails one of those checks is the signal to review the new
+upstream file and refresh the overlay + its `.sha256` pin.

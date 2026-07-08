@@ -61,7 +61,7 @@ type R2Config struct {
 // bindPersistentVolumeClaim (called transitively from handler.go's generic
 // per-resource POST dispatch, several call frames away from main.go) gets
 // at this cluster's R2Config without pkg/apiserver importing
-// "github.com/syumai/workers/cloudflare" itself -- that import would break
+// "github.com/k8flare/k8flare/pkg/cfruntime/cloudflare" itself -- that import would break
 // `go test ./pkg/apiserver/...`, which runs as a normal host binary, not a
 // GOOS=js/wasm one. Defaults to a zero R2Config so every existing test in
 // this package (none of which call SetR2ConfigFunc) gets harmless empty

@@ -21,8 +21,8 @@
 // patched fork of all of k8s.io/kubernetes (~107MB, 5,200+ files in this
 // repo's pinned k3s-io/kubernetes v1.36.2-k3s1) into this repository,
 // which is a fundamentally different scale of commitment than the small,
-// contained third_party/syumai-workers-fork/ (a few hundred KB, one
-// upstream library, two changed files) and was not attempted here --
+// contained pkg/cfruntime/ (a used-only subset of one upstream library,
+// absorbed rather than vendored as a full fork) and was not attempted here --
 // this is a new, material finding beyond what spikes/s8-wasm-resident's
 // toy Go programs could have caught (they never imported the real
 // kube-scheduler/kube-controller-manager package trees), recorded in
@@ -38,9 +38,9 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/k8flare/k8flare/pkg/cfruntime"
+	"github.com/k8flare/k8flare/pkg/cfruntime/cloudflare"
 	"github.com/k8flare/k8flare/pkg/controllers"
-	"github.com/syumai/workers"
-	"github.com/syumai/workers/cloudflare"
 )
 
 var (

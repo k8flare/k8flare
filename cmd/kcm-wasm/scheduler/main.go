@@ -28,10 +28,10 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/k8flare/k8flare/pkg/cfruntime"
+	"github.com/k8flare/k8flare/pkg/cfruntime/cloudflare"
 	"github.com/k8flare/k8flare/pkg/controllers"
 	"github.com/k8flare/k8flare/pkg/controllers/sched"
-	"github.com/syumai/workers"
-	"github.com/syumai/workers/cloudflare"
 )
 
 var (

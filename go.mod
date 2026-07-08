@@ -20,7 +20,6 @@ replace (
 	github.com/prometheus/client_golang => github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/common => github.com/prometheus/common v0.67.5
 	github.com/spegel-org/spegel => github.com/k3s-io/spegel v0.7.1-k3s1
-	github.com/syumai/workers => ./third_party/syumai-workers-fork
 	go.etcd.io/etcd/api/v3 => github.com/k3s-io/etcd/api/v3 v3.6.12-k3s1
 	go.etcd.io/etcd/client/pkg/v3 => github.com/k3s-io/etcd/client/pkg/v3 v3.6.12-k3s1
 	go.etcd.io/etcd/client/v3 => github.com/k3s-io/etcd/client/v3 v3.6.12-k3s1
@@ -82,12 +81,11 @@ replace (
 )
 
 require (
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/k3s-io/k3s v1.36.3-0.20260624174945-01b6f04aaa69
 	github.com/miekg/dns v1.1.72
-	github.com/syumai/workers v0.32.0
 	github.com/urfave/cli/v2 v2.27.7
 	golang.org/x/sys v0.46.0
-	google.golang.org/grpc v1.81.1
 	gopkg.in/evanphx/json-patch.v4 v4.13.0
 	gvisor.dev/gvisor v0.0.0-20260706222844-e29951214cf7
 	k8s.io/api v0.36.2
@@ -186,7 +184,6 @@ require (
 	github.com/filecoin-project/go-clock v0.1.0 // indirect
 	github.com/flannel-io/flannel v0.28.4 // indirect
 	github.com/flynn/noise v1.1.0 // indirect
-	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
 	github.com/gammazero/deque v1.2.1 // indirect
 	github.com/getsentry/sentry-go v0.27.0 // indirect
@@ -453,6 +450,7 @@ require (
 	gonum.org/v1/gonum v0.17.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260401024825-9d38bb4040a9 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260406210006-6f92a3bedf2d // indirect
+	google.golang.org/grpc v1.81.1 // indirect
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
 	gopkg.in/go-jose/go-jose.v2 v2.6.3 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect

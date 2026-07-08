@@ -20,7 +20,6 @@ replace (
 	github.com/prometheus/client_golang => github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/common => github.com/prometheus/common v0.67.5
 	github.com/spegel-org/spegel => github.com/k3s-io/spegel v0.7.1-k3s1
-	github.com/syumai/workers => ./third_party/syumai-workers-fork
 	go.etcd.io/etcd/api/v3 => github.com/k3s-io/etcd/api/v3 v3.6.12-k3s1
 	go.etcd.io/etcd/client/pkg/v3 => github.com/k3s-io/etcd/client/pkg/v3 v3.6.12-k3s1
 	go.etcd.io/etcd/client/v3 => github.com/k3s-io/etcd/client/v3 v3.6.12-k3s1
@@ -82,15 +81,24 @@ replace (
 )
 
 require (
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/k3s-io/k3s v1.36.3-0.20260624174945-01b6f04aaa69
-	github.com/syumai/workers v0.32.0
+	github.com/miekg/dns v1.1.72
+	github.com/urfave/cli/v2 v2.27.7
+	golang.org/x/sys v0.46.0
 	gopkg.in/evanphx/json-patch.v4 v4.13.0
+	gvisor.dev/gvisor v0.0.0-20230927004350-cbd86285d259
 	k8s.io/api v0.36.2
 	k8s.io/apimachinery v0.36.2
+	k8s.io/apiserver v0.36.2
 	k8s.io/client-go v0.36.2
 	k8s.io/component-base v0.36.2
+	k8s.io/endpointslice v0.0.0
+	k8s.io/klog/v2 v2.140.0
+	k8s.io/kube-controller-manager v0.0.0
 	k8s.io/kube-scheduler v0.0.0
 	k8s.io/kubernetes v1.36.2
+	k8s.io/utils v0.0.0-20260319190234-28399d86e0b5
 	sigs.k8s.io/yaml v1.6.0
 )
 
@@ -176,7 +184,6 @@ require (
 	github.com/filecoin-project/go-clock v0.1.0 // indirect
 	github.com/flannel-io/flannel v0.28.4 // indirect
 	github.com/flynn/noise v1.1.0 // indirect
-	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
 	github.com/gammazero/deque v1.2.1 // indirect
 	github.com/getsentry/sentry-go v0.27.0 // indirect
@@ -391,7 +398,6 @@ require (
 	github.com/tidwall/btree v1.8.1 // indirect
 	github.com/tinylib/msgp v1.6.1 // indirect
 	github.com/tmc/grpc-websocket-proxy v0.0.0-20220101234140-673ab2c3ae75 // indirect
-	github.com/urfave/cli/v2 v2.27.7 // indirect
 	github.com/vbatts/tar-split v0.12.2 // indirect
 	github.com/vishvananda/netlink v1.3.1 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
@@ -434,7 +440,6 @@ require (
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260508192327-42602be52be6 // indirect
 	golang.org/x/term v0.44.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
@@ -453,7 +458,6 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/apiextensions-apiserver v0.35.2 // indirect
-	k8s.io/apiserver v0.36.2 // indirect
 	k8s.io/cloud-provider v0.35.2 // indirect
 	k8s.io/cluster-bootstrap v0.35.2 // indirect
 	k8s.io/component-helpers v0.36.2 // indirect
@@ -463,12 +467,9 @@ require (
 	k8s.io/cri-streaming v0.36.2 // indirect
 	k8s.io/csi-translation-lib v0.0.0 // indirect
 	k8s.io/dynamic-resource-allocation v0.0.0 // indirect
-	k8s.io/endpointslice v0.0.0 // indirect
 	k8s.io/externaljwt v1.32.0 // indirect
-	k8s.io/klog/v2 v2.140.0 // indirect
 	k8s.io/kms v0.34.5 // indirect
 	k8s.io/kube-aggregator v0.35.2 // indirect
-	k8s.io/kube-controller-manager v0.0.0 // indirect
 	k8s.io/kube-openapi v0.0.0-20260319004828-5883c5ee87b9 // indirect
 	k8s.io/kube-proxy v0.35.2 // indirect
 	k8s.io/kubectl v0.36.2 // indirect
@@ -477,7 +478,6 @@ require (
 	k8s.io/mount-utils v0.35.2 // indirect
 	k8s.io/pod-security-admission v0.0.0 // indirect
 	k8s.io/streaming v0.36.2 // indirect
-	k8s.io/utils v0.0.0-20260319190234-28399d86e0b5 // indirect
 	lukechampine.com/blake3 v1.4.1 // indirect
 	modernc.org/libc v1.72.3 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
