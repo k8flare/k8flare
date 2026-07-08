@@ -18,6 +18,7 @@ import (
 	"k8s.io/kubernetes/pkg/controller/deployment"
 	"k8s.io/kubernetes/pkg/controller/job"
 	"k8s.io/kubernetes/pkg/controller/replicaset"
+	"k8s.io/kubernetes/pkg/controller/statefulset"
 )
 
 // clusterCIDR matches the /16 the deleted workers/storage/src/scheduler.ts
@@ -38,6 +39,7 @@ const (
 	replicaSetWorkers    = 5
 	deploymentWorkers    = 5
 	daemonSetWorkers     = 2
+	statefulSetWorkers   = 5 // matches RecommendedDefaultStatefulSetControllerConfiguration
 	jobWorkers           = 5
 	cronJobWorkers       = 5
 	endpointWorkers      = 5
@@ -81,10 +83,12 @@ const (
 // build`, not assumed).
 //
 // Individually, the specific controller packages this repo actually
-// enables (pkg/controller/{replicaset,deployment,daemon,job,cronjob,
-// endpoint,endpointslice,nodeipam,nodelifecycle,tainteviction}) compile
-// cleanly for GOOS=js/wasm on their own -- verified the same way. So this
-// function hand-wires exactly those ten, using a plain
+// enables (pkg/controller/{replicaset,deployment,daemon,statefulset,job,
+// cronjob,endpoint,endpointslice,nodeipam,nodelifecycle,tainteviction})
+// compile cleanly for GOOS=js/wasm on their own -- verified the same way
+// (statefulset: `GOOS=js GOARCH=wasm go build
+// k8s.io/kubernetes/pkg/controller/statefulset/...` with zero output).
+// So this function hand-wires exactly those eleven, using a plain
 // k8s.io/client-go/informers.SharedInformerFactory (the same type
 // ControllerContext.InformerFactory in the real app package is declared
 // as) instead of the app package's own context/registry machinery.
@@ -160,6 +164,19 @@ func RunControllerManager(ctx context.Context, restCfg *restclient.Config) (err 
 		return fmt.Errorf("controller-manager: new cronjob controller: %w", err)
 	}
 
+	// NewStatefulSetController takes no context/error return (unlike its
+	// deployment/daemonset/job/cronjob siblings above) -- confirmed against
+	// the real signature in k8s.io/kubernetes/pkg/controller/statefulset,
+	// not assumed.
+	ssc := statefulset.NewStatefulSetController(
+		ctx,
+		factory.Pods(),
+		factory.StatefulSets(),
+		factory.PersistentVolumeClaims(),
+		factory.ControllerRevisions(),
+		client,
+	)
+
 	// endpoint/endpointslice/nodeipam/nodelifecycle/tainteviction are
 	// deliberately NOT run here anymore: pkg/apiserver already implements
 	// each of them server-side (TriggerEndpointsReconcile, AssignPodCIDR/
@@ -168,7 +185,7 @@ func RunControllerManager(ctx context.Context, restCfg *restclient.Config) (err 
 	// (every Node, every Lease, every EndpointSlice, ...) were pure memory
 	// overhead against production's 128MiB isolate limit -- under which
 	// the freshly loaded dynamic worker was observed dying mid informer
-	// sync and reload-looping (2026-07-06). The five workload controllers
+	// sync and reload-looping (2026-07-06). The six workload controllers
 	// below are the ones with no server-side equivalent.
 
 	factory.Start(ctx.Done())
@@ -177,6 +194,7 @@ func RunControllerManager(ctx context.Context, restCfg *restclient.Config) (err 
 		func(ctx context.Context) { rsc.Run(ctx, replicaSetWorkers) },
 		func(ctx context.Context) { dc.Run(ctx, deploymentWorkers) },
 		func(ctx context.Context) { dsc.Run(ctx, daemonSetWorkers) },
+		func(ctx context.Context) { ssc.Run(ctx, statefulSetWorkers) },
 		func(ctx context.Context) { jc.Run(ctx, jobWorkers) },
 		func(ctx context.Context) { cjc.Run(ctx, cronJobWorkers) },
 	} {
@@ -191,7 +209,7 @@ func RunControllerManager(ctx context.Context, restCfg *restclient.Config) (err 
 // recover(): an unrecovered panic in any one goroutine kills the whole Go
 // program, taking down every other controller sharing this WASM instance
 // (S8 FINDINGS.md, "Other pitfalls worth remembering") -- one controller
-// misbehaving should not be able to do that to the other nine.
+// misbehaving should not be able to do that to the other five.
 func runRecovered(ctx context.Context, run func(context.Context)) {
 	defer func() {
 		if r := recover(); r != nil {

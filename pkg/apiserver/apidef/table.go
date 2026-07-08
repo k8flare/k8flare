@@ -406,7 +406,13 @@ var Table = []ResourceDef{
 	{
 		GroupVersion: appsv1.SchemeGroupVersion, Kind: "StatefulSet", Resource: "statefulsets",
 		Singular: "statefulset", ShortNames: []string{"sts"}, Namespaced: true,
-		StubReason:   "Never populated with real data -- confirmed empirically by running the real scheduler: its default InterPodAffinity/PodTopologySpread (owning-controller lookups) plugin starts an informer for this type unconditionally, the same way DRA's plugin does for ResourceClaim/ResourceSlice/DeviceClass above, even when no pod in the cluster uses the corresponding feature.",
+		// Populated for real by the real, unmodified kube-controller-manager's
+		// statefulset controller (pkg/controller/statefulset, enabled via both
+		// cmd/controller-manager's --controllers default and the WASM
+		// Controllers DO's pkg/controllers.RunControllerManager) -- unlike the
+		// stub types elsewhere in this table, this one is actually written to.
+		// See docs/general-purpose-k8s-plan.md's Phase 3 StatefulSet entry for
+		// what was verified end-to-end.
 		Subresources: []Subresource{statusSubresource(), scaleSubresource()},
 		New:          func() runtime.Object { return &appsv1.StatefulSet{} },
 		NewList: func() runtime.Object {
@@ -416,8 +422,18 @@ var Table = []ResourceDef{
 	{
 		GroupVersion: appsv1.SchemeGroupVersion, Kind: "ControllerRevision", Resource: "controllerrevisions",
 		Singular: "controllerrevision", Namespaced: true,
-		StubReason: "Never populated with real data -- exists only so DaemonSet/StatefulSet controllers (real, or a future real kube-controller-manager) can complete WaitForCacheSync on their ControllerRevision informer. Same stub-type pattern as the DRA/ReplicaSet-adjacent types above.",
-		New:        func() runtime.Object { return &appsv1.ControllerRevision{} },
+		// Originally registered only so DaemonSet/StatefulSet controllers'
+		// ControllerRevision informer could complete WaitForCacheSync against
+		// an empty list -- but both the real DaemonSet controller (Phase 3)
+		// and now the real StatefulSet controller actually write real
+		// ControllerRevision objects here (hash-based revision naming,
+		// confirmed end-to-end: `kubectl get controllerrevisions` shows real
+		// entries after creating either type). The doc comment previously on
+		// this entry claimed it was "never populated with real data," which
+		// was already inaccurate for DaemonSet before this StatefulSet work;
+		// corrected per CLAUDE.md's honest-correction rule rather than left
+		// in place.
+		New: func() runtime.Object { return &appsv1.ControllerRevision{} },
 		NewList: func() runtime.Object {
 			return &appsv1.ControllerRevisionList{TypeMeta: metav1.TypeMeta{Kind: "ControllerRevisionList", APIVersion: "apps/v1"}}
 		},

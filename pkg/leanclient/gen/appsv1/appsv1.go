@@ -60,7 +60,7 @@ func (c *Client) ControllerRevisions(namespace string) appsv1client.ControllerRe
 }
 
 func (c *Client) StatefulSets(namespace string) appsv1client.StatefulSetInterface {
-	panic("leanclient: StatefulSets not implemented (unused by this repo's controllers)")
+	return NewStatefulSets(c.rc, namespace)
 }
 
 type replicaSets struct {
@@ -297,4 +297,71 @@ func (c *controllerRevisions) Patch(ctx context.Context, name string, pt types.P
 
 func (c *controllerRevisions) Apply(ctx context.Context, obj *applyconfigurationsappsv1.ControllerRevisionApplyConfiguration, opts metav1.ApplyOptions) (*appsv1.ControllerRevision, error) {
 	panic("leanclient: Server-Side Apply not implemented (unused by this repo's controllers/scheduler)")
+}
+
+type statefulSets struct {
+	client restclient.Interface
+	ns     string
+}
+
+var _ appsv1client.StatefulSetInterface = (*statefulSets)(nil)
+
+func NewStatefulSets(c restclient.Interface, ns string) *statefulSets {
+	return &statefulSets{client: c, ns: ns}
+}
+
+func (c *statefulSets) Create(ctx context.Context, obj *appsv1.StatefulSet, opts metav1.CreateOptions) (*appsv1.StatefulSet, error) {
+	return leanclient.Create(ctx, c.client, "statefulsets", c.ns, obj, schema.GroupVersion{Group: "apps", Version: "v1"}.WithKind("StatefulSet"), opts)
+}
+
+func (c *statefulSets) Update(ctx context.Context, obj *appsv1.StatefulSet, opts metav1.UpdateOptions) (*appsv1.StatefulSet, error) {
+	return leanclient.Update(ctx, c.client, "statefulsets", c.ns, obj.Name, obj, schema.GroupVersion{Group: "apps", Version: "v1"}.WithKind("StatefulSet"), opts)
+}
+
+func (c *statefulSets) UpdateStatus(ctx context.Context, obj *appsv1.StatefulSet, opts metav1.UpdateOptions) (*appsv1.StatefulSet, error) {
+	return leanclient.UpdateSubresource(ctx, c.client, "statefulsets", c.ns, obj.Name, "status", obj, schema.GroupVersion{Group: "apps", Version: "v1"}.WithKind("StatefulSet"), opts)
+}
+
+func (c *statefulSets) Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error {
+	return leanclient.Delete(ctx, c.client, "statefulsets", c.ns, name, opts)
+}
+
+func (c *statefulSets) DeleteCollection(ctx context.Context, opts metav1.DeleteOptions, listOpts metav1.ListOptions) error {
+	return leanclient.DeleteCollection(ctx, c.client, "statefulsets", c.ns, opts, listOpts)
+}
+
+func (c *statefulSets) Get(ctx context.Context, name string, opts metav1.GetOptions) (*appsv1.StatefulSet, error) {
+	return leanclient.Get[appsv1.StatefulSet](ctx, c.client, "statefulsets", c.ns, name, opts)
+}
+
+func (c *statefulSets) List(ctx context.Context, opts metav1.ListOptions) (*appsv1.StatefulSetList, error) {
+	return leanclient.List[appsv1.StatefulSetList](ctx, c.client, "statefulsets", c.ns, opts)
+}
+
+func (c *statefulSets) Watch(ctx context.Context, opts metav1.ListOptions) (apimachinerywatch.Interface, error) {
+	return leanclient.Watch(ctx, c.client, "statefulsets", c.ns, opts, func() *appsv1.StatefulSet { return &appsv1.StatefulSet{} })
+}
+
+func (c *statefulSets) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (*appsv1.StatefulSet, error) {
+	return leanclient.Patch[appsv1.StatefulSet](ctx, c.client, "statefulsets", c.ns, name, pt, data, opts, subresources...)
+}
+
+func (c *statefulSets) Apply(ctx context.Context, obj *applyconfigurationsappsv1.StatefulSetApplyConfiguration, opts metav1.ApplyOptions) (*appsv1.StatefulSet, error) {
+	panic("leanclient: Server-Side Apply not implemented (unused by this repo's controllers/scheduler)")
+}
+
+func (c *statefulSets) ApplyStatus(ctx context.Context, obj *applyconfigurationsappsv1.StatefulSetApplyConfiguration, opts metav1.ApplyOptions) (*appsv1.StatefulSet, error) {
+	panic("leanclient: Server-Side Apply not implemented (unused by this repo's controllers/scheduler)")
+}
+
+func (c *statefulSets) GetScale(ctx context.Context, name string, options metav1.GetOptions) (*autoscalingv1.Scale, error) {
+	panic("leanclient: StatefulSets.GetScale not implemented (unused by this repo's controllers/scheduler)")
+}
+
+func (c *statefulSets) UpdateScale(ctx context.Context, name string, scale *autoscalingv1.Scale, opts metav1.UpdateOptions) (*autoscalingv1.Scale, error) {
+	panic("leanclient: StatefulSets.UpdateScale not implemented (unused by this repo's controllers/scheduler)")
+}
+
+func (c *statefulSets) ApplyScale(ctx context.Context, name string, scale *applyconfigurationsautoscalingv1.ScaleApplyConfiguration, opts metav1.ApplyOptions) (*autoscalingv1.Scale, error) {
+	panic("leanclient: StatefulSets.ApplyScale not implemented (unused by this repo's controllers/scheduler)")
 }

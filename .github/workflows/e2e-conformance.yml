@@ -252,11 +252,12 @@ jobs:
           }
 
       # Same rationale as the scheduler step above: no sudo, own kubeconfig,
-      # runner-writable --data-dir. --controllers= enables exactly the five
+      # runner-writable --data-dir. --controllers= enables exactly the six
       # workload controllers this project's apiserver has been verified
       # against (see docs/general-purpose-k8s-plan.md, Phase 3) --
-      # garbagecollector and statefulset are registered by the same real
-      # binary but not enabled here pending their own verification pass.
+      # garbagecollector is registered by the same real binary but not
+      # enabled here pending its own verification pass (metadata-only
+      # client + RESTMapper, see Phase 3's OwnerReference GC entry).
       - name: Start controller-manager (real kube-controller-manager)
         run: |
           nohup ./bin/k8flare-controller-manager \

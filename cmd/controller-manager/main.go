@@ -33,7 +33,7 @@ func main() {
 	// alias is "nodelifecycle" (no hyphen); taint-eviction has no alias, only
 	// the literal canonical name "taint-eviction-controller"
 	// (newTaintEvictionControllerDescriptor, cmd/kube-controller-manager/app/core.go).
-	controllers := flag.String("controllers", "replicaset,deployment,daemonset,job,cronjob,endpoint,endpointslice,nodeipam,nodelifecycle,taint-eviction-controller", "Comma-separated controllers to enable, forwarded to --controllers")
+	controllers := flag.String("controllers", "replicaset,deployment,daemonset,statefulset,job,cronjob,endpoint,endpointslice,nodeipam,nodelifecycle,taint-eviction-controller", "Comma-separated controllers to enable, forwarded to --controllers")
 	flag.Parse()
 
 	if *serverURL == "" {

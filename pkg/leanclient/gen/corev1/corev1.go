@@ -62,6 +62,10 @@ func (c *Client) Endpoints(namespace string) corev1client.EndpointsInterface {
 	return NewEndpoints(c.rc, namespace)
 }
 
+func (c *Client) PersistentVolumeClaims(namespace string) corev1client.PersistentVolumeClaimInterface {
+	return NewPersistentVolumeClaims(c.rc, namespace)
+}
+
 func (c *Client) Events(namespace string) corev1client.EventInterface {
 	return NewEvents(c.rc, namespace)
 }
@@ -80,9 +84,6 @@ func (c *Client) Namespaces() corev1client.NamespaceInterface {
 }
 func (c *Client) PersistentVolumes() corev1client.PersistentVolumeInterface {
 	panic("leanclient: PersistentVolumes not implemented (unused by this repo's controllers/scheduler)")
-}
-func (c *Client) PersistentVolumeClaims(namespace string) corev1client.PersistentVolumeClaimInterface {
-	panic("leanclient: PersistentVolumeClaims not implemented (unused by this repo's controllers/scheduler)")
 }
 func (c *Client) PodTemplates(namespace string) corev1client.PodTemplateInterface {
 	panic("leanclient: PodTemplates not implemented (unused by this repo's controllers/scheduler)")
@@ -361,6 +362,61 @@ func (c *endpoints) Patch(ctx context.Context, name string, pt types.PatchType, 
 }
 
 func (c *endpoints) Apply(ctx context.Context, obj *applyconfigurationscorev1.EndpointsApplyConfiguration, opts metav1.ApplyOptions) (*corev1.Endpoints, error) {
+	panic("leanclient: Server-Side Apply not implemented (unused by this repo's controllers/scheduler)")
+}
+
+type persistentVolumeClaims struct {
+	client restclient.Interface
+	ns     string
+}
+
+var _ corev1client.PersistentVolumeClaimInterface = (*persistentVolumeClaims)(nil)
+
+func NewPersistentVolumeClaims(c restclient.Interface, ns string) *persistentVolumeClaims {
+	return &persistentVolumeClaims{client: c, ns: ns}
+}
+
+func (c *persistentVolumeClaims) Create(ctx context.Context, obj *corev1.PersistentVolumeClaim, opts metav1.CreateOptions) (*corev1.PersistentVolumeClaim, error) {
+	return leanclient.Create(ctx, c.client, "persistentvolumeclaims", c.ns, obj, schema.GroupVersion{Group: "", Version: "v1"}.WithKind("PersistentVolumeClaim"), opts)
+}
+
+func (c *persistentVolumeClaims) Update(ctx context.Context, obj *corev1.PersistentVolumeClaim, opts metav1.UpdateOptions) (*corev1.PersistentVolumeClaim, error) {
+	return leanclient.Update(ctx, c.client, "persistentvolumeclaims", c.ns, obj.Name, obj, schema.GroupVersion{Group: "", Version: "v1"}.WithKind("PersistentVolumeClaim"), opts)
+}
+
+func (c *persistentVolumeClaims) UpdateStatus(ctx context.Context, obj *corev1.PersistentVolumeClaim, opts metav1.UpdateOptions) (*corev1.PersistentVolumeClaim, error) {
+	return leanclient.UpdateSubresource(ctx, c.client, "persistentvolumeclaims", c.ns, obj.Name, "status", obj, schema.GroupVersion{Group: "", Version: "v1"}.WithKind("PersistentVolumeClaim"), opts)
+}
+
+func (c *persistentVolumeClaims) Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error {
+	return leanclient.Delete(ctx, c.client, "persistentvolumeclaims", c.ns, name, opts)
+}
+
+func (c *persistentVolumeClaims) DeleteCollection(ctx context.Context, opts metav1.DeleteOptions, listOpts metav1.ListOptions) error {
+	return leanclient.DeleteCollection(ctx, c.client, "persistentvolumeclaims", c.ns, opts, listOpts)
+}
+
+func (c *persistentVolumeClaims) Get(ctx context.Context, name string, opts metav1.GetOptions) (*corev1.PersistentVolumeClaim, error) {
+	return leanclient.Get[corev1.PersistentVolumeClaim](ctx, c.client, "persistentvolumeclaims", c.ns, name, opts)
+}
+
+func (c *persistentVolumeClaims) List(ctx context.Context, opts metav1.ListOptions) (*corev1.PersistentVolumeClaimList, error) {
+	return leanclient.List[corev1.PersistentVolumeClaimList](ctx, c.client, "persistentvolumeclaims", c.ns, opts)
+}
+
+func (c *persistentVolumeClaims) Watch(ctx context.Context, opts metav1.ListOptions) (apimachinerywatch.Interface, error) {
+	return leanclient.Watch(ctx, c.client, "persistentvolumeclaims", c.ns, opts, func() *corev1.PersistentVolumeClaim { return &corev1.PersistentVolumeClaim{} })
+}
+
+func (c *persistentVolumeClaims) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (*corev1.PersistentVolumeClaim, error) {
+	return leanclient.Patch[corev1.PersistentVolumeClaim](ctx, c.client, "persistentvolumeclaims", c.ns, name, pt, data, opts, subresources...)
+}
+
+func (c *persistentVolumeClaims) Apply(ctx context.Context, obj *applyconfigurationscorev1.PersistentVolumeClaimApplyConfiguration, opts metav1.ApplyOptions) (*corev1.PersistentVolumeClaim, error) {
+	panic("leanclient: Server-Side Apply not implemented (unused by this repo's controllers/scheduler)")
+}
+
+func (c *persistentVolumeClaims) ApplyStatus(ctx context.Context, obj *applyconfigurationscorev1.PersistentVolumeClaimApplyConfiguration, opts metav1.ApplyOptions) (*corev1.PersistentVolumeClaim, error) {
 	panic("leanclient: Server-Side Apply not implemented (unused by this repo's controllers/scheduler)")
 }
 
