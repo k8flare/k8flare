@@ -156,11 +156,26 @@ jobs:
           current-context: k8flare-dev
           EOF
 
+      # --local is required now, not just a style choice: wrangler.jsonc's
+      # `vpc_networks` MESH binding (added in b6d4340 for the Mesh kubelet
+      # proxy) has no local emulation at all, so plain `wrangler dev` -- with
+      # or without that binding's own "remote": true -- tries to establish a
+      # real remote-proxy session for it at STARTUP and hard-fails before
+      # ever binding a port if no Cloudflare credentials are present, which
+      # is exactly this job's state (no CLOUDFLARE_API_TOKEN secret, by
+      # design -- see the ClusterIP verification step below for why). This
+      # was a real, undetected regression: confirmed via `gh run list` that
+      # no e2e-conformance run has executed since b6d4340 landed, so nothing
+      # had caught it. `--local` disables remote bindings outright, which is
+      # exactly what this job wants (MESH is unused by every test here) and
+      # requires no change to the committed wrangler.jsonc, so the real
+      # deployed Worker's Mesh feature is unaffected.
       - name: Start wrangler dev (real Workers + Durable Object storage)
         run: |
           nohup npx wrangler dev \
             -c workers/k8flare/wrangler.jsonc \
             --enable-containers=false \
+            --local \
             --port 8787 \
             --local-protocol https \
             --https-key-path "$RUNNER_TEMP/devtls/dev.key" \
@@ -289,10 +304,94 @@ jobs:
             --ginkgo.no-color \
             --ginkgo.focus="$BASELINE_FOCUS"
 
-      # Promotion gate (Phase 1 close-out): the one conformance test the
-      # plan names as the real-traffic acceptance -- a client pod curling a
-      # ClusterIP and reaching the backing pods through kube-proxy. Run in
-      # isolation so its verdict is unambiguous.
+      # Phase 1 promotion gate, REQUIRED: proves real ClusterIP packet
+      # routing end-to-end (a genuinely separate Pod's network namespace
+      # reaches a Service's ClusterIP and gets DNAT-routed to the backing
+      # Pod by the real embedded kube-proxy) WITHOUT kubectl exec or kubectl
+      # logs. Both go through gateway/proxy/target.ts's
+      # resolveKubeletTarget(), which requires the MESH (vpc_networks,
+      # remote-only, see the wrangler dev step's comment above) or legacy
+      # KUBELET_VPC binding for BYO-VM nodes -- neither has local-dev
+      # emulation, and minting a real Mesh connector token per ephemeral CI
+      # run would mean touching real Cloudflare infrastructure (and a new,
+      # sensitive CLOUDFLARE_API_TOKEN CI secret) on every PR, which breaks
+      # this job's deliberate "local-only, never touches the deployed
+      # Worker" design -- so the upstream
+      # `[sig-network] Services should serve a basic endpoint from pods
+      # [Conformance]` test below can never pass in this harness as-is (its
+      # own reachability check is exec-driven, not a routing test). This
+      # step proves the identical underlying claim through a channel that
+      # needs neither exec nor logs: Pod phase / container exitCode, which
+      # kubelet reports to the apiserver directly over the same path every
+      # other step in this job already polls with curl+jq.
+      #
+      # Verified by hand first (not just written from reading the code, per
+      # this repo's rule 2): a real wrangler dev + real k3s agent (kube-proxy
+      # in iptables mode, flannel host-gw) reproduced this exact scenario --
+      # a backend Pod running nginx behind a Service, and a separate busybox
+      # Pod, in its OWN network namespace, entered via `crictl exec`
+      # (container-runtime level, bypassing this project's own kubectl-exec
+      # gap entirely) -- and a `wget` to the ClusterIP returned nginx's real
+      # response. See docs/general-purpose-k8s-plan.md, Phase 1.
+      - name: Verify real ClusterIP traffic routing (Phase 1 promotion gate, exec-free)
+        run: |
+          set -e
+          echo "=== creating a real backend Pod + Service ==="
+          curl -skf -X POST https://127.0.0.1:8787/api/v1/namespaces/default/pods \
+            -H "Authorization: Bearer k8flare-dev-token" -H "Content-Type: application/json" \
+            -d '{"apiVersion":"v1","kind":"Pod","metadata":{"name":"clusterip-verify-backend","labels":{"app":"clusterip-verify"}},"spec":{"containers":[{"name":"web","image":"docker.io/library/nginx:alpine","ports":[{"containerPort":80}]}]}}' > /dev/null
+
+          curl -skf -X POST https://127.0.0.1:8787/api/v1/namespaces/default/services \
+            -H "Authorization: Bearer k8flare-dev-token" -H "Content-Type: application/json" \
+            -d '{"apiVersion":"v1","kind":"Service","metadata":{"name":"clusterip-verify-backend"},"spec":{"selector":{"app":"clusterip-verify"},"ports":[{"port":80,"targetPort":80}]}}' > /dev/null
+
+          echo "Waiting for the backend Pod to run (real scheduler binds it, real kubelet pulls+starts it)..."
+          PHASE=""
+          for _ in $(seq 1 30); do
+            PHASE=$(curl -sk https://127.0.0.1:8787/api/v1/namespaces/default/pods/clusterip-verify-backend \
+              -H "Authorization: Bearer k8flare-dev-token" | jq -r '.status.phase')
+            [ "$PHASE" = "Running" ] && break
+            sleep 3
+          done
+          if [ "$PHASE" != "Running" ]; then
+            echo "::error::backend Pod never became Running (phase=$PHASE)"
+            curl -sk https://127.0.0.1:8787/api/v1/namespaces/default/pods/clusterip-verify-backend -H "Authorization: Bearer k8flare-dev-token"
+            exit 1
+          fi
+
+          CLUSTER_IP=$(curl -sk https://127.0.0.1:8787/api/v1/namespaces/default/services/clusterip-verify-backend \
+            -H "Authorization: Bearer k8flare-dev-token" | jq -r '.spec.clusterIP')
+          echo "ClusterIP: $CLUSTER_IP"
+
+          echo "=== creating a SEPARATE probe Pod that curls the ClusterIP and exits accordingly (restartPolicy: Never) ==="
+          curl -skf -X POST https://127.0.0.1:8787/api/v1/namespaces/default/pods \
+            -H "Authorization: Bearer k8flare-dev-token" -H "Content-Type: application/json" \
+            -d "{\"apiVersion\":\"v1\",\"kind\":\"Pod\",\"metadata\":{\"name\":\"clusterip-verify-probe\"},\"spec\":{\"restartPolicy\":\"Never\",\"containers\":[{\"name\":\"probe\",\"image\":\"docker.io/library/busybox:1.36\",\"command\":[\"sh\",\"-c\",\"wget -T5 -O- http://$CLUSTER_IP:80/ | grep -q 'Welcome to nginx' && exit 0 || exit 1\"]}]}}" > /dev/null
+
+          echo "Waiting for the probe Pod to complete..."
+          PHASE=""
+          for _ in $(seq 1 30); do
+            PHASE=$(curl -sk https://127.0.0.1:8787/api/v1/namespaces/default/pods/clusterip-verify-probe \
+              -H "Authorization: Bearer k8flare-dev-token" | jq -r '.status.phase')
+            [ "$PHASE" = "Succeeded" ] || [ "$PHASE" = "Failed" ] && break
+            sleep 3
+          done
+
+          if [ "$PHASE" != "Succeeded" ]; then
+            echo "::error::ClusterIP probe Pod did not succeed (phase=$PHASE) -- real ClusterIP traffic routing is broken"
+            curl -sk https://127.0.0.1:8787/api/v1/namespaces/default/pods/clusterip-verify-probe -H "Authorization: Bearer k8flare-dev-token"
+            exit 1
+          fi
+          echo "Real ClusterIP traffic routing confirmed: a separate Pod's network namespace reached $CLUSTER_IP and received the backend's actual HTTP response."
+
+      # The actual upstream conformance test named as Phase 1's acceptance
+      # criterion. Kept here, still advisory: its own reachability check is
+      # exec-driven (see the required step above for the full trace of why
+      # that can't work in this harness), so it cannot pass here regardless
+      # of whether ClusterIP routing itself works -- this remains a standing
+      # probe in case a future Mesh-in-CI path or an upstream test-framework
+      # option to swap the reachability mechanism changes that, not a
+      # meaningful pass/fail signal today.
       #
       # FIRST RUN (2026-07-06) FAILED -- see docs/general-purpose-k8s-plan.md
       # Phase 1's open follow-ups for the ginkgo detail. It never reached
@@ -301,9 +400,8 @@ jobs:
       # CI harness (README's documented gap -- exec needs the optional
       # Tunnel+VPC setup, not configured here). continue-on-error means a
       # RED ginkgo run still shows as a green GitHub Actions step -- read the
-      # step's own log, not its conclusion, before deciding whether to
-      # promote this focus string into BASELINE_FOCUS.
-      - name: Run ClusterIP traffic candidate (Phase 1 promotion gate, advisory)
+      # step's own log, not its conclusion.
+      - name: Run ClusterIP traffic candidate (Phase 1 upstream conformance test, advisory)
         id: cluster-ip-traffic
         continue-on-error: true
         timeout-minutes: 10
