@@ -140,10 +140,6 @@ export async function handleClustersAPI(
 // wall-clock-billed) -> Controllers -> WatchHub -> Cluster (facets +
 // deleteAll) -> registry record. Each DO exposes /admin/destroy and
 // deletes its own storage -- DO storage cannot be enumerated externally.
-// NOT covered in v1: R2 objects under clusters/<doName>/ (S3-API
-// deletion needs SigV4 signing this Worker doesn't carry yet; R2
-// deletes are free, so a later cleanup pass loses nothing -- recorded
-// in docs/cost-model.md).
 async function teardownCluster(
   env: Env,
   ctx: ExecutionContext,

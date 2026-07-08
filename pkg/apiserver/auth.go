@@ -11,10 +11,10 @@ import (
 
 // currentSAAuthenticator is the real JWT ServiceAccount token
 // authenticator (serviceaccounttoken.go), installed via
-// SetServiceAccountAuthenticator once CAManager.Initialize has run --
-// same settable-func-var pattern as r2.go's currentR2Config, for the
-// same reason (this apiserver's per-request instantiation means the key
-// is only readable during request handling, not at package init). Nil
+// SetServiceAccountAuthenticator once CAManager.Initialize has run -- a
+// settable-func-var, for the same reason (this apiserver's per-request
+// instantiation means the key is only readable during request handling,
+// not at package init). Nil
 // until installed, in which case AuthMiddleware simply never tries it
 // (e.g. supervisor/discovery endpoints registered before main's SA
 // authenticator wiring runs, or a build that never calls it).

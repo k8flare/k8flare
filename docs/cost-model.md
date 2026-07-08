@@ -394,6 +394,18 @@ container, or names an image outside the allowlist is rejected (`status.phase
 
 ## Phase 8 (R2 PV/PVC backend) implementation
 
+**REMOVED 2026-07-08:** this entire custom R2-backed dynamic provisioner
+(`pkg/apiserver/r2.go`, `r2handlers.go`, `pvcbind.go`) was deleted --
+user decision to stop hand-rolling a synthetic-CSI-named, synchronous
+bind mechanism and instead rebuild PV/PVC provisioning later using a
+real CSI driver (k8s's standard mechanism), once CRD support exists.
+`StorageClass`/`PersistentVolume`/`PersistentVolumeClaim` remain generic
+CRUD resources in `apidef.Table`; no StorageClass is bootstrapped or
+marked default, so PVCs stay `Pending` exactly like a real cluster with
+no provisioner configured. The section below is kept as a historical
+record of the removed implementation and its cost figures -- see git
+history for the actual code.
+
 `StorageClass`/`PersistentVolume`/`PersistentVolumeClaim` are added to
 `apidef.Table` (both `corev1`/`storagev1`, already-served groups, so no new
 mux route or Scheme registration was needed -- adding the table rows was

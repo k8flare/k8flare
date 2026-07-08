@@ -40,8 +40,13 @@ workers/k8flare — 唯一のデプロイ単位・唯一の公開 Worker(6 Worke
    │    ホストプロセス専用に固定(判断根拠は docs/platform-verification.md)。
    └─ CFContainersScheduler + NodeVM{Small,Medium,Large} DO(containers):
         Pod-on-Containers ノードバックエンド(任意 OCI 実行が要るため Containers)
-R2: PV/PVC/StorageClass バックエンド
 ```
+
+PV/PVC/StorageClass: 汎用 CRUD リソースとしては存在するが、動的プロビジョナーは
+現在なし(独自 R2 バックエンドを 2026-07-08 に撤去 — 経緯は git history と
+docs/cost-model.md「Phase 8」/docs/platform-verification.md「S6」参照。実クラス
+タでプロビジョナー未設定時と同じく PVC は Pending のまま。k8s 標準の CSI ドライ
+バーでの作り直しを検討中)。
 
 (訂正 2026-07-06: 旧 6 Worker 分割(gateway/apiserver/storage/runtime/
 controllers/nodes + script_name DO binding + service binding 循環)は

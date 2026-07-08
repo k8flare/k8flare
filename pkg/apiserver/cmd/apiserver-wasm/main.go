@@ -62,36 +62,12 @@ var getTokens = sync.OnceValue(func() []string {
 	return tokens
 })
 
-// getR2Config resolves this cluster's R2Config from the Workers
-// environment, falling back to apiserver.ApplyR2DevFallback's dev
-// placeholders for any unset field. Passed to pkg/apiserver via
-// apiserver.ServerConfig.R2Config rather than called directly there --
-// see r2.go's currentR2Config doc comment for why.
-var getR2Config = sync.OnceValue(func() apiserver.R2Config {
-	return apiserver.ApplyR2DevFallback(apiserver.R2Config{
-		AccountID:       cloudflare.Getenv("R2_ACCOUNT_ID"),
-		AccessKeyID:     cloudflare.Getenv("R2_ACCESS_KEY_ID"),
-		SecretAccessKey: cloudflare.Getenv("R2_SECRET_ACCESS_KEY"),
-		Bucket:          cloudflare.Getenv("R2_BUCKET"),
-	})
-})
-
 func main() {
 	mux := apiserver.NewServer(apiserver.ServerConfig{
 		StorageDo: storageDo,
 		Tokens:    getTokens,
-		R2Config:  getR2Config,
 		ClusterBasePath: func() string {
 			return cloudflare.Getenv("CLUSTER_BASE_PATH")
-		},
-		// Scopes this cluster's R2 object keys under clusters/<doName>/
-		// (default keeps unprefixed keys) -- see
-		// pkg/apiserver/r2.go's currentClusterStoragePrefix.
-		ClusterStoragePrefix: func() string {
-			if n := clusterDOName(); n != "default" {
-				return "clusters/" + n + "/"
-			}
-			return ""
 		},
 	})
 	workers.Serve(mux)

@@ -201,15 +201,13 @@ var Table = []ResourceDef{
 		},
 	},
 	{
-		// Phase 8 (R2 PV/PVC backend). Cluster-scoped, like Node -- upstream
-		// PersistentVolume is never namespaced even though the claims that
-		// bind to it are. Bound synchronously by pkg/apiserver/pvcbind.go
-		// when a PersistentVolumeClaim naming (or defaulting to) the "r2"
-		// StorageClass is created, mirroring AssignClusterIP/AssignPodCIDR's
-		// "allocate before the first write" shape (clusterip.go/nodecidr.go)
-		// as closely as PV/PVC's two-object relationship allows -- see
-		// pvcbind.go's doc comment for exactly where this deviates from
-		// that pattern and why.
+		// Cluster-scoped, like Node -- upstream PersistentVolume is never
+		// namespaced even though the claims that bind to it are. Generic
+		// CRUD only: this apiserver has no dynamic provisioner (the
+		// R2-backed one was removed 2026-07-08, see git history, pending
+		// a real CSI-driver-based replacement), so a PersistentVolumeClaim
+		// stays Pending exactly like a real cluster with no matching
+		// StorageClass/provisioner.
 		GroupVersion: corev1.SchemeGroupVersion, Kind: "PersistentVolume", Resource: "persistentvolumes",
 		Singular: "persistentvolume", ShortNames: []string{"pv"}, Namespaced: false,
 		Subresources: []Subresource{statusSubresource()},
@@ -219,8 +217,7 @@ var Table = []ResourceDef{
 		},
 	},
 	{
-		// Phase 8 (R2 PV/PVC backend). Namespaced -- see the PersistentVolume
-		// entry above for the bind mechanism.
+		// Namespaced -- see the PersistentVolume entry above.
 		GroupVersion: corev1.SchemeGroupVersion, Kind: "PersistentVolumeClaim", Resource: "persistentvolumeclaims",
 		Singular: "persistentvolumeclaim", ShortNames: []string{"pvc"}, Namespaced: true,
 		Subresources: []Subresource{statusSubresource()},
@@ -301,15 +298,10 @@ var Table = []ResourceDef{
 
 	// ---- storage.k8s.io/v1 ----
 	{
-		// Phase 8 (R2 PV/PVC backend). Bootstrapped once, as this cluster's
-		// default class (BootstrapStorageClasses, pvcbind.go), the same
-		// bootstrap-on-first-request shape BootstrapCluster (bootstrap.go)
-		// uses for baseline namespaces -- kubectl and any PVC that omits
-		// spec.storageClassName both see a real object, not just an implied
-		// name. Provisioner is a synthetic name (no real external
-		// provisioner/CSI sidecar runs anywhere in this project -- binding
-		// happens synchronously in pvcbind.go instead), but a real,
-		// discoverable value, not an empty string.
+		// Generic CRUD only -- no StorageClass is bootstrapped or marked
+		// default (the R2-backed dynamic provisioner that used to do so
+		// was removed 2026-07-08, see git history, pending a real
+		// CSI-driver-based replacement).
 		GroupVersion: storagev1.SchemeGroupVersion, Kind: "StorageClass", Resource: "storageclasses",
 		Singular: "storageclass", ShortNames: []string{"sc"}, Namespaced: false,
 		New: func() runtime.Object { return &storagev1.StorageClass{} },

@@ -61,12 +61,6 @@ export interface Env {
   // Public URL in-VM k3s agents join through (microVMs dial out over
   // the internet; bindings don't reach them).
   GATEWAY_URL?: string;
-  // R2 PV/PVC backend configuration (see pkg/apiserver/r2.go); passed
-  // through to the apiserver dynamic worker's env as plain values.
-  R2_ACCOUNT_ID?: string;
-  R2_ACCESS_KEY_ID?: string;
-  R2_SECRET_ACCESS_KEY?: string;
-  R2_BUCKET?: string;
   // Test kill switch: "1" disables KCM pokes/loads so pkg/apiserver's
   // go test suite (whose Pods must not be touched by controllers) can
   // run against the consolidated single config. See CLAUDE.md's

@@ -170,12 +170,10 @@ export async function handleGateway(
   // over service bindings to unrouted Workers; the Go handlers themselves
   // are unauthenticated). Now that everything shares the one public fetch
   // handler, the boundary is explicit: in-Worker callers (the Cluster
-  // DO's node-lifecycle ping, nodes' mint-r2-credentials) go through
-  // apiserverFetch directly and never enter this handler; from the
-  // outside these routes exist only behind the cluster token (the same
-  // trust level as every other API path -- pkg/apiserver's own test
-  // suite drives /internal/mint-r2-credentials this way), and without it
-  // they 404 rather than advertise themselves.
+  // DO's node-lifecycle ping) go through apiserverFetch directly and
+  // never enter this handler; from the outside these routes exist only
+  // behind the cluster token (the same trust level as every other API
+  // path), and without it they 404 rather than advertise themselves.
   if (url.pathname.startsWith("/internal/")) {
     if (!dwAuth(req, env)) {
       return new Response("not found", { status: 404 });

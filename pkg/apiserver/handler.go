@@ -347,11 +347,6 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 					ReleasePodCIDR(ctx, store.storage, &nodeList.Items[i])
 				}
 			}
-			if pvcList, ok := obj.(*corev1.PersistentVolumeClaimList); ok {
-				for i := range pvcList.Items {
-					ReleasePersistentVolume(ctx, stores, &pvcList.Items[i])
-				}
-			}
 			if _, ok := obj.(*corev1.PodList); ok {
 				// Every matching Pod in this namespace is gone -- one
 				// reconcile pass recomputes every affected Service's
@@ -414,9 +409,6 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		}
 		if node, ok := obj.(*corev1.Node); ok {
 			ReleasePodCIDR(ctx, store.storage, node)
-		}
-		if pvc, ok := obj.(*corev1.PersistentVolumeClaim); ok {
-			ReleasePersistentVolume(ctx, stores, pvc)
 		}
 		if store.namespaced && namespacedStores != nil {
 			if m := getObjectMeta(obj); m != nil {

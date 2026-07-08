@@ -12,7 +12,7 @@ import { assembleWasm, fetchWasmAsset, fetchWasmManifest, type WasmManifest } fr
 //    dispatches cost ~12-24ms including the per-request Go boot the old
 //    deployed worker.mjs did anyway.
 //  - env passes only plain values + Fetchers: STORAGE (ClusterLoopback,
-//    the Cluster DO route) and the K3S_TOKEN/R2_* vars main.go reads.
+//    the Cluster DO route) and the K3S_TOKEN var main.go reads.
 let manifestCache: WasmManifest | null = null;
 
 async function apiserverEntrypoint(env: Env): Promise<Fetcher> {
@@ -45,14 +45,6 @@ async function apiserverEntrypoint(env: Env): Promise<Fetcher> {
     // the Go side unions with the per-cluster vault.
     const envToken = env.ENV_K3S_TOKEN ?? env.K3S_TOKEN;
     if (envToken) dynamicEnv.K3S_TOKEN = envToken;
-    for (const k of [
-      "R2_ACCOUNT_ID",
-      "R2_ACCESS_KEY_ID",
-      "R2_SECRET_ACCESS_KEY",
-      "R2_BUCKET",
-    ] as const) {
-      if (env[k]) dynamicEnv[k] = env[k];
-    }
     return {
       compatibilityDate: "2026-07-01",
       mainModule: "index.js",

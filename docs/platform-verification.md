@@ -731,6 +731,13 @@ your Worker's code had hung..."`, resolved in ~2ms — looks structural,
 
 ## S6: R2
 
+**REMOVED 2026-07-08:** the custom R2-backed PV/PVC provisioner this
+spike's findings fed into (`pkg/apiserver/r2.go`/`r2handlers.go`/
+`pvcbind.go`) was deleted -- user decision to rebuild PV/PVC
+provisioning later using a real CSI driver instead of a hand-rolled
+synthetic-CSI mechanism. Kept below as a historical record; see git
+history for the removed code.
+
 **Verification items**
 
 - Per-PVC access isolation (bucket/prefix + scoped tokens)
