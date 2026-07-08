@@ -919,3 +919,49 @@ The headroom problem was instead relieved by dropping 5 unused
 upstream defaulters packages from `cmd/k8flare-gen/defaulters.go`
 (zero cost-model impact -- pure binary-size change, no new Loader id,
 no new request path): apiserver headroom went from 2.21MiB to 4.05MiB.
+
+## PriorityClass (scheduling.k8s.io/v1) admission (actual, 2026-07-08)
+
+Phase 5 quick win (`docs/general-purpose-k8s-plan.md`): registered
+`scheduling.k8s.io/v1`'s `PriorityClass` in `apidef.Table` and added
+`pkg/apiserver/priority.go`, which resolves a Pod's
+`spec.priorityClassName` to a real `spec.priority` synchronously in the
+same `HandleResource` POST path LimitRange defaulting and compute-class
+routing already use (`handler.go`) -- no new Worker, no new Durable
+Object, no new alarm, no new Loader id: this is pure added Go code inside
+the existing apiserver Loader dynamic worker, billed under the same
+per-request CPU time it already accrues.
+
+**Measured apiserver WASM size delta** (`bash scripts/build-wasm-chunks.sh`,
+raw `.wasm` bytes against the 64MiB Loader cap, not gzip -- this repo
+moved off the gzip/9.5MiB-CI-budget convention the earlier phases above
+used once the S19 single-Worker + ASSETS+LOADER path landed): baseline
+measured directly on this worktree's `feat/v2-rearchitecture` tip before
+this change (confirmed by reverting via `git stash`, rebuilding, and
+restoring -- not assumed from an older doc's number) was **62,862,779
+bytes**; with `PriorityClass` registered plus `priority.go`'s admission
+logic it is **62,999,035 bytes**, a delta of **+136,256 bytes (+133.06
+KiB, +0.217%)**. Headroom under the 64MiB (67,108,864 byte) cap: 4,013KiB
+(was 4,146KiB before this change). KCM (`cmd/kcm-wasm`) is unaffected --
+**65,041,921 bytes, unchanged** -- since it doesn't import `pkg/apiserver`
+(no workload controller in this project's `--controllers` set consumes
+`PriorityClass`, matching upstream: none of ReplicaSet/Deployment/
+DaemonSet/StatefulSet/Job/CronJob/Endpoints/EndpointSlice read it).
+
+No `pkg/leanclient` change was needed: the real `kube-scheduler`
+(`cmd/scheduler`, BYO VM/host process) only ever reads a Pod's already-
+resolved `spec.priority`, never `PriorityClass` objects directly (the
+`schedulingv1listers.PriorityClassLister` upstream's own priority
+admission plugin needs is apiserver-side machinery, and this apiserver's
+`ResolvePodPriority` reads its own in-process `ResourceStore` directly,
+no client library involved), and no enabled `pkg/controller/*` reconciler
+constructs a PriorityClass informer either -- confirmed by grep against
+`pkg/leanclient/leanclient.go`'s hand-curated 13-type list, unchanged by
+this task.
+
+**Idle-cost invariant**: unaffected by construction -- `ResolvePodPriority`
+only runs synchronously inside an existing Pod-create request, the same
+"runs only when there's a write to do" shape every other admission step
+in this path (LimitRange, compute-class routing) already has. No alarm,
+no polling, nothing added for a cluster that never creates a Pod or a
+PriorityClass.

@@ -33,6 +33,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	resourcev1 "k8s.io/api/resource/v1"
+	schedulingv1 "k8s.io/api/scheduling/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -2196,4 +2197,153 @@ func TestBasicAuth(t *testing.T) {
 	if _, err := basicClient.CoreV1().Namespaces().List(ctx, metav1.ListOptions{}); !errors.IsForbidden(err) {
 		t.Fatalf("List namespaces with basic auth: got %v, want Forbidden", err)
 	}
+}
+
+// TestPriorityClass exercises Phase 5's PriorityClass quick win
+// (pkg/apiserver/priority.go): scheduling.k8s.io/v1's PriorityClass CRUD,
+// and priorityClassName -> spec.priority resolution at Pod-create admission,
+// against the real client-go clientset -- matching real upstream's
+// plugin/pkg/admission/priority/admission.go behavior (see priority.go's
+// doc comment for the one deliberate deviation, covered by the
+// "direct spec.priority, no class name" subtest below).
+func TestPriorityClass(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+	ns := "test-priorityclass"
+
+	_ = client.CoreV1().Namespaces().Delete(ctx, ns, metav1.DeleteOptions{})
+	if _, err := client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: ns},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("Create namespace: %v", err)
+	}
+
+	highName := "test-pc-high"
+	_ = client.SchedulingV1().PriorityClasses().Delete(ctx, highName, metav1.DeleteOptions{})
+	high, err := client.SchedulingV1().PriorityClasses().Create(ctx, &schedulingv1.PriorityClass{
+		ObjectMeta: metav1.ObjectMeta{Name: highName},
+		Value:      1000000,
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create PriorityClass: %v", err)
+	}
+	if high.Value != 1000000 {
+		t.Errorf("Value: got %d, want 1000000", high.Value)
+	}
+	// Upstream's SetDefaults_PriorityClass (registered via
+	// zz_generated_defaulters.go) fills in PreemptionPolicy when omitted.
+	if high.PreemptionPolicy == nil || *high.PreemptionPolicy != corev1.PreemptLowerPriority {
+		t.Errorf("PreemptionPolicy: got %v, want PreemptLowerPriority default", high.PreemptionPolicy)
+	}
+	if err := client.SchedulingV1().PriorityClasses().Delete(ctx, highName, metav1.DeleteOptions{}); err != nil {
+		t.Fatalf("Delete PriorityClass: %v", err)
+	}
+	if _, err := client.SchedulingV1().PriorityClasses().Create(ctx, &schedulingv1.PriorityClass{
+		ObjectMeta: metav1.ObjectMeta{Name: highName},
+		Value:      1000000,
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("Re-create PriorityClass: %v", err)
+	}
+
+	t.Run("PriorityClassName resolves to spec.priority", func(t *testing.T) {
+		podName := "test-pc-resolve-pod"
+		_ = client.CoreV1().Pods(ns).Delete(ctx, podName, metav1.DeleteOptions{})
+		pod, err := client.CoreV1().Pods(ns).Create(ctx, &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: ns},
+			Spec: corev1.PodSpec{
+				PriorityClassName: highName,
+				Containers:        []corev1.Container{{Name: "test", Image: "busybox"}},
+			},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Create pod: %v", err)
+		}
+		if pod.Spec.Priority == nil || *pod.Spec.Priority != 1000000 {
+			t.Errorf("Priority: got %v, want 1000000", pod.Spec.Priority)
+		}
+		if pod.Spec.PreemptionPolicy == nil || *pod.Spec.PreemptionPolicy != corev1.PreemptLowerPriority {
+			t.Errorf("PreemptionPolicy: got %v, want PreemptLowerPriority (copied from the class)", pod.Spec.PreemptionPolicy)
+		}
+		client.CoreV1().Pods(ns).Delete(ctx, podName, metav1.DeleteOptions{})
+	})
+
+	t.Run("unresolvable PriorityClassName is rejected", func(t *testing.T) {
+		podName := "test-pc-unresolvable-pod"
+		_ = client.CoreV1().Pods(ns).Delete(ctx, podName, metav1.DeleteOptions{})
+		_, err := client.CoreV1().Pods(ns).Create(ctx, &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: ns},
+			Spec: corev1.PodSpec{
+				PriorityClassName: "does-not-exist",
+				Containers:        []corev1.Container{{Name: "test", Image: "busybox"}},
+			},
+		}, metav1.CreateOptions{})
+		if !errors.IsForbidden(err) {
+			t.Fatalf("Create pod with unresolvable PriorityClassName: got %v, want Forbidden", err)
+		}
+	})
+
+	t.Run("mismatched explicit priority is rejected", func(t *testing.T) {
+		podName := "test-pc-mismatch-pod"
+		_ = client.CoreV1().Pods(ns).Delete(ctx, podName, metav1.DeleteOptions{})
+		mismatched := int32(1)
+		_, err := client.CoreV1().Pods(ns).Create(ctx, &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: ns},
+			Spec: corev1.PodSpec{
+				PriorityClassName: highName,
+				Priority:          &mismatched,
+				Containers:        []corev1.Container{{Name: "test", Image: "busybox"}},
+			},
+		}, metav1.CreateOptions{})
+		if !errors.IsForbidden(err) {
+			t.Fatalf("Create pod with priority (%d) mismatching PriorityClass %q (1000000): got %v, want Forbidden", mismatched, highName, err)
+		}
+	})
+
+	t.Run("direct spec.priority with no class name is left untouched", func(t *testing.T) {
+		// Deliberate deviation from upstream (see priority.go's doc
+		// comment): this repo's real, working, verified direct-
+		// spec.priority preemption (README.md's Scheduling table) must
+		// keep working exactly as before this admission logic was added.
+		podName := "test-pc-direct-priority-pod"
+		_ = client.CoreV1().Pods(ns).Delete(ctx, podName, metav1.DeleteOptions{})
+		direct := int32(12345)
+		pod, err := client.CoreV1().Pods(ns).Create(ctx, &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: ns},
+			Spec: corev1.PodSpec{
+				Priority:   &direct,
+				Containers: []corev1.Container{{Name: "test", Image: "busybox"}},
+			},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Create pod with direct spec.priority: %v", err)
+		}
+		if pod.Spec.Priority == nil || *pod.Spec.Priority != 12345 {
+			t.Errorf("Priority: got %v, want 12345 (untouched)", pod.Spec.Priority)
+		}
+		if pod.Spec.PriorityClassName != "" {
+			t.Errorf("PriorityClassName: got %q, want empty (untouched)", pod.Spec.PriorityClassName)
+		}
+		client.CoreV1().Pods(ns).Delete(ctx, podName, metav1.DeleteOptions{})
+	})
+
+	t.Run("neither field set resolves to 0 with no globalDefault class", func(t *testing.T) {
+		podName := "test-pc-unset-pod"
+		_ = client.CoreV1().Pods(ns).Delete(ctx, podName, metav1.DeleteOptions{})
+		pod, err := client.CoreV1().Pods(ns).Create(ctx, &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: ns},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{Name: "test", Image: "busybox"}},
+			},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Create pod with neither field set: %v", err)
+		}
+		if pod.Spec.Priority == nil || *pod.Spec.Priority != 0 {
+			t.Errorf("Priority: got %v, want 0 (no globalDefault PriorityClass exists)", pod.Spec.Priority)
+		}
+		client.CoreV1().Pods(ns).Delete(ctx, podName, metav1.DeleteOptions{})
+	})
+
+	client.SchedulingV1().PriorityClasses().Delete(ctx, highName, metav1.DeleteOptions{})
+	client.CoreV1().Namespaces().Delete(ctx, ns, metav1.DeleteOptions{})
 }

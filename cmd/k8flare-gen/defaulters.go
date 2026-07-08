@@ -32,6 +32,12 @@ var defaulterPackages = []defaulterPackage{
 	{schema.GroupVersion{Group: "", Version: "v1"}, "corev1defaults", "k8s.io/kubernetes/pkg/apis/core/v1"},
 	{schema.GroupVersion{Group: "apps", Version: "v1"}, "appsv1defaults", "k8s.io/kubernetes/pkg/apis/apps/v1"},
 	{schema.GroupVersion{Group: "batch", Version: "v1"}, "batchv1defaults", "k8s.io/kubernetes/pkg/apis/batch/v1"},
+	// scheduling.k8s.io/v1 (PriorityClass): upstream's SetDefaults_PriorityClass
+	// fills in spec.preemptionPolicy (defaults to PreemptLowerPriority) when a
+	// created PriorityClass omits it -- needed so pkg/apiserver/priority.go's
+	// resolution copies a real, non-nil PreemptionPolicy onto a Pod exactly
+	// like a real cluster would, not just the numeric Value.
+	{schema.GroupVersion{Group: "scheduling.k8s.io", Version: "v1"}, "schedulingv1defaults", "k8s.io/kubernetes/pkg/apis/scheduling/v1"},
 	// policy/v1 (PodDisruptionBudget) and node.k8s.io/v1 (RuntimeClass)
 	// have no versioned defaulting package upstream -- both are
 	// omitted deliberately, not by oversight.

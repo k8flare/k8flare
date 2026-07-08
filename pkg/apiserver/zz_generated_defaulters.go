@@ -7,6 +7,7 @@ import (
 	appsv1defaults "k8s.io/kubernetes/pkg/apis/apps/v1"
 	batchv1defaults "k8s.io/kubernetes/pkg/apis/batch/v1"
 	corev1defaults "k8s.io/kubernetes/pkg/apis/core/v1"
+	schedulingv1defaults "k8s.io/kubernetes/pkg/apis/scheduling/v1"
 )
 
 // registerVersionedDefaults registers every API group's real upstream
@@ -24,6 +25,9 @@ func registerVersionedDefaults() error {
 	}
 	if err := corev1defaults.RegisterDefaults(Scheme); err != nil {
 		return fmt.Errorf("register v1 defaults: %w", err)
+	}
+	if err := schedulingv1defaults.RegisterDefaults(Scheme); err != nil {
+		return fmt.Errorf("register scheduling.k8s.io/v1 defaults: %w", err)
 	}
 	return nil
 }

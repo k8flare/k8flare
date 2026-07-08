@@ -739,6 +739,39 @@ Quick wins first:
 - **OpenAPI v2/v3 discovery documents** for the served types, so `kubectl
 apply` stops needing `--validate=false`.
 
+> **Update (2026-07-08):** the PriorityClass item above is done —
+> `scheduling.k8s.io/v1`'s `PriorityClass` is registered in `apidef.Table`
+> (cluster-scoped, `apidef.ResourceDef`, same shape as `RuntimeClass`/
+> `ClusterRole`) and upstream's own `SetDefaults_PriorityClass` (fills in
+> `preemptionPolicy`) is wired through `cmd/k8flare-gen/defaulters.go`'s
+> table the same way `apps/v1`/`batch/v1`/core/v1 defaulters already are.
+> New file `pkg/apiserver/priority.go`'s `ResolvePodPriority` resolves a
+> Pod's `spec.priorityClassName` -> `spec.priority` at Pod-create admission,
+> wired into `handler.go`'s POST path the same way LimitRange defaulting
+> and compute-class routing already are (not a new admission mechanism) —
+> following real upstream's `plugin/pkg/admission/priority/admission.go`
+> (`k8s.io/kubernetes@v1.36.2-k3s1`) for an unresolvable class name (403
+> Forbidden), a mismatched explicit `spec.priority` (403 Forbidden), and
+> the no-`priorityClassName`/no-`globalDefault` case (resolves to 0). One
+> deliberate, documented deviation from upstream: a Pod that sets
+> `spec.priority` directly with no `priorityClassName` is left completely
+> untouched (upstream would instead reject it) — preserving this project's
+> existing, already-verified direct-`spec.priority` preemption path
+> unchanged, see the README's Scheduling table. Verified end-to-end against
+> a real `wrangler dev` + the real, unmodified `cmd/scheduler` binary: a
+> `low`(100)/`high`(1000000) `PriorityClass` pair, a capacity-constrained
+> fake Node, a bound low-priority Pod, then a high-priority Pod that
+> triggers a real `FailedScheduling: Insufficient cpu` event followed by a
+> real `Preempted` event on the low-priority Pod naming the high-priority
+> Pod's own UID, followed by `Scheduled` on the high-priority Pod, with the
+> preempted Pod confirmed truly gone (404, not soft-deleted) — the same
+> mechanism a real cluster uses, not a stand-in. Measured apiserver WASM
+> size delta: +136,256 bytes (+133.06 KiB, +0.217%), see
+> `docs/cost-model.md`'s PriorityClass section. `pkg/leanclient` needed no
+> change: neither the real `cmd/scheduler` (reads only the already-resolved
+> `spec.priority`) nor any enabled `pkg/controller/*` reconciler constructs
+> a `PriorityClass` client/informer.
+
 Then the auth ladder, shared with the hosted-product plan:
 
 - **TokenRequest / TokenReview** — real ServiceAccount tokens (unblocks
