@@ -49,7 +49,7 @@ import (
 //
 // Until GOOS=js support existed for k8s.io/kubernetes's scheduler package
 // tree at all (see docs/platform-verification.md's honest-correction entry
-// and third_party/k8s-js-overlays/README.md for why and how that was
+// and pkg/k8s-js-overlays/README.md for why and how that was
 // unblocked), kube-scheduler was BYO-VM/host-process-only; this restores
 // it to workers/controllers on the same terms RunControllerManager already
 // established for kube-controller-manager.
@@ -82,7 +82,7 @@ func RunScheduler(ctx context.Context, restCfg *restclient.Config) (err error) {
 		{Name: "NodeVolumeLimits"},
 		{Name: "VolumeZone"},
 		// DynamicResources must be disabled on GOOS=js: the js half of the
-		// scheduler-registry overlay (third_party/k8s-js-overlays/
+		// scheduler-registry overlay (pkg/k8s-js-overlays/
 		// scheduler-registry_js.go) drops it from the in-tree registry to
 		// fit the Worker Loader's 64MiB cap, and a profile that names a
 		// plugin missing from the registry fails framework construction.

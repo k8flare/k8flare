@@ -17,7 +17,7 @@ limitations under the License.
 */
 
 // GOOS!=js half of the k8flare scheduler-registry overlay (see
-// scheduler-registry_js.go and third_party/k8s-js-overlays/README.md):
+// scheduler-registry_js.go and pkg/k8s-js-overlays/README.md):
 // upstream registry.go byte-for-byte, plus only this comment and the
 // build tag, so host builds (cmd/scheduler, conformance CI) keep the
 // exact upstream in-tree plugin set including DynamicResources.

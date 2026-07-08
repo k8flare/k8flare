@@ -2,18 +2,18 @@
 # Regenerates .build/clientgo-lean-mirror/: a full local copy of the
 # upstream k3s-io/kubernetes-forked k8s.io/client-go module, with
 # kubernetes/typed/<group>/<version>, applyconfigurations/<group>/<version>
-# and kubernetes/clientset.go replaced by third_party/clientgo-lean-overlays/'s
+# and kubernetes/clientset.go replaced by pkg/clientgo-lean-overlays/'s
 # hand-curated, pruned versions.
 #
 # Why this exists, and what it prunes: see
-# third_party/clientgo-lean-overlays/README.md. Short version: importing
+# pkg/clientgo-lean-overlays/README.md. Short version: importing
 # client-go's own generated PodInterface (etc.) -- required to satisfy
 # upstream controller code's exact client parameter type -- costs ~44MiB
 # of linked GOOS=js/wasm code per type, almost entirely from *unrelated*
 # sibling files (other core/v1 types' generated code) in the same package
 # being linked despite never being referenced. go build -overlay can't fix
 # this (client-go resolves into GOMODCACHE; overlay refuses to touch it,
-# same restriction as third_party/k8s-js-overlays/), so -- same lever as
+# same restriction as pkg/k8s-js-overlays/), so -- same lever as
 # that sibling mirror -- this generates a pruned local copy and go.mod
 # replaces k8s.io/client-go with it.
 #
@@ -24,7 +24,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OVERLAY_DIR="$ROOT/third_party/clientgo-lean-overlays"
+OVERLAY_DIR="$ROOT/pkg/clientgo-lean-overlays"
 DST="$ROOT/.build/clientgo-lean-mirror"
 
 # Deliberately go.mod-replace-state-independent, same reasoning as
@@ -56,7 +56,7 @@ chmod -R u+w "$DST"
 # kubernetes/typed/<group>/<version> and applyconfigurations/<group>/<version>
 # are NOT pruned, deliberately -- see this repo's honest-correction note
 # (docs/platform-verification.md, Phase 10) and
-# third_party/clientgo-lean-overlays/README.md. Short version: pruning
+# pkg/clientgo-lean-overlays/README.md. Short version: pruning
 # them broke the moment pkg/scheduler.New's informerFactory parameter
 # (fixed to the real k8s.io/client-go/informers.SharedInformerFactory,
 # which imports all ~54 groups' typed/applyconfigurations packages
@@ -66,7 +66,7 @@ chmod -R u+w "$DST"
 # ObjectReferenceApplyConfiguration), so partial pruning cascades into
 # compile errors across unrelated groups. The per-type overlay files
 # (kubernetes/typed/<group>/<version>/*.go, applyconfigurations/<group>/
-# <version>/*.go) are kept in third_party/clientgo-lean-overlays/ for the
+# <version>/*.go) are kept in pkg/clientgo-lean-overlays/ for the
 # record and because pkg/leanclient/gen's generated clients still
 # implement their (now merely redundant-with-upstream, not
 # size-saving) interfaces, but this script no longer swaps them in.
@@ -103,7 +103,7 @@ cp "$OVERLAY_DIR/kubernetes/scheme/register.go" "$DST/kubernetes/scheme/register
 cp "$OVERLAY_DIR/kubernetes/scheme/register_sched.go" "$DST/kubernetes/scheme/register_sched.go"
 
 # informers/<group>/<version> and listers/<group>/<version> are NOT
-# pruned, deliberately -- see third_party/clientgo-lean-overlays/README.md's
+# pruned, deliberately -- see pkg/clientgo-lean-overlays/README.md's
 # "correction" note. kubernetes.Interface (above) stays full width because
 # it's an *external* fixed contract (client-go/tools/leaderelection/
 # resourcelock, and every informers/<group>/<version>'s own
@@ -116,7 +116,7 @@ cp "$OVERLAY_DIR/kubernetes/scheme/register_sched.go" "$DST/kubernetes/scheme/re
 # pkg/scheduler.New's own call site (this repo's fork of it) -- so it's
 # pruned to the 5 groups (Core/Apps/Storage/Resource/Scheduling) the real,
 # unmodified upstream kube-scheduler actually calls. See
-# third_party/clientgo-lean-overlays/informers/factory.go's doc comment
+# pkg/clientgo-lean-overlays/informers/factory.go's doc comment
 # for the full accounting. Drift-checked like scheme/register.go above.
 UPSTREAM_INFORMERS_FACTORY="$SRC/informers/factory.go"
 EXPECTED_IF_SHA="$(awk '{print $1}' "$OVERLAY_DIR/upstream-informers-factory.go.sha256")"

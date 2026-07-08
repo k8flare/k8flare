@@ -5,7 +5,7 @@ Copyright The Kubernetes Authors.
 Licensed under the Apache License, Version 2.0 (the "License");
 */
 
-// k8flare leanwidth overlay (see third_party/clientgo-lean-overlays/
+// k8flare leanwidth overlay (see pkg/clientgo-lean-overlays/
 // README.md and docs/platform-verification.md's OPEN REGRESSION entry):
 // kubernetes.Interface narrowed to the groups this repo's controllers
 // actually use, plus SchedulingV1alpha2 (the 1.36 job controller imports

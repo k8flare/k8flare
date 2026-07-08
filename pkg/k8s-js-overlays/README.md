@@ -29,7 +29,7 @@ The only remaining lever is a module-level `replace k8s.io/kubernetes =>
 commitment the project avoided for a long time (see the honest-correction
 entries in `docs/platform-verification.md` for the earlier, abandoned
 attempt). What makes it tractable now is that the local directory doesn't
-need to be *committed*: `scripts/gen-k8s-js-mirror.sh` generates it on
+need to be _committed_: `scripts/gen-k8s-js-mirror.sh` generates it on
 demand as a full local copy of the pinned upstream module (APFS
 copy-on-write clone on macOS, a plain copy on Linux CI), swaps in the two
 files below, and the result is gitignored (`.build/`). Nothing about
@@ -38,7 +38,7 @@ the two small overlay files and this note are.
 
 **Consequence you need to know about**: `go.mod`'s `k8s.io/kubernetes`
 replace now points at `./.build/k8s-js-mirror`, a directory that must
-exist on disk before *any* Go build in this repository works -- not just
+exist on disk before _any_ Go build in this repository works -- not just
 the WASM scheduler build. `npm run build:wasm` regenerates it
 automatically; if you're doing a host-only build (`cmd/agent`,
 `cmd/scheduler`, `cmd/controller-manager`, `go vet ./...`) in a fresh
@@ -54,7 +54,7 @@ exists before anything else.
 - `signal_notjs.go` -- upstream `signal.go`, unmodified except
   `//go:build !windows` -> `//go:build !windows && !js`.
 - `signal_js.go` -- new file, `//go:build js`, `var compareSignal
-  os.Signal = os.Interrupt` (mirrors `signal_windows.go`'s fallback).
+os.Signal = os.Interrupt` (mirrors `signal_windows.go`'s fallback).
 - `upstream-module.txt` -- `<module> <version>` of the upstream fork to
   mirror from, kept independent of `go.mod`'s replace target so the
   generator script can still resolve the pristine upstream source after

@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // k8flare lean overlay for kubernetes/scheme/register.go (see
-// third_party/clientgo-lean-overlays/README.md). Upstream registers all
+// pkg/clientgo-lean-overlays/README.md). Upstream registers all
 // ~55 API group-versions into this package-level Scheme at init() time --
 // and because scheme registration happens via init side effects, Go's
 // linker cannot dead-code-eliminate any of it: importing

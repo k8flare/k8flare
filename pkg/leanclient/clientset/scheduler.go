@@ -20,7 +20,7 @@
 //     nodevolumelimits.NewCSIManager(informerFactory.Storage().V1().
 //     CSINodes().Lister()), and framework/plugins/volumebinding.New (its
 //     registry entry is still linked -- only DynamicResources is dropped
-//     from the js registry, see third_party/k8s-js-overlays/
+//     from the js registry, see pkg/k8s-js-overlays/
 //     scheduler-registry_js.go) references CSIDrivers/
 //     CSIStorageCapacities/StorageClasses too, even though sched.go's
 //     profile config disables the VolumeBinding *plugin* -- the registry

@@ -16,7 +16,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// GOOS=js overlay (k8flare, see third_party/k8s-js-overlays/README.md):
+// GOOS=js overlay (k8flare, see pkg/k8s-js-overlays/README.md):
 // identical to upstream registry.go EXCEPT the DynamicResources plugin is
 // omitted. Rationale is the Worker Loader's hard 64MiB cap on the
 // scheduler WASM, not taste: the DRA plugin's registry entry links

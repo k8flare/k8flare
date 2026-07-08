@@ -547,7 +547,7 @@ revInformer, kubeClient)` directly, which needs real (non-panicking)
      informers. Added both as real `leanClientType` entries (CRUD + Watch +
      UpdateStatus + the same `ApplyScale`/`GetScale`/`UpdateScale` stub set
      ReplicaSet/Deployment already have) and regenerated via
-     `go run ./cmd/k8flare-gen` — `third_party/clientgo-lean-overlays/kubernetes/
+     `go run ./cmd/k8flare-gen` — `pkg/clientgo-lean-overlays/kubernetes/
 typed/{core,apps}/v1` did **not** need touching: a prior correction
      (Phase 10, see that mirror's README) already stopped pruning
      `kubernetes/typed/<group>/<version>` at all (the real scheduler's

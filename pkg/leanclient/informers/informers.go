@@ -27,7 +27,7 @@
 // package's one-leaf-constructor-per-resource approach, that indirection
 // risks pulling in every resource's constructor across every group it
 // supports, most of which this repo's ten controllers never touch (see
-// third_party/clientgo-lean-overlays/README.md for why "referencing
+// pkg/clientgo-lean-overlays/README.md for why "referencing
 // anything in a package can link unrelated package-mate code" is a real,
 // measured risk here, not a theoretical one).
 package informers

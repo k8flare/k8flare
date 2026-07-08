@@ -9,7 +9,7 @@ import (
 // a client-go XInterface for. This table is this generator's own small
 // hand-written source of truth (mirrors pkg/apiserver/apidef.Table's
 // role for the apiserver side) -- see pkg/leanclient/leanclient.go's doc
-// comment and third_party/clientgo-lean-overlays/README.md for why this
+// comment and pkg/clientgo-lean-overlays/README.md for why this
 // package exists at all (client-go's own generated typed clients cost
 // ~45MiB of linked GOOS=js/wasm code regardless of scheme scope).
 //
@@ -21,8 +21,8 @@ import (
 // Run()) actually construct clients/informers for (confirmed by grep, not
 // guessed) -- adding a resource here requires a
 // matching hand-curated interface-only extraction in
-// third_party/clientgo-lean-overlays/kubernetes/typed/<group>/<version>/
-// and third_party/clientgo-lean-overlays/applyconfigurations/<group>/<version>/
+// pkg/clientgo-lean-overlays/kubernetes/typed/<group>/<version>/
+// and pkg/clientgo-lean-overlays/applyconfigurations/<group>/<version>/
 // first (see that directory's README.md), since the generated code below
 // implements interfaces declared there, not upstream's unpruned ones.
 type leanClientType struct {
@@ -47,7 +47,7 @@ type leanClientType struct {
 	APIPackageAlias string
 	APIPackagePath  string
 	// ApplyConfigPackageAlias/ApplyConfigPackagePath: this repo's pruned
-	// third_party/clientgo-lean-overlays/applyconfigurations/<group>/<version>
+	// pkg/clientgo-lean-overlays/applyconfigurations/<group>/<version>
 	// mirror -- only ever referenced for Apply/ApplyStatus's parameter type
 	// (see leanclient.go's doc comment for why a real implementation isn't
 	// provided: Server-Side Apply is unused by every controller/scheduler
@@ -83,7 +83,7 @@ type leanClientGroup struct {
 	// `schema.GroupVersion{Group: "", Version: "v1"}`.
 	GroupVersion string
 	// TypedPackageAlias/TypedPackagePath: this repo's pruned
-	// third_party/clientgo-lean-overlays/kubernetes/typed/<group>/<version>
+	// pkg/clientgo-lean-overlays/kubernetes/typed/<group>/<version>
 	// mirror, declaring the XInterface/XGetter this file implements.
 	TypedPackageAlias string
 	TypedPackagePath  string
@@ -710,7 +710,7 @@ func writeLeanClientType(b *strings.Builder, t leanClientType, typedPackageAlias
 
 	// Compile-time interface satisfaction check: if a k8s.io/client-go
 	// bump adds/changes a method on this type's XInterface (declared in
-	// the pruned third_party/clientgo-lean-overlays mirror), this fails
+	// the pruned pkg/clientgo-lean-overlays mirror), this fails
 	// go build here instead of failing silently at runtime (same
 	// reasoning as pkg/apiserver/apidef.Table's New/NewList closures).
 	fmt.Fprintf(b, "var _ %s.%sInterface = (*%s)(nil)\n\n", typedPackageAlias, t.Kind, t.Receiver)

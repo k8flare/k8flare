@@ -1,7 +1,9 @@
 //go:build js && wasm && !leanwidth
 
-// Adapted from third_party/leanclient-kcm's identical-purpose stubs.go
-// (originally scaffolded from k8s.io/client-go's kubernetes.Interface,
+// Adapted from the identical-purpose stubs.go of an earlier spike
+// (spikes/leanclient-kcm, since pruned to its FINDINGS-equivalent record --
+// no surviving source file to point at) -- originally scaffolded from
+// k8s.io/client-go's kubernetes.Interface,
 // v1.36.2-k3s1, by a throwaway script) -- that version's real group set
 // was {Core, Apps, Discovery, Coordination} (no Batch); this repo's
 // Clientset (clientset.go) implements {Core, Apps, Batch, Discovery,

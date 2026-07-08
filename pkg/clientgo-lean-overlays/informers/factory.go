@@ -3,7 +3,7 @@
 // (Core/Apps/Storage/Resource/Scheduling) this repo's real, unmodified
 // upstream kube-scheduler (pkg/scheduler.New's informerFactory parameter,
 // see docs/platform-verification.md's S8 kube-scheduler-wasm-fork entry)
-// actually calls. See third_party/clientgo-lean-overlays/README.md for why
+// actually calls. See pkg/clientgo-lean-overlays/README.md for why
 // this whole mirror exists; this file extends that same "prune the
 // aggregate, not the leaf packages" technique one level up, from
 // kubernetes/clientset.go (kubernetes.Interface, ~54 typed-client
@@ -289,7 +289,7 @@ type GenericInformer interface {
 // tree (see this file's doc comment) -- permanent panic stub, not a
 // narrowed real implementation.
 func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource) (GenericInformer, error) {
-	return nil, fmt.Errorf("k8flare: informers.SharedInformerFactory.ForResource pruned -- unused by pkg/scheduler (see third_party/clientgo-lean-overlays/informers/factory.go)")
+	return nil, fmt.Errorf("k8flare: informers.SharedInformerFactory.ForResource pruned -- unused by pkg/scheduler (see pkg/clientgo-lean-overlays/informers/factory.go)")
 }
 
 // SharedInformerFactory provides shared informers for the 5 API groups

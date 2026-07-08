@@ -4,7 +4,7 @@
 // against go.wasm.mod, whose k8s.io/client-go replace points at the
 // width-pruned .build/clientgo-lean-mirror (kubernetes.Interface has
 // only this repo's five real groups plus Discovery -- see
-// third_party/clientgo-lean-overlays/kubernetes/clientset_leanwidth.go).
+// pkg/clientgo-lean-overlays/kubernetes/clientset_leanwidth.go).
 // Merely importing a typed group package links that group's entire
 // generated API surface via its proto-registration init()s, so the wide
 // stubs.go (which imports all ~50 other groups to satisfy the full-width

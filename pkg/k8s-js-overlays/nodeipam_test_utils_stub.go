@@ -8,7 +8,7 @@
 // fake-clientset-backed informer factory used only in tests), the latter
 // of which pulls in *all* ~54 client-go groups' typed clients and
 // applyconfigurations transitively -- exactly the weight
-// third_party/clientgo-lean-overlays exists to avoid. Since this file is
+// pkg/clientgo-lean-overlays exists to avoid. Since this file is
 // dead code for RunControllerManager's actual path, stubbing it here is
 // simpler than mirroring/pruning client-go's fake and aggregate informers
 // packages just to keep an unused test fixture compiling.

@@ -41,15 +41,15 @@
 // unrelated sibling files (Service/ConfigMap/Secret/... apply-configs)
 // from a local copy of just k8s.io/client-go/applyconfigurations/core/v1
 // dropped an identical stub from 44.25MiB to 2.04MiB with zero code
-// changes elsewhere. third_party/clientgo-lean-overlays/ is the
+// changes elsewhere. pkg/clientgo-lean-overlays/ is the
 // consequence: a second local module mirror (alongside
-// third_party/k8s-js-overlays/ for k8s.io/kubernetes) pruning
+// pkg/k8s-js-overlays/ for k8s.io/kubernetes) pruning
 // k8s.io/client-go's kubernetes/typed/<group>/<version> and
 // applyconfigurations/<group>/<version> packages down to interface-only
 // declarations (typed) and empty structs (applyconfigurations) for
 // exactly the types this repo's controllers use -- see that directory's
 // README.md for the full mechanism and why go build -overlay can't do
-// this (GOMODCACHE restriction, same reason third_party/k8s-js-overlays/
+// this (GOMODCACHE restriction, same reason pkg/k8s-js-overlays/
 // exists).
 package leanclient
 

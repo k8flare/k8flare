@@ -6,7 +6,7 @@
 #
 # Why this exists, and why go.mod's `k8s.io/kubernetes` replace points
 # here instead of straight at github.com/k3s-io/kubernetes: see
-# third_party/k8s-js-overlays/README.md. Short version: `go build
+# pkg/k8s-js-overlays/README.md. Short version: `go build
 # -overlay` cannot patch files inside GOMODCACHE ("Files beneath
 # GOMODCACHE must not be replaced" -- verified by actually trying), so
 # the only way to change this one file's content is a module-level
@@ -15,14 +15,14 @@
 #
 # go.mod's replace line depends on .build/k8s-js-mirror existing on disk
 # -- run this after every fresh clone and after editing
-# third_party/k8s-js-overlays/upstream-module.txt (k8s version bump).
+# pkg/k8s-js-overlays/upstream-module.txt (k8s version bump).
 # `npm run build:wasm` runs it automatically; run it by hand for host
 # builds (cmd/agent, cmd/scheduler, cmd/controller-manager, go vet, etc.)
 # if you haven't run a wasm build yet in a fresh checkout.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OVERLAY_DIR="$ROOT/third_party/k8s-js-overlays"
+OVERLAY_DIR="$ROOT/pkg/k8s-js-overlays"
 DST="$ROOT/.build/k8s-js-mirror"
 
 UPSTREAM_MODULE="$(awk '{print $1}' "$OVERLAY_DIR/upstream-module.txt")"
@@ -77,7 +77,7 @@ cp "$OVERLAY_DIR/signal_js.go" "$TARGET_DIR/signal_js.go"
 # Same drift-check-then-swap treatment for the scheduler's in-tree plugin
 # registry: the js build drops the DynamicResources plugin entry to fit
 # the Worker Loader's hard 64MiB cap (see
-# third_party/k8s-js-overlays/scheduler-registry_js.go's doc comment for
+# pkg/k8s-js-overlays/scheduler-registry_js.go's doc comment for
 # the measured numbers); the !js build keeps upstream's registry
 # byte-for-byte so cmd/scheduler and the conformance CI are unaffected.
 UPSTREAM_REGISTRY="$SRC/pkg/scheduler/framework/plugins/registry.go"
@@ -149,17 +149,16 @@ PYEOF
 # queue/testing.go is a non-_test.go file (so it's part of the package's
 # normal build) whose test-helper exports are confirmed unused by any
 # non-test code in pkg/scheduler (grep) but import
-# k8s.io/client-go/kubernetes/fake, which third_party/clientgo-lean-
-# overlays' pruning breaks for the five groups it narrows. See
-# third_party/k8s-js-overlays/queue_testing_stub.go's doc comment.
+# k8s.io/client-go/kubernetes/fake, which pkg/clientgo-lean-overlays' pruning breaks for the five groups it narrows. See
+# pkg/k8s-js-overlays/queue_testing_stub.go's doc comment.
 cp "$OVERLAY_DIR/queue_testing_stub.go" "$DST/pkg/scheduler/backend/queue/testing.go"
 
 # Same treatment, same reasoning: pkg/controller/nodeipam/ipam/test/utils.go
 # is a non-_test.go test-fixture file whose k8s.io/client-go/kubernetes/fake
 # + aggregate k8s.io/client-go/informers imports break
-# third_party/clientgo-lean-overlays' pruning, for zero functional benefit
+# pkg/clientgo-lean-overlays' pruning, for zero functional benefit
 # (confirmed unused by non-test code). See
-# third_party/k8s-js-overlays/nodeipam_test_utils_stub.go's doc comment.
+# pkg/k8s-js-overlays/nodeipam_test_utils_stub.go's doc comment.
 cp "$OVERLAY_DIR/nodeipam_test_utils_stub.go" "$DST/pkg/controller/nodeipam/ipam/test/utils.go"
 
 echo "gen-k8s-js-mirror: done ($(find "$DST" -type f | wc -l | tr -d ' ') files at $DST)"

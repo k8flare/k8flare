@@ -24,7 +24,7 @@ import (
 )
 
 // Clientset implements kubernetes.Interface (this repo's pruned, 5-group
-// third_party/clientgo-lean-overlays/kubernetes/clientset.go version --
+// pkg/clientgo-lean-overlays/kubernetes/clientset.go version --
 // see that file's doc comment) by delegating each group accessor to the
 // matching pkg/leanclient/gen/<group> package's Client, all five sharing
 // cfg's Transport.

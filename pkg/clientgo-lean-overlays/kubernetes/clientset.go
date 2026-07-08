@@ -1,6 +1,6 @@
 // Hand-curated: byte-identical to upstream's Interface declaration
 // (kubernetes/clientset.go), NOT narrowed. See
-// third_party/clientgo-lean-overlays/README.md's "correction" note: an
+// pkg/clientgo-lean-overlays/README.md's "correction" note: an
 // earlier version of this file narrowed Interface to the five groups this
 // repo's controllers/scheduler actually call, expecting to avoid ever
 // needing the other ~49 groups' typed/*.go and applyconfigurations/*.go
@@ -14,7 +14,7 @@
 // calls a handful at runtime. Reverted to upstream's full interface (this
 // file, unmodified) + this repo's Clientset implementing the other ~49
 // methods as panic stubs (pkg/leanclient/clientset/stubs.go, adapted from
-// the older third_party/leanclient-kcm's identical pattern) instead.
+// an earlier spike's identical pattern, see that file's doc comment) instead.
 //go:build !leanwidth
 
 package kubernetes
