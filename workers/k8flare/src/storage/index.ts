@@ -4,14 +4,8 @@ import { prefixEnd, base64ToArrayBuffer, jsonResponse } from "./helpers.ts";
 import { currentRevision, type SqlExec } from "./queries.ts";
 import { handleReplay, broadcastEvent, type WatchHost } from "./watch.ts";
 import { storeGetCurrent, storeInsert, storeList } from "./store.ts";
-import { allocateClusterIPs, needsServiceIPAttention } from "./serviceip.ts";
 export { WatchHub } from "./watchhub.ts";
 
-// serviceip.ts's ClusterIP allocation wakes on-demand (see
-// armSafetyNetSoon) whenever a write needs its attention, so this is only
-// a safety net for a missed trigger — not the primary mechanism. Keeping
-// it long keeps idle clusters cheap.
-//
 // Phase 5 deleted this alarm loop's other three passes -- scheduler.ts
 // (PodCIDR allocation), endpoints.ts (Endpoints/EndpointSlice from
 // Service+Pod), and nodelifecycle.ts (Lease-staleness -> Unknown+taint+evict)
@@ -26,19 +20,17 @@ export { WatchHub } from "./watchhub.ts";
 // base). Both remain host-process/BYO-VM-only; workers/controllers cannot
 // currently host either for a deployed (non-BYO-VM) cluster.
 //
-// PodCIDR allocation (pkg/apiserver/nodecidr.go) and Endpoints/EndpointSlice
-// (pkg/apiserver/endpoints.go) were restored as synchronous reconciles
-// inside apiserver's Go WASM binary instead -- the same design ClusterIP
-// allocation below already used (Phase 3), so this alarm loop doesn't gain
-// any new work for either. ClusterIP allocation itself *did* eventually
-// move to apiserver too (pkg/apiserver/clusterip.go, Phase 3, despite this
-// comment previously and incorrectly claiming otherwise -- honest
-// correction, CLAUDE.md rule 4): allocateClusterIPs below is now dead code
-// on any path that goes through the Go create path, kept rather than
-// deleted (Phase 3's "concurrent agent owns workers/storage" boundary), and
-// this safety net is genuinely just a backstop for the -- currently
-// unreachable in practice -- case where a Service's ClusterIP was somehow
-// never assigned synchronously.
+// PodCIDR allocation (pkg/apiserver/nodecidr.go), Endpoints/EndpointSlice
+// (pkg/apiserver/endpoints.go), and ClusterIP allocation
+// (pkg/apiserver/clusterip.go) were all restored as synchronous reconciles
+// inside apiserver's Go WASM binary instead, so this alarm loop doesn't
+// gain any new work for them. ClusterIP allocation used to also carry a
+// TS-side backstop here (serviceip.ts, ridden on this same alarm) for the
+// case where a Service's ClusterIP was somehow never assigned
+// synchronously; deleted 2026-07-10 as a v3-design cleanup once it was
+// confirmed dead on every reachable path (Go's create path always
+// allocates synchronously) -- see git history for serviceip.ts if this
+// ever needs resurrecting.
 //
 // Node lifecycle (Lease staleness -> Unknown+taint+evict,
 // pkg/apiserver/nodelifecycle.go) could not move the same way: staleness is
@@ -46,11 +38,12 @@ export { WatchHub } from "./watchhub.ts";
 // to hook a synchronous call to. It runs from this alarm instead, via a
 // fire-and-forget ping to apiserver's
 // POST /internal/reconcile-node-lifecycle (see reconcileNodeLifecycle
-// below) -- the same event-armed-safety-net shape ClusterIP allocation
-// already uses here, not a new polling mechanism.
+// below) -- an event-armed safety net (armed by any Node write, see
+// needsNodeLifecycleAttention), not a fixed polling loop.
 const SAFETY_NET_INTERVAL_MS = 60_000;
-// How long to wait after a write that needs ClusterIP allocation before
-// waking the alarm, so a burst of writes coalesces into a single pass.
+// How long to wait after a write that needs node-lifecycle attention
+// before waking the alarm, so a burst of writes coalesces into a single
+// pass.
 const DEBOUNCE_MS = 1_000;
 
 // Coarse (prefix-only, no value inspection -- like the old
@@ -93,15 +86,14 @@ function needsNodesPing(key: string): boolean {
 
 /**
  * Whether writing this key means the node-lifecycle safety net (see
- * reconcileNodeLifecycle) should be pulled in to run soon, mirroring
- * needsServiceIPAttention's role for ClusterIP allocation. Coarse (any
- * write under nodes/, not just a brand-new Node): a freshly-registered Node
+ * reconcileNodeLifecycle) should be pulled in to run soon (see
+ * armSafetyNetSoon). Coarse (any write under nodes/, not just a
+ * brand-new Node): a freshly-registered Node
  * won't be stale for at least pkg/apiserver/nodelifecycle.go's
  * nodeMonitorGracePeriod, so in practice this mostly just guarantees the
  * safety net is armed at all once a cluster has its first Node -- without
- * this, a cluster with zero Services (nothing else arms the safety net) and
- * one freshly created Node would stay parked forever and never notice that
- * Node's Lease going stale later.
+ * this, a cluster's freshly created first Node would stay parked forever
+ * and never notice that Node's Lease going stale later.
  */
 function needsNodeLifecycleAttention(key: string): boolean {
   return key.startsWith("/registry/nodes/");
@@ -117,19 +109,15 @@ function hasLiveKeyUnderPrefix(sql: SqlExec, prefix: string): boolean {
 }
 
 /**
- * Whether the safety-net alarm should stay armed: serviceip.ts's ClusterIP
- * allocation backstop needs a live Service, and pkg/apiserver/
+ * Whether the safety-net alarm should stay armed: pkg/apiserver/
  * nodelifecycle.go's Lease-staleness reconcile needs a live Node to ever
  * have anything to check (see reconcileNodeLifecycle below -- it has no
  * event to wake it otherwise, so it rides this same alarm). A cluster with
- * neither has nothing left for the safety net to do -- it parks (cost
+ * no Nodes has nothing left for the safety net to do -- it parks (cost
  * invariants #1/#3: no alarm chain on an idle cluster).
  */
 function hasPendingSafetyNetWork(sql: SqlExec): boolean {
-  return (
-    hasLiveKeyUnderPrefix(sql, "/registry/services/") ||
-    hasLiveKeyUnderPrefix(sql, "/registry/nodes/")
-  );
+  return hasLiveKeyUnderPrefix(sql, "/registry/nodes/");
 }
 
 /** Minimal ctx shape Cluster needs: facets (FacetHost) plus DO storage/alarm access. */
@@ -170,8 +158,8 @@ export class Cluster {
     }
     this.initialized = true;
     // Only arm the safety net if there's already something for it to watch
-    // (e.g. this DO woke from hibernation/eviction with live Nodes/Services
-    // from before). A genuinely fresh/empty cluster stays parked until its
+    // (e.g. this DO woke from hibernation/eviction with a live Node from
+    // before). A genuinely fresh/empty cluster stays parked until its
     // first write arms it via wakeSchedulerSoon.
     if (hasPendingSafetyNetWork(this.sql)) {
       this.ctx.storage.setAlarm(Date.now() + SAFETY_NET_INTERVAL_MS);
@@ -180,9 +168,9 @@ export class Cluster {
 
   /**
    * Pull the safety-net alarm in to fire soon if it isn't already due
-   * sooner, so a Service needing a ClusterIP gets handled promptly instead
-   * of waiting for the next safety-net resync. Never pushes the alarm
-   * further out.
+   * sooner, so node-lifecycle attention (see needsNodeLifecycleAttention)
+   * gets handled promptly instead of waiting for the next safety-net
+   * resync. Never pushes the alarm further out.
    */
   private async armSafetyNetSoon(): Promise<void> {
     const target = Date.now() + DEBOUNCE_MS;
@@ -340,7 +328,6 @@ export class Cluster {
         null,
       );
       await broadcastEvent(this.host, this.sql, key, id);
-      if (needsServiceIPAttention(key, value)) await this.armSafetyNetSoon();
       if (needsNodeLifecycleAttention(key)) await this.armSafetyNetSoon();
       if (needsControllersPing(key)) void this.pingControllers();
       if (needsNodesPing(key)) void this.pingNodes();
@@ -371,7 +358,6 @@ export class Cluster {
         lease,
       };
       await broadcastEvent(this.host, this.sql, key, id);
-      if (needsServiceIPAttention(key, value)) await this.armSafetyNetSoon();
       if (needsNodeLifecycleAttention(key)) await this.armSafetyNetSoon();
       if (needsControllersPing(key)) void this.pingControllers();
       if (needsNodesPing(key)) void this.pingNodes();
@@ -399,7 +385,6 @@ export class Cluster {
       oldValue,
     );
     await broadcastEvent(this.host, this.sql, key, id);
-    if (needsServiceIPAttention(key, oldValue)) await this.armSafetyNetSoon();
     if (needsNodeLifecycleAttention(key)) await this.armSafetyNetSoon();
     if (needsControllersPing(key)) void this.pingControllers();
     if (needsNodesPing(key)) void this.pingNodes();
@@ -444,13 +429,12 @@ export class Cluster {
 
   async alarm(): Promise<void> {
     this.initialize();
-    await allocateClusterIPs(this.host, this.sql);
     await this.reconcileNodeLifecycle();
-    // Re-arm the safety net only if there's still a live Service or Node
-    // that needs ongoing monitoring (ClusterIP allocation, Lease-staleness
-    // detection); otherwise park (no alarm chain on an idle cluster -- cost
-    // invariants #1/#3). A write needing sooner attention than the next
-    // safety-net tick pulls this in via armSafetyNetSoon.
+    // Re-arm the safety net only if there's still a live Node that needs
+    // ongoing Lease-staleness monitoring; otherwise park (no alarm chain
+    // on an idle cluster -- cost invariants #1/#3). A write needing sooner
+    // attention than the next safety-net tick pulls this in via
+    // armSafetyNetSoon.
     if (hasPendingSafetyNetWork(this.sql)) {
       this.ctx.storage.setAlarm(Date.now() + SAFETY_NET_INTERVAL_MS);
     }
@@ -462,10 +446,10 @@ export class Cluster {
    * nodelifecycle.go's RegisterInternalHandlers), which detects Nodes whose
    * Lease has gone stale, marks them Unknown + taints them unreachable, and
    * evicts their Pods once stale for long enough. Runs on every safety-net
-   * tick (like allocateClusterIPs above) rather than being event-triggered:
-   * staleness is detected by the ABSENCE of an expected Lease renewal, so
-   * there is no write to arm this from the way armSafetyNetSoon arms
-   * ClusterIP allocation. Best-effort, same reasoning as pingControllers:
+   * tick rather than being event-triggered: staleness is detected by the
+   * ABSENCE of an expected Lease renewal, so there is no write to arm this
+   * from the way needsNodeLifecycleAttention arms other node writes.
+   * Best-effort, same reasoning as pingControllers:
    * a failure here must not fail whatever write happened to trigger this
    * alarm tick, and the next tick (while hasPendingSafetyNetWork stays
    * true) retries.
