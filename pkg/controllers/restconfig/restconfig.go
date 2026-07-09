@@ -1,10 +1,12 @@
 //go:build js && wasm
 
-// Package controllers hosts the WASM-resident kube-scheduler and
-// kube-controller-manager glue for workers/controllers. See
-// docs/platform-verification.md's S8 section for the execution shape this
-// implements (DO-hosted + WaitUntil-resident + event-armed alarm() safety
-// net) and spikes/s8-wasm-resident/FINDINGS.md for the underlying spike.
+// Package restconfig builds an in-memory *rest.Config for this repo's
+// WASM-resident control-plane binaries (pkg/controllers.
+// RunControllerManager, pkg/controllers/gc.RunGarbageCollector) -- see
+// docs/platform-verification.md's S8 section for the execution shape
+// this supports (DO-hosted + WaitUntil-resident + event-armed alarm()
+// safety net) and spikes/s8-wasm-resident/FINDINGS.md for the
+// underlying spike.
 //
 // cmd/scheduler and cmd/controller-manager are unchanged: their normal
 // startup path (NewSchedulerCommand/NewControllerManagerCommand ->
@@ -24,7 +26,20 @@
 // those two binaries themselves stay untouched; this is new, WASM-only
 // glue that duplicates only the handful of lines that would otherwise
 // touch a kubeconfig file.
-package controllers
+//
+// Its own package, separate from pkg/controllers/pkg/controllers/gc:
+// every *-wasm entrypoint needs RestConfig, but pkg/controllers and
+// pkg/controllers/gc each carry a different, mutually irrelevant real
+// upstream controller tree (six workload controllers vs. the garbage
+// collector) -- sharing a package with either would link the other's
+// reachable code into every binary regardless of whether it's ever
+// called (Go's dead-code elimination works at function granularity, not
+// well enough to prune an entire unrelated controller's worth of code
+// out of a shared package -- confirmed live: pkg/controllers/gc.go
+// briefly lived directly in pkg/controllers and measurably added ~4MB to
+// the KCM binary despite RunControllerManager never calling
+// RunGarbageCollector).
+package restconfig
 
 import (
 	restclient "k8s.io/client-go/rest"

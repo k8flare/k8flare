@@ -93,11 +93,14 @@ func decodeBody(body []byte) (runtime.Object, error) {
 // case below (see NamespacedResourceStores): swept when a Namespace object
 // itself is deleted ("namespaces" never exists as a key in any other
 // group's stores map, so that branch is naturally unreachable for group-API
-// calls even though they pass the same namespacedStores), and walked for
-// ownerReferences cascade GC (gc.go's CascadeDeleteDependents) whenever any
-// namespaced object is deleted, regardless of group -- deleting an apps/v1
+// calls even though they pass the same namespacedStores), and walked by
+// orphan.go's OrphanDependents whenever any namespaced object is deleted
+// with propagationPolicy=Orphan, regardless of group -- deleting an apps/v1
 // Deployment must reach ReplicaSets (apps/v1) and Pods (core/v1) alike, so
-// every group's HandleResource call passes the same full, cross-group slice.
+// every group's HandleResource call passes the same full, cross-group
+// slice. Background/Foreground cascade delete is no longer this
+// apiserver's job at all -- the real pkg/controllers/gc garbagecollector
+// controller handles it asynchronously.
 //
 // priorityClassStore, if non-nil, is the scheduling.k8s.io/v1 priorityclasses
 // store -- Pod is core/v1-only, but the store it needs to resolve
@@ -336,6 +339,27 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 				writeInternalError(w, err)
 				return
 			}
+			if store.namespaced && namespacedStores != nil && policy == metav1.DeletePropagationOrphan {
+				// Real GC (pkg/controllers/gc) handles Background/Foreground
+				// cascade delete asynchronously; Orphan is the one policy
+				// this apiserver still handles synchronously (see
+				// orphan.go). Uses each item's own namespace, not the
+				// request's (which is "" for an all-namespaces collection
+				// delete).
+				items, err := meta.ExtractList(obj)
+				if err != nil {
+					writeInternalError(w, fmt.Errorf("extract deleted %s list: %w", resource, err))
+					return
+				}
+				for _, item := range items {
+					if m := getObjectMeta(item); m != nil {
+						if err := OrphanDependents(ctx, namespacedStores, m.Namespace, m.UID); err != nil {
+							writeInternalError(w, err)
+							return
+						}
+					}
+				}
+			}
 			if svcList, ok := obj.(*corev1.ServiceList); ok {
 				for i := range svcList.Items {
 					ReleaseClusterIP(ctx, store.storage, &svcList.Items[i])
@@ -354,26 +378,6 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 				// below, without needing to iterate per-Pod.
 				if err := ReconcileNamespaceEndpoints(ctx, store.storage, namespace); err != nil {
 					log.Printf("endpoints reconciliation error for namespace %s: %v", namespace, err)
-				}
-			}
-			if store.namespaced && namespacedStores != nil {
-				// ownerReferences cascade GC (see gc.go) for every object
-				// this collection-delete just removed, e.g. `kubectl delete
-				// replicasets --all` should also take their Pods with it.
-				// Uses each item's own namespace, not the request's (which is
-				// "" for an all-namespaces collection delete).
-				items, err := meta.ExtractList(obj)
-				if err != nil {
-					writeInternalError(w, fmt.Errorf("extract deleted %s list: %w", resource, err))
-					return
-				}
-				for _, item := range items {
-					if m := getObjectMeta(item); m != nil {
-						if err := CascadeDeleteDependents(ctx, namespacedStores, m.Namespace, m.UID, policy); err != nil {
-							writeInternalError(w, err)
-							return
-						}
-					}
 				}
 			}
 			writeRuntimeObject(w, http.StatusOK, obj)
@@ -410,9 +414,12 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		if node, ok := obj.(*corev1.Node); ok {
 			ReleasePodCIDR(ctx, store.storage, node)
 		}
-		if store.namespaced && namespacedStores != nil {
+		if store.namespaced && namespacedStores != nil && policy == metav1.DeletePropagationOrphan {
+			// Real GC (pkg/controllers/gc) handles Background/Foreground
+			// cascade delete asynchronously; Orphan is the one policy
+			// this apiserver still handles synchronously (see orphan.go).
 			if m := getObjectMeta(obj); m != nil {
-				if err := CascadeDeleteDependents(ctx, namespacedStores, namespace, m.UID, policy); err != nil {
+				if err := OrphanDependents(ctx, namespacedStores, namespace, m.UID); err != nil {
 					writeInternalError(w, err)
 					return
 				}

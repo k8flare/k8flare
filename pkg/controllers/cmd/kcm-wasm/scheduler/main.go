@@ -27,13 +27,13 @@ import (
 
 	"github.com/k8flare/k8flare/pkg/cfruntime"
 	"github.com/k8flare/k8flare/pkg/cfruntime/cloudflare"
-	"github.com/k8flare/k8flare/pkg/controllers"
+	"github.com/k8flare/k8flare/pkg/controllers/restconfig"
 	"github.com/k8flare/k8flare/pkg/controllers/sched"
 )
 
 func main() {
 	token := cloudflare.GetenvDefault("K3S_TOKEN", "k8flare-dev-token")
-	restCfg := controllers.RestConfig("GATEWAY", token, cloudflare.Getenv("CLUSTER_BASE_PATH"))
+	restCfg := restconfig.RestConfig("GATEWAY", token, cloudflare.Getenv("CLUSTER_BASE_PATH"))
 	workers.ResidentService("scheduler", func(ctx context.Context) error {
 		return sched.RunScheduler(ctx, restCfg)
 	})

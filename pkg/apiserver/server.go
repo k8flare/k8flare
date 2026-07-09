@@ -110,10 +110,12 @@ func NewServer(cfg ServerConfig) *http.ServeMux {
 	// every other group even though they all pass the same
 	// namespacedStores). namespacedStores is passed to every group, not
 	// just core, because HandleResource's DELETE case also uses it for
-	// ownerReferences cascade GC (gc.go) -- e.g. deleting an apps/v1
-	// Deployment must be able to find and delete the ReplicaSets
-	// (apps/v1) and Pods (core/v1) it owns, which requires the union
-	// across every group, not just the deleted object's own. Pod is
+	// propagationPolicy=Orphan (orphan.go) -- e.g. orphaning an apps/v1
+	// Deployment's dependents must be able to find its ReplicaSets
+	// (apps/v1) and Pods (core/v1), which requires the union across
+	// every group, not just the deleted object's own (Background/
+	// Foreground cascade delete is the real pkg/controllers/gc
+	// garbagecollector controller's job, asynchronously). Pod is
 	// core/v1-only, but priority admission (priority.go) needs the
 	// scheduling.k8s.io/v1 priorityclasses store to resolve
 	// spec.priorityClassName -- threaded into every group's

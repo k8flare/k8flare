@@ -51,8 +51,9 @@ const SAFETY_NET_INTERVAL_MS = 60_000;
 // are not CPU-billed (cost invariant #2).
 const PUMP_WINDOW_MS = 25000;
 
-// LoadedComponent tracks one Loader-loaded control-plane binary (kcm or
-// sched) through manifest fetch, chunk assembly, and dynamic-worker load.
+// LoadedComponent tracks one Loader-loaded control-plane binary (kcm,
+// sched, or gc) through manifest fetch, chunk assembly, and
+// dynamic-worker load.
 interface LoadedComponent {
   entrypoint: Fetcher | null;
   // Resolves null when the component's manifest is absent from ASSETS
@@ -60,12 +61,19 @@ interface LoadedComponent {
   loading: Promise<Fetcher | null> | null;
 }
 
-// The two control-plane binaries this DO hosts as dynamic workers. Two,
-// not one: the combined KCM+scheduler binary exceeds the Loader's 64MiB
-// cap while each fits alone (workers/controllers/scheduler/main.go's doc
-// comment has the numbers). All LOADER.get() calls happen here in the
-// parent -- a loaded worker cannot load further workers (S14 Part 6).
-const COMPONENTS = ["kcm", "sched"] as const;
+// The control-plane binaries this DO hosts as dynamic workers. Separate
+// binaries, not one combined: each is already close to the Loader's
+// 64MiB cap alone (workers/controllers/scheduler/main.go's doc comment
+// has kcm/sched's numbers; pkg/controllers/gc's doc comment has gc's --
+// combining any two would exceed it). All LOADER.get() calls happen
+// here in the parent -- a loaded worker cannot load further workers
+// (S14 Part 6). gc (the real garbagecollector controller, replacing
+// pkg/apiserver's old synchronous CascadeDeleteDependents) is
+// deliberately its own isolate rather than folded into kcm: its
+// dependency-graph builder needs an informer/watch per resource type
+// across apidef.Table, which would compete for kcm's own 128MiB isolate
+// budget (see pkg/controllers/controllermanager.go's doc comment).
+const COMPONENTS = ["kcm", "sched", "gc"] as const;
 type ComponentName = (typeof COMPONENTS)[number];
 
 export class Controllers {
@@ -83,6 +91,7 @@ export class Controllers {
   components: Record<ComponentName, LoadedComponent> = {
     kcm: { entrypoint: null, loading: null },
     sched: { entrypoint: null, loading: null },
+    gc: { entrypoint: null, loading: null },
   };
 
   constructor(state: DurableObjectState, env: Env) {
@@ -226,6 +235,7 @@ export class Controllers {
       await this.state.storage.deleteAll();
       this.components.kcm = { entrypoint: null, loading: null };
       this.components.sched = { entrypoint: null, loading: null };
+      this.components.gc = { entrypoint: null, loading: null };
       return Response.json({ destroyed: true });
     }
     // Test kill switch (see Env.KCM_DISABLED): pkg/apiserver's go test
@@ -249,6 +259,7 @@ export class Controllers {
 
     const kcmResp = this.poke("kcm", request);
     const schedResp = this.poke("sched");
+    const gcResp = this.poke("gc");
     const statuses: Record<string, unknown> = {};
     if (schedResp) {
       statuses.scheduler = await schedResp
@@ -256,6 +267,13 @@ export class Controllers {
         .catch((err) => `dispatch failed: ${err}`);
     } else {
       statuses.scheduler = "not loaded";
+    }
+    if (gcResp) {
+      statuses.garbageCollector = await gcResp
+        .then((r) => r.json<Record<string, unknown>>().then((j) => j.garbageCollector ?? "up"))
+        .catch((err) => `dispatch failed: ${err}`);
+    } else {
+      statuses.garbageCollector = "not loaded";
     }
     if (!kcmResp) {
       statuses.controllerManager = "loading";

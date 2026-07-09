@@ -505,7 +505,7 @@ is cost-neutral by default; the deltas are:
 | Item                                                                                  | Delta                                                                | Estimate                                                                                                                                                                           |
 | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | apiserver as Loader dynamic worker                                                    | +1 unique loader id per ACTIVE cluster-day                           | $0.002/cluster/active-day; $0 idle (never loaded). Rebuild day = 2 ids briefly.                                                                                                    |
-| KCM/sched per-cluster loader ids (multi-cluster)                                      | ids become `kcm:<doName>@sha`                                        | $0.002 × loaded binaries × active clusters/day (today: 1 global id). Idle clusters load nothing.                                                                                   |
+| KCM/sched/gc per-cluster loader ids (multi-cluster)                                   | ids become `kcm:<doName>@sha` (and `gc:<doName>@sha`)                | $0.002 × loaded binaries × active clusters/day (today: kcm + gc = 2 global ids; sched still unshipped, see below). Idle clusters load nothing.                                     |
 | OpenAPI assets served via `env.ASSETS.fetch` from the Worker (run_worker_first: true) | request + CPU on discovery paths that previously bypassed the Worker | Negligible: kubectl discovery bursts only (~30 reqs/invocation), still asset-store-backed; no isolate-size cost.                                                                   |
 | apiserver dynamic-worker warm dispatch                                                | per-request `LOADER.get` (factory skipped) + entrypoint hop          | S19 measured warm 12–24 ms wall (dev), CPU-billed portion unchanged — the per-request Go instantiation is the same work today's `worker.mjs` does.                                 |
 | Static assets storage                                                                 | kcm (~60MB) + apiserver (~43MB) chunks + openapi                     | assets are free/flat (no per-GB assets fee at current pricing); no change to R2/DO storage.                                                                                        |
@@ -977,3 +977,70 @@ only runs synchronously inside an existing Pod-create request, the same
 in this path (LimitRange, compute-class routing) already has. No alarm,
 no polling, nothing added for a cluster that never creates a Pod or a
 PriorityClass.
+
+## Phase 9 (real garbagecollector controller) implementation (actual, 2026-07-09)
+
+Replaces `pkg/apiserver/gc.go`'s `CascadeDeleteDependents` (a hand-rolled,
+synchronous-in-request, namespace-scoped-only ownerReferences sweep) with
+the real, unmodified upstream `k8s.io/kubernetes/pkg/controller/
+garbagecollector`, hosted as a THIRD Loader-loaded dynamic worker
+(`gc:<doName>@sha`) inside the Controllers DO, alongside kcm and (still
+unshipped) sched -- see `pkg/controllers/gc`'s doc comment for the full
+design and `docs/general-purpose-k8s-plan.md`'s "ownerReferences GC"
+entry for the investigation this was deferred from.
+
+**Why a third isolate, not folded into kcm's binary.** The garbage
+collector's dependency-graph builder needs an informer/watch per
+resource type across the _entire_ `apidef.Table`, not the handful of
+types the six workload controllers already watch. Measured, not
+assumed: this code briefly lived directly in `pkg/controllers` (sharing
+kcm's package) and added ~4.15MB to the committed KCM binary (64,994,641
+-> 69,145,178 bytes) despite `RunControllerManager` never calling
+`RunGarbageCollector` -- Go's GOOS=js/wasm dead-code elimination does not
+prune an entire unrelated controller's reachable code out of a shared
+package. Splitting `pkg/controllers/gc` (and the REST-config builder,
+`pkg/controllers/restconfig`) into their own packages restored kcm to
+64,990,970 bytes and left gc at 65,205,198 bytes -- both comfortably
+under the Loader's 67,108,864-byte (64MiB) cap (1859KiB / 2068KiB
+headroom respectively).
+
+**New lean-overlay surface.** `k8s.io/controller-manager/pkg/
+informerfactory.InformerFactory`'s `ForResource` return type is fixed to
+`k8s.io/client-go/informers.GenericInformer` -- importing that type
+pulled in the _existing_ `pkg/clientgo-lean-overlays/informers/
+factory.go` overlay (built earlier for kube-scheduler's wide,
+non-leanwidth `kubernetes.Interface`), which doesn't compile under
+`-tags leanwidth`'s narrowed `kubernetes.Interface`. Fixed with a new
+`factory_leanwidth.go` sibling (`//go:build leanwidth`) declaring just
+the bare `GenericInformer`/`SharedInformerFactory` types this build
+needs, none of the real `SharedInformerFactory`'s Apps()/Core()/etc.
+accessors (which is what dragged in the wide-Interface-only informer
+subpackages). Also new: `pkg/leanclient.MetadataClient` (a
+`metadata.Interface` implementation reusing this repo's existing
+DoRaw+json verb/watch generics with `T = metav1.PartialObjectMetadata`)
+and `apidef.NewRESTMapper` (a static `meta.ResettableRESTMapper` built
+once from `apidef.Table` at call time -- no discovery round trip, since
+this project's resource set is fixed at build time; `Reset()` is a
+permanent no-op for the same reason).
+
+**Cost delta**: +1 Loader unique-load id per active cluster/day
+($0.002/cluster/active-day, same primitive as kcm's own line in the
+Single-Worker consolidation table above) -- idle clusters load nothing,
+same as kcm/apiserver. No new alarm: gc is poked the same
+`fetch()`-driven + safety-net-alarm-driven way kcm/sched already are
+(`workers/k8flare/src/controllers/index.ts`'s `COMPONENTS` array), no
+independent polling loop of its own.
+
+**User-visible behavior change, not just an implementation swap.** The
+old mechanism ran cascade delete synchronously inside the same HTTP
+request that deleted the owner (`kubectl delete deployment` didn't
+return until its ReplicaSets/Pods were gone too). The real
+garbagecollector runs asynchronously in its own dynamic-worker isolate:
+`kubectl delete deployment` now returns as soon as the Deployment itself
+is gone, with dependents cascading afterward on that isolate's own pump
+window -- eventually consistent, matching real upstream Kubernetes
+exactly, not the artificially-synchronous guarantee the old bespoke
+mechanism gave for free by construction. This was an explicit,
+user-approved tradeoff (not discovered after the fact), made because
+matching real Kubernetes semantics was judged more valuable than the
+synchronous convenience -- see git history for the decision point.

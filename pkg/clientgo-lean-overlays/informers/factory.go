@@ -47,10 +47,24 @@
 // framework/plugins/dynamicresources/dra_manager.go) -- generic.go (the
 // upstream file that implements it, via a GroupVersionResource switch
 // spanning all ~54 API types) is deleted from the mirror by
-// gen-clientgo-lean-mirror.sh, and GenericInformer/ForResource are
+// gen-clientgo-lean-mirror.ts, and GenericInformer/ForResource are
 // redeclared here as a permanent panic stub, same pattern as this
 // repo's other confirmed-unused-methods (pkg/leanclient/clientset/
 // stubs.go).
+//
+// !leanwidth only: this file's Apps()/Core()/Policy()/Resource()/
+// Scheduling()/Storage() accessors need kubernetes.Interface at the
+// FULL width kubernetes/clientset.go (also !leanwidth-only) provides --
+// same reason that file reverted to full width (see its own doc
+// comment). The `-tags leanwidth` KCM/garbage-collector builds
+// (pkg/controllers, pkg/controllers/gc.go) never use
+// informers.SharedInformerFactory at all (KCM uses its own
+// pkg/leanclient/informers; the garbage collector needs only the bare
+// GenericInformer type to satisfy k8s.io/controller-manager/pkg/
+// informerfactory.InformerFactory's return type) -- see
+// factory_leanwidth.go for their much smaller sibling.
+//go:build !leanwidth
+
 package informers
 
 import (

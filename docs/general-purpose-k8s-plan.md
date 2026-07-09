@@ -667,6 +667,37 @@ statefulset`'s own import graph touches `mount-utils`/`probe`/
    create landing after the final pass) — the real `garbagecollector`
    stays the actual fix.
 
+   **DONE (2026-07-09):** the real `garbagecollector` replaced
+   `pkg/apiserver/gc.go` entirely, resolving both open items above --
+   the PartialObjectMetadata client (`pkg/leanclient.MetadataClient`)
+   and `meta.ResettableRESTMapper` (`apidef.NewRESTMapper`, a static
+   mapper built from `apidef.Table` since this project's resource set
+   never changes at runtime, so no real discovery client is needed) now
+   exist, and `Watch` across arbitrary GVRs turned out to already work
+   via this repo's existing generic `Watch[T]` helper instantiated with
+   `T = metav1.PartialObjectMetadata` -- no new watch mechanism needed.
+   Runs as its own dynamic worker (`pkg/controllers/gc`, `pkg/
+controllers/cmd/gc-wasm`), a separate Loader isolate from kcm's six
+   workload controllers, since its graph builder watches every resource
+   type in `apidef.Table` and would otherwise compete for kcm's 128MiB
+   isolate budget. See `docs/cost-model.md`'s "Phase 9 (real
+   garbagecollector controller) implementation" for the full cost/size
+   accounting and the user-visible synchronous -> eventually-consistent
+   behavior change this introduced (an explicit, approved tradeoff, not
+   a regression discovered after the fact).
+
+   **Verified live (2026-07-10)** after fixing two blocking bugs found by
+   actually running it: the cfruntime fetch transport buffered response
+   bodies (deadlocking every watch -- which client-go v1.35+'s
+   WatchListClient default makes the reflector's INITIAL sync path, and
+   which had silently broken KCM's informers too since the 2026-07-08
+   cfruntime rewrite), and the GC informer factory's `stopCh != nil`
+   started-check (context.Background().Done() IS nil by spec). Full
+   account: `docs/platform-verification.md` S20. With both fixed,
+   `wrangler dev` shows Deployment -> KCM-created ReplicaSet ->
+   `kubectl delete deployment` -> GC cascade-deletes the ReplicaSet,
+   each within seconds.
+
 Verify: conformance `[sig-apps]` ReplicaSet/Deployment basics move into the
 required set — these are Conformance-tagged upstream, so this phase is the
 largest single jump in official conformance coverage. StatefulSet's own

@@ -3222,3 +3222,58 @@ added, since no new component was built or shipped -- the task's cost-
 accounting requirement was conditional on actually implementing the
 delegate, and this entry's conclusion is the negative-finding branch
 instead.
+
+---
+
+## S20: resident dynamic worker の watch ストリームが全滅していた退行(発見+修正 2026-07-10)
+
+**症状**: 実 garbagecollector を第 3 の dynamic worker として組み込む作業
+(pkg/controllers/gc)中、informer が一度も cache sync を完了しないことを発見。
+切り分けの結果、**KCM の informer も同一環境で一度も sync していなかった**
+(Deployment を作っても ReplicaSet が生成されない)— GC 固有ではなく resident
+DW 全体の退行。
+
+**根本原因(2 要因の合成)**:
+
+1. `pkg/cfruntime/cloudflare/fetch` (2026-07-08 のスクラッチ書き直し)が
+   レスポンスボディを `arrayBuffer()` で一括読みしていた。書き直し時に確認した
+   呼び出し元(kine GET・vault 読み等の有界 JSON)では正しかったが、
+   **Kubernetes の WATCH(終わらないストリーム)では `arrayBuffer()` の
+   Promise が永遠に解決しない**。
+2. client-go **v1.35 から `WatchListClient` feature が Beta/Default:true**
+   (.build/clientgo-lean-mirror/features/known_features.go)— reflector の
+   初回同期自体が list ではなく streaming watch(`watchList` +
+   sendInitialEvents)になるため、「watch だけでなく初回 sync から」全部
+   ブロックした。ミラーへの使い捨て println 計装で
+   `ListAndWatchWithContext ENTER` まで到達し `list()` に一度も入らないことを
+   実測して特定。
+
+**なぜテストで捕まらなかったか**: `go test ./pkg/apiserver/...` は
+`KCM_DISABLED=1` で wrangler dev を起動する(テスト中の Pod をコントローラーに
+触らせないため)。resident DW の informer 動作はどの自動テストにも守られて
+おらず、cfruntime 書き直し(apiserver の per-request 経路と /healthz でのみ
+検証)がこの退行を伴ったまま 2 日間気づかれなかった。
+
+**修正**: `fetch.go` の `responseFromJS` を ReadableStream の
+`getReader()`/`read()` チャンク逐次読みの `io.ReadCloser`(`streamBody`)に
+変更。参照実装は spikes/s8-wasm-resident/vendor/syumai-workers-fork の
+internal/jsutil/stream.go(旧 cfruntime が吸収していた形)。
+
+**検証(実機, wrangler dev)**: 修正後、(1) Deployment 作成 → KCM が 3 秒で
+ReplicaSet を生成、(2) Deployment 削除 → 実 garbagecollector が 3 秒で
+ReplicaSet をカスケード削除(非同期・eventually-consistent、実 k8s と同じ)。
+両者とも修正前は無反応だった。
+
+**付随して直した第 2 のバグ**: pkg/controllers/gc の informerFactory が
+「Start() 済みか」を `stopCh != nil` で判定していたが、resident DW の ctx は
+`context.Background()` であり、その `Done()` は仕様上 **nil チャネル**を返す
+("Done may return nil if this context can never be canceled")— 正当な
+stopCh の値がまさに nil なので判定が常に偽になり、informer が一度も
+Run されていなかった。明示的な `started bool` フラグに変更。
+
+**教訓**: (1) ストリーミングが要る呼び出し元(watch)の存在は「現在の
+呼び出し元を全部確認した」では守れない — トランスポート層は最初から
+ストリーミングにしておく。(2) KCM_DISABLED で守られていない領域
+(resident DW の実 reconcile 動作)に自動テストの穴がある — conformance CI
+(e2e-conformance.yml)がこの穴を埋める唯一のゲートなので、ローカル変更でも
+KCM に触れたら手動で Deployment→ReplicaSet の実機確認をすること。

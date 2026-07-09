@@ -127,11 +127,22 @@ fs.copyFileSync(
   path.join(OVERLAY_DIR, "informers/factory.go"),
   path.join(DST, "informers/factory.go"),
 );
+// factory_leanwidth.go: the `-tags leanwidth` (KCM/garbage-collector)
+// sibling -- just the bare GenericInformer type, none of factory.go's
+// SharedInformerFactory machinery (which needs the FULL kubernetes.
+// Interface neither of those binaries builds against). See its own doc
+// comment.
+fs.copyFileSync(
+  path.join(OVERLAY_DIR, "informers/factory_leanwidth.go"),
+  path.join(DST, "informers/factory_leanwidth.go"),
+);
 // generic.go implements ForResource via a switch spanning every API type
 // in all ~54 groups (the mechanism that would silently re-widen the
-// pruned factory back out) -- deleted; the pruned factory.go above
-// redeclares GenericInformer and stubs ForResource itself (confirmed
-// unused by pkg/scheduler's own call sites).
+// pruned factory back out) -- deleted; the pruned factory.go/
+// factory_leanwidth.go above redeclare GenericInformer and stub
+// ForResource themselves (confirmed unused by pkg/scheduler's own call
+// sites; the leanwidth build never calls ForResource on this type at
+// all -- see factory_leanwidth.go).
 fs.rmSync(path.join(DST, "informers/generic.go"), { force: true });
 
 console.log(`gen-clientgo-lean-mirror: done (${countFiles(DST)} files at ${DST})`);

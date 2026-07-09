@@ -91,29 +91,87 @@ func requestToJS(req *http.Request) (js.Value, error) {
 	return js.Global().Get("Request").New(req.URL.String(), opts), nil
 }
 
-// responseFromJS reads the JS Response body in one shot via
-// arrayBuffer() -- every caller of this client in this repo
-// (pkg/apiserver/storage.go, pkg/apiserver/cmd/apiserver-wasm's vault token read,
-// client-go's own REST decoding via RestConfig) does
-// json.NewDecoder(resp.Body).Decode(...), which works identically over a
-// pre-buffered reader.
+// responseFromJS wraps the JS Response body's ReadableStream in a
+// streaming io.ReadCloser (streamBody below), chunk by chunk as the
+// stream produces them. It MUST NOT buffer the whole body up front: an
+// earlier version read the body in one shot via arrayBuffer(), which
+// was correct for every caller checked at the time (kine GETs, vault
+// reads -- all bounded JSON) but silently deadlocked every Kubernetes
+// WATCH stream (an unbounded response whose arrayBuffer() promise never
+// settles), and client-go v1.35+ enables WatchListClient by default, so
+// even the reflector's INITIAL sync is a watch -- with the buffering
+// version, kube-controller-manager's and the garbage collector's
+// informers never completed a single sync (found live 2026-07-10, see
+// docs/platform-verification.md's cfruntime-rewrite correction).
 func responseFromJS(resp js.Value) (*http.Response, error) {
-	buf, err := awaitPromise(resp.Call("arrayBuffer"))
-	if err != nil {
-		return nil, fmt.Errorf("read response body: %w", err)
-	}
-	body := make([]byte, buf.Get("byteLength").Int())
-	js.CopyBytesToGo(body, js.Global().Get("Uint8Array").New(buf))
-
 	status := resp.Get("status").Int()
 	header := headerFromJS(resp.Get("headers"))
+
+	var body io.ReadCloser = http.NoBody
+	if stream := resp.Get("body"); !stream.IsNull() && !stream.IsUndefined() {
+		body = &streamBody{stream: stream}
+	}
+
+	contentLength := int64(-1) // unknown (e.g. a streaming watch)
+	if cl := header.Get("Content-Length"); cl != "" {
+		if n, err := strconv.ParseInt(cl, 10, 64); err == nil {
+			contentLength = n
+		}
+	}
 	return &http.Response{
 		Status:        strconv.Itoa(status) + " " + resp.Get("statusText").String(),
 		StatusCode:    status,
 		Header:        header,
-		Body:          io.NopCloser(bytes.NewReader(body)),
-		ContentLength: int64(len(body)),
+		Body:          body,
+		ContentLength: contentLength,
 	}, nil
+}
+
+// streamBody adapts a JS ReadableStream to io.ReadCloser: each Read
+// pulls at most one chunk from the stream's reader when the local
+// buffer is empty (same shape as the reference implementation this
+// repo's earlier vendored syumai/workers fork carried in
+// internal/jsutil/stream.go, which the original cfruntime absorbed --
+// see spikes/s8-wasm-resident/vendor/syumai-workers-fork).
+type streamBody struct {
+	stream js.Value
+	reader js.Value // lazily: stream.getReader()
+	buf    bytes.Buffer
+	eof    bool
+}
+
+func (b *streamBody) Read(p []byte) (int, error) {
+	if b.buf.Len() == 0 {
+		if b.eof {
+			return 0, io.EOF
+		}
+		if b.reader.IsUndefined() {
+			b.reader = b.stream.Call("getReader")
+		}
+		result, err := awaitPromise(b.reader.Call("read"))
+		if err != nil {
+			return 0, fmt.Errorf("read response stream: %w", err)
+		}
+		if result.Get("done").Bool() {
+			b.eof = true
+			return 0, io.EOF
+		}
+		value := result.Get("value") // a Uint8Array chunk
+		chunk := make([]byte, value.Get("byteLength").Int())
+		js.CopyBytesToGo(chunk, value)
+		b.buf.Write(chunk)
+	}
+	return b.buf.Read(p)
+}
+
+func (b *streamBody) Close() error {
+	if !b.reader.IsUndefined() {
+		b.reader.Call("cancel")
+	} else if !b.stream.IsUndefined() && !b.stream.IsNull() {
+		b.stream.Call("cancel")
+	}
+	b.eof = true
+	return nil
 }
 
 func headerFromJS(headers js.Value) http.Header {

@@ -24,17 +24,25 @@ BUILD := .build/wasm
 CAP := 67108864 # the Worker Loader's 64MiB total-module-bytes cap (S14 Part 2)
 
 APISERVER_SRC := $(shell find pkg/apiserver -name '*.go') go.mod go.sum
-KCM_SRC := $(shell find pkg/controllers pkg/leanclient -name '*.go') \
+# KCM_SRC excludes pkg/controllers/gc and its cmd/gc-wasm entrypoint: they
+# share the pkg/controllers/cmd parent directory but not a package with
+# controllermanager.go (see pkg/controllers/gc's doc comment), so kcm.
+# manifest.json has no reason to rebuild when only GC-specific source
+# changes.
+KCM_SRC := $(shell find pkg/controllers pkg/leanclient -name '*.go' -not -path 'pkg/controllers/gc/*' -not -path 'pkg/controllers/cmd/gc-wasm/*') \
+	go.wasm.mod \
+	$(shell find pkg/clientgo-lean-overlays pkg/k8s-js-overlays -type f)
+GC_SRC := $(shell find pkg/controllers/gc pkg/controllers/restconfig pkg/controllers/cmd/gc-wasm pkg/leanclient pkg/apiserver/apidef -name '*.go') \
 	go.wasm.mod \
 	$(shell find pkg/clientgo-lean-overlays pkg/k8s-js-overlays -type f)
 NODES_AGENT_SRC := $(shell find pkg/agent cmd/agent -name '*.go') go.mod go.sum
 
-.PHONY: all wasm wasm-apiserver wasm-kcm gen-mirrors gen check vet test dev deploy clean-wasm nodes-agent setup-tunnel help
+.PHONY: all wasm wasm-apiserver wasm-kcm wasm-gc gen-mirrors gen check vet test dev deploy clean-wasm nodes-agent setup-tunnel help
 
 all: wasm
 
 help:
-	@echo "targets: wasm wasm-apiserver wasm-kcm gen check vet test dev deploy clean-wasm nodes-agent setup-tunnel"
+	@echo "targets: wasm wasm-apiserver wasm-kcm wasm-gc gen check vet test dev deploy clean-wasm nodes-agent setup-tunnel"
 
 ## gen-mirrors: regenerate .build/{k8s-js,clientgo-lean}-mirror, the local
 ## copies go.mod's k8s.io/kubernetes and k8s.io/client-go replace directives
@@ -50,13 +58,14 @@ $(ASSETS)/wasm_exec.js: $(WASM_TOOLS)/patch-wasm-exec.ts $(WASM_TOOLS)/gomod.ts
 	@mkdir -p $(ASSETS)
 	node $(WASM_TOOLS)/patch-wasm-exec.ts "$$(go env GOROOT)/lib/wasm/wasm_exec.js" $@
 
-## wasm: build both WASM chunks (apiserver + kcm); skipped per-binary if its inputs are unchanged
-wasm: $(ASSETS)/apiserver.manifest.json $(ASSETS)/kcm.manifest.json
+## wasm: build all WASM chunks (apiserver + kcm + gc); skipped per-binary if its inputs are unchanged
+wasm: $(ASSETS)/apiserver.manifest.json $(ASSETS)/kcm.manifest.json $(ASSETS)/gc.manifest.json
 
-## wasm-apiserver / wasm-kcm: build just one chunk -- e.g. CI jobs that
-## never touch KCM skip its ~2min wasm-opt pass this way.
+## wasm-apiserver / wasm-kcm / wasm-gc: build just one chunk -- e.g. CI
+## jobs that never touch KCM/GC skip their ~2min wasm-opt pass this way.
 wasm-apiserver: $(ASSETS)/apiserver.manifest.json
 wasm-kcm: $(ASSETS)/kcm.manifest.json
+wasm-gc: $(ASSETS)/gc.manifest.json
 
 $(ASSETS)/apiserver.manifest.json: $(APISERVER_SRC) $(ASSETS)/wasm_exec.js | gen-mirrors
 	@command -v wasm-opt >/dev/null 2>&1 || { echo "wasm-opt not found -- install binaryen (mise: aqua:web-assembly/binaryen, apt/brew: binaryen)" >&2; exit 1; }
@@ -102,6 +111,36 @@ $(ASSETS)/kcm.manifest.json: $(KCM_SRC) $(ASSETS)/wasm_exec.js | gen-mirrors
 	fi; \
 	echo "kcm: $$raw bytes ($$(( ($(CAP) - $$raw) / 1024 ))KiB headroom under the 64MiB Loader cap)"; \
 	node $(WASM_TOOLS)/chunk-wasm.ts $(BUILD)/kcm.opt.wasm $(ASSETS) kcm
+
+# GC: the real, unmodified upstream garbagecollector controller
+# (pkg/controllers/gc), a THIRD dynamic worker alongside kcm/sched --
+# deliberately its own binary, not folded into kcm.manifest.json's
+# RunControllerManager, because its dependency-graph builder needs an
+# informer/watch per resource type across apidef.Table, which would
+# compete for the same 128MiB isolate memory budget that already forced
+# five other controllers out of that binary once (see
+# pkg/controllers/controllermanager.go's doc comment). Same
+# go.wasm.mod + -tags leanwidth + wasm-opt -Oz shape as kcm above --
+# also needed a lean overlay for k8s.io/client-go/informers' aggregate
+# GenericInformer type (pkg/clientgo-lean-overlays/informers/
+# factory_leanwidth.go) that kcm never needed.
+$(ASSETS)/gc.manifest.json: $(GC_SRC) $(ASSETS)/wasm_exec.js | gen-mirrors
+	@command -v wasm-opt >/dev/null 2>&1 || { echo "wasm-opt not found -- install binaryen (mise: aqua:web-assembly/binaryen, apt/brew: binaryen)" >&2; exit 1; }
+	@mkdir -p $(ASSETS) $(BUILD)
+	echo "== gc (./pkg/controllers/cmd/gc-wasm)"; \
+	GOFLAGS=-modfile=go.wasm.mod GOOS=js GOARCH=wasm go build -tags leanwidth -ldflags="-s -w" -trimpath -o $(BUILD)/gc.wasm ./pkg/controllers/cmd/gc-wasm; \
+	wasm-opt -Oz \
+		--strip-debug --strip-producers \
+		--enable-bulk-memory --enable-nontrapping-float-to-int \
+		--enable-sign-ext --enable-mutable-globals \
+		$(BUILD)/gc.wasm -o $(BUILD)/gc.opt.wasm; \
+	raw=$$(wc -c < $(BUILD)/gc.opt.wasm | tr -d ' '); \
+	if [ "$$raw" -ge $(CAP) ]; then \
+		echo "::error::gc ($$raw bytes) exceeds the Worker Loader's 64MiB cap ($(CAP) bytes) -- the dynamic worker cannot load. Trim dependencies (see docs/platform-verification.md S14)." >&2; \
+		exit 1; \
+	fi; \
+	echo "gc: $$raw bytes ($$(( ($(CAP) - $$raw) / 1024 ))KiB headroom under the 64MiB Loader cap)"; \
+	node $(WASM_TOOLS)/chunk-wasm.ts $(BUILD)/gc.opt.wasm $(ASSETS) gc
 
 ## gen: regenerate derived artifacts from pkg/apiserver/apidef.Table and go.mod's k8s.io/kubernetes pin
 gen: | gen-mirrors
@@ -151,6 +190,7 @@ deploy: nodes-agent
 clean-wasm:
 	rm -f $(ASSETS)/apiserver.wasm.part* $(ASSETS)/apiserver.manifest.json
 	rm -f $(ASSETS)/kcm.wasm.part* $(ASSETS)/kcm.manifest.json
+	rm -f $(ASSETS)/gc.wasm.part* $(ASSETS)/gc.manifest.json
 	rm -f $(ASSETS)/wasm_exec.js
 
 ## setup-tunnel: guided Cloudflare Tunnel + VPC Service setup for BYO-VM

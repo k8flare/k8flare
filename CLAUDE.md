@@ -14,32 +14,55 @@ Kubernetes offers scale-to-zero control planes")。**この特性を壊す変更
 `k8flare` 自身のコードを最小化し、k8s/k3s の実物資産(Go パッケージ・
 実バイナリ)を最大限再利用する方向に作り直している。手書きで再実装しない。
 
-## アーキテクチャ(1画面)
+## アーキテクチャ(v3 ターゲット設計 — 2026-07-10)
+
+本番前の検証フェーズにつき、既存コードや稼働中クラスタの DO データの移行は
+設計制約にしない(ユーザー決定 2026-07-10)。k8s 制御プレーンを Cloudflare の
+**3 プリミティブ**だけに載せるのが理想形:
+
+1. **Dynamic Worker(LOADER + ASSETS チャンク)= 計算。** 制御プレーンロジック
+   (Go WASM)はすべてここで動く。永続状態は持たない(メモ化は isolate 生存期間
+   限定)。契約は 2 形態のみ:
+   - **per-request**(apiserver): リクエスト毎に fresh な Go インスタンス
+   - **resident**(kcm / gc): poke ごとの有界 waitUntil ポンプ、event-armed
+   各バイナリは Loader の 64MiB raw cap 制約(Makefile の manifest レシピが
+   ゲート)。**エントリポイント毎に pkg サブパッケージを分離する** — 同一
+   パッケージに同居させると呼ばれないコントローラーのコードまでリンクされる
+   (kcm 実測 +4.15MB、2026-07-09。pkg/controllers/restconfig の doc comment)。
+2. **Durable Object + Facets = 状態。** Dynamic Worker が持てないデータはすべてここ。
+   - Cluster DO: root = リビジョン権威 + kine ログ。facets = ns/<name>・
+     events-log・ca-vault(+ per-cluster token vault)
+   - WatchHub DO: watch fan-out(hibernation WebSocket 必須)
+   - CFContainersScheduler + NodeVM{Small,Medium,Large} DO(containers):
+     Pod 実行(任意 OCI 実行が要るため Containers)
+3. **ASSETS = 静的。** デプロイ毎に不変なもの: WASM チャンク(≤24MiB×N +
+   sha256 manifest)・patched wasm_exec.js・OpenAPI / discovery 文書。
+
+シェル Worker は workers/k8flare の 1 つだけ(唯一のデプロイ単位・唯一の公開
+fetch)。その TS の役割は (1) ルーティング/認証 (2) LOADER 呼び出し(loaded
+worker からは不可、S14) (3) DO クラスの器 (4) bindings グルー、に限定し、
+**ビジネスロジックを TS に書かない**(Go-first の徹底)。
 
 ```
 kubectl / kubelet(BYO VM: cmd/agent 無改変 k3s embed)
    │ HTTPS + token
    ▼
-workers/k8flare — 唯一のデプロイ単位・唯一の公開 Worker(6 Worker を統合、S19)
-   src/index.ts(公開 fetch = 旧 gateway ルーティング: 認証一元化・
-   watch ストリーミング・kubelet proxy(VPC)・/nodes/* オペレータ面。
-   /internal/* は外部からはクラスタトークン必須)
-   ├──► apiserver: 実 Go WASM(apidef テーブル駆動、pkg/apiserver/cmd/apiserver-wasm)を
-   │    Static Assets ≤24MiB チャンク + LOADER で Dynamic Worker 起動
-   │    (S19: per-request 契約 = worker.mjs 相当。10MiB gzip 上限から解放。
-   │    kine への経路は STORAGE 自己バインディング(ClusterLoopback
-   │    entrypoint)経由 — Loader env に DO namespace は渡せないため)
-   ├─ Cluster DO: リビジョン権威・kine ログ・facet(ns/<name>, events-log, ca-vault)
-   ├─ WatchHub DO: watch fan-out(hibernation 必須)
-   ├─ Controllers DO: 実 kube-controller-manager(pkg/controllers/cmd/kcm-wasm)を同じ
-   │    ASSETS+LOADER で起動(S14。64MiB raw Loader 上限、wasm-opt -Oz —
-   │    Makefile の kcm.manifest.json レシピがゲート)。動的 Worker は poke
-   │    (Cluster DO の pingControllers 直呼び / event-armed 安全網 alarm)
-   │    ごとに有界 waitUntil ウィンドウでのみポンプされる。
-   │    **実 kube-scheduler は GOOS=js で構文コンパイル不可** — BYO VM /
-   │    ホストプロセス専用に固定(判断根拠は docs/platform-verification.md)。
-   └─ CFContainersScheduler + NodeVM{Small,Medium,Large} DO(containers):
-        Pod-on-Containers ノードバックエンド(任意 OCI 実行が要るため Containers)
+workers/k8flare(シェル: 認証一元化・watch ストリーミング・kubelet proxy・
+   │            /nodes/* オペレータ面。/internal/* は外部からはクラスタトークン必須)
+   ├──► apiserver DW(per-request。apidef テーブル駆動、
+   │      pkg/apiserver/cmd/apiserver-wasm。kine への経路は STORAGE 自己バインディング
+   │      (ClusterLoopback entrypoint)経由 — Loader env に DO namespace は渡せない、S2)
+   ├──► kcm DW(resident。実 kube-controller-manager の 6 ワークロードコントローラー、
+   │      pkg/controllers/cmd/kcm-wasm。poke = Cluster DO の pingControllers 直呼び /
+   │      event-armed 安全網 alarm)
+   ├──► gc DW(resident。実 garbagecollector、pkg/controllers/cmd/gc-wasm。
+   │      wrangler dev で Deployment→ReplicaSet カスケード削除を実機確認済み
+   │      2026-07-10。kubectl delete は非同期 eventually-consistent へ変更 —
+   │      実 k8s と同じ挙動、ユーザー承認済み)
+   ├──► sched DW(保留: 実 kube-scheduler は wasm-opt 後 101MB で 64MiB cap 超。
+   │      当面 BYO VM / ホストプロセス(cmd/scheduler)で運用)
+   ├─ Cluster DO / WatchHub DO / CFContainersScheduler + NodeVM DO(上記 2.)
+   └─ ASSETS(上記 3.)
 ```
 
 PV/PVC/StorageClass: 汎用 CRUD リソースとしては存在するが、動的プロビジョナーは
@@ -67,7 +90,7 @@ S19 の 3 ゲート検証を経て単一 Worker に統合。旧クラスタの D
 
 ```
 pnpm install                     # 初回のみ
-make wasm                        # Go を変更したら必須。apiserver+KCM のチャンクを
+make wasm                        # Go を変更したら必須。apiserver+KCM+GC のチャンクを
                                  # workers/k8flare/assets/wasm/ に生成(Make のファイル依存関係で
                                  # 差分ベースにスキップ。KCM の wasm-opt 込みで約2分だが、対象バイナリの
                                  # ソースが変わっていなければ即スキップ。強制再ビルドは `make clean-wasm wasm`)
