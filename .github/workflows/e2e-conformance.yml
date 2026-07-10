@@ -379,10 +379,21 @@ jobs:
             -H "Authorization: Bearer k8flare-dev-token" | jq -r '.spec.clusterIP')
           echo "ClusterIP: $CLUSTER_IP"
 
+          # Retry loop, not a single wget: a first-run failure (2026-07-10,
+          # run 29110617118) showed the probe container running for exactly
+          # 5s (wget's -T5 timeout) before exiting 1 -- a TCP connect that
+          # hung rather than an immediate refusal, even though the backend
+          # Pod already reported phase=Running and its EndpointSlice had
+          # already gone ready=true 1.5s earlier. That points at kube-proxy's
+          # iptables sync lagging slightly behind the endpoint becoming
+          # ready, not the backend container itself -- so the fix retries
+          # past that lag instead of trying to wait on a single readiness
+          # signal that isn't guaranteed to cover kube-proxy's own sync
+          # delay.
           echo "=== creating a SEPARATE probe Pod that curls the ClusterIP and exits accordingly (restartPolicy: Never) ==="
           curl -skf -X POST https://127.0.0.1:8787/api/v1/namespaces/default/pods \
             -H "Authorization: Bearer k8flare-dev-token" -H "Content-Type: application/json" \
-            -d "{\"apiVersion\":\"v1\",\"kind\":\"Pod\",\"metadata\":{\"name\":\"clusterip-verify-probe\"},\"spec\":{\"restartPolicy\":\"Never\",\"containers\":[{\"name\":\"probe\",\"image\":\"docker.io/library/busybox:1.36\",\"command\":[\"sh\",\"-c\",\"wget -T5 -O- http://$CLUSTER_IP:80/ | grep -q 'Welcome to nginx' && exit 0 || exit 1\"]}]}}" > /dev/null
+            -d "{\"apiVersion\":\"v1\",\"kind\":\"Pod\",\"metadata\":{\"name\":\"clusterip-verify-probe\"},\"spec\":{\"restartPolicy\":\"Never\",\"containers\":[{\"name\":\"probe\",\"image\":\"docker.io/library/busybox:1.36\",\"command\":[\"sh\",\"-c\",\"i=0; while [ \$i -lt 10 ]; do wget -T3 -O- http://$CLUSTER_IP:80/ 2>/dev/null | grep -q 'Welcome to nginx' && exit 0; i=\$((i+1)); sleep 2; done; exit 1\"]}]}}" > /dev/null
 
           echo "Waiting for the probe Pod to complete..."
           PHASE=""
