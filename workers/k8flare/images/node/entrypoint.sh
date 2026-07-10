@@ -5,7 +5,17 @@
 # cgroup ("invalid state" otherwise -- hit live in S15's first local run).
 set -e
 if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
-  mkdir -p /sys/fs/cgroup/init
+  # Best-effort, like its two sibling lines below (this one was missing
+  # its own `|| true` -- under `set -e` that's not "skip this step",
+  # it's "abort the whole entrypoint with no further output": a
+  # container run without cgroup-namespace write access (e.g. a plain,
+  # non-privileged `wrangler dev` local Docker run, not a real
+  # Firecracker microVM) exits 1 here before k8flare-agent ever starts,
+  # surfacing upstream only as `@cloudflare/containers`' generic
+  # "Container exited with unexpected exit code: 1" -- no entrypoint
+  # output at all, since this line never got the chance to fail loudly.
+  # Reproduced live in CI 2026-07-11 (smoke-nodes.yml).
+  mkdir -p /sys/fs/cgroup/init || true
   xargs -rn1 < /sys/fs/cgroup/cgroup.procs > /sys/fs/cgroup/init/cgroup.procs || true
   sed -e 's/ / +/g' -e 's/^/+/' < /sys/fs/cgroup/cgroup.controllers > /sys/fs/cgroup/cgroup.subtree_control || true
 fi

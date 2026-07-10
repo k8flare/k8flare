@@ -385,6 +385,22 @@ jobs:
           }
           echo "Unpullable image correctly left the Pod Failed."
 
+      # NodeVM containers only ever surface a generic
+      # "Container exited with unexpected exit code: N" in wrangler.log
+      # -- the container's own stdout/stderr (e.g. entrypoint.sh output)
+      # isn't captured there at all. Diagnosing exit-code-1 boot
+      # failures previously meant re-running with a manually attached
+      # `docker logs`; dump every NodeVM container's logs here instead
+      # so a failed run is self-diagnosing from its own artifact.
+      - name: Dump NodeVM container state on failure
+        if: failure()
+        run: |
+          docker ps -a --filter "name=PodContainer" > "$RUNNER_TEMP/docker-ps.log" 2>&1 || true
+          for c in $(docker ps -a --filter "name=PodContainer" --format '{{.Names}}'); do
+            echo "=== docker logs $c ===" >> "$RUNNER_TEMP/docker-logs.log"
+            docker logs "$c" >> "$RUNNER_TEMP/docker-logs.log" 2>&1 || true
+          done
+
       - name: Tear down
         if: always()
         run: |
@@ -399,4 +415,6 @@ jobs:
           name: smoke-nodes-logs
           path: |
             ${{ runner.temp }}/wrangler.log
+            ${{ runner.temp }}/docker-ps.log
+            ${{ runner.temp }}/docker-logs.log
           if-no-files-found: ignore
