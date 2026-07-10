@@ -27,6 +27,22 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
+      # go.mod's k8s.io/kubernetes and k8s.io/client-go replaces point
+      # into gitignored .build/ mirrors, so EVERY go command below --
+      # starting with the plain `go mod download` -- fails on a fresh
+      # checkout until they exist. The gen scripts self-bootstrap: they
+      # resolve the pinned upstream via `go mod download -json
+      # module@version`, independent of the replace they're generating
+      # (packages/wasm-build/src/gomod.ts). This was broken on every
+      # main push since the v2 rearchitecture landed (2026-07-08..10,
+      # all runs red in ~30s) -- the e2e workflow never hit it because
+      # its first Go-touching step is `npm run build:wasm`, whose make
+      # target orders gen-mirrors first.
+      - name: Generate .build/ module mirrors (go.mod replace targets)
+        run: |
+          node packages/wasm-build/src/gen-k8s-js-mirror.ts
+          node packages/wasm-build/src/gen-clientgo-lean-mirror.ts
+
       # cmd/k8flare-gen's OpenAPI generator (cmd/k8flare-gen/openapi.go)
       # reads api/openapi-spec/swagger.json straight off disk from
       # k8s.io/kubernetes's module cache directory (found via `go list -m`)
