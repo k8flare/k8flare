@@ -303,92 +303,41 @@ export async function getPod(env: Env, namespace: string, name: string): Promise
 
 // ---- Task #13: virtual kube-proxy (ClusterIP -> backing Pod resolution) ----
 //
-// Minimal read-only shapes this module needs from real corev1.Service and
-// discoveryv1.EndpointSlice -- same "just enough fields" approach as
-// PodObject/NodeObject above.
+// The ClusterIP -> Service -> EndpointSlice resolution itself moved into
+// Go (pkg/apiserver/vkubeproxy.go's ResolveVKubeProxyTarget), which runs
+// in-process against this apiserver's own ResourceStore -- one HTTP hop
+// from here instead of the two separate round trips (a Service lookup,
+// then an EndpointSlice lookup) this file used to make. This module just
+// carries the result back to podproxy.ts's handleVKubeProxy, which still
+// owns the final hop (forwarding to the resolved Pod's NodeVM Durable
+// Object -- something only the shell Worker can do, per forwardToPod's
+// doc comment).
 
-export interface ServiceObject {
-  apiVersion: "v1";
-  kind: "Service";
-  metadata: { name: string; namespace: string };
-  spec?: {
-    clusterIP?: string;
-    ports?: Array<{ name?: string; port: number; protocol?: string }>;
-  };
-}
-
-export interface ServiceList {
-  items: ServiceObject[];
-}
-
-export interface EndpointSliceEndpoint {
-  addresses: string[];
-  conditions?: { ready?: boolean };
-  targetRef?: { kind?: string; name?: string; namespace?: string; uid?: string };
-}
-
-export interface EndpointSlicePort {
-  name?: string;
-  port?: number;
-  protocol?: string;
-}
-
-export interface EndpointSliceObject {
-  apiVersion: "discovery.k8s.io/v1";
-  kind: "EndpointSlice";
-  metadata: { name: string; namespace: string };
-  endpoints?: EndpointSliceEndpoint[];
-  ports?: EndpointSlicePort[];
-}
-
-export interface EndpointSliceList {
-  items: EndpointSliceObject[];
+export interface VKubeProxyTarget {
+  podUID: string;
+  containerPort: number;
 }
 
 /**
- * GET /api/v1/services?fieldSelector=spec.clusterIP=<ip> (all namespaces --
- * pkg/apiserver/store.go allows spec.clusterIP as a real field selector,
- * added for kube-proxy's own Service informer). ClusterIPs are unique
- * cluster-wide, so at most one Service ever matches. Returns null if none
- * do (a stale/unknown ClusterIP -- the caller's proxied connection should
- * fail, not synthesize a fake target).
+ * GET /internal/vkubeproxy-resolve?ip=&port= (pkg/apiserver/vkubeproxy.go).
+ * Returns null if no Service/ready-endpoint match was found (a stale/
+ * unknown ClusterIP, or no ready backing Pod yet -- the caller's proxied
+ * connection should fail, not synthesize a fake target).
  */
-export async function getServiceByClusterIP(
+export async function resolveVKubeProxyTarget(
   env: Env,
   clusterIP: string,
-): Promise<ServiceObject | null> {
+  port: number,
+): Promise<VKubeProxyTarget | null> {
   const resp = await apiFetch(
     env,
-    `/api/v1/services?fieldSelector=${encodeURIComponent(`spec.clusterIP=${clusterIP}`)}`,
+    `/internal/vkubeproxy-resolve?ip=${encodeURIComponent(clusterIP)}&port=${port}`,
   );
-  if (!resp.ok)
-    throw new Error(`getServiceByClusterIP ${clusterIP}: ${resp.status} ${await resp.text()}`);
-  const list: ServiceList = await resp.json();
-  return list.items?.[0] ?? null;
-}
-
-/**
- * GET .../endpointslices?labelSelector=kubernetes.io/service-name=<name>,
- * the standard EndpointSlice-to-Service label (pkg/apiserver/endpoints.go's
- * buildEndpointSlice sets it; this project builds exactly one combined
- * slice per Service, so at most one item is ever returned in practice, but
- * the caller still handles a list for forward compatibility).
- */
-export async function listEndpointSlicesForService(
-  env: Env,
-  namespace: string,
-  serviceName: string,
-): Promise<EndpointSliceObject[]> {
-  const resp = await apiFetch(
-    env,
-    `/apis/discovery.k8s.io/v1/namespaces/${namespace}/endpointslices?labelSelector=${encodeURIComponent(`kubernetes.io/service-name=${serviceName}`)}`,
-  );
-  if (!resp.ok)
-    throw new Error(
-      `listEndpointSlicesForService ${namespace}/${serviceName}: ${resp.status} ${await resp.text()}`,
-    );
-  const list: EndpointSliceList = await resp.json();
-  return list.items ?? [];
+  if (!resp.ok) {
+    if (resp.status === 502) return null; // no Service/ready-endpoint match
+    throw new Error(`resolveVKubeProxyTarget ${clusterIP}:${port}: ${resp.status} ${await resp.text()}`);
+  }
+  return (await resp.json()) as VKubeProxyTarget;
 }
 
 export async function deleteNode(env: Env, name: string): Promise<void> {

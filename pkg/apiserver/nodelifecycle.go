@@ -304,4 +304,9 @@ func RegisterInternalHandlers(mux *http.ServeMux, storage *Storage) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
+
+	// GET /internal/vkubeproxy-resolve?ip=&port=: the ClusterIP->(Pod
+	// UID, container port) resolution half of nodes/podproxy.ts's
+	// handleVKubeProxy (vkubeproxy.go).
+	mux.HandleFunc("GET /internal/vkubeproxy-resolve", handleVKubeProxyResolve(storage))
 }

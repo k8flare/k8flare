@@ -20,12 +20,7 @@
 // explicit deferral of raw TCP and secure/TokenReview'd kubelet
 // exec/attach to later work).
 import type { Env } from "./env.ts";
-import {
-  getPod,
-  getServiceByClusterIP,
-  listEndpointSlicesForService,
-  type EndpointSliceEndpoint,
-} from "./client.ts";
+import { getPod, resolveVKubeProxyTarget } from "./client.ts";
 import { vmBinding } from "./scheduler.ts";
 
 // Headers only meaningful between k8flare's own components (the cluster
@@ -117,10 +112,11 @@ export async function handlePodProxy(req: Request, env: Env, pathname: string): 
  * Handles the virtual-kube-proxy backend resolution: given the intercepted
  * connection's original destination (X-K8flare-Target-IP/-Port, set by
  * pkg/vkubeproxy) and the app's own request (method/path/headers/body,
- * forwarded as-is), resolves the owning Service by ClusterIP
- * (`spec.clusterIP` field selector, pkg/apiserver/store.go), then its
- * ready backing Pod via EndpointSlice (pkg/apiserver/endpoints.go builds
- * exactly one combined slice per Service), then forwards like
+ * forwarded as-is), resolves the owning Service by ClusterIP and its
+ * ready backing Pod via EndpointSlice (both now done in-process by
+ * pkg/apiserver/vkubeproxy.go's ResolveVKubeProxyTarget, one HTTP hop
+ * from here instead of the two separate round trips this file used to
+ * make -- see client.ts's resolveVKubeProxyTarget), then forwards like
  * handlePodProxy above. appPath is the app's own request path+query
  * (nodes/index.ts strips the /vkubeproxy prefix before calling this).
  */
@@ -137,43 +133,10 @@ export async function handleVKubeProxy(req: Request, env: Env, appPath: string):
     return new Response("X-K8flare-Target-Port must be numeric", { status: 400 });
   }
 
-  const svc = await getServiceByClusterIP(env, targetIP);
-  if (!svc) {
-    return new Response(`no Service with ClusterIP ${targetIP}`, { status: 502 });
-  }
-  const svcPort = svc.spec?.ports?.find((p) => p.port === targetPort);
-  if (!svcPort) {
-    return new Response(
-      `Service ${svc.metadata.namespace}/${svc.metadata.name} has no port ${targetPort}`,
-      { status: 502 },
-    );
+  const target = await resolveVKubeProxyTarget(env, targetIP, targetPort);
+  if (!target) {
+    return new Response(`no ready endpoint for ClusterIP ${targetIP}:${targetPort}`, { status: 503 });
   }
 
-  const slices = await listEndpointSlicesForService(env, svc.metadata.namespace, svc.metadata.name);
-  let containerPort: number | undefined;
-  let endpoint: EndpointSliceEndpoint | undefined;
-  for (const slice of slices) {
-    // This project builds one combined EndpointSlice per Service
-    // (endpoints.go's buildEndpointSlice), whose Ports already carry the
-    // resolved container port number -- match by name if the Service
-    // names its ports, otherwise there is only one to pick.
-    const portEntry = svcPort.name
-      ? slice.ports?.find((p) => p.name === svcPort.name)
-      : slice.ports?.[0];
-    if (!portEntry?.port) continue;
-    const ready = slice.endpoints?.find((e) => e.conditions?.ready !== false && e.targetRef?.uid);
-    if (ready) {
-      containerPort = portEntry.port;
-      endpoint = ready;
-      break;
-    }
-  }
-  if (!containerPort || !endpoint?.targetRef?.uid) {
-    return new Response(
-      `no ready endpoint for Service ${svc.metadata.namespace}/${svc.metadata.name}:${targetPort}`,
-      { status: 503 },
-    );
-  }
-
-  return forwardToPod(env, endpoint.targetRef.uid, containerPort, appPath, req);
+  return forwardToPod(env, target.podUID, target.containerPort, appPath, req);
 }
