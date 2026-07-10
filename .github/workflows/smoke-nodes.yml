@@ -95,10 +95,26 @@ jobs:
       - name: Build node agent (linux/amd64)
         run: make -B nodes-agent
 
+      # --local is required, not just a style choice: wrangler.jsonc's
+      # `vpc_networks` MESH binding (`"remote": true`) has no local
+      # emulation at all, so plain `wrangler dev` tries to establish a
+      # real remote-proxy session for it at STARTUP and hard-fails
+      # before ever binding a port when no Cloudflare credentials are
+      # present -- exactly this job's state (no CLOUDFLARE_API_TOKEN
+      # secret). Same fix, same root cause, as e2e-conformance.yml's own
+      # "Start wrangler dev" step comment (a real, previously-undetected
+      # regression from MESH's introduction, b6d4340 -- this workflow
+      # hadn't run recently enough to catch it either, confirmed live
+      # 2026-07-11 when this exact failure reproduced here). `--local`
+      # only disables remote *bindings*; it does not affect the
+      # Docker-backed Containers this job actually exercises (a
+      # separate concern, gated by --enable-containers, which this
+      # step deliberately leaves at its default-enabled value).
       - name: Start wrangler dev (the consolidated k8flare Worker)
         run: |
           nohup npx wrangler dev \
             -c workers/k8flare/wrangler.jsonc \
+            --local \
             --port 8930 \
             --persist-to .wrangler/state \
             --log-level info \
