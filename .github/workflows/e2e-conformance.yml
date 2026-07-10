@@ -182,9 +182,14 @@ jobs:
       # deployed Worker's Mesh feature is unaffected.
       - name: Start wrangler dev (real Workers + Durable Object storage)
         run: |
+          # SCHED_DISABLED: this job runs a HOST kube-scheduler process
+          # (control-plane step below); the in-Worker sched dynamic
+          # worker must stay unloaded or two live schedulers race on
+          # Bindings and flake sig-scheduling.
           nohup npx wrangler dev \
             -c workers/k8flare/wrangler.jsonc \
             --enable-containers=false \
+            --var SCHED_DISABLED:1 \
             --local \
             --port 8787 \
             --local-protocol https \

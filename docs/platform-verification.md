@@ -3340,3 +3340,8 @@ gen-clientgo-lean-mirror.ts に再現可能な形で実装、sha256 ピン付き
 実 k8s 同様 404 を返すべき。(b) e2e-conformance はホスト版 scheduler を
 併走させるため、sched DW と二重スケジューラになる構成の整理が必要
 (binding の 409 は upstream 的に無害だが、意図した構成にすること)。
+→ (b) は 2026-07-11 に解決: KCM_DISABLED と同型の SCHED_DISABLED
+ハーネス・キルスイッチを Controllers DO の loadComponent に追加し、
+e2e-conformance.yml の wrangler dev に `--var SCHED_DISABLED:1` を付与
+(ホスト版が唯一の live scheduler になる構成に固定)。go test 経路は
+KCM_DISABLED が全 poke を止めるため元から影響なし。

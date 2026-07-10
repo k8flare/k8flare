@@ -66,6 +66,11 @@ export interface Env {
   // run against the consolidated single config. See CLAUDE.md's
   // local-dev pitfalls.
   KCM_DISABLED?: string;
+  // Harness kill switch: "1" keeps the sched dynamic worker unloaded so
+  // a harness-run HOST kube-scheduler (e2e-conformance.yml) is the only
+  // live scheduler -- two schedulers race on Bindings. KCM_DISABLED
+  // implies this too (it gates every controllers poke).
+  SCHED_DISABLED?: string;
   // Multi-cluster: set ONLY on derived envs (clusters/clusterenv.ts, DO
   // apiEnv helpers), never in wrangler.jsonc -- names the Cluster DO
   // instance downstream storage traffic targets. loader/apiserver.ts

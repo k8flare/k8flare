@@ -158,10 +158,15 @@ export class Controllers {
   }
 
   private async loadComponent(name: ComponentName): Promise<Fetcher | null> {
-    // Manifest absent = component not shipped in this deployment --
-    // currently true for "sched" (no reproducible <64MiB build yet; see
-    // the Makefile's kcm.manifest.json recipe). Treated as absent, not an
-    // error, so pokes/alarms stay quiet about it.
+    // Harness kill switch (see Env.SCHED_DISABLED): e2e-conformance runs
+    // a HOST kube-scheduler process against the same cluster, and two
+    // live schedulers race on Bindings (409s are upstream-tolerated but
+    // make sig-scheduling tests flaky). Same treated-as-absent shape as
+    // a missing manifest, so pokes/alarms stay quiet about it.
+    if (name === "sched" && this.env.SCHED_DISABLED === "1") return null;
+    // Manifest absent = component not shipped in this deployment.
+    // Treated as absent, not an error, so pokes/alarms stay quiet
+    // about it.
     const manifest = await fetchWasmManifest(this.env.ASSETS, name);
     if (!manifest) return null;
     const doName = this.clusterName();
