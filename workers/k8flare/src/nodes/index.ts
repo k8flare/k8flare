@@ -5,12 +5,13 @@ import type { Env } from "./env.ts";
 import { vmBinding } from "./scheduler.ts";
 import { handlePodProxy, handleVKubeProxy } from "./podproxy.ts";
 
-// workers/nodes hosts the cf-containers-scheduler (per-Pod microVM node
-// binder, scheduler.ts) and the NodeVM container classes it manages. The
-// only inbound traffic is pokes: storage's pingNodes write-hook on pod
-// writes, and an operator's bootstrap/health request. Token-gated: a
-// poke wakes reconciliation (a recurring cost lever), so strangers must
-// not be able to pull it.
+// workers/nodes hosts the cf-containers-scheduler (per-Pod microVM
+// NodeVM lifecycle manager, scheduler.ts -- despite the name it no
+// longer schedules/binds, see that file's doc comment) and the NodeVM
+// container classes it manages. The only inbound traffic is pokes:
+// storage's pingNodes write-hook on pod writes, and an operator's
+// bootstrap/health request. Token-gated: a poke wakes reconciliation (a
+// recurring cost lever), so strangers must not be able to pull it.
 // The former nodes Worker's fetch handler, called directly from the
 // consolidated public routing (gateway/index.ts). Still token-gated on
 // its own: a poke wakes reconciliation (a recurring cost lever), so the

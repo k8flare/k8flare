@@ -1,13 +1,19 @@
-// CFContainersScheduler: the per-Pod-node binder Durable Object that
-// replaces the old VirtualNode backend. Kubernetes-conventional: pods
-// select it via spec.schedulerName "cf-containers-scheduler" (injected by
-// the apiserver's compute-class admission, pkg/apiserver/computeclass.go,
-// namespace-first); it binds via the official Binding subresource and
-// records standard Scheduled/FailedScheduling Events. The scheduling
-// decision itself is trivial by design -- every pod gets its own
-// dedicated microVM node (nodevm.ts) -- so there is no predicate engine
-// here, just lifecycle: boot VM, wait for its kubelet to register, bind,
-// destroy on pod termination.
+// CFContainersScheduler: the NodeVM lifecycle manager Durable Object for
+// the Pod-on-Containers backend. Despite the class name (kept as-is --
+// renaming it would need a wrangler.jsonc DO migration entry, not
+// justified by this change alone), it no longer schedules or binds
+// anything: pkg/apiserver/computeclass.go's admission-time
+// AssignContainersNode already picked each Pod's size tier and pinned it
+// to a dedicated, not-yet-existing Node name (the standard
+// kubernetes.io/hostname nodeSelector key), and the real, unmodified
+// kube-scheduler (pkg/controllers/sched, the sched dynamic worker) binds
+// it via the official Binding subresource once that Node exists and is
+// Ready -- exactly like any other Pod, no dedicated binder needed. What
+// remains here is pure demand-driven infrastructure lifecycle: given a
+// Pod already pinned to a Node name nobody has booted yet, start that
+// NodeVM (nodevm.ts); given a tracked NodeVM whose Pod is gone, tear it
+// down. There is still no predicate engine -- every Pod gets its own
+// dedicated microVM node -- just start/stop.
 //
 // Wake model (cost invariants #1/#3): event-armed pokes from storage's
 // pingNodes write-hook (any /registry/pods/ write) plus a safety-net
@@ -17,19 +23,18 @@ import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./env.ts";
 import { clusterSecrets } from "../clusters/tokens.ts";
 import type { NodeVMBase } from "./nodevm.ts";
-import {
-  bindPod,
-  createSchedulingEvent,
-  deleteNode,
-  getNode,
-  getPod,
-  listUnscheduledPods,
-  type PodObject,
-} from "./client.ts";
-import { resolveSizeTier, type SizeTier } from "./images.ts";
+import { deleteNode, getNode, getPod, listPendingContainersPods } from "./client.ts";
 import { createMeshConnector, deleteMeshConnector } from "./meshconnector.ts";
 
-export const SCHEDULER_NAME = "cf-containers-scheduler";
+/** Mirrors pkg/apiserver/computeclass.go's SizeTier naming exactly. */
+export type SizeTier = "small" | "medium" | "large";
+
+// Matches pkg/apiserver/computeclass.go's NodeVMTierAnnotation -- Go owns
+// the tier decision (real resource.Quantity math against the fixed
+// Cloudflare Containers instance_type tiers), this DO just reads it.
+const NODEVM_TIER_ANNOTATION = "k8flare.com/nodevm-tier";
+
+const COMPONENT_NAME = "cf-containers-scheduler";
 const SAFETY_NET_INTERVAL_MS = 15_000;
 
 /** One tracked pod->VM assignment, persisted across DO restarts. */
@@ -50,8 +55,8 @@ interface TrackedVM {
 }
 
 // A VM whose kubelet hasn't registered within this window is considered
-// failed (image pull dead, account concurrency cap, ...): emit
-// FailedScheduling and destroy so the next poke can retry fresh.
+// failed (image pull dead, account concurrency cap, ...): destroy it so
+// the next poke can retry fresh (see the timeout branch in reconcile()).
 const NODE_READY_TIMEOUT_MS = 5 * 60_000;
 
 export function vmBinding(env: Env, tier: SizeTier): DurableObjectNamespace<NodeVMBase> {
@@ -122,7 +127,7 @@ export class CFContainersScheduler extends DurableObject<Env> {
     // motivated this shape).
     void this.reconcile().catch((err) => console.log(`cf-containers-scheduler: ${err}`));
     await this.armIfIdle();
-    return Response.json({ ok: true, scheduler: SCHEDULER_NAME });
+    return Response.json({ ok: true, scheduler: COMPONENT_NAME });
   }
 
   async alarm(): Promise<void> {
@@ -134,10 +139,10 @@ export class CFContainersScheduler extends DurableObject<Env> {
     });
     // Re-arm while there is work in flight; park on an idle cluster.
     // "Work" includes PENDING pods with no VM, not just tracked VMs:
-    // after a FailedScheduling teardown the pod is still unscheduled and
-    // nothing will write it again, so parking on tracked-VMs-only left
-    // it stuck forever (hit live 2026-07-06, same predicate class as
-    // the KCM liveness bug fixed in d1a9503).
+    // after a boot-timeout teardown the pod's hostname pin is still set
+    // and nothing will write it again, so parking on tracked-VMs-only
+    // left it stuck forever (hit live 2026-07-06, same predicate class
+    // as the KCM liveness bug fixed in d1a9503).
     if (hasWork) {
       await this.ctx.storage.setAlarm(Date.now() + SAFETY_NET_INTERVAL_MS);
     }
@@ -175,24 +180,26 @@ export class CFContainersScheduler extends DurableObject<Env> {
     const env = await this.apiEnv();
     let dirty = false;
 
-    // 1) New work: unscheduled pods addressed to this scheduler.
-    const pending = (await listUnscheduledPods(env)).filter(
-      (p) => p.spec?.schedulerName === SCHEDULER_NAME && !p.metadata.deletionTimestamp,
-    );
+    // 1) New work: Pods admission already pinned to a dedicated Node
+    // name (pkg/apiserver/computeclass.go's AssignContainersNode) that
+    // this DO hasn't started a NodeVM for yet. Tier resolution and node
+    // naming already happened in Go at admission time -- this loop only
+    // ever starts infrastructure, never rejects a Pod (a Pod whose
+    // resources don't fit any tier is rejected synchronously at create
+    // time instead, a kubectl-visible 403, so it never reaches here).
+    const pending = await listPendingContainersPods(env);
     for (const pod of pending) {
       const uid = pod.metadata.uid ?? `${pod.metadata.namespace}/${pod.metadata.name}`;
       if (tracked[uid]) continue; // VM already booting/bound for it
-      const tier = resolveSizeTier(pod);
-      if (!tier) {
-        await createSchedulingEvent(
-          env,
-          pod,
-          "FailedScheduling",
-          "pod resources exceed the largest cf-containers size tier",
-        );
+      const nodeName = pod.spec?.nodeSelector?.["kubernetes.io/hostname"];
+      const tier = pod.metadata.annotations?.[NODEVM_TIER_ANNOTATION] as SizeTier | undefined;
+      if (!nodeName || (tier !== "small" && tier !== "medium" && tier !== "large")) {
+        // Shouldn't happen -- AssignContainersNode always sets both
+        // together -- but a malformed Pod (e.g. hand-edited past
+        // admission) must not crash reconcile() for every other Pod.
+        console.log(`cf-containers-scheduler: pod ${uid} missing node name/tier, skipping`);
         continue;
       }
-      const nodeName = `cf-${pod.metadata.name}-${uid.slice(0, 8)}`;
       // Claim this UID and persist it BEFORE any awaited network call
       // below, not after. A DO's single-threaded execution can still
       // interleave two reconcile() invocations at an await point (e.g. a
@@ -265,27 +272,27 @@ export class CFContainersScheduler extends DurableObject<Env> {
         continue;
       }
       if (!vm.bound) {
+        // "bound" here means "this VM's kubelet has registered a Ready
+        // Node at least once", purely to skip the getNode() call below
+        // on future passes -- NOT that the real scheduler has bound the
+        // Pod to it (that's now entirely the real scheduler's own job,
+        // watched via its own Pod/Node informers, not polled here).
         const node = await getNode(env, vm.nodeName);
         const ready = node?.status?.conditions?.some(
           (c) => c.type === "Ready" && c.status === "True",
         );
         if (ready) {
-          await bindPod(env, vm.namespace, vm.podName, vm.nodeName);
-          await createSchedulingEvent(
-            env,
-            pod,
-            "Scheduled",
-            `Successfully assigned ${vm.namespace}/${vm.podName} to ${vm.nodeName}`,
-          );
           vm.bound = true;
           dirty = true;
         } else if (Date.now() - vm.bootedAt > NODE_READY_TIMEOUT_MS) {
-          await createSchedulingEvent(
-            env,
-            pod,
-            "FailedScheduling",
-            `node VM ${vm.nodeName} did not become Ready within ${NODE_READY_TIMEOUT_MS / 1000}s`,
-          );
+          // The VM never came up (image pull dead, account concurrency
+          // cap, ...). No FailedScheduling event to synthesize here
+          // anymore -- the real scheduler already reports the Pod as
+          // Unschedulable on its own (verified live 2026-07-11) for as
+          // long as no Ready Node named vm.nodeName exists. Reap the
+          // failed VM and drop tracking; the Pod keeps the same
+          // (deterministic) hostname pin, so it re-enters `pending`
+          // above on the next pass and gets a fresh boot attempt.
           await this.teardown(env, vm);
           delete tracked[uid];
           dirty = true;

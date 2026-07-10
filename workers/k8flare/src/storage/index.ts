@@ -75,10 +75,12 @@ function needsControllersPing(key: string): boolean {
 
 /**
  * Whether writing this key should poke workers/nodes'
- * cf-containers-scheduler (the per-Pod microVM binder): pod writes only
- * -- a new unscheduled pod is its work queue, and pod status/deletion
- * drives VM teardown. Same event-armed shape as needsControllersPing;
- * the binder's own safety-net alarm parks when it tracks nothing.
+ * cf-containers-scheduler (the per-Pod microVM NodeVM lifecycle manager
+ * -- it no longer binds Pods, see nodes/scheduler.ts's doc comment):
+ * pod writes only -- a Pod admission already pinned to a not-yet-booted
+ * Node is its work queue, and pod status/deletion drives VM teardown.
+ * Same event-armed shape as needsControllersPing; its own safety-net
+ * alarm parks when it tracks nothing.
  */
 function needsNodesPing(key: string): boolean {
   return key.startsWith("/registry/pods/");
