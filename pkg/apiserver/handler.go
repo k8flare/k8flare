@@ -218,7 +218,8 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 					}
 				}
 			}
-			if PodWantsContainers(pod, nsLabels) {
+			wantsContainers := PodWantsContainers(pod, nsLabels)
+			if wantsContainers {
 				MutatePodForComputeClass(pod)
 			}
 			if lrStore, exists := stores["limitranges"]; exists {
@@ -229,6 +230,18 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 						writeStatusError(w, http.StatusForbidden, "Forbidden", err.Error())
 						return
 					}
+				}
+			}
+			// Must run after the LimitRange defaulting above: it sizes
+			// the Pod's dedicated NodeVM from its resource requests, so
+			// a Pod relying on a namespace's LimitRange default (rather
+			// than specifying resources itself) needs that default
+			// filled in first, or every such Pod would resolve as if it
+			// asked for nothing.
+			if wantsContainers {
+				if err := AssignContainersNode(pod); err != nil {
+					writeStatusError(w, http.StatusForbidden, "Forbidden", err.Error())
+					return
 				}
 			}
 		}
