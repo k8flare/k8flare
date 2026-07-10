@@ -156,6 +156,18 @@ func RunScheduler(ctx context.Context, restCfg *restclient.Config) (err error) {
 		return fmt.Errorf("scheduler: new scheduler: %w", err)
 	}
 
+	// Starts the queued-event -> API-server write pipeline (mirrors
+	// cmd/kube-scheduler/app/server.go's Run, which calls this on
+	// cc.EventBroadcaster before its own sched.Run). Recorders built
+	// above via recorderAdapter.NewRecorder only enqueue into this
+	// adapter's internal watch.Broadcaster; without this call nothing
+	// ever drains that queue, so every Scheduled/FailedScheduling event
+	// is silently dropped -- confirmed live 2026-07-11 (wrangler dev: a
+	// Pod bound successfully but neither /api/v1/events nor
+	// /apis/events.k8s.io/v1/... ever recorded it, no error logged).
+	recorderAdapter.StartRecordingToSink(ctx.Done())
+	defer recorderAdapter.Shutdown()
+
 	factory.Start(ctx.Done())
 	factory.WaitForCacheSync(ctx.Done())
 
