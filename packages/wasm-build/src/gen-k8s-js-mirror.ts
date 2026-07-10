@@ -342,12 +342,15 @@ pair(`${NR}/balanced_allocation.go`, (s) =>
 checkPinFile("pkg/kubelet/types/types.go", "upstream-kubelet-types.go.sha256");
 pair("pkg/kubelet/types/types.go", (s) =>
   s
+    .replaceAll('\t"k8s.io/cri-client/pkg/logs"\n', "")
     .replaceAll(
-      '\t"k8s.io/cri-client/pkg/logs"\n',
-      "",
+      "logs.RFC3339NanoLenient",
+      '"2006-01-02T15:04:05.999999999Z07:00" /* logs.RFC3339NanoLenient, inlined (k8flare js) */',
     )
-    .replaceAll('logs.RFC3339NanoLenient', '"2006-01-02T15:04:05.999999999Z07:00" /* logs.RFC3339NanoLenient, inlined (k8flare js) */')
-    .replaceAll('logs.RFC3339NanoFixed', '"2006-01-02T15:04:05.000000000Z07:00" /* logs.RFC3339NanoFixed, inlined (k8flare js) */'),
+    .replaceAll(
+      "logs.RFC3339NanoFixed",
+      '"2006-01-02T15:04:05.000000000Z07:00" /* logs.RFC3339NanoFixed, inlined (k8flare js) */',
+    ),
 );
 
 // ---- kube-scheduler-mirror: the third module mirror (task #4) ----
