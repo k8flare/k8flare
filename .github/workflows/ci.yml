@@ -64,8 +64,18 @@ jobs:
       # binaryen's wasm-opt is required by the Makefile's kcm.manifest.json
       # recipe (the KCM WASM only fits under the Worker Loader's hard
       # 64MiB cap after -Oz -- see the Makefile's comment there).
-      - name: Install binaryen (wasm-opt)
-        run: sudo apt-get update && sudo apt-get install -y binaryen
+      - name: Install binaryen (wasm-opt) -- pinned release, not apt
+        # Pinned to the same version developers use locally (mise
+        # aqua:web-assembly/binaryen). apt/ubuntu ships an older binaryen
+        # whose -Oz optimizes measurably worse: the SAME gc-wasm source
+        # measured 65,204,713 bytes locally (version_129) but 67,222,931
+        # bytes (+2.0MB, 111KiB OVER the 64MiB Loader cap) with apt's
+        # binaryen on CI -- found 2026-07-10 when the e2e workflow's
+        # Build WASM step failed while local builds passed. wasm-opt
+        # version is part of the size gate's reproducibility.
+        run: |
+          curl -sSL https://github.com/WebAssembly/binaryen/releases/download/version_129/binaryen-version_129-x86_64-linux.tar.gz | sudo tar xz -C /opt
+          echo "/opt/binaryen-version_129/bin" >> "$GITHUB_PATH"
 
       # Nothing bundles WASM into the script anymore (the old 10MiB-gzip
       # apiserver budget is retired): both control-plane binaries ship as
