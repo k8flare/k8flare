@@ -218,8 +218,21 @@ jobs:
             exit 1
           }
           echo "smoke-pod is Running on $NODE_NAME."
-          docker ps --format '{{.Names}}' | grep -q PodContainer || {
-            echo "::error::no PodContainer* Docker container found for a Running Pod"
+          # Every Pod in this file asks for no resources -> "small" tier
+          # -> the NodeVMSmall Container class -> this image (confirmed
+          # from the build log: "naming to
+          # docker.io/cloudflare-dev/nodevmsmall:<hash>"). Matching by
+          # image ancestor, not container name, is deliberate: the old
+          # version of this check (`grep PodContainerSmall`) named a
+          # Container class ("PodContainer*") that predates the
+          # CFContainersScheduler/NodeVM* rewrite (9a2a463) and hasn't
+          # existed since -- this file's `docker ps` assertions had
+          # already gone stale before this rewrite, silently matching
+          # nothing (found while diagnosing a real boot failure in CI
+          # 2026-07-11, via the "Dump NodeVM container state" step below
+          # coming back completely empty).
+          docker ps --filter "ancestor=cloudflare-dev/nodevmsmall" --format '{{.Names}}' | grep -q . || {
+            echo "::error::no NodeVMSmall Docker container found for a Running Pod"
             exit 1
           }
           # Real scheduler Event, not a hand-rolled one (pkg/controllers/
@@ -235,7 +248,7 @@ jobs:
 
       - name: restartPolicy=Always -- container is restarted after being killed
         run: |
-          CID=$(docker ps --format '{{.Names}}' | grep PodContainerSmall | grep -v -- -proxy | head -1)
+          CID=$(docker ps --filter "ancestor=cloudflare-dev/nodevmsmall" --format '{{.Names}}' | grep -v -- -proxy | head -1)
           docker stop "$CID"
           for _ in $(seq 1 20); do
             docker ps --format '{{.Names}}' | grep -qx "$CID" && break
@@ -252,10 +265,10 @@ jobs:
           curl -sf -X DELETE "http://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod" \
             -H "Authorization: Bearer k8flare-dev-token" -o /dev/null
           for _ in $(seq 1 20); do
-            docker ps --format '{{.Names}}' | grep -q PodContainer || break
+            docker ps --filter "ancestor=cloudflare-dev/nodevmsmall" --filter "ancestor=cloudflare-dev/nodevmmedium" --filter "ancestor=cloudflare-dev/nodevmlarge" --format '{{.Names}}' | grep -q . || break
             sleep 2
           done
-          docker ps --format '{{.Names}}' | grep -q PodContainer && {
+          docker ps --filter "ancestor=cloudflare-dev/nodevmsmall" --filter "ancestor=cloudflare-dev/nodevmmedium" --filter "ancestor=cloudflare-dev/nodevmlarge" --format '{{.Names}}' | grep -q . && {
             echo "::error::Pod container(s) still running >40s after Pod delete"
             docker ps
             exit 1
@@ -291,10 +304,10 @@ jobs:
             }' -o /dev/null
 
           for _ in $(seq 1 30); do
-            docker ps --format '{{.Names}}' | grep -q PodContainerSmall && break
+            docker ps --filter "ancestor=cloudflare-dev/nodevmsmall" --format '{{.Names}}' | grep -q . && break
             sleep 3
           done
-          CID=$(docker ps --format '{{.Names}}' | grep PodContainerSmall | grep -v -- -proxy | head -1)
+          CID=$(docker ps --filter "ancestor=cloudflare-dev/nodevmsmall" --format '{{.Names}}' | grep -v -- -proxy | head -1)
           [ -n "$CID" ] || { echo "::error::smoke-pod-never's container never started"; exit 1; }
           docker stop "$CID"
 
@@ -330,10 +343,10 @@ jobs:
             }' -o /dev/null
 
           for _ in $(seq 1 30); do
-            docker ps --format '{{.Names}}' | grep -q PodContainerSmall && break
+            docker ps --filter "ancestor=cloudflare-dev/nodevmsmall" --format '{{.Names}}' | grep -q . && break
             sleep 3
           done
-          CID=$(docker ps --format '{{.Names}}' | grep PodContainerSmall | grep -v -- -proxy | head -1)
+          CID=$(docker ps --filter "ancestor=cloudflare-dev/nodevmsmall" --format '{{.Names}}' | grep -v -- -proxy | head -1)
           [ -n "$CID" ] || { echo "::error::smoke-pod-onfailure's container never started"; exit 1; }
           docker stop "$CID"
 
@@ -395,8 +408,16 @@ jobs:
       - name: Dump NodeVM container state on failure
         if: failure()
         run: |
-          docker ps -a --filter "name=PodContainer" > "$RUNNER_TEMP/docker-ps.log" 2>&1 || true
-          for c in $(docker ps -a --filter "name=PodContainer" --format '{{.Names}}'); do
+          # Unfiltered, deliberately: a name-based filter here already
+          # came back empty once (this job's very first real container-
+          # crash run, 2026-07-11) because the guessed name pattern
+          # ("PodContainer*") was stale -- see the "Create smoke-pod"
+          # step's own comment on that. Diagnostics should never rely on
+          # a naming guess panning out; the assertion checks above use
+          # the (now confirmed) image ancestor instead, but this dump
+          # stays maximally broad on purpose.
+          docker ps -a > "$RUNNER_TEMP/docker-ps.log" 2>&1 || true
+          for c in $(docker ps -a --format '{{.Names}}'); do
             echo "=== docker logs $c ===" >> "$RUNNER_TEMP/docker-logs.log"
             docker logs "$c" >> "$RUNNER_TEMP/docker-logs.log" 2>&1 || true
           done
