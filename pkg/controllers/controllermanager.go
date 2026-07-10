@@ -18,6 +18,7 @@ import (
 	"k8s.io/kubernetes/pkg/controller/deployment"
 	"k8s.io/kubernetes/pkg/controller/job"
 	"k8s.io/kubernetes/pkg/controller/replicaset"
+	"k8s.io/kubernetes/pkg/controller/replication"
 	"k8s.io/kubernetes/pkg/controller/statefulset"
 )
 
@@ -36,14 +37,15 @@ const clusterCIDR = "10.42.0.0/16"
 // to override them -- if that's ever needed, add real flags to
 // workers/controllers, not a reimplementation of KubeControllerManagerOptions.
 const (
-	replicaSetWorkers    = 5
-	deploymentWorkers    = 5
-	daemonSetWorkers     = 2
-	statefulSetWorkers   = 5 // matches RecommendedDefaultStatefulSetControllerConfiguration
-	jobWorkers           = 5
-	cronJobWorkers       = 5
-	endpointWorkers      = 5
-	endpointSliceWorkers = 5
+	replicationControllerWorkers = 5 // matches RecommendedDefaultReplicationControllerConfiguration
+	replicaSetWorkers            = 5
+	deploymentWorkers            = 5
+	daemonSetWorkers             = 2
+	statefulSetWorkers           = 5 // matches RecommendedDefaultStatefulSetControllerConfiguration
+	jobWorkers                   = 5
+	cronJobWorkers               = 5
+	endpointWorkers              = 5
+	endpointSliceWorkers         = 5
 
 	endpointUpdatesBatchPeriod = 0 // upstream default: no batching delay
 	maxEndpointsPerSlice       = 100
@@ -105,6 +107,14 @@ func RunControllerManager(ctx context.Context, restCfg *restclient.Config) (err 
 	}
 
 	factory := leaninformers.New(client, minResyncPeriod)
+
+	rcc := replication.NewReplicationManager(
+		ctx,
+		factory.Pods(),
+		factory.ReplicationControllers(),
+		client,
+		replication.BurstReplicas,
+	)
 
 	rsc := replicaset.NewReplicaSetController(
 		ctx,
@@ -185,12 +195,13 @@ func RunControllerManager(ctx context.Context, restCfg *restclient.Config) (err 
 	// (every Node, every Lease, every EndpointSlice, ...) were pure memory
 	// overhead against production's 128MiB isolate limit -- under which
 	// the freshly loaded dynamic worker was observed dying mid informer
-	// sync and reload-looping (2026-07-06). The six workload controllers
+	// sync and reload-looping (2026-07-06). The seven workload controllers
 	// below are the ones with no server-side equivalent.
 
 	factory.Start(ctx.Done())
 
 	for _, run := range []func(context.Context){
+		func(ctx context.Context) { rcc.Run(ctx, replicationControllerWorkers) },
 		func(ctx context.Context) { rsc.Run(ctx, replicaSetWorkers) },
 		func(ctx context.Context) { dc.Run(ctx, deploymentWorkers) },
 		func(ctx context.Context) { dsc.Run(ctx, daemonSetWorkers) },

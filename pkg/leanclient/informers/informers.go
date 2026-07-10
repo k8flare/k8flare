@@ -2,8 +2,8 @@
 
 // Package informers is a narrow stand-in for k8s.io/client-go/informers'
 // SharedInformerFactory: it lazily constructs and shares (never
-// duplicates) exactly the fourteen SharedIndexInformers this repo's
-// eleven enabled controllers (pkg/controller/{replicaset,deployment,
+// duplicates) exactly the fifteen SharedIndexInformers this repo's
+// enabled controllers (pkg/controller/{replication,replicaset,deployment,
 // daemon,statefulset,job,cronjob,endpoint,endpointslice,nodeipam,
 // nodelifecycle,tainteviction}) and scheduler (pkg/scheduler) take as
 // constructor parameters, by
@@ -73,6 +73,7 @@ type Informers struct {
 	nodes                  cache.SharedIndexInformer
 	services               cache.SharedIndexInformer
 	endpoints              cache.SharedIndexInformer
+	replicationControllers cache.SharedIndexInformer
 	replicaSets            cache.SharedIndexInformer
 	deployments            cache.SharedIndexInformer
 	daemonSets             cache.SharedIndexInformer
@@ -115,6 +116,13 @@ func (f *Informers) Endpoints() corev1informers.EndpointsInformer {
 		f.endpoints = corev1informers.NewFilteredEndpointsInformer(f.client, metav1.NamespaceAll, f.resync, namespaceIndexers, nil)
 	}
 	return &endpointsInformer{f.endpoints}
+}
+
+func (f *Informers) ReplicationControllers() corev1informers.ReplicationControllerInformer {
+	if f.replicationControllers == nil {
+		f.replicationControllers = corev1informers.NewFilteredReplicationControllerInformer(f.client, metav1.NamespaceAll, f.resync, namespaceIndexers, nil)
+	}
+	return &replicationControllerInformer{f.replicationControllers}
 }
 
 func (f *Informers) ReplicaSets() appsv1informers.ReplicaSetInformer {
@@ -201,7 +209,7 @@ func (f *Informers) Leases() coordinationv1informers.LeaseInformer {
 // twelve accessors that will ever be called, have been).
 func (f *Informers) Start(stopCh <-chan struct{}) {
 	for _, informer := range []cache.SharedIndexInformer{
-		f.pods, f.nodes, f.services, f.endpoints,
+		f.pods, f.nodes, f.services, f.endpoints, f.replicationControllers,
 		f.replicaSets, f.deployments, f.daemonSets, f.statefulSets, f.controllerRevisions,
 		f.jobs, f.cronJobs, f.endpointSlices, f.leases, f.persistentVolumeClaims,
 	} {
@@ -237,6 +245,13 @@ type endpointsInformer struct{ informer cache.SharedIndexInformer }
 func (i *endpointsInformer) Informer() cache.SharedIndexInformer { return i.informer }
 func (i *endpointsInformer) Lister() corev1listers.EndpointsLister {
 	return corev1listers.NewEndpointsLister(i.informer.GetIndexer())
+}
+
+type replicationControllerInformer struct{ informer cache.SharedIndexInformer }
+
+func (i *replicationControllerInformer) Informer() cache.SharedIndexInformer { return i.informer }
+func (i *replicationControllerInformer) Lister() corev1listers.ReplicationControllerLister {
+	return corev1listers.NewReplicationControllerLister(i.informer.GetIndexer())
 }
 
 type replicaSetInformer struct{ informer cache.SharedIndexInformer }
