@@ -10,6 +10,39 @@
 # now a native route of the consolidated Worker (gateway/index.ts), so
 # the proxy -- and the multi-config first-port workaround it existed
 # for -- is gone.
+#
+# Rewritten 2026-07-11 for the Provisioner + real-scheduler design
+# (pkg/apiserver/computeclass.go's AssignContainersNode, nodes/
+# scheduler.ts's doc comment): a Pod is no longer given a fixed
+# `spec.nodeName` directly by this test. Admission alone decides the
+# size tier and pins a dedicated (not-yet-existing) Node name via the
+# standard `kubernetes.io/hostname` nodeSelector; nodes/scheduler.ts
+# boots that Pod's own NodeVM on demand; the NodeVM's real embedded k3s
+# kubelet self-registers that exact Node; and the real, unmodified
+# kube-scheduler (the sched dynamic worker) binds the Pod once that Node
+# is Ready -- so this workflow now also builds and exercises sched.wasm,
+# not just apiserver.wasm. Every Pod below gets its OWN dedicated NodeVM
+# (this backend's design since the CFContainersScheduler binder
+# replaced the shared-node VirtualNode backend the previous version of
+# this file targeted, `cf-containers-default` -- that name and the
+# `/nodes/healthz` bootstrap route it depended on no longer exist
+# anywhere in this repo), so each restartPolicy case below waits for its
+# own VM boot rather than reusing one warm node.
+#
+# CAUTION -- unverified end-to-end: this rewrite could only be checked
+# against the admission (Go, tier/nodeSelector/annotation mutation) and
+# real-scheduler (Unschedulable-while-no-Node, real Binding once Ready)
+# halves locally, via `wrangler dev --enable-containers=false` (no
+# Docker in this sandbox, CLAUDE.md's documented constraint). The
+# Docker-dependent halves -- the NodeVM's real kubelet actually
+# self-registering the exact pinned Node name, and every `docker ps`
+# assertion below -- have NOT been run since this rewrite. Watch the
+# first CI run closely and be ready to adjust step names is what this
+# actually observes (a Docker-dependent watch, not a "verified working"
+# claim) and reconsider the timeout-minutes budget below: per-Pod VM
+# boot (4 separate NodeVMs across this file, vs. 1 shared node before)
+# is expected to take noticeably longer in wall-clock time than the
+# previous version of this file did.
 name: Smoke Test workers/nodes
 
 on:
@@ -17,12 +50,14 @@ on:
     paths:
       - "workers/k8flare/**"
       - "pkg/apiserver/nodecidr.go"
+      - "pkg/apiserver/computeclass.go"
+      - "pkg/controllers/sched/**"
   workflow_dispatch:
 
 jobs:
   smoke-nodes:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -37,13 +72,23 @@ jobs:
         with:
           go-version: "1.26"
 
+      - name: Install binaryen (wasm-opt) -- sched.wasm needs it, apiserver.wasm doesn't (see Makefile)
+        run: |
+          curl -sSL https://github.com/WebAssembly/binaryen/releases/download/version_129/binaryen-version_129-x86_64-linux.tar.gz | sudo tar xz -C /opt
+          echo "/opt/binaryen-version_129/bin" >> "$GITHUB_PATH"
+
       - name: Install dependencies
         run: pnpm install
 
-      # Only the apiserver binary is needed here (the KCM never touches
-      # these bare Pods and its wasm-opt pass costs ~2min).
-      - name: Build WASM (apiserver only)
-        run: make -B wasm-apiserver
+      # apiserver (admission: size tier + hostname pin) and sched (the
+      # real kube-scheduler dynamic worker, needed to actually bind these
+      # Pods now -- see this file's header comment). KCM/GC never touch
+      # these bare Pods and their wasm-opt passes cost real minutes each,
+      # so they're deliberately left unbuilt: workers/controllers'
+      # loadComponent() resolves a missing manifest as "not shipped" and
+      # moves on, it doesn't error.
+      - name: Build WASM (apiserver + sched)
+        run: make -B wasm-apiserver wasm-sched
 
       # The consolidated config's containers[] docker-builds images/node,
       # whose Dockerfile COPYs the cross-compiled k8flare-agent.
@@ -75,46 +120,49 @@ jobs:
             exit 1
           }
 
-      # Any request to workers/nodes bootstraps VirtualNode's alarm loop
-      # (see virtualnode.ts's fetch() doc comment) -- this is that one-time
-      # wake, mirroring the "Deploying workers/nodes" section of README.md.
-      - name: Bootstrap the virtual node
+      # Every Pod below opts into the Containers backend via the
+      # k8flare.com/compute annotation (pkg/apiserver/computeclass.go).
+      # Admission alone (no manual bootstrap poke needed -- a Pod create
+      # is itself a /registry/pods/ write, which storage's pingNodes and
+      # pingControllers write-hooks already wake nodes/scheduler.ts and
+      # the sched dynamic worker from, verified live 2026-07-11 against
+      # wrangler dev) picks the size tier from the Pod's resource
+      # requests (none given anywhere in this file -> "small", the
+      # smallest tier) and pins a dedicated, not-yet-existing Node name
+      # via the standard kubernetes.io/hostname nodeSelector -- read back
+      # from the create response below.
+      - name: Create smoke-pod and wait for its NodeVM to register + Running
         run: |
-          curl -sf "http://127.0.0.1:8930/nodes/healthz" | tee /dev/stderr
-          echo
-
-      # Node registration + first Lease renewal happen on VirtualNode's
-      # first alarm tick (~NODE_LEASE_RENEW_INTERVAL_MS after the bootstrap
-      # above, see client.ts) -- poll rather than a fixed sleep.
-      - name: Wait for the virtual Node to register
-        run: |
-          for _ in $(seq 1 20); do
-            NODE=$(curl -sf "http://127.0.0.1:8930/api/v1/nodes/cf-containers-default" \
-              -H "Authorization: Bearer k8flare-dev-token" 2>/dev/null) && break
-            sleep 2
-          done
-          echo "$NODE" | python3 -m json.tool
-          PODCIDR=$(echo "$NODE" | python3 -c "import json,sys; print(json.load(sys.stdin)['spec'].get('podCIDR',''))")
-          [ -n "$PODCIDR" ] || { echo "::error::cf-containers-default has no allocated podCIDR"; exit 1; }
-          echo "Node registered with podCIDR=$PODCIDR"
-
-      - name: Create a Pod bound to the virtual node
-        run: |
-          curl -sf -X POST "http://127.0.0.1:8930/api/v1/namespaces/default/pods" \
+          NODE_NAME=$(curl -sf -X POST "http://127.0.0.1:8930/api/v1/namespaces/default/pods" \
             -H "Authorization: Bearer k8flare-dev-token" -H "Content-Type: application/json" \
             -d '{
               "apiVersion": "v1", "kind": "Pod",
-              "metadata": {"name": "smoke-pod"},
+              "metadata": {"name": "smoke-pod", "annotations": {"k8flare.com/compute": "containers"}},
               "spec": {
-                "nodeName": "cf-containers-default",
                 "restartPolicy": "Always",
                 "containers": [{"name": "demo", "image": "k8flare/demo:latest"}]
               }
-            }' -o /dev/null
+            }' | python3 -c "import json,sys; print(json.load(sys.stdin)['spec']['nodeSelector']['kubernetes.io/hostname'])")
+          echo "smoke-pod pinned to Node $NODE_NAME"
+          echo "NODE_NAME=$NODE_NAME" >> "$GITHUB_ENV"
 
-      - name: Wait for the Pod to become Running (kubectl run -> Running)
-        run: |
-          for _ in $(seq 1 20); do
+          echo "Waiting for $NODE_NAME to self-register Ready (its NodeVM's real kubelet)..."
+          for _ in $(seq 1 60); do
+            READY=$(curl -sf "http://127.0.0.1:8930/api/v1/nodes/$NODE_NAME" \
+              -H "Authorization: Bearer k8flare-dev-token" 2>/dev/null \
+              | python3 -c "import json,sys; d=json.load(sys.stdin); print(any(c.get('type')=='Ready' and c.get('status')=='True' for c in d.get('status',{}).get('conditions',[])))" \
+              2>/dev/null || echo False)
+            [ "$READY" = "True" ] && break
+            sleep 3
+          done
+          [ "$READY" = "True" ] || {
+            echo "::error::$NODE_NAME never became Ready"
+            cat "$RUNNER_TEMP/wrangler.log"
+            exit 1
+          }
+
+          echo "Waiting for smoke-pod to become Running (real scheduler Bind + kubelet start)..."
+          for _ in $(seq 1 30); do
             PHASE=$(curl -sf "http://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod" \
               -H "Authorization: Bearer k8flare-dev-token" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',{}).get('phase',''))")
             [ "$PHASE" = "Running" ] && break
@@ -125,9 +173,19 @@ jobs:
             cat "$RUNNER_TEMP/wrangler.log"
             exit 1
           }
-          echo "smoke-pod is Running."
+          echo "smoke-pod is Running on $NODE_NAME."
           docker ps --format '{{.Names}}' | grep -q PodContainer || {
             echo "::error::no PodContainer* Docker container found for a Running Pod"
+            exit 1
+          }
+          # Real scheduler Event, not a hand-rolled one (pkg/controllers/
+          # sched's event-broadcaster-sink fix, 088c7fe) -- confirms the
+          # standard kubectl describe pod experience still works end to
+          # end under the new design.
+          curl -sf "http://127.0.0.1:8930/api/v1/namespaces/default/events" \
+            -H "Authorization: Bearer k8flare-dev-token" | tee /dev/stderr \
+            | grep -q '"reason": *"Scheduled"' || {
+            echo "::error::no Scheduled Event recorded for smoke-pod"
             exit 1
           }
 
@@ -145,7 +203,7 @@ jobs:
           }
           echo "Always: container restarted as expected."
 
-      - name: Delete the Pod (kubectl delete -> container actually stops)
+      - name: Delete the Pod (kubectl delete -> container actually stops, Node reaped)
         run: |
           curl -sf -X DELETE "http://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod" \
             -H "Authorization: Bearer k8flare-dev-token" -o /dev/null
@@ -160,22 +218,37 @@ jobs:
           }
           echo "Pod delete stopped its container."
 
+          # New assertion (the old shared-node design had no per-Pod
+          # Node to reap): nodes/scheduler.ts's teardown() must delete
+          # the dedicated Node object too, not just the container.
+          for _ in $(seq 1 20); do
+            curl -sf -o /dev/null -w '%{http_code}' "http://127.0.0.1:8930/api/v1/nodes/$NODE_NAME" \
+              -H "Authorization: Bearer k8flare-dev-token" | grep -q '^404$' && break
+            sleep 2
+          done
+          curl -sf -o /dev/null -w '%{http_code}' "http://127.0.0.1:8930/api/v1/nodes/$NODE_NAME" \
+            -H "Authorization: Bearer k8flare-dev-token" | grep -q '^404$' || {
+            echo "::error::Node $NODE_NAME was not reaped after its Pod was deleted"
+            exit 1
+          }
+          echo "Node $NODE_NAME reaped."
+
       - name: restartPolicy=Never -- killed container is NOT restarted, Pod goes Failed
         run: |
           curl -sf -X POST "http://127.0.0.1:8930/api/v1/namespaces/default/pods" \
             -H "Authorization: Bearer k8flare-dev-token" -H "Content-Type: application/json" \
             -d '{
               "apiVersion": "v1", "kind": "Pod",
-              "metadata": {"name": "smoke-pod-never"},
+              "metadata": {"name": "smoke-pod-never", "annotations": {"k8flare.com/compute": "containers"}},
               "spec": {
-                "nodeName": "cf-containers-default", "restartPolicy": "Never",
+                "restartPolicy": "Never",
                 "containers": [{"name": "demo", "image": "k8flare/demo:latest"}]
               }
             }' -o /dev/null
 
-          for _ in $(seq 1 20); do
+          for _ in $(seq 1 30); do
             docker ps --format '{{.Names}}' | grep -q PodContainerSmall && break
-            sleep 2
+            sleep 3
           done
           CID=$(docker ps --format '{{.Names}}' | grep PodContainerSmall | grep -v -- -proxy | head -1)
           [ -n "$CID" ] || { echo "::error::smoke-pod-never's container never started"; exit 1; }
@@ -205,16 +278,16 @@ jobs:
             -H "Authorization: Bearer k8flare-dev-token" -H "Content-Type: application/json" \
             -d '{
               "apiVersion": "v1", "kind": "Pod",
-              "metadata": {"name": "smoke-pod-onfailure"},
+              "metadata": {"name": "smoke-pod-onfailure", "annotations": {"k8flare.com/compute": "containers"}},
               "spec": {
-                "nodeName": "cf-containers-default", "restartPolicy": "OnFailure",
+                "restartPolicy": "OnFailure",
                 "containers": [{"name": "demo", "image": "k8flare/demo:latest"}]
               }
             }' -o /dev/null
 
-          for _ in $(seq 1 20); do
+          for _ in $(seq 1 30); do
             docker ps --format '{{.Names}}' | grep -q PodContainerSmall && break
-            sleep 2
+            sleep 3
           done
           CID=$(docker ps --format '{{.Names}}' | grep PodContainerSmall | grep -v -- -proxy | head -1)
           [ -n "$CID" ] || { echo "::error::smoke-pod-onfailure's container never started"; exit 1; }
@@ -232,30 +305,41 @@ jobs:
           curl -sf -X DELETE "http://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod-onfailure" \
             -H "Authorization: Bearer k8flare-dev-token" -o /dev/null
 
-      - name: Image allowlist -- a non-allowlisted image is rejected, not silently run
+      # Renamed from "Image allowlist" (the previous version of this
+      # test's name): this repo never actually enforced an image
+      # allowlist in code (workers/nodes' old ALLOWED_IMAGES/
+      # isAllowedImage were already dead code, unreferenced by anything,
+      # confirmed while rewriting this file 2026-07-11 -- and removed
+      # rather than carried into the Go admission rewrite). What this
+      # step actually exercises is the NodeVM's real containerd failing
+      # to pull an image it has no reason to have cached/allowed, which
+      # is a real, if weaker, guarantee than an explicit allowlist would
+      # be. Left in as a regression check for that real failure path,
+      # not as coverage of an allowlist this repo doesn't have.
+      - name: A Pod naming an unpullable image ends up Failed
         run: |
           curl -sf -X POST "http://127.0.0.1:8930/api/v1/namespaces/default/pods" \
             -H "Authorization: Bearer k8flare-dev-token" -H "Content-Type: application/json" \
             -d '{
               "apiVersion": "v1", "kind": "Pod",
-              "metadata": {"name": "smoke-pod-badimage"},
+              "metadata": {"name": "smoke-pod-badimage", "annotations": {"k8flare.com/compute": "containers"}},
               "spec": {
-                "nodeName": "cf-containers-default", "restartPolicy": "Always",
-                "containers": [{"name": "demo", "image": "nginx:latest"}]
+                "restartPolicy": "Always",
+                "containers": [{"name": "demo", "image": "k8flare/does-not-exist:latest"}]
               }
             }' -o /dev/null
 
-          for _ in $(seq 1 20); do
+          for _ in $(seq 1 30); do
             PHASE=$(curl -sf "http://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod-badimage" \
               -H "Authorization: Bearer k8flare-dev-token" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',{}).get('phase',''))")
             [ "$PHASE" = "Failed" ] && break
-            sleep 2
+            sleep 3
           done
           [ "$PHASE" = "Failed" ] || {
-            echo "::error::a Pod naming a non-allowlisted image did not end up Failed (got: $PHASE)"
+            echo "::error::a Pod naming an unpullable image did not end up Failed (got: $PHASE)"
             exit 1
           }
-          echo "Non-allowlisted image correctly rejected."
+          echo "Unpullable image correctly left the Pod Failed."
 
       - name: Tear down
         if: always()

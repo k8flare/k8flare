@@ -1062,3 +1062,66 @@ Pod-on-Containers nodes; retiring it in favor of this scheduler is task
 #2's design work), so for now the sched DW adds capability (real
 scheduling semantics for BYO-VM-node clusters without a host scheduler)
 rather than replacing spend.
+
+## Task #2 (Pod-on-Containers Provisioner, real-scheduler handoff) implementation (actual, 2026-07-11)
+
+Replaces the task #2 target design's original assumption (a new
+resident Go dynamic worker, poke-driven like kcm/gc/sched) with a
+**per-request, admission-time** implementation instead --
+`pkg/apiserver/computeclass.go`'s `AssignContainersNode`, called from
+the existing pod-create path (`handler.go`) that already runs
+`MutatePodForComputeClass`. The chosen shape costs strictly less than
+either a new resident DW or the TS binder it replaces:
+
+- **No new resident dynamic worker.** Size-tier resolution (real
+  `k8s.io/apimachinery/pkg/api/resource.Quantity` math, replacing
+  `nodes/images.ts`'s hand-rolled parsing) and dedicated-Node-name
+  minting (`k8s.io/apiserver/pkg/storage/names.SimpleNameGenerator`,
+  the same generator `store.go` already links for `generateName`) are
+  both pure, side-effect-free functions of the Pod object already being
+  admitted -- there is no reactive/polling shape to justify a poke-armed
+  isolate, alarm, or warmup window (cost invariants #1-3: this is the
+  cheap side of the choice the design doc's open question asked for).
+  Runs inside the SAME per-request apiserver WASM instantiation every
+  Pod create already pays for; the only marginal cost is a few more Go
+  function calls per Pod-on-Containers Pod create, not a new billing
+  primitive.
+- **`nodes/scheduler.ts` (the DO, kept under its old class name --
+  renaming needs a wrangler.jsonc DO migration entry, not justified by
+  this change) shrinks, it doesn't grow**: the Binding-subresource call
+  and Scheduled/FailedScheduling event synthesis it used to do are both
+  deleted outright (the real scheduler, `pkg/controllers/sched`, now
+  does both natively -- see the event-broadcaster-sink fix, commit
+  `088c7fe`, which was a *precondition* for this handoff: without it,
+  the standard events `kubectl describe pod` shows would have silently
+  vanished). What remains is the same event-armed poke/safety-net-alarm
+  shape the DO already had (unchanged wake model), just with less work
+  per poke.
+- **Net effect on the sched DW's existing cost line above**: it no
+  longer "adds capability... rather than replacing spend" -- Pod-on-
+  Containers Pods are now bound by the real scheduler too, so this
+  closes that open item. No new Loader unique-load id beyond what
+  Phase 10 already counted (sched was already loaded on every relevant
+  Pod write via `pingControllers`; it simply does more useful work per
+  load now).
+
+**Rejected alternative (per this task's own design brief, explicitly
+left open pending a cost-invariant check)**: a resident Go "Provisioner"
+dynamic worker on the kcm/gc/sched poke pattern. Rejected because it
+would add a 5th ~64MiB-capped binary, its own warmup window and
+safety-net alarm, and a Loader unique-load id per active cluster/day --
+recurring cost with no reactive workload to justify it, since every
+decision it would have made is a pure function of the Pod already in
+hand at admission time. This is the kind of call cost invariant #8 asks
+for before adding a new poke/alarm-shaped component: it doesn't survive
+the check here.
+
+**Unverified**: the Docker-dependent half of this design (a NodeVM's
+real embedded kubelet self-registering the exact dedicated Node name
+`AssignContainersNode` pinned, and that registration's own
+`node.kubernetes.io/not-ready` self-taint correctly gating the real
+scheduler until Ready -- see the finding recorded against task #2's
+design phase, 2026-07-10, that Ready-condition-alone does NOT gate the
+real scheduler) has not been exercised end-to-end in this sandbox (no
+Docker). `smoke-nodes.yml` was rewritten for the new flow but its own
+CI run is the first real check of that half.

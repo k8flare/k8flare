@@ -303,3 +303,21 @@ above, extended through DNS, API machinery, and auth, with conformance CI as
 the definition of done) and
 [`multi-tenancy-and-hosting.md`](multi-tenancy-and-hosting.md) (the
 multi-cluster / namespace-DO / facets / hosted-product track).
+
+## Note (2026-07-11): Pod-on-Containers binding also moved to the real scheduler
+
+This document predates the Loader/Dynamic-Worker rearchitecture (it still
+refers to a `packages/etcd`-era "Etcd DO" that no longer exists) and only
+ever covered `cmd/scheduler`'s BYO-VM/host-process path above. The
+*other* scheduler this repo has -- `nodes/scheduler.ts`'s per-Pod
+Containers-backend binder -- went through the same migration described
+above for `cmd/scheduler`, but later and by a different route: rather
+than a host process, it's the real kube-scheduler running as a fourth
+Loader dynamic worker (`pkg/controllers/sched`, `docs/cost-model.md`'s
+"Phase 10" entry), and rather than the TS binder calling the `pods/
+binding` subresource itself, `pkg/apiserver/computeclass.go`'s
+admission-time `AssignContainersNode` now pins each Pod to a dedicated,
+not-yet-existing Node name so the real scheduler binds it once that
+Node's own real kubelet self-registers it Ready -- see
+`docs/cost-model.md`'s "Task #2" entry for the cost accounting and the
+open verification item (Docker-dependent, unexercised in this sandbox).
