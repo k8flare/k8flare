@@ -17,6 +17,7 @@ import (
 
 	"encoding/json"
 	"github.com/k8flare/k8flare/pkg/leanclient"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	policyv1beta1 "k8s.io/api/policy/v1beta1"
@@ -66,6 +67,18 @@ func (c *Client) PersistentVolumeClaims(namespace string) corev1client.Persisten
 	return NewPersistentVolumeClaims(c.rc, namespace)
 }
 
+func (c *Client) PersistentVolumes() corev1client.PersistentVolumeInterface {
+	return NewPersistentVolumes(c.rc)
+}
+
+func (c *Client) Namespaces() corev1client.NamespaceInterface {
+	return NewNamespaces(c.rc)
+}
+
+func (c *Client) ReplicationControllers(namespace string) corev1client.ReplicationControllerInterface {
+	return NewReplicationControllers(c.rc, namespace)
+}
+
 func (c *Client) Events(namespace string) corev1client.EventInterface {
 	return NewEvents(c.rc, namespace)
 }
@@ -79,17 +92,8 @@ func (c *Client) ConfigMaps(namespace string) corev1client.ConfigMapInterface {
 func (c *Client) LimitRanges(namespace string) corev1client.LimitRangeInterface {
 	panic("leanclient: LimitRanges not implemented (unused by this repo's controllers/scheduler)")
 }
-func (c *Client) Namespaces() corev1client.NamespaceInterface {
-	panic("leanclient: Namespaces not implemented (unused by this repo's controllers/scheduler)")
-}
-func (c *Client) PersistentVolumes() corev1client.PersistentVolumeInterface {
-	panic("leanclient: PersistentVolumes not implemented (unused by this repo's controllers/scheduler)")
-}
 func (c *Client) PodTemplates(namespace string) corev1client.PodTemplateInterface {
 	panic("leanclient: PodTemplates not implemented (unused by this repo's controllers/scheduler)")
-}
-func (c *Client) ReplicationControllers(namespace string) corev1client.ReplicationControllerInterface {
-	panic("leanclient: ReplicationControllers not implemented (unused by this repo's controllers/scheduler)")
 }
 func (c *Client) ResourceQuotas(namespace string) corev1client.ResourceQuotaInterface {
 	panic("leanclient: ResourceQuotas not implemented (unused by this repo's controllers/scheduler)")
@@ -157,6 +161,13 @@ func (c *pods) ApplyStatus(ctx context.Context, obj *applyconfigurationscorev1.P
 }
 
 func (c *pods) Bind(ctx context.Context, binding *corev1.Binding, opts metav1.CreateOptions) error {
+	// Stamp TypeMeta: plain encoding/json (unlike client-go's codec path)
+	// otherwise emits a body without kind/apiVersion, which this
+	// apiserver's strict decoder 400s ("Object 'Kind' is missing") --
+	// found live 2026-07-10 when the first in-Worker scheduler's
+	// DefaultBinder got 400 on every pods/binding POST; same fix as
+	// leanclient.Delete's DeleteOptions stamping.
+	binding.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Binding"}
 	body, err := json.Marshal(binding)
 	if err != nil {
 		return err
@@ -418,6 +429,182 @@ func (c *persistentVolumeClaims) Apply(ctx context.Context, obj *applyconfigurat
 
 func (c *persistentVolumeClaims) ApplyStatus(ctx context.Context, obj *applyconfigurationscorev1.PersistentVolumeClaimApplyConfiguration, opts metav1.ApplyOptions) (*corev1.PersistentVolumeClaim, error) {
 	panic("leanclient: Server-Side Apply not implemented (unused by this repo's controllers/scheduler)")
+}
+
+type persistentVolumes struct {
+	client restclient.Interface
+	ns     string
+}
+
+var _ corev1client.PersistentVolumeInterface = (*persistentVolumes)(nil)
+
+func NewPersistentVolumes(c restclient.Interface) *persistentVolumes {
+	return &persistentVolumes{client: c, ns: ""}
+}
+
+func (c *persistentVolumes) Create(ctx context.Context, obj *corev1.PersistentVolume, opts metav1.CreateOptions) (*corev1.PersistentVolume, error) {
+	return leanclient.Create(ctx, c.client, "persistentvolumes", c.ns, obj, schema.GroupVersion{Group: "", Version: "v1"}.WithKind("PersistentVolume"), opts)
+}
+
+func (c *persistentVolumes) Update(ctx context.Context, obj *corev1.PersistentVolume, opts metav1.UpdateOptions) (*corev1.PersistentVolume, error) {
+	return leanclient.Update(ctx, c.client, "persistentvolumes", c.ns, obj.Name, obj, schema.GroupVersion{Group: "", Version: "v1"}.WithKind("PersistentVolume"), opts)
+}
+
+func (c *persistentVolumes) UpdateStatus(ctx context.Context, obj *corev1.PersistentVolume, opts metav1.UpdateOptions) (*corev1.PersistentVolume, error) {
+	return leanclient.UpdateSubresource(ctx, c.client, "persistentvolumes", c.ns, obj.Name, "status", obj, schema.GroupVersion{Group: "", Version: "v1"}.WithKind("PersistentVolume"), opts)
+}
+
+func (c *persistentVolumes) Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error {
+	return leanclient.Delete(ctx, c.client, "persistentvolumes", c.ns, name, opts)
+}
+
+func (c *persistentVolumes) DeleteCollection(ctx context.Context, opts metav1.DeleteOptions, listOpts metav1.ListOptions) error {
+	return leanclient.DeleteCollection(ctx, c.client, "persistentvolumes", c.ns, opts, listOpts)
+}
+
+func (c *persistentVolumes) Get(ctx context.Context, name string, opts metav1.GetOptions) (*corev1.PersistentVolume, error) {
+	return leanclient.Get[corev1.PersistentVolume](ctx, c.client, "persistentvolumes", c.ns, name, opts)
+}
+
+func (c *persistentVolumes) List(ctx context.Context, opts metav1.ListOptions) (*corev1.PersistentVolumeList, error) {
+	return leanclient.List[corev1.PersistentVolumeList](ctx, c.client, "persistentvolumes", c.ns, opts)
+}
+
+func (c *persistentVolumes) Watch(ctx context.Context, opts metav1.ListOptions) (apimachinerywatch.Interface, error) {
+	return leanclient.Watch(ctx, c.client, "persistentvolumes", c.ns, opts, func() *corev1.PersistentVolume { return &corev1.PersistentVolume{} })
+}
+
+func (c *persistentVolumes) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (*corev1.PersistentVolume, error) {
+	return leanclient.Patch[corev1.PersistentVolume](ctx, c.client, "persistentvolumes", c.ns, name, pt, data, opts, subresources...)
+}
+
+func (c *persistentVolumes) Apply(ctx context.Context, obj *applyconfigurationscorev1.PersistentVolumeApplyConfiguration, opts metav1.ApplyOptions) (*corev1.PersistentVolume, error) {
+	panic("leanclient: Server-Side Apply not implemented (unused by this repo's controllers/scheduler)")
+}
+
+func (c *persistentVolumes) ApplyStatus(ctx context.Context, obj *applyconfigurationscorev1.PersistentVolumeApplyConfiguration, opts metav1.ApplyOptions) (*corev1.PersistentVolume, error) {
+	panic("leanclient: Server-Side Apply not implemented (unused by this repo's controllers/scheduler)")
+}
+
+type namespaces struct {
+	client restclient.Interface
+	ns     string
+}
+
+var _ corev1client.NamespaceInterface = (*namespaces)(nil)
+
+func NewNamespaces(c restclient.Interface) *namespaces {
+	return &namespaces{client: c, ns: ""}
+}
+
+func (c *namespaces) Create(ctx context.Context, obj *corev1.Namespace, opts metav1.CreateOptions) (*corev1.Namespace, error) {
+	return leanclient.Create(ctx, c.client, "namespaces", c.ns, obj, schema.GroupVersion{Group: "", Version: "v1"}.WithKind("Namespace"), opts)
+}
+
+func (c *namespaces) Update(ctx context.Context, obj *corev1.Namespace, opts metav1.UpdateOptions) (*corev1.Namespace, error) {
+	return leanclient.Update(ctx, c.client, "namespaces", c.ns, obj.Name, obj, schema.GroupVersion{Group: "", Version: "v1"}.WithKind("Namespace"), opts)
+}
+
+func (c *namespaces) UpdateStatus(ctx context.Context, obj *corev1.Namespace, opts metav1.UpdateOptions) (*corev1.Namespace, error) {
+	return leanclient.UpdateSubresource(ctx, c.client, "namespaces", c.ns, obj.Name, "status", obj, schema.GroupVersion{Group: "", Version: "v1"}.WithKind("Namespace"), opts)
+}
+
+func (c *namespaces) Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error {
+	return leanclient.Delete(ctx, c.client, "namespaces", c.ns, name, opts)
+}
+
+func (c *namespaces) DeleteCollection(ctx context.Context, opts metav1.DeleteOptions, listOpts metav1.ListOptions) error {
+	return leanclient.DeleteCollection(ctx, c.client, "namespaces", c.ns, opts, listOpts)
+}
+
+func (c *namespaces) Get(ctx context.Context, name string, opts metav1.GetOptions) (*corev1.Namespace, error) {
+	return leanclient.Get[corev1.Namespace](ctx, c.client, "namespaces", c.ns, name, opts)
+}
+
+func (c *namespaces) List(ctx context.Context, opts metav1.ListOptions) (*corev1.NamespaceList, error) {
+	return leanclient.List[corev1.NamespaceList](ctx, c.client, "namespaces", c.ns, opts)
+}
+
+func (c *namespaces) Watch(ctx context.Context, opts metav1.ListOptions) (apimachinerywatch.Interface, error) {
+	return leanclient.Watch(ctx, c.client, "namespaces", c.ns, opts, func() *corev1.Namespace { return &corev1.Namespace{} })
+}
+
+func (c *namespaces) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (*corev1.Namespace, error) {
+	return leanclient.Patch[corev1.Namespace](ctx, c.client, "namespaces", c.ns, name, pt, data, opts, subresources...)
+}
+
+func (c *namespaces) Apply(ctx context.Context, obj *applyconfigurationscorev1.NamespaceApplyConfiguration, opts metav1.ApplyOptions) (*corev1.Namespace, error) {
+	panic("leanclient: Server-Side Apply not implemented (unused by this repo's controllers/scheduler)")
+}
+
+func (c *namespaces) ApplyStatus(ctx context.Context, obj *applyconfigurationscorev1.NamespaceApplyConfiguration, opts metav1.ApplyOptions) (*corev1.Namespace, error) {
+	panic("leanclient: Server-Side Apply not implemented (unused by this repo's controllers/scheduler)")
+}
+
+func (c *namespaces) Finalize(ctx context.Context, item *corev1.Namespace, opts metav1.UpdateOptions) (*corev1.Namespace, error) {
+	panic("leanclient: Namespaces.Finalize not implemented (unused by this repo's controllers/scheduler)")
+}
+
+type replicationControllers struct {
+	client restclient.Interface
+	ns     string
+}
+
+var _ corev1client.ReplicationControllerInterface = (*replicationControllers)(nil)
+
+func NewReplicationControllers(c restclient.Interface, ns string) *replicationControllers {
+	return &replicationControllers{client: c, ns: ns}
+}
+
+func (c *replicationControllers) Create(ctx context.Context, obj *corev1.ReplicationController, opts metav1.CreateOptions) (*corev1.ReplicationController, error) {
+	return leanclient.Create(ctx, c.client, "replicationcontrollers", c.ns, obj, schema.GroupVersion{Group: "", Version: "v1"}.WithKind("ReplicationController"), opts)
+}
+
+func (c *replicationControllers) Update(ctx context.Context, obj *corev1.ReplicationController, opts metav1.UpdateOptions) (*corev1.ReplicationController, error) {
+	return leanclient.Update(ctx, c.client, "replicationcontrollers", c.ns, obj.Name, obj, schema.GroupVersion{Group: "", Version: "v1"}.WithKind("ReplicationController"), opts)
+}
+
+func (c *replicationControllers) UpdateStatus(ctx context.Context, obj *corev1.ReplicationController, opts metav1.UpdateOptions) (*corev1.ReplicationController, error) {
+	return leanclient.UpdateSubresource(ctx, c.client, "replicationcontrollers", c.ns, obj.Name, "status", obj, schema.GroupVersion{Group: "", Version: "v1"}.WithKind("ReplicationController"), opts)
+}
+
+func (c *replicationControllers) Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error {
+	return leanclient.Delete(ctx, c.client, "replicationcontrollers", c.ns, name, opts)
+}
+
+func (c *replicationControllers) DeleteCollection(ctx context.Context, opts metav1.DeleteOptions, listOpts metav1.ListOptions) error {
+	return leanclient.DeleteCollection(ctx, c.client, "replicationcontrollers", c.ns, opts, listOpts)
+}
+
+func (c *replicationControllers) Get(ctx context.Context, name string, opts metav1.GetOptions) (*corev1.ReplicationController, error) {
+	return leanclient.Get[corev1.ReplicationController](ctx, c.client, "replicationcontrollers", c.ns, name, opts)
+}
+
+func (c *replicationControllers) List(ctx context.Context, opts metav1.ListOptions) (*corev1.ReplicationControllerList, error) {
+	return leanclient.List[corev1.ReplicationControllerList](ctx, c.client, "replicationcontrollers", c.ns, opts)
+}
+
+func (c *replicationControllers) Watch(ctx context.Context, opts metav1.ListOptions) (apimachinerywatch.Interface, error) {
+	return leanclient.Watch(ctx, c.client, "replicationcontrollers", c.ns, opts, func() *corev1.ReplicationController { return &corev1.ReplicationController{} })
+}
+
+func (c *replicationControllers) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (*corev1.ReplicationController, error) {
+	return leanclient.Patch[corev1.ReplicationController](ctx, c.client, "replicationcontrollers", c.ns, name, pt, data, opts, subresources...)
+}
+
+func (c *replicationControllers) Apply(ctx context.Context, obj *applyconfigurationscorev1.ReplicationControllerApplyConfiguration, opts metav1.ApplyOptions) (*corev1.ReplicationController, error) {
+	panic("leanclient: Server-Side Apply not implemented (unused by this repo's controllers/scheduler)")
+}
+
+func (c *replicationControllers) ApplyStatus(ctx context.Context, obj *applyconfigurationscorev1.ReplicationControllerApplyConfiguration, opts metav1.ApplyOptions) (*corev1.ReplicationController, error) {
+	panic("leanclient: Server-Side Apply not implemented (unused by this repo's controllers/scheduler)")
+}
+
+func (c *replicationControllers) GetScale(ctx context.Context, replicationControllerName string, options metav1.GetOptions) (*autoscalingv1.Scale, error) {
+	panic("leanclient: ReplicationControllers.GetScale not implemented (unused by this repo's controllers/scheduler)")
+}
+func (c *replicationControllers) UpdateScale(ctx context.Context, replicationControllerName string, scale *autoscalingv1.Scale, opts metav1.UpdateOptions) (*autoscalingv1.Scale, error) {
+	panic("leanclient: ReplicationControllers.UpdateScale not implemented (unused by this repo's controllers/scheduler)")
 }
 
 type events struct {

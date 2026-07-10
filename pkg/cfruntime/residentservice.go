@@ -35,7 +35,19 @@ func ResidentService(label string, run func(ctx context.Context) error) {
 		startOnce.Do(func() {
 			cloudflare.WaitUntil(func() {
 				setStatus("running")
-				err := run(context.Background())
+				// WithCancel, NOT bare context.Background(): Background's
+				// Done() returns a nil channel by spec ("Done may return
+				// nil if this context can never be canceled"), and real
+				// upstream k8s code passes ctx.Done() around as a stop
+				// channel where nil silently changes behavior -- it broke
+				// the GC informer factory's started-check AND deadlocked
+				// the scheduler's factory.WaitForCacheSync (both found
+				// live, 2026-07-09/10). A cancellable context's Done() is
+				// a real channel that simply never closes here, which is
+				// what "runs for the instance's lifetime" actually means.
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				err := run(ctx)
 				log.Printf("%s: exited: %v", label, err)
 				setStatus("exited: " + errString(err))
 			})

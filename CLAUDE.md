@@ -59,8 +59,10 @@ workers/k8flare(シェル: 認証一元化・watch ストリーミング・kubel
    │      wrangler dev で Deployment→ReplicaSet カスケード削除を実機確認済み
    │      2026-07-10。kubectl delete は非同期 eventually-consistent へ変更 —
    │      実 k8s と同じ挙動、ユーザー承認済み)
-   ├──► sched DW(保留: 実 kube-scheduler は wasm-opt 後 101MB で 64MiB cap 超。
-   │      当面 BYO VM / ホストプロセス(cmd/scheduler)で運用)
+   ├──► sched DW(resident。実 kube-scheduler、pkg/controllers/cmd/kcm-wasm/scheduler、
+   │      -tags schedwidth。2026-07-10 に 101MB→45MB opt へ削減して cap 内に収め、
+   │      wrangler dev で実 Pod bind を実機確認済み — 経緯は
+   │      docs/platform-verification.md S21。cmd/scheduler(ホスト)も併存)
    ├─ Cluster DO / WatchHub DO / CFContainersScheduler + NodeVM DO(上記 2.)
    └─ ASSETS(上記 3.)
 ```

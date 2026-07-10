@@ -3277,3 +3277,66 @@ Run されていなかった。明示的な `started bool` フラグに変更。
 (resident DW の実 reconcile 動作)に自動テストの穴がある — conformance CI
 (e2e-conformance.yml)がこの穴を埋める唯一のゲートなので、ローカル変更でも
 KCM に触れたら手動で Deployment→ReplicaSet の実機確認をすること。
+
+---
+
+## S21: 実 kube-scheduler の Dynamic Worker 化(2026-07-10、実機検証済み)
+
+**結論**: 実物・無改変の upstream kube-scheduler が第 4 の dynamic worker
+(`-tags schedwidth`、45.2MB opt、64MiB cap に 21.4MiB の余裕)として
+Cloudflare Workers 内で稼働し、wrangler dev で実 Pod の bind
+(Deployment→実 KCM が Pod 生成→実 scheduler が 4 秒で bind→削除→実 GC が
+4 秒でカスケード、のフルチェーン)を実機確認した。2026-07-07 の
+「101.1MB でキャップ超過、恒久的にホスト専用」判断を覆す。
+
+**サイズ削減の 3 本柱**(すべて gen-k8s-js-mirror.ts /
+gen-clientgo-lean-mirror.ts に再現可能な形で実装、sha256 ピン付き):
+
+1. **schedwidth 幅**: kubernetes.Interface を scheduler が実際にリンクする
+   9 メソッドに絞る clientset_schedwidth.go + informers サブバージョン
+   刈り込み overlay(2026-07-07 に失敗した「V1 だけに絞れない」問題を、
+   グループ内の非 V1 サブバージョン informers を build-tag 分岐で落とす
+   ことで解決)。124.1MB raw → 98.6MB raw
+2. **kube-scheduler 第 3 ミラー**(.build/kube-scheduler-mirror、
+   go.wasm.mod の replace 先): framework/listers.go の import 1 行を
+   structured → structured/schedulerapi(apimachinery のみ依存の alias 元)
+   に書き換えるだけで、structured→internal/{stable,incubating,experimental}
+   →cel-go→protobuf/genproto/antlr の全チェーンが切断。-14.7MB raw
+3. **kubelet/types→cri-client/logs の切断**: pkg/apis/core/validation→
+   capabilities→kubelet/types が「時刻フォーマット定数 2 個」のために
+   cri-client→grpc+cri-api+otelgrpc+protobuf 全体をリンクしていた。js-pair
+   で定数をインライン化して切断 — **-30.8MB raw**。この切断は KCM/GC にも
+   効き、kcm 65.0→41.8MB、gc 65.2→41.2MB へ縮小(副次効果)
+
+**起動までに潰した実バグ 7 件**(すべて実機で発見、コンパイルでは不可視):
+
+1. leanclient の Discovery() panic スタブ → events adapter が起動時に
+   無条件でプローブするため即死。エラー返却化して core-events フォール
+   バックに誘導
+2. DynamicResources を MultiPoint.Disabled で無効化しても
+   expandMultiPointPlugins が Disabled 参照**前**にレジストリ存在チェックで
+   エラー → Enabled からの strip 方式へ
+3. DRAExtendedResource feature gate(Beta/default-on)が nil
+   SharedDRAManager を deref → gate をコードで無効化
+4. leanclient に PersistentVolume/Namespace/ReplicationController の実
+   クライアントが無く informer の ListAndWatch が panic → いずれも実
+   apidef リソースなので k8flare-gen に追加(スタブ拡張は panic のまま)
+5. **context.Background().Done() は nil チャネル**(仕様)— resident DW の
+   ctx として本物の k8s コードに渡すと、stop channel として振る舞いが
+   変わる箇所で壊れる(GC の informer factory 起動判定に続き 2 件目)。
+   ResidentService が WithCancel 済み ctx を渡すよう根本修正
+6. Volume 系 4 プラグインも Disabled が効かず有効のままで、VolumeBinding が
+   **apidef.Table に存在しない** VolumeAttachment/CSIStorageCapacity の
+   informer を張った。ゲートウェイの watch は未知リソースにも 200 の
+   空ストリームを返す(404 にしない)ため initial-events-end bookmark が
+   永遠に来ず、factory.WaitForCacheSync が恒久デッドロック → 4 プラグインも
+   Enabled strip へ(ホスト版 cmd/scheduler の config 無効化と同等)
+7. leanclient の Pods.Bind が Binding の TypeMeta を stamp せず、strict
+   decoder に 400 され続けた(Delete の DeleteOptions stamping と同型)→
+   stamp 追加。**これが最後の 1 個で、直後に実 bind 成功**
+
+**残課題**: (a) 未知リソースへの watch が 404 でなく空 200 ストリームに
+なるゲートウェイ挙動は informer を無限に待たせる罠(本件 6 の増幅要因)—
+実 k8s 同様 404 を返すべき。(b) e2e-conformance はホスト版 scheduler を
+併走させるため、sched DW と二重スケジューラになる構成の整理が必要
+(binding の 409 は upstream 的に無害だが、意図した構成にすること)。

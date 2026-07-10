@@ -73,6 +73,13 @@ fs.copyFileSync(
   path.join(OVERLAY_DIR, "kubernetes/clientset_leanwidth.go"),
   path.join(DST, "kubernetes/clientset_leanwidth.go"),
 );
+// schedwidth variant: narrow kubernetes.Interface for the `-tags
+// schedwidth` scheduler wasm build (see its doc comment; mutually
+// exclusive with leanwidth, never combined).
+fs.copyFileSync(
+  path.join(OVERLAY_DIR, "kubernetes/clientset_schedwidth.go"),
+  path.join(DST, "kubernetes/clientset_schedwidth.go"),
+);
 
 // kubernetes/scheme/register.go: THE size lever for the GOOS=js binaries.
 // Upstream init()-registers all ~55 group-versions, and init side effects
@@ -144,5 +151,28 @@ fs.copyFileSync(
 // sites; the leanwidth build never calls ForResource on this type at
 // all -- see factory_leanwidth.go).
 fs.rmSync(path.join(DST, "informers/generic.go"), { force: true });
+
+// schedwidth: each of the 5 groups informers/factory.go's SharedInformerFactory
+// exposes with more than one upstream API version (Apps/Storage/Resource/
+// Scheduling/Policy -- Core only ever had V1) gets its own group-level
+// interface.go narrowed to just the version(s) pkg/scheduler's real call
+// sites reach, mutually exclusive via build tag with the untouched
+// upstream interface.go (copied in first, so the untagged upstream
+// copy -- now itself tagged `!schedwidth` by the overlay -- is replaced,
+// not merely supplemented). See pkg/clientgo-lean-overlays/informers/
+// apps/interface.go's doc comment for why this (not deleting the sibling
+// version directories) is the mechanism: nothing else in any of these
+// group packages references other groups, so this is safe the same way
+// informers/factory.go's own narrowing already was -- unlike
+// kubernetes/typed and applyconfigurations, which cross-reference across
+// group boundaries and are NOT pruned (see this file's comment above).
+for (const group of ["apps", "storage", "resource", "scheduling", "policy"]) {
+  for (const variant of ["interface.go", "interface_schedwidth.go"]) {
+    fs.copyFileSync(
+      path.join(OVERLAY_DIR, `informers/${group}/${variant}`),
+      path.join(DST, `informers/${group}/${variant}`),
+    );
+  }
+}
 
 console.log(`gen-clientgo-lean-mirror: done (${countFiles(DST)} files at ${DST})`);

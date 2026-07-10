@@ -1,5 +1,14 @@
-//go:build js && wasm && !leanwidth
+//go:build js && wasm && !leanwidth && !schedwidth
 
+// schedwidth (kubernetes.Interface narrowed for the scheduler wasm
+// build, see pkg/clientgo-lean-overlays/kubernetes/clientset_schedwidth.go)
+// excludes this file the same way leanwidth does: its narrow Interface
+// only needs 4 of these ~49 stubs (Discovery/ResourceV1beta2/
+// SchedulingV1alpha2/EventsV1, see stubs_schedwidth.go), and merely
+// importing the other ~45 groups' typed packages here (even as unused
+// panic stubs) would link their generated API surface right back in --
+// exactly what schedwidth exists to avoid.
+//
 // Adapted from the identical-purpose stubs.go of an earlier spike
 // (spikes/leanclient-kcm, since pruned to its FINDINGS-equivalent record --
 // no surviving source file to point at) -- originally scaffolded from

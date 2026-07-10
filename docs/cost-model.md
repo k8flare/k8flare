@@ -1044,3 +1044,21 @@ mechanism gave for free by construction. This was an explicit,
 user-approved tradeoff (not discovered after the fact), made because
 matching real Kubernetes semantics was judged more valuable than the
 synchronous convenience -- see git history for the decision point.
+
+## Phase 10 (real kube-scheduler as a dynamic worker) implementation (actual, 2026-07-10)
+
+The real, unmodified upstream kube-scheduler ships as the FOURTH dynamic
+worker (`sched:<doName>@sha`, `-tags schedwidth`): 45.2MB opt against
+the 64MiB Loader cap, down from 101.1MB via the three severings recorded
+in `docs/platform-verification.md` S21. The same cri-client severing
+also shrank kcm 65.0->41.8MB and gc 65.2->41.2MB as a side effect.
+
+**Cost delta**: +1 Loader unique-load id per active cluster/day
+($0.002/cluster/active-day, same primitive as kcm/gc/apiserver's
+existing lines). Same poke/event-armed execution shape as kcm/gc -- no
+new alarm, no polling; idle clusters load nothing. Replaces nothing yet
+(the TS binder in workers/k8flare/src/nodes/scheduler.ts still runs for
+Pod-on-Containers nodes; retiring it in favor of this scheduler is task
+#2's design work), so for now the sched DW adds capability (real
+scheduling semantics for BYO-VM-node clusters without a host scheduler)
+rather than replacing spend.

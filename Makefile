@@ -35,14 +35,17 @@ KCM_SRC := $(shell find pkg/controllers pkg/leanclient -name '*.go' -not -path '
 GC_SRC := $(shell find pkg/controllers/gc pkg/controllers/restconfig pkg/controllers/cmd/gc-wasm pkg/leanclient pkg/apiserver/apidef -name '*.go') \
 	go.wasm.mod \
 	$(shell find pkg/clientgo-lean-overlays pkg/k8s-js-overlays -type f)
+SCHED_SRC := $(shell find pkg/controllers/sched pkg/controllers/restconfig pkg/controllers/cmd/kcm-wasm/scheduler pkg/leanclient -name '*.go') \
+	go.wasm.mod \
+	$(shell find pkg/clientgo-lean-overlays pkg/k8s-js-overlays -type f)
 NODES_AGENT_SRC := $(shell find pkg/agent cmd/agent -name '*.go') go.mod go.sum
 
-.PHONY: all wasm wasm-apiserver wasm-kcm wasm-gc gen-mirrors gen check vet test dev deploy clean-wasm nodes-agent setup-tunnel help
+.PHONY: all wasm wasm-apiserver wasm-kcm wasm-gc wasm-sched gen-mirrors gen check vet test dev deploy clean-wasm nodes-agent setup-tunnel help
 
 all: wasm
 
 help:
-	@echo "targets: wasm wasm-apiserver wasm-kcm wasm-gc gen check vet test dev deploy clean-wasm nodes-agent setup-tunnel"
+	@echo "targets: wasm wasm-apiserver wasm-kcm wasm-gc wasm-sched gen check vet test dev deploy clean-wasm nodes-agent setup-tunnel"
 
 ## gen-mirrors: regenerate .build/{k8s-js,clientgo-lean}-mirror, the local
 ## copies go.mod's k8s.io/kubernetes and k8s.io/client-go replace directives
@@ -58,14 +61,15 @@ $(ASSETS)/wasm_exec.js: $(WASM_TOOLS)/patch-wasm-exec.ts $(WASM_TOOLS)/gomod.ts
 	@mkdir -p $(ASSETS)
 	node $(WASM_TOOLS)/patch-wasm-exec.ts "$$(go env GOROOT)/lib/wasm/wasm_exec.js" $@
 
-## wasm: build all WASM chunks (apiserver + kcm + gc); skipped per-binary if its inputs are unchanged
-wasm: $(ASSETS)/apiserver.manifest.json $(ASSETS)/kcm.manifest.json $(ASSETS)/gc.manifest.json
+## wasm: build all WASM chunks (apiserver + kcm + gc + sched); skipped per-binary if its inputs are unchanged
+wasm: $(ASSETS)/apiserver.manifest.json $(ASSETS)/kcm.manifest.json $(ASSETS)/gc.manifest.json $(ASSETS)/sched.manifest.json
 
 ## wasm-apiserver / wasm-kcm / wasm-gc: build just one chunk -- e.g. CI
 ## jobs that never touch KCM/GC skip their ~2min wasm-opt pass this way.
 wasm-apiserver: $(ASSETS)/apiserver.manifest.json
 wasm-kcm: $(ASSETS)/kcm.manifest.json
 wasm-gc: $(ASSETS)/gc.manifest.json
+wasm-sched: $(ASSETS)/sched.manifest.json
 
 $(ASSETS)/apiserver.manifest.json: $(APISERVER_SRC) $(ASSETS)/wasm_exec.js | gen-mirrors
 	@command -v wasm-opt >/dev/null 2>&1 || { echo "wasm-opt not found -- install binaryen (mise: aqua:web-assembly/binaryen, apt/brew: binaryen)" >&2; exit 1; }
@@ -87,13 +91,9 @@ $(ASSETS)/apiserver.manifest.json: $(APISERVER_SRC) $(ASSETS)/wasm_exec.js | gen
 # Interface WIDTH is what keeps this binary under the cap -- full width
 # measured 98.6MB opt vs 66.1MB narrow (docs/platform-verification.md).
 #
-# sched (./pkg/controllers/cmd/kcm-wasm/scheduler) is NOT built here
-# (the Controllers DO tolerates the missing manifest): kube-scheduler
-# measures 101.1MB opt against the reproducible mirrors, still far over
-# the Loader cap -- see docs/platform-verification.md's S8
-# kube-scheduler-wasm-fork entry. It remains host-process/BYO-VM
-# (cmd/scheduler); pkg/controllers/cmd/kcm-wasm/scheduler stays as the
-# ready entrypoint for the day it gets its own width answer.
+# sched got its width answer on 2026-07-10 (see sched.manifest.json's
+# recipe below): -tags schedwidth + the DRA/CEL and cri-client severing
+# in gen-k8s-js-mirror.ts took it from 101.1MB opt to ~45MB opt.
 $(ASSETS)/kcm.manifest.json: $(KCM_SRC) $(ASSETS)/wasm_exec.js | gen-mirrors
 	@command -v wasm-opt >/dev/null 2>&1 || { echo "wasm-opt not found -- install binaryen (mise: aqua:web-assembly/binaryen, apt/brew: binaryen)" >&2; exit 1; }
 	@mkdir -p $(ASSETS) $(BUILD)
@@ -141,6 +141,35 @@ $(ASSETS)/gc.manifest.json: $(GC_SRC) $(ASSETS)/wasm_exec.js | gen-mirrors
 	fi; \
 	echo "gc: $$raw bytes ($$(( ($(CAP) - $$raw) / 1024 ))KiB headroom under the 64MiB Loader cap)"; \
 	node $(WASM_TOOLS)/chunk-wasm.ts $(BUILD)/gc.opt.wasm $(ASSETS) gc
+
+# SCHED: the real, unmodified upstream kube-scheduler as the FOURTH
+# dynamic worker. Built with -tags schedwidth (its own kubernetes.
+# Interface width, narrower than full but wider than KCM's leanwidth --
+# see pkg/clientgo-lean-overlays/kubernetes/clientset_schedwidth.go)
+# against go.wasm.mod, whose kube-scheduler replace points at
+# .build/kube-scheduler-mirror (one import rewritten to sever the
+# DRA/CEL chain -- see gen-k8s-js-mirror.ts's kube-scheduler-mirror
+# comment). Additional js-pair severings (DRA plugin, cri-client) in
+# the k8s mirror took this binary from 101.1MB opt (2026-07-07, "far
+# over the cap, host-only forever") to ~45MB opt -- full accounting in
+# docs/platform-verification.md's S21 entry.
+$(ASSETS)/sched.manifest.json: $(SCHED_SRC) $(ASSETS)/wasm_exec.js | gen-mirrors
+	@command -v wasm-opt >/dev/null 2>&1 || { echo "wasm-opt not found -- install binaryen (mise: aqua:web-assembly/binaryen, apt/brew: binaryen)" >&2; exit 1; }
+	@mkdir -p $(ASSETS) $(BUILD)
+	echo "== sched (./pkg/controllers/cmd/kcm-wasm/scheduler)"; \
+	GOFLAGS=-modfile=go.wasm.mod GOOS=js GOARCH=wasm go build -tags schedwidth -ldflags="-s -w" -trimpath -o $(BUILD)/sched.wasm ./pkg/controllers/cmd/kcm-wasm/scheduler; \
+	wasm-opt -Oz \
+		--strip-debug --strip-producers \
+		--enable-bulk-memory --enable-nontrapping-float-to-int \
+		--enable-sign-ext --enable-mutable-globals \
+		$(BUILD)/sched.wasm -o $(BUILD)/sched.opt.wasm; \
+	raw=$$(wc -c < $(BUILD)/sched.opt.wasm | tr -d ' '); \
+	if [ "$$raw" -ge $(CAP) ]; then \
+		echo "::error::sched ($$raw bytes) exceeds the Worker Loader's 64MiB cap ($(CAP) bytes) -- the dynamic worker cannot load. Trim dependencies (see docs/platform-verification.md S14)." >&2; \
+		exit 1; \
+	fi; \
+	echo "sched: $$raw bytes ($$(( ($(CAP) - $$raw) / 1024 ))KiB headroom under the 64MiB Loader cap)"; \
+	node $(WASM_TOOLS)/chunk-wasm.ts $(BUILD)/sched.opt.wasm $(ASSETS) sched
 
 ## gen: regenerate derived artifacts from pkg/apiserver/apidef.Table and go.mod's k8s.io/kubernetes pin
 gen: | gen-mirrors
@@ -191,6 +220,7 @@ clean-wasm:
 	rm -f $(ASSETS)/apiserver.wasm.part* $(ASSETS)/apiserver.manifest.json
 	rm -f $(ASSETS)/kcm.wasm.part* $(ASSETS)/kcm.manifest.json
 	rm -f $(ASSETS)/gc.wasm.part* $(ASSETS)/gc.manifest.json
+	rm -f $(ASSETS)/sched.wasm.part* $(ASSETS)/sched.manifest.json
 	rm -f $(ASSETS)/wasm_exec.js
 
 ## setup-tunnel: guided Cloudflare Tunnel + VPC Service setup for BYO-VM

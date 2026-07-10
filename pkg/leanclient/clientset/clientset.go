@@ -8,7 +8,6 @@
 package clientset
 
 import (
-	kubernetes "k8s.io/client-go/kubernetes"
 	appsv1client "k8s.io/client-go/kubernetes/typed/apps/v1"
 	batchv1client "k8s.io/client-go/kubernetes/typed/batch/v1"
 	coordinationv1client "k8s.io/client-go/kubernetes/typed/coordination/v1"
@@ -36,7 +35,12 @@ type Clientset struct {
 	coordination *coordinationv1.Client
 }
 
-var _ kubernetes.Interface = (*Clientset)(nil)
+// kubernetes.Interface satisfaction for *Clientset alone is asserted in
+// assert_schedwidth.go/assert_other.go instead of here: under `-tags
+// schedwidth`, *Clientset alone no longer satisfies it (StorageV1/
+// ResourceV1/PolicyV1 come only from SchedulerClientset, scheduler.go) --
+// scheduler.go's own `var _ kubernetes.Interface = (*SchedulerClientset)(nil)`
+// covers that build instead.
 
 // NewForConfig mirrors client-go's own generated Clientset constructor's
 // name (kubernetes.NewForConfig), so callers moving between the two only

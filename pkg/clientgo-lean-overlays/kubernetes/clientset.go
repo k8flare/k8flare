@@ -15,7 +15,10 @@
 // file, unmodified) + this repo's Clientset implementing the other ~49
 // methods as panic stubs (pkg/leanclient/clientset/stubs.go, adapted from
 // an earlier spike's identical pattern, see that file's doc comment) instead.
-//go:build !leanwidth
+//
+// !schedwidth too: `-tags schedwidth` gets its own narrow Interface,
+// clientset_schedwidth.go -- see that file's doc comment.
+//go:build !leanwidth && !schedwidth
 
 package kubernetes
 

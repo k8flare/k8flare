@@ -13,12 +13,14 @@ package sched
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/events"
 
+	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/scheduler"
-	schedulerapi "k8s.io/kubernetes/pkg/scheduler/apis/config"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config/latest"
 
 	leanclientset "github.com/k8flare/k8flare/pkg/leanclient/clientset"
@@ -56,9 +58,32 @@ import (
 func RunScheduler(ctx context.Context, restCfg *restclient.Config) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
+			// Print the stack too: a resident dynamic worker has no other
+			// way to surface WHERE a startup panic happened (found the
+			// hard way during the schedwidth bring-up, 2026-07-10).
+			println(string(debug.Stack()))
 			err = fmt.Errorf("scheduler: panic: %v", r)
 		}
 	}()
+
+	// DRAExtendedResource (Beta, default-on in v1.36) must be off in this
+	// build: the js scheduler runs with a nil SharedDRAManager (the DRA
+	// plugin/manager is severed from the js mirror to fit the 64MiB
+	// Loader cap -- see gen-k8s-js-mirror.ts's DRA/CEL severing comment),
+	// and both eventhandlers.go's DeviceClass case
+	// (draManager.DeviceClassResolver(), nil-panicked live 2026-07-10)
+	// and noderesources' extended-resource scoring path
+	// (draManager.ResourceClaims().GatherAllocatedState()) dereference
+	// the manager whenever this gate is on. Same effect as the
+	// --feature-gates=DRAExtendedResource=false flag the host binary
+	// could take; DynamicResourceAllocation itself is GA/locked and
+	// stays on, which is fine -- its remaining event handlers only touch
+	// the (kept, apimachinery-only) claim cache and slice tracker.
+	if err := utilfeature.DefaultMutableFeatureGate.SetFromMap(map[string]bool{
+		string(features.DRAExtendedResource): false,
+	}); err != nil {
+		return fmt.Errorf("scheduler: disable DRAExtendedResource: %w", err)
+	}
 
 	client, err := leanclientset.NewSchedulerClientsetForConfig(restclient.AddUserAgent(restCfg, "kube-scheduler"))
 	if err != nil {
@@ -76,20 +101,41 @@ func RunScheduler(ctx context.Context, restCfg *restclient.Config) (err error) {
 	// latest.Default() already allocates Profiles[0].Plugins non-nil with
 	// these four present (and enabled) in MultiPoint, verified by probing
 	// its return value directly rather than assumed.
-	cfg.Profiles[0].Plugins.MultiPoint.Disabled = []schedulerapi.Plugin{
-		{Name: "VolumeBinding"},
-		{Name: "VolumeRestrictions"},
-		{Name: "NodeVolumeLimits"},
-		{Name: "VolumeZone"},
-		// DynamicResources must be disabled on GOOS=js: the js half of the
-		// scheduler-registry overlay (pkg/k8s-js-overlays/
-		// scheduler-registry_js.go) drops it from the in-tree registry to
-		// fit the Worker Loader's 64MiB cap, and a profile that names a
-		// plugin missing from the registry fails framework construction.
-		// DRA is unusable against this apiserver anyway (ResourceClaim/
-		// ResourceSlice/DeviceClass are permanently-empty stubs).
-		{Name: "DynamicResources"},
+	// STRIP the unwanted default plugins from MultiPoint.Enabled --
+	// setting MultiPoint.Disabled does NOT work for any of these
+	// (confirmed live 2026-07-10, twice):
+	//   - DynamicResources: the js registry overlay drops it from the
+	//     in-tree REGISTRY, and framework construction errors on any
+	//     MultiPoint.Enabled entry missing from the registry BEFORE it
+	//     consults any Disabled list (expandMultiPointPlugins's
+	//     '%s %q does not exist').
+	//   - VolumeBinding & friends: with only Disabled set, the final
+	//     framework plugin dump still showed all four ENABLED at every
+	//     extension point, and VolumeBinding's event registrations then
+	//     started VolumeAttachment/CSIStorageCapacity informers -- two
+	//     resources this apiserver does not even serve (not in
+	//     apidef.Table), whose watches therefore never receive the
+	//     initial-events-end bookmark, permanently deadlocking
+	//     factory.WaitForCacheSync.
+	// Same four Volume plugins the host binary disables via its config
+	// file (cmd/scheduler's writeSchedulerConfig), same reason: this
+	// apiserver has no volume binding to back. DRA is unusable against
+	// this apiserver anyway (ResourceClaim/ResourceSlice/DeviceClass are
+	// permanently-empty stubs).
+	strip := map[string]bool{
+		"DynamicResources":   true,
+		"VolumeBinding":      true,
+		"VolumeRestrictions": true,
+		"NodeVolumeLimits":   true,
+		"VolumeZone":         true,
 	}
+	enabled := cfg.Profiles[0].Plugins.MultiPoint.Enabled[:0]
+	for _, p := range cfg.Profiles[0].Plugins.MultiPoint.Enabled {
+		if !strip[p.Name] {
+			enabled = append(enabled, p)
+		}
+	}
+	cfg.Profiles[0].Plugins.MultiPoint.Enabled = enabled
 
 	recorderAdapter := events.NewEventBroadcasterAdapter(client)
 

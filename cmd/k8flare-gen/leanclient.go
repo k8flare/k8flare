@@ -145,6 +145,36 @@ var leanClientGroups = []leanClientGroup{
 			{Kind: "PersistentVolumeClaim", Receiver: "persistentVolumeClaims", Resource: "persistentvolumeclaims", Namespaced: true, HasUpdateStatus: true,
 				APIPackageAlias: "corev1", APIPackagePath: "k8s.io/api/core/v1",
 				ApplyConfigPackageAlias: "applyconfigurationscorev1", ApplyConfigPackagePath: "k8s.io/client-go/applyconfigurations/core/v1"},
+			// PersistentVolume: the real kube-scheduler's event handlers
+			// register a PV informer, whose ListAndWatch crashed on the old
+			// panic stub during the schedwidth bring-up (2026-07-10). PV is
+			// a real apidef.Table resource this apiserver serves.
+			// PersistentVolumeExpansion is empty upstream (no extras).
+			{Kind: "PersistentVolume", Receiver: "persistentVolumes", Resource: "persistentvolumes", Namespaced: false, HasUpdateStatus: true,
+				APIPackageAlias: "corev1", APIPackagePath: "k8s.io/api/core/v1",
+				ApplyConfigPackageAlias: "applyconfigurationscorev1", ApplyConfigPackagePath: "k8s.io/client-go/applyconfigurations/core/v1"},
+			// Namespace: PodTopologySpread/InterPodAffinity's namespace
+			// lister -- same schedwidth bring-up finding as
+			// PersistentVolume above (2026-07-10). Finalize is a panic
+			// stub (namespaceExtras), never called by the scheduler.
+			{Kind: "Namespace", Receiver: "namespaces", Resource: "namespaces", Namespaced: false, HasUpdateStatus: true,
+				APIPackageAlias: "corev1", APIPackagePath: "k8s.io/api/core/v1",
+				ApplyConfigPackageAlias: "applyconfigurationscorev1", ApplyConfigPackagePath: "k8s.io/client-go/applyconfigurations/core/v1",
+				Extras: namespaceExtras,
+			},
+			// ReplicationController: PodTopologySpread's setListers builds
+			// an RC lister/informer unconditionally -- same schedwidth
+			// bring-up finding as PersistentVolume/Namespace (2026-07-10).
+			// RC is a real apidef.Table resource. GetScale/UpdateScale are
+			// panic stubs (replicationControllerExtras).
+			{Kind: "ReplicationController", Receiver: "replicationControllers", Resource: "replicationcontrollers", Namespaced: true, HasUpdateStatus: true,
+				APIPackageAlias: "corev1", APIPackagePath: "k8s.io/api/core/v1",
+				ApplyConfigPackageAlias: "applyconfigurationscorev1", ApplyConfigPackagePath: "k8s.io/client-go/applyconfigurations/core/v1",
+				ExtraImports: []string{
+					`autoscalingv1 "k8s.io/api/autoscaling/v1"`,
+				},
+				Extras: replicationControllerExtras,
+			},
 			{Kind: "Event", Receiver: "events", Resource: "events", Namespaced: true, HasUpdateStatus: false,
 				APIPackageAlias: "corev1", APIPackagePath: "k8s.io/api/core/v1",
 				ApplyConfigPackageAlias: "applyconfigurationscorev1", ApplyConfigPackagePath: "k8s.io/client-go/applyconfigurations/core/v1",
@@ -364,9 +394,9 @@ func (c *Client) ResourceClaimTemplates(namespace string) resourcev1client.Resou
 
 // podExtras implements PodExpansion. Bind is the only one of these
 // coreV1OtherGetterStubs panic-stubs CoreV1Interface's remaining Getters
-// beyond Pods/Nodes/Services/Endpoints/Events/PersistentVolumeClaims
-// (ComponentStatuses, ConfigMaps, LimitRanges, Namespaces,
-// PersistentVolumes, PodTemplates, ReplicationControllers,
+// beyond Pods/Nodes/Services/Endpoints/Events/PersistentVolumeClaims/
+// PersistentVolumes/Namespaces/ReplicationControllers
+// (ComponentStatuses, ConfigMaps, LimitRanges, PodTemplates,
 // ResourceQuotas, Secrets, ServiceAccounts) -- confirmed unused by every
 // controller/scheduler this repo enables. Events was moved out of this
 // list and into Types below: unlike these, it *is* called -- every
@@ -378,6 +408,12 @@ func (c *Client) ResourceClaimTemplates(namespace string) resourcev1client.Resou
 // moved out the same way once the statefulset controller (which reads/writes
 // PVCs directly, no informer beyond factory.PersistentVolumeClaims()) was
 // enabled -- see docs/general-purpose-k8s-plan.md's Phase 3 StatefulSet entry.
+// PersistentVolumes moved out the same way for the schedwidth scheduler
+// (2026-07-10): the real scheduler's event handlers register a PV
+// informer, whose ListAndWatch called this accessor and crashed the
+// first sched dynamic-worker boot -- and PV is a real apidef.Table
+// resource this apiserver serves, so a real client is correct, not a
+// widened stub.
 const coreV1OtherGetterStubs = `
 func (c *Client) ComponentStatuses() corev1client.ComponentStatusInterface {
 	panic("leanclient: ComponentStatuses not implemented (unused by this repo's controllers/scheduler)")
@@ -388,17 +424,8 @@ func (c *Client) ConfigMaps(namespace string) corev1client.ConfigMapInterface {
 func (c *Client) LimitRanges(namespace string) corev1client.LimitRangeInterface {
 	panic("leanclient: LimitRanges not implemented (unused by this repo's controllers/scheduler)")
 }
-func (c *Client) Namespaces() corev1client.NamespaceInterface {
-	panic("leanclient: Namespaces not implemented (unused by this repo's controllers/scheduler)")
-}
-func (c *Client) PersistentVolumes() corev1client.PersistentVolumeInterface {
-	panic("leanclient: PersistentVolumes not implemented (unused by this repo's controllers/scheduler)")
-}
 func (c *Client) PodTemplates(namespace string) corev1client.PodTemplateInterface {
 	panic("leanclient: PodTemplates not implemented (unused by this repo's controllers/scheduler)")
-}
-func (c *Client) ReplicationControllers(namespace string) corev1client.ReplicationControllerInterface {
-	panic("leanclient: ReplicationControllers not implemented (unused by this repo's controllers/scheduler)")
 }
 func (c *Client) ResourceQuotas(namespace string) corev1client.ResourceQuotaInterface {
 	panic("leanclient: ResourceQuotas not implemented (unused by this repo's controllers/scheduler)")
@@ -425,6 +452,13 @@ func (c *Client) ServiceAccounts(namespace string) corev1client.ServiceAccountIn
 // repo enables.
 const podExtras = `
 func (c *pods) Bind(ctx context.Context, binding *corev1.Binding, opts metav1.CreateOptions) error {
+	// Stamp TypeMeta: plain encoding/json (unlike client-go's codec path)
+	// otherwise emits a body without kind/apiVersion, which this
+	// apiserver's strict decoder 400s ("Object 'Kind' is missing") --
+	// found live 2026-07-10 when the first in-Worker scheduler's
+	// DefaultBinder got 400 on every pods/binding POST; same fix as
+	// leanclient.Delete's DeleteOptions stamping.
+	binding.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Binding"}
 	body, err := json.Marshal(binding)
 	if err != nil {
 		return err
@@ -474,6 +508,29 @@ func (c *pods) UpdateResize(ctx context.Context, podName string, pod *corev1.Pod
 const nodeExtras = `
 func (c *nodes) PatchStatus(ctx context.Context, nodeName string, data []byte) (*corev1.Node, error) {
 	panic("leanclient: Nodes.PatchStatus not implemented (unused by this repo's controllers/scheduler)")
+}
+`
+
+// namespaceExtras implements NamespaceExpansion (Finalize) -- an
+// intentional panic stub: the scheduler only LISTS/WATCHES namespaces
+// (PodTopologySpread/InterPodAffinity's namespace lister), never
+// finalizes one (that's the namespace-lifecycle controller's job, which
+// this repo's apiserver handles itself).
+const namespaceExtras = `
+func (c *namespaces) Finalize(ctx context.Context, item *corev1.Namespace, opts metav1.UpdateOptions) (*corev1.Namespace, error) {
+	panic("leanclient: Namespaces.Finalize not implemented (unused by this repo's controllers/scheduler)")
+}
+`
+
+// replicationControllerExtras panic-stubs RC's scale methods (declared
+// on the base interface, not an Expansion): the scheduler
+// (PodTopologySpread's setListers) only LISTS ReplicationControllers.
+const replicationControllerExtras = `
+func (c *replicationControllers) GetScale(ctx context.Context, replicationControllerName string, options metav1.GetOptions) (*autoscalingv1.Scale, error) {
+	panic("leanclient: ReplicationControllers.GetScale not implemented (unused by this repo's controllers/scheduler)")
+}
+func (c *replicationControllers) UpdateScale(ctx context.Context, replicationControllerName string, scale *autoscalingv1.Scale, opts metav1.UpdateOptions) (*autoscalingv1.Scale, error) {
+	panic("leanclient: ReplicationControllers.UpdateScale not implemented (unused by this repo's controllers/scheduler)")
 }
 `
 
