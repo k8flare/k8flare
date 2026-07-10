@@ -21,4 +21,18 @@ RUN curl -fsSL -o /usr/local/bin/k3s \
 COPY k8flare-agent /usr/local/bin/k8flare-agent
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh /usr/local/bin/k8flare-agent
+# Required for `wrangler dev` to even start this Container class locally
+# (a zero-EXPOSE image is hard-rejected at dev startup, not just a
+# warning -- CLAUDE.md's documented pitfall, reproduced live 2026-07-11
+# in CI: "The container ... does not expose any ports"). 10250 is the
+# real kubelet port nodevm.ts's defaultPort/startAndWaitForPorts waits
+# on to consider a NodeVM booted; 10256 is entrypoint.sh's
+# -kubelet-plain-proxy-port, the plain-HTTP front the gateway's
+# logs/metrics bridge (nodes/index.ts's /kubelet/ route) actually calls
+# through containerFetch. Pod-on-Containers' own arbitrary container
+# ports (podproxy.ts/vkubeproxy, task #13) are reached the same way but
+# can't be declared here -- they're only known per-Pod at runtime, not
+# at image build time; hostNetwork: true (computeclass.go) is what makes
+# them reachable at all despite not being EXPOSEd.
+EXPOSE 10250 10256
 ENTRYPOINT ["/entrypoint.sh"]
