@@ -135,6 +135,19 @@ jobs:
             cat "$RUNNER_TEMP/wrangler.log"
             exit 1
           }
+          # Mirrors setupWranglerDev's own extra grace period
+          # (pkg/apiserver/apiserver_test.go: "Give it a moment to fully
+          # initialize"): the port answering doesn't mean every
+          # subsystem a write path touches (e.g. this job's first-ever
+          # Pod create bootstraps the "default" Namespace on first
+          # request, per server.go's routing comment) has finished
+          # settling. Reproduced live 2026-07-11 without this: the port
+          # check passed (after a slow 79s cold GET) but the very next
+          # step's Pod-create POST got a bare 503 with no app-level
+          # error in the log -- a platform/cold-start race, not this
+          # job's own logic (that step also now retries once, belt and
+          # suspenders).
+          sleep 3
 
       # Every Pod below opts into the Containers backend via the
       # k8flare.com/compute annotation (pkg/apiserver/computeclass.go).
@@ -149,16 +162,31 @@ jobs:
       # from the create response below.
       - name: Create smoke-pod and wait for its NodeVM to register + Running
         run: |
-          NODE_NAME=$(curl -sf -X POST "http://127.0.0.1:8930/api/v1/namespaces/default/pods" \
-            -H "Authorization: Bearer k8flare-dev-token" -H "Content-Type: application/json" \
-            -d '{
-              "apiVersion": "v1", "kind": "Pod",
-              "metadata": {"name": "smoke-pod", "annotations": {"k8flare.com/compute": "containers"}},
-              "spec": {
-                "restartPolicy": "Always",
-                "containers": [{"name": "demo", "image": "k8flare/demo:latest"}]
-              }
-            }' | python3 -c "import json,sys; print(json.load(sys.stdin)['spec']['nodeSelector']['kubernetes.io/hostname'])")
+          # Retries the create itself, not just the readiness poll
+          # below: a bare 503 with no app-level error is a platform/
+          # cold-start race (see the previous step's comment), not
+          # something a single attempt should treat as fatal.
+          CREATE_BODY=""
+          for i in $(seq 1 5); do
+            CREATE_BODY=$(curl -sf -X POST "http://127.0.0.1:8930/api/v1/namespaces/default/pods" \
+              -H "Authorization: Bearer k8flare-dev-token" -H "Content-Type: application/json" \
+              -d '{
+                "apiVersion": "v1", "kind": "Pod",
+                "metadata": {"name": "smoke-pod", "annotations": {"k8flare.com/compute": "containers"}},
+                "spec": {
+                  "restartPolicy": "Always",
+                  "containers": [{"name": "demo", "image": "k8flare/demo:latest"}]
+                }
+              }') && break
+            echo "Pod create attempt $i failed, retrying..."
+            sleep 3
+          done
+          if [ -z "$CREATE_BODY" ]; then
+            echo "::error::smoke-pod create never succeeded after 5 attempts"
+            cat "$RUNNER_TEMP/wrangler.log"
+            exit 1
+          fi
+          NODE_NAME=$(echo "$CREATE_BODY" | python3 -c "import json,sys; print(json.load(sys.stdin)['spec']['nodeSelector']['kubernetes.io/hostname'])")
           echo "smoke-pod pinned to Node $NODE_NAME"
           echo "NODE_NAME=$NODE_NAME" >> "$GITHUB_ENV"
 
