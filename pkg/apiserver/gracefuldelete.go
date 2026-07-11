@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -248,4 +249,62 @@ func finalizeDeleteWithOrphanSweep(ctx context.Context, rs *ResourceStore, names
 		return nil
 	}
 	return sweepOrphanStragglers(ctx, namespacedStores, namespace, string(m.UID))
+}
+
+
+// RejectCreateWithTerminatingController blocks creating a namespaced
+// object whose controller ownerReference points at an owner that is
+// currently terminating (deletionTimestamp set). Upstream has no such
+// admission check -- it doesn't need one, because its controllers
+// observe an owner's deletionTimestamp within milliseconds and stand
+// down before back-filling. Here the KCM is a resident dynamic worker
+// whose per-resource watch pumps have no cross-stream ordering
+// guarantee, so a controller can observe its dependents being orphaned
+// (and "missing") seconds before it observes the owner's own
+// deletionTimestamp, and back-fill replacements mid-orphan -- run
+// 29140071160: "expect 50 pods, got 54", four back-fills created in
+// that window, then orphaned along with the originals. Rejecting the
+// create is behaviorally equivalent to what upstream's timing produces
+// (no such pod ever exists); the controller treats the 403 like any
+// create failure and stops for real once its informer catches up.
+// Returns "" if the create is allowed, else the rejection message.
+func RejectCreateWithTerminatingController(ctx context.Context, namespacedStores []*ResourceStore, namespace string, obj runtime.Object) string {
+	if namespacedStores == nil || namespace == "" {
+		return ""
+	}
+	m := getObjectMeta(obj)
+	if m == nil {
+		return ""
+	}
+	for _, ref := range m.OwnerReferences {
+		if ref.Controller == nil || !*ref.Controller {
+			continue
+		}
+		ownerStore := storeForKind(namespacedStores, ref.Kind)
+		if ownerStore == nil {
+			continue // cluster-scoped or unserved owner kind: allow
+		}
+		owner, err := ownerStore.Get(ctx, namespace, ref.Name)
+		if err != nil {
+			continue // absent owner: allow; the GC cascades danglings
+		}
+		om := getObjectMeta(owner)
+		if om != nil && om.UID == ref.UID && om.DeletionTimestamp != nil {
+			return fmt.Sprintf("cannot create %s: controller owner %s %q is being deleted", m.Name, ref.Kind, ref.Name)
+		}
+	}
+	return ""
+}
+
+// storeForKind resolves a namespaced ResourceStore by its object Kind
+// (ownerReferences carry Kind, not the plural resource). The kind is
+// derived from the store's own newFunc's Go type name -- k8s API type
+// names ARE their Kinds.
+func storeForKind(namespacedStores []*ResourceStore, kind string) *ResourceStore {
+	for _, rs := range namespacedStores {
+		if t := reflect.TypeOf(rs.newFunc()); t != nil && t.Kind() == reflect.Ptr && t.Elem().Name() == kind {
+			return rs
+		}
+	}
+	return nil
 }

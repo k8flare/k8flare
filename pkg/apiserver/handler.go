@@ -185,6 +185,15 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 
 		ApplyDefaults(rObj)
 
+		// Back-fill guard for the graceful-deletion lifecycle: refuse to
+		// create an object whose controller owner is already terminating
+		// (see RejectCreateWithTerminatingController's doc comment for
+		// why this closes a watch-ordering window upstream doesn't have).
+		if msg := RejectCreateWithTerminatingController(ctx, namespacedStores, namespace, rObj); msg != "" {
+			writeStatusError(w, http.StatusForbidden, "Forbidden", msg)
+			return
+		}
+
 		// Fill in any container resource requests/limits the pod itself
 		// didn't specify, then reject it if it still violates a
 		// Container-scoped LimitRange's Min/Max, from LimitRanges in its
