@@ -242,14 +242,14 @@ jobs:
 
           echo "Waiting for wrangler dev on 127.0.0.1:8930..."
           for _ in $(seq 1 60); do
-            if curl -skf -o /dev/null "https://127.0.0.1:8930/api/v1/namespaces" \
+            if curl -skf --max-time 10 -o /dev/null "https://127.0.0.1:8930/api/v1/namespaces" \
               -H "Authorization: Bearer k8flare-dev-token"; then
               break
             fi
             sleep 1
           done
 
-          curl -skf -o /dev/null "https://127.0.0.1:8930/api/v1/namespaces" \
+          curl -skf --max-time 30 -o /dev/null "https://127.0.0.1:8930/api/v1/namespaces" \
             -H "Authorization: Bearer k8flare-dev-token" || {
             echo "::error::wrangler dev did not come up cleanly"
             cat "$RUNNER_TEMP/wrangler.log"
@@ -528,7 +528,7 @@ jobs:
       # `docker logs`; dump every NodeVM container's logs here instead
       # so a failed run is self-diagnosing from its own artifact.
       - name: Dump NodeVM container state on failure
-        if: failure()
+        if: failure() || cancelled()
         run: |
           # Unfiltered, deliberately: a name-based filter here already
           # came back empty once (this job's very first real container-
@@ -552,7 +552,7 @@ jobs:
           pkill -f "wrangler dev" || true
 
       - name: Upload logs
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: smoke-nodes-logs
