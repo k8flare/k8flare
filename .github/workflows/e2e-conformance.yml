@@ -338,7 +338,15 @@ jobs:
       # proven live before any test runs.
       - name: Wait for the dynamic-worker control plane (kcm + sched + gc)
         if: matrix.controlplane == 'dw'
-        timeout-minutes: 10
+        # Generous, deliberately: the first poke loads kcm+sched+gc
+        # (~150MB of wasm) CONCURRENTLY, and compiling that much wasm on
+        # a 2-vCPU runner blocks workerd's event loop for many minutes
+        # -- run 29169330476's wrangler.log stops dead at the warmup
+        # deployment's 201 and resumes only after the compiles finish.
+        # The polling loop is TIME-bounded (20min) so the failure
+        # diagnostics always run inside the step timeout, unlike the
+        # first attempt whose iteration-bounded loop outlived it.
+        timeout-minutes: 28
         run: |
           AUTH="Authorization: Bearer k8flare-dev-token"
           curl -skf --max-time 30 -o /dev/null -X POST https://127.0.0.1:8787/apis/apps/v1/namespaces/default/deployments \
@@ -346,11 +354,11 @@ jobs:
             -d '{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"dw-warmup"},"spec":{"replicas":1,"selector":{"matchLabels":{"app":"dw-warmup"}},"template":{"metadata":{"labels":{"app":"dw-warmup"}},"spec":{"containers":[{"name":"c","image":"registry.k8s.io/pause:3.10"}]}}}}'
           echo "Waiting for the warmup Pod to reach Running (kcm -> sched -> kubelet)..."
           PHASE=""
-          for _ in $(seq 1 90); do
+          while [ "$SECONDS" -lt 1200 ]; do
             PHASE=$(curl -sk --max-time 10 "https://127.0.0.1:8787/api/v1/namespaces/default/pods?labelSelector=app%3Ddw-warmup" \
               -H "$AUTH" | python3 -c "import json,sys; items=json.load(sys.stdin).get('items',[]); print(items[0].get('status',{}).get('phase','') if items else '')" 2>/dev/null || true)
             [ "$PHASE" = "Running" ] && break
-            sleep 5
+            sleep 10
           done
           [ "$PHASE" = "Running" ] || {
             echo "::error::dw control plane warmup: Pod never reached Running (last: $PHASE)"
