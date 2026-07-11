@@ -56,9 +56,11 @@ workers/k8flare(シェル: 認証一元化・watch ストリーミング・kubel
    │      pkg/controllers/cmd/kcm-wasm。poke = Cluster DO の pingControllers 直呼び /
    │      event-armed 安全網 alarm)
    ├──► gc DW(resident。実 garbagecollector、pkg/controllers/cmd/gc-wasm。
-   │      wrangler dev で Deployment→ReplicaSet カスケード削除を実機確認済み
-   │      2026-07-10。kubectl delete は非同期 eventually-consistent へ変更 —
-   │      実 k8s と同じ挙動、ユーザー承認済み)
+   │      kubectl delete は非同期 eventually-consistent(実 k8s と同じ挙動、
+   │      ユーザー承認済み)。Orphan/Foreground は apiserver 側の最小
+   │      graceful-deletion(deletionTimestamp+finalizer スタンプ、
+   │      pkg/apiserver/gracefuldelete.go)で実 GC に完全委任。upstream の
+   │      GC conformance 7 テストを 7/7 で required 昇格済み 2026-07-11)
    ├──► sched DW(resident。実 kube-scheduler、pkg/controllers/cmd/kcm-wasm/scheduler、
    │      -tags schedwidth。2026-07-10 に 101MB→45MB opt へ削減して cap 内に収め、
    │      wrangler dev で実 Pod bind を実機確認済み — 経緯は

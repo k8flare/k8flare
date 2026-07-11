@@ -698,6 +698,28 @@ controllers/cmd/gc-wasm`), a separate Loader isolate from kcm's six
    `kubectl delete deployment` -> GC cascade-deletes the ReplicaSet,
    each within seconds.
 
+   **PROMOTED TO REQUIRED (2026-07-11):** upstream's 7 [Conformance]
+   Garbage collector e2e tests all pass (run 29136960838, 7/7) and are
+   now a required e2e-conformance group. Getting from 1/7 to 7/7 took,
+   in order (each verified live before landing, per rule 2): enabling
+   the real ReplicationController controller in both the host
+   controller-manager and the WASM KCM (9b01689 -- the RC-based tests
+   simply had no controller creating their pods); retrying
+   delete-vs-concurrent-write conflicts in the storage layer, including
+   the silent 200-deleted:false no-op path (729e6fb); and, decisively,
+   replacing the synchronous OrphanDependents sweep with the minimal
+   graceful-deletion lifecycle (7c80d1d,
+   `pkg/apiserver/gracefuldelete.go`): Orphan/Foreground DELETEs stamp
+   deletionTimestamp + the policy finalizer and hand the actual
+   orphaning/cascading to the real garbagecollector, whose
+   attemptToOrphan/foreground machinery this project had until then been
+   re-implementing badly inline -- both intermediate orderings of the
+   synchronous sweep raced the live controllers (owner-first lost the
+   dependents to the GC's dangling-reference cascade; strip-first let
+   the RC controller re-adopt and back-fill). Foreground deletion now
+   has real semantics too: the owner stays visible until its dependents
+   are gone.
+
 Verify: conformance `[sig-apps]` ReplicaSet/Deployment basics move into the
 required set — these are Conformance-tagged upstream, so this phase is the
 largest single jump in official conformance coverage. StatefulSet's own
