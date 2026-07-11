@@ -135,7 +135,9 @@ export async function handleVKubeProxy(req: Request, env: Env, appPath: string):
 
   const target = await resolveVKubeProxyTarget(env, targetIP, targetPort);
   if (!target) {
-    return new Response(`no ready endpoint for ClusterIP ${targetIP}:${targetPort}`, { status: 503 });
+    return new Response(`no ready endpoint for ClusterIP ${targetIP}:${targetPort}`, {
+      status: 503,
+    });
   }
 
   return forwardToPod(env, target.podUID, target.containerPort, appPath, req);

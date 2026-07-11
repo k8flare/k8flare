@@ -335,7 +335,9 @@ export async function resolveVKubeProxyTarget(
   );
   if (!resp.ok) {
     if (resp.status === 502) return null; // no Service/ready-endpoint match
-    throw new Error(`resolveVKubeProxyTarget ${clusterIP}:${port}: ${resp.status} ${await resp.text()}`);
+    throw new Error(
+      `resolveVKubeProxyTarget ${clusterIP}:${port}: ${resp.status} ${await resp.text()}`,
+    );
   }
   return (await resp.json()) as VKubeProxyTarget;
 }
