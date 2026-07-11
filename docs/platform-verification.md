@@ -3345,3 +3345,16 @@ gen-clientgo-lean-mirror.ts に再現可能な形で実装、sha256 ピン付き
 e2e-conformance.yml の wrangler dev に `--var SCHED_DISABLED:1` を付与
 (ホスト版が唯一の live scheduler になる構成に固定)。go test 経路は
 KCM_DISABLED が全 poke を止めるため元から影響なし。
+
+**S21 追補(2026-07-12、GC conformance required 昇格の最終形)**: upstream
+GC conformance 7 テストのうち 6 つを required 化(run 29136960838 で 7/7
+緑を確認済み)。残る 1 つ「should orphan pods created by rc [Serial]」は
+**orphan の正しさではなく制御プレーンの書き込み/watch スループットのカナリア**
+として advisory に置く: 高速なランナーでは通り(上記 7/7 run)、遅い
+2-vCPU ランナーでは 50 Pod の作成自体に ~20 秒の DO 書き込みキュー時間が
+かかり、KCM の informer が数秒〜数十秒古い世界を見て back-fill する。
+この失敗系から 5 つの実修正(RC コントローラー有効化・削除の conflict
+リトライ・graceful-deletion ライフサイクル・PATCH リトライ・
+terminating/absent owner 作成ガード+無条件スタンプ)を得たが、
+複数秒の informer ラグ自体はサーバー側ガードでは打ち消せない。
+再昇格の条件は書き込みパスの高速化(別タスク)。
