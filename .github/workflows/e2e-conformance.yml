@@ -20,6 +20,20 @@ on:
 
 jobs:
   e2e-conformance:
+    # Two control planes, one suite:
+    #   host -- the REQUIRED gate: host kube-scheduler +
+    #     kube-controller-manager processes, dynamic workers for kcm/sched
+    #     disabled (gc dynamic worker always runs; the host has no GC).
+    #   dw -- the v3 PRODUCTION shape: NO host control-plane processes;
+    #     the kcm/sched/gc dynamic workers are the entire control plane.
+    #     Advisory (continue-on-error) until it has a green track record,
+    #     then it becomes required too -- before this matrix existed the
+    #     shape production actually runs had ZERO conformance coverage.
+    strategy:
+      fail-fast: false
+      matrix:
+        controlplane: [host, dw]
+    continue-on-error: ${{ matrix.controlplane == 'dw' }}
     runs-on: ubuntu-latest
     # Budget: setup (deps + wasm + binaries + cluster up) ~30min, baseline
     # ~7min, experimental step-capped at 20min, teardown seconds.
@@ -196,8 +210,8 @@ jobs:
           nohup npx wrangler dev \
             -c workers/k8flare/wrangler.jsonc \
             --enable-containers=false \
-            --var SCHED_DISABLED:1 \
-            --var CM_DISABLED:1 \
+            --var SCHED_DISABLED:${{ matrix.controlplane == 'host' && '1' || '0' }} \
+            --var CM_DISABLED:${{ matrix.controlplane == 'host' && '1' || '0' }} \
             --local \
             --port 8787 \
             --local-protocol https \
@@ -274,6 +288,7 @@ jobs:
       # (root-owned-by-default) production default. --insecure-skip-tls-verify
       # is belt-and-suspenders on top of the system trust store install above.
       - name: Start scheduler (real kube-scheduler)
+        if: matrix.controlplane == 'host'
         run: |
           nohup ./bin/k8flare-scheduler \
             --server=https://127.0.0.1:8787 \
@@ -297,6 +312,7 @@ jobs:
       # enabled here pending its own verification pass (metadata-only
       # client + RESTMapper, see Phase 3's OwnerReference GC entry).
       - name: Start controller-manager (real kube-controller-manager)
+        if: matrix.controlplane == 'host'
         run: |
           nohup ./bin/k8flare-controller-manager \
             --server=https://127.0.0.1:8787 \
@@ -311,6 +327,48 @@ jobs:
             cat "$RUNNER_TEMP/controller-manager.log"
             exit 1
           }
+
+      # dw variant only: the control plane is the kcm/sched/gc dynamic
+      # workers, and their first load is poke-driven (~1-2 minutes of
+      # Loader assembly each). Readiness is checked BEHAVIORALLY -- one
+      # throwaway Deployment must go Pod-Running (kcm created it, sched
+      # bound it, the kubelet ran it) and then cascade away on delete
+      # (gc) -- so the conformance clock never starts against a
+      # still-loading control plane, and all three dynamic workers are
+      # proven live before any test runs.
+      - name: Wait for the dynamic-worker control plane (kcm + sched + gc)
+        if: matrix.controlplane == 'dw'
+        timeout-minutes: 10
+        run: |
+          AUTH="Authorization: Bearer k8flare-dev-token"
+          curl -skf --max-time 30 -o /dev/null -X POST https://127.0.0.1:8787/apis/apps/v1/namespaces/default/deployments \
+            -H "$AUTH" -H "Content-Type: application/json" \
+            -d '{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"dw-warmup"},"spec":{"replicas":1,"selector":{"matchLabels":{"app":"dw-warmup"}},"template":{"metadata":{"labels":{"app":"dw-warmup"}},"spec":{"containers":[{"name":"c","image":"registry.k8s.io/pause:3.10"}]}}}}'
+          echo "Waiting for the warmup Pod to reach Running (kcm -> sched -> kubelet)..."
+          PHASE=""
+          for _ in $(seq 1 90); do
+            PHASE=$(curl -sk --max-time 10 "https://127.0.0.1:8787/api/v1/namespaces/default/pods?labelSelector=app%3Ddw-warmup" \
+              -H "$AUTH" | python3 -c "import json,sys; items=json.load(sys.stdin).get('items',[]); print(items[0].get('status',{}).get('phase','') if items else '')" 2>/dev/null || true)
+            [ "$PHASE" = "Running" ] && break
+            sleep 5
+          done
+          [ "$PHASE" = "Running" ] || {
+            echo "::error::dw control plane warmup: Pod never reached Running (last: $PHASE)"
+            exit 1
+          }
+          echo "Warmup Pod Running. Deleting and waiting for the GC cascade..."
+          curl -skf --max-time 30 -o /dev/null -X DELETE https://127.0.0.1:8787/apis/apps/v1/namespaces/default/deployments/dw-warmup -H "$AUTH"
+          for _ in $(seq 1 60); do
+            N=$(curl -sk --max-time 10 "https://127.0.0.1:8787/api/v1/namespaces/default/pods?labelSelector=app%3Ddw-warmup" \
+              -H "$AUTH" | python3 -c "import json,sys; print(len(json.load(sys.stdin).get('items',[])))" 2>/dev/null || echo "?")
+            [ "$N" = "0" ] && break
+            sleep 5
+          done
+          [ "$N" = "0" ] || {
+            echo "::error::dw control plane warmup: GC never cascaded the warmup pods (remaining: $N)"
+            exit 1
+          }
+          echo "Dynamic-worker control plane is live (kcm + sched + gc all verified behaviorally)."
 
       # Baseline group: 11 Conformance tests (2 NodeSelector + 1 resource-limits
       # + 1 hostPort + 2 LimitRange + 5 Watchers) already fully validated this
