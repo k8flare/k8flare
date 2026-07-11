@@ -124,6 +124,86 @@ jobs:
       # bridge IP in its SANs and hands the CA to the NodeVMs through
       # GATEWAY_CA_B64 -> nodevm.ts -> entrypoint.sh's system-bundle
       # append (pkg/agent's ReplaceServerCA trusts the SYSTEM bundle).
+      # The NodeVM image runs a full k3s agent (kubelet + containerd +
+      # flannel + kube-proxy), which needs root capabilities the plain
+      # unprivileged `docker run` workerd performs cannot grant: run
+      # 29138450844's docker-logs showed kube-proxy dying on "iptables
+      # ... you must be root" and read-only /proc/sys sysctls once the
+      # join itself finally worked. Production Firecracker microVMs give
+      # the workload a real root VM, so this is purely a local-emulation
+      # gap; workerd offers no privileged knob, but it reaches Docker
+      # through DOCKER_HOST -- so CI interposes a socket proxy that
+      # injects HostConfig.Privileged=true into POST /containers/create
+      # and raw-splices every other request (attach/logs use connection
+      # hijacking, which a parsing proxy would break).
+      - name: Start privileged-injecting Docker socket proxy (CI-only)
+        run: |
+          cat > "$RUNNER_TEMP/docker-priv-proxy.js" <<'PROXY'
+          const net = require("net");
+          const http = require("http");
+          const REAL = "/var/run/docker.sock";
+          const SOCK = process.env.PROXY_SOCK;
+          const server = net.createServer((client) => {
+            let buf = Buffer.alloc(0);
+            const onData = (chunk) => {
+              buf = Buffer.concat([buf, chunk]);
+              const headerEnd = buf.indexOf("\r\n\r\n");
+              if (headerEnd === -1) return; // keep buffering headers
+              client.removeListener("data", onData);
+              const head = buf.slice(0, headerEnd).toString();
+              const line = head.split("\r\n")[0];
+              const m = line.match(/^POST (\S*\/containers\/create\S*) HTTP/);
+              if (!m) {
+                // transparent raw splice (handles hijacked streams)
+                const up = net.connect(REAL, () => {
+                  up.write(buf);
+                  client.pipe(up);
+                  up.pipe(client);
+                });
+                up.on("error", () => client.destroy());
+                client.on("error", () => up.destroy());
+                return;
+              }
+              // buffer the JSON body, inject Privileged, replay upstream
+              const clm = head.match(/content-length: *(\d+)/i);
+              const bodyLen = clm ? parseInt(clm[1], 10) : 0;
+              const need = headerEnd + 4 + bodyLen;
+              const finish = () => {
+                const body = JSON.parse(buf.slice(headerEnd + 4, need).toString() || "{}");
+                body.HostConfig = Object.assign({}, body.HostConfig, { Privileged: true });
+                const newBody = Buffer.from(JSON.stringify(body));
+                const req = http.request(
+                  { socketPath: REAL, path: m[1], method: "POST",
+                    headers: { "Content-Type": "application/json", "Content-Length": newBody.length, Host: "docker" } },
+                  (res) => {
+                    let out = `HTTP/1.1 ${res.statusCode} ${res.statusMessage}\r\n`;
+                    for (let i = 0; i < res.rawHeaders.length; i += 2) out += `${res.rawHeaders[i]}: ${res.rawHeaders[i + 1]}\r\n`;
+                    client.write(out + "\r\n");
+                    res.pipe(client);
+                  },
+                );
+                req.on("error", () => client.destroy());
+                req.end(newBody);
+              };
+              if (buf.length >= need) finish();
+              else {
+                const more = (c2) => { buf = Buffer.concat([buf, c2]); if (buf.length >= need) { client.removeListener("data", more); finish(); } };
+                client.on("data", more);
+              }
+            };
+            client.on("data", onData);
+            client.on("error", () => {});
+          });
+          server.listen(SOCK, () => console.log("docker priv proxy on", SOCK));
+          PROXY
+          export PROXY_SOCK="$RUNNER_TEMP/docker-priv.sock"
+          nohup node "$RUNNER_TEMP/docker-priv-proxy.js" > "$RUNNER_TEMP/docker-priv-proxy.log" 2>&1 &
+          for _ in $(seq 1 10); do [ -S "$PROXY_SOCK" ] && break; sleep 1; done
+          [ -S "$PROXY_SOCK" ] || { cat "$RUNNER_TEMP/docker-priv-proxy.log"; exit 1; }
+          # smoke: the proxy must answer a plain docker API call
+          curl -s --unix-socket "$PROXY_SOCK" http://docker/_ping | grep -q OK
+          echo "DOCKER_HOST=unix://$PROXY_SOCK" >> "$GITHUB_ENV"
+
       - name: Start wrangler dev (the consolidated k8flare Worker)
         run: |
           mkdir -p "$RUNNER_TEMP/devtls"
