@@ -3380,3 +3380,13 @@ WASM を gateway isolate 内で 1 回 instantiate して同期呼び出し」と
 案 (d) で確定。per-event の Loader/DW 起動もイベント毎の再インスタンス化も
 不要 = ホットパスへのコスト追加ほぼゼロ(コスト不変条件を全て満たす)。
 サイズも ASSETS の 25MiB/ファイル上限に対し 4.57MB で余裕。
+
+**S21 追補の訂正(2026-07-12)**: カナリア分離の根本原因が判明し、同日中に
+required へ再昇格した。「複数秒の informer ラグ」の主因は環境スループット
+ではなく (1) WASM 側 rest.Config の QPS 未設定(client-go デフォルト
+5 QPS が全 resident コントローラーを律速 — ローカル実測: KCM の 50 Pod
+作成 ~9 秒、GC の 50 ownerRef strip ~10 秒)と (2) e2e がホスト
+kube-controller-manager と kcm DW の**二重コントローラーマネージャー**で
+走っていたこと。QPS=50/Burst=100 + CM_DISABLED(SCHED_DISABLED と対称)
+で run 29161962551 はカナリア含め全緑、GC required 群の実行時間も
+~8 分→~3 分に短縮。GC conformance 7 テストは全て required に戻った。
