@@ -184,6 +184,12 @@ func badRequestStatus(message string) *metav1.Status {
 	}
 }
 
+// deleteConflictRetries bounds ResourceStore.Delete's conflict-retry
+// loop (see its doc comment). Conflicts are momentary races against
+// another writer; a handful of immediate re-read-and-retry passes is
+// plenty.
+const deleteConflictRetries = 5
+
 // StatusError wraps a metav1.Status as an error, allowing callers to inspect
 // the structured Kubernetes status response.
 type StatusError struct {
@@ -493,29 +499,43 @@ func (rs *ResourceStore) Update(ctx context.Context, namespace, name string, obj
 func (rs *ResourceStore) Delete(ctx context.Context, namespace, name string) (runtime.Object, error) {
 	key := rs.storageKey(namespace, name)
 
-	// Get the current object so we can return it and obtain its revision
-	stored, err := rs.storage.Get(ctx, key)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return nil, &StatusError{Status: notFoundStatus(rs.resource, name)}
+	// Get-then-CAS-delete, retried on conflict: unlike an update, a
+	// DELETE without preconditions must not fail just because someone
+	// else wrote the object between the read and the delete (a
+	// controller status write, a concurrent kine-log insert racing for
+	// the same revision) -- real apiservers delete the object whatever
+	// its latest revision is. Each retry re-reads the fresh revision;
+	// an object that vanished mid-retry is a plain NotFound, same as if
+	// it had been gone at the start.
+	var lastErr error
+	for attempt := 0; attempt < deleteConflictRetries; attempt++ {
+		stored, err := rs.storage.Get(ctx, key)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil, &StatusError{Status: notFoundStatus(rs.resource, name)}
+			}
+			return nil, fmt.Errorf("store delete: get current: %w", err)
 		}
-		return nil, fmt.Errorf("store delete: get current: %w", err)
-	}
 
-	// Decode the current object to return it
-	obj := rs.newFunc()
-	if err := DecodeFromStorage(stored.Value, obj); err != nil {
-		return nil, fmt.Errorf("store delete: decode: %w", err)
-	}
-	setResourceVersion(obj, stored.ModRevision)
+		// Decode the current object to return it
+		obj := rs.newFunc()
+		if err := DecodeFromStorage(stored.Value, obj); err != nil {
+			return nil, fmt.Errorf("store delete: decode: %w", err)
+		}
+		setResourceVersion(obj, stored.ModRevision)
 
-	// Delete from storage using the current revision
-	_, err = rs.storage.Delete(ctx, key, stored.ModRevision)
-	if err != nil {
+		// Delete from storage using the current revision
+		_, err = rs.storage.Delete(ctx, key, stored.ModRevision)
+		if err == nil {
+			return obj, nil
+		}
+		if errors.Is(err, ErrConflict) {
+			lastErr = err
+			continue
+		}
 		return nil, fmt.Errorf("store delete: %w", err)
 	}
-
-	return obj, nil
+	return nil, fmt.Errorf("store delete: conflicted %d times: %w", deleteConflictRetries, lastErr)
 }
 
 // DeleteCollection deletes every object of this resource type in namespace
@@ -575,8 +595,17 @@ func (rs *ResourceStore) DeleteAllInNamespace(ctx context.Context, namespace str
 		// re-prepends the prefix itself) — must strip it here or the request
 		// double-prefixes and fails to find the key.
 		key := strings.TrimPrefix(obj.Key, rs.storage.prefix)
-		// Revision 0 means unconditional delete (see Storage.Delete/handleDelete).
-		if _, err := rs.storage.Delete(ctx, key, 0); err != nil {
+		// Revision 0 means unconditional delete (see Storage.Delete/
+		// handleDelete), so a CAS mismatch can't happen -- but the
+		// kine-log event insert can still lose a same-revision race
+		// (ErrConflict, the DO's UNIQUE-constraint 409); retry those.
+		var err error
+		for attempt := 0; attempt < deleteConflictRetries; attempt++ {
+			if _, err = rs.storage.Delete(ctx, key, 0); !errors.Is(err, ErrConflict) {
+				break
+			}
+		}
+		if err != nil {
 			return 0, fmt.Errorf("delete %s: %w", obj.Key, err)
 		}
 	}

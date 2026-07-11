@@ -370,11 +370,24 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 					return
 				}
 				for _, item := range items {
-					if m := getObjectMeta(item); m != nil {
-						if err := OrphanDependents(ctx, namespacedStores, m.Namespace, m.UID); err != nil {
-							writeInternalError(w, err)
+					m := getObjectMeta(item)
+					if m == nil {
+						continue
+					}
+					// Stamp deletionTimestamp before stripping, same
+					// controller-stand-down reasoning as the single-name
+					// path below.
+					if m.DeletionTimestamp == nil {
+						now := metav1.Now()
+						m.DeletionTimestamp = &now
+						if _, err := store.Update(ctx, m.Namespace, m.Name, item); err != nil && !isStatusReason(err, metav1.StatusReasonNotFound) {
+							writeInternalError(w, fmt.Errorf("mark %s %s/%s deleting: %w", resource, m.Namespace, m.Name, err))
 							return
 						}
+					}
+					if err := OrphanDependents(ctx, namespacedStores, m.Namespace, m.UID); err != nil {
+						writeInternalError(w, err)
+						return
 					}
 				}
 			}
@@ -444,7 +457,31 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			// and leaves it alone. If orphaning fails partway, the owner
 			// still exists and a client retry of the same DELETE is the
 			// correct, idempotent recovery.
+			// ...but stripping alone isn't enough while the owner's own
+			// controller is still managing it: with a 50-replica RC, the
+			// real replication controller re-adopts each just-stripped
+			// pod (its selector still matches, and adoption's
+			// canAdoptFunc re-fetches an owner that looks perfectly
+			// alive) and back-fills "missing" ones, so the final owner
+			// delete still leaves re-adopted pods dangling for the GC to
+			// cascade -- observed live as "expect 50 pods, got 13" in
+			// run 29134357997. Upstream prevents exactly this with the
+			// deletionTimestamp the orphan finalizer lifecycle sets:
+			// every workload controller stops managing (and refuses to
+			// adopt for) an owner whose fresh read carries a
+			// deletionTimestamp. This apiserver has no graceful-deletion
+			// lifecycle, but it can borrow that one signal: stamp
+			// deletionTimestamp on the owner FIRST, so controllers stand
+			// down, then strip, then hard-delete.
 			if cur, err := store.Get(ctx, namespace, name); err == nil {
+				if m := getObjectMeta(cur); m != nil && m.DeletionTimestamp == nil {
+					now := metav1.Now()
+					m.DeletionTimestamp = &now
+					if _, err := store.Update(ctx, namespace, name, cur); err != nil {
+						writeInternalError(w, fmt.Errorf("mark %s %s/%s deleting: %w", resource, namespace, name, err))
+						return
+					}
+				}
 				if m := getObjectMeta(cur); m != nil {
 					if err := OrphanDependents(ctx, namespacedStores, namespace, m.UID); err != nil {
 						writeInternalError(w, err)

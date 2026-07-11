@@ -241,8 +241,30 @@ func (s *Storage) Delete(ctx context.Context, key string, revision int64) (int64
 		return 0, fmt.Errorf("storage delete: decode response: %w", err)
 	}
 
+	// The Cluster DO's catch-all maps a kine-log "UNIQUE constraint
+	// failed" (two writers racing to insert an event at the same
+	// revision -- e.g. this delete vs. a controller's concurrent status
+	// update on the same cluster) to 409, for EVERY method, delete
+	// included. That's a retryable moment, not a failure: surface it as
+	// ErrConflict so store.go re-reads and retries. Observed live as
+	// `failed to delete the deployment: ... unexpected status 409` in
+	// the GC conformance group (run 29134357997, 2026-07-11).
+	if resp.StatusCode == http.StatusConflict {
+		return result.Revision, ErrConflict
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("storage delete: unexpected status %d", resp.StatusCode)
+	}
+
+	// handleDelete reports a revision-CAS mismatch as HTTP 200 with
+	// deleted:false (workers/k8flare/src/storage/index.ts), NOT as an
+	// error status. Treating that as success meant a delete racing a
+	// concurrent update silently left the object alive while the
+	// apiserver told the client it was gone -- same retry contract as
+	// the 409 above.
+	if !result.Deleted {
+		return result.Revision, ErrConflict
 	}
 
 	return result.Revision, nil
