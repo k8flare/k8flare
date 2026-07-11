@@ -3358,3 +3358,25 @@ GC conformance 7 テストのうち 6 つを required 化(run 29136960838 で 7/
 terminating/absent owner 作成ガード+無条件スタンプ)を得たが、
 複数秒の informer ラグ自体はサーバー側ガードでは打ち消せない。
 再昇格の条件は書き込みパスの高速化(別タスク)。
+
+---
+
+## S22: Go WASM インスタンスの isolate 内再利用 — 同期 js.FuncOf は IoContext を跨げる(2026-07-12、実機検証済み)
+
+S8 の既知制約「timers/goroutines は go.run() をホストした IoContext が
+アクティブな間しか進行しない(独立リクエストからの再利用は "code had
+hung")」が、**同期 js.FuncOf コールバックには適用されない**ことを実機で
+確認した。検証: labels/fields 判定のみの最小 Go WASM(apimachinery
+labels+fields、4.57MB opt / 1.3MB gzip)を module スコープで 1 回
+instantiate し、36 回の独立した fetch() イベント(連続 30 回+8 秒空けて
+5 回)から globalThis.matchLabelSelector/matchFieldSelector を同期呼び出し
+— 全て正しい結果、エラー 0、"code had hung" 0、boot 26ms、呼び出し
+レイテンシ ~0ms。goroutine/timer の前進を必要としない純粋関数の
+エクスポートなら、Go ランタイムのスケジューラが止まっていても呼べる
+(js.FuncOf コールバックはホスト JS スレッドから直接実行されるため)。
+
+**含意**: watch 経路のセレクタ判定 Go 化(タスク #1)は「静的アセット
+WASM を gateway isolate 内で 1 回 instantiate して同期呼び出し」という
+案 (d) で確定。per-event の Loader/DW 起動もイベント毎の再インスタンス化も
+不要 = ホットパスへのコスト追加ほぼゼロ(コスト不変条件を全て満たす)。
+サイズも ASSETS の 25MiB/ファイル上限に対し 4.57MB で余裕。
