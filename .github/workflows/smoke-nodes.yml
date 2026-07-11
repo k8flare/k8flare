@@ -346,7 +346,11 @@ jobs:
           # nothing (found while diagnosing a real boot failure in CI
           # 2026-07-11, via the "Dump NodeVM container state" step below
           # coming back completely empty).
-          docker ps --filter "ancestor=cloudflare-dev/nodevmsmall" --format '{{.Names}}' | grep -q . || {
+          # NOT --filter ancestor=...: without a tag that only matches
+          # ":latest", and workerd tags NodeVM images with a content
+          # hash (cloudflare-dev/nodevmsmall:4de44020) -- run
+          # 29139397094 failed here with the Pod genuinely Running.
+          docker ps --format '{{.Image}}' | grep -q 'cloudflare-dev/nodevmsmall' || {
             echo "::error::no NodeVMSmall Docker container found for a Running Pod"
             exit 1
           }
@@ -378,10 +382,10 @@ jobs:
           curl -skf -X DELETE "https://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod" \
             -H "Authorization: Bearer k8flare-dev-token" -o /dev/null
           for _ in $(seq 1 20); do
-            docker ps --filter "ancestor=cloudflare-dev/nodevmsmall" --filter "ancestor=cloudflare-dev/nodevmmedium" --filter "ancestor=cloudflare-dev/nodevmlarge" --format '{{.Names}}' | grep -q . || break
+            docker ps --format '{{.Image}}' | grep -qE 'cloudflare-dev/nodevm(small|medium|large)' || break
             sleep 2
           done
-          docker ps --filter "ancestor=cloudflare-dev/nodevmsmall" --filter "ancestor=cloudflare-dev/nodevmmedium" --filter "ancestor=cloudflare-dev/nodevmlarge" --format '{{.Names}}' | grep -q . && {
+          docker ps --format '{{.Image}}' | grep -qE 'cloudflare-dev/nodevm(small|medium|large)' && {
             echo "::error::Pod container(s) still running >40s after Pod delete"
             docker ps
             exit 1
