@@ -347,21 +347,26 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 				}
 			}
 
-			obj, err := store.DeleteCollection(ctx, namespace, labelSelector)
-			if err != nil {
-				writeInternalError(w, err)
-				return
-			}
 			if store.namespaced && namespacedStores != nil && policy == metav1.DeletePropagationOrphan {
 				// Real GC (pkg/controllers/gc) handles Background/Foreground
 				// cascade delete asynchronously; Orphan is the one policy
 				// this apiserver still handles synchronously (see
-				// orphan.go). Uses each item's own namespace, not the
+				// orphan.go). Strip dependents BEFORE the collection
+				// delete, for the same GC-race reason as the single-name
+				// path below (orphan-after-delete loses the race against
+				// the real GC's dangling-reference cascade). List first so
+				// the sweep runs against exactly the owners about to be
+				// removed; uses each item's own namespace, not the
 				// request's (which is "" for an all-namespaces collection
 				// delete).
-				items, err := meta.ExtractList(obj)
+				listObj, err := store.List(ctx, namespace, "", labelSelector)
 				if err != nil {
-					writeInternalError(w, fmt.Errorf("extract deleted %s list: %w", resource, err))
+					writeInternalError(w, err)
+					return
+				}
+				items, err := meta.ExtractList(listObj)
+				if err != nil {
+					writeInternalError(w, fmt.Errorf("extract %s list for orphan: %w", resource, err))
 					return
 				}
 				for _, item := range items {
@@ -372,6 +377,11 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 						}
 					}
 				}
+			}
+			obj, err := store.DeleteCollection(ctx, namespace, labelSelector)
+			if err != nil {
+				writeInternalError(w, err)
+				return
 			}
 			if svcList, ok := obj.(*corev1.ServiceList); ok {
 				for i := range svcList.Items {
@@ -415,6 +425,36 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			}
 		}
 
+		if store.namespaced && namespacedStores != nil && policy == metav1.DeletePropagationOrphan {
+			// Real GC (pkg/controllers/gc) handles Background/Foreground
+			// cascade delete asynchronously; Orphan is the one policy
+			// this apiserver still handles synchronously (see orphan.go).
+			//
+			// Strip the dependents BEFORE deleting the owner, not after
+			// (same ordering argument as the namespace sweep above): the
+			// real garbagecollector races this handler. Reproduced live
+			// 2026-07-11 (wrangler dev; also the "should orphan RS
+			// created by deployment" conformance failure in run
+			// 29118462901): with the owner deleted first, the GC's
+			// owner-DELETED event still finds the dependent carrying the
+			// ownerRef, live-checks the owner, sees it absent -- a
+			// dangling reference -- and cascade-deletes the very
+			// dependents this request was supposed to orphan. Stripping
+			// first means the GC re-reads a dependent with no ownerRef
+			// and leaves it alone. If orphaning fails partway, the owner
+			// still exists and a client retry of the same DELETE is the
+			// correct, idempotent recovery.
+			if cur, err := store.Get(ctx, namespace, name); err == nil {
+				if m := getObjectMeta(cur); m != nil {
+					if err := OrphanDependents(ctx, namespacedStores, namespace, m.UID); err != nil {
+						writeInternalError(w, err)
+						return
+					}
+				}
+			}
+			// A Get error (e.g. NotFound) falls through to Delete below
+			// for the proper structured error response.
+		}
 		obj, err := store.Delete(ctx, namespace, name)
 		if err != nil {
 			writeResourceError(w, err, resource, name)
@@ -426,17 +466,6 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		}
 		if node, ok := obj.(*corev1.Node); ok {
 			ReleasePodCIDR(ctx, store.storage, node)
-		}
-		if store.namespaced && namespacedStores != nil && policy == metav1.DeletePropagationOrphan {
-			// Real GC (pkg/controllers/gc) handles Background/Foreground
-			// cascade delete asynchronously; Orphan is the one policy
-			// this apiserver still handles synchronously (see orphan.go).
-			if m := getObjectMeta(obj); m != nil {
-				if err := OrphanDependents(ctx, namespacedStores, namespace, m.UID); err != nil {
-					writeInternalError(w, err)
-					return
-				}
-			}
 		}
 		TriggerEndpointsReconcile(ctx, store.storage, namespace, obj)
 		writeRuntimeObject(w, http.StatusOK, obj)
