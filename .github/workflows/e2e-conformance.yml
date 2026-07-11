@@ -36,8 +36,10 @@ jobs:
     continue-on-error: ${{ matrix.controlplane == 'dw' }}
     runs-on: ubuntu-latest
     # Budget: setup (deps + wasm + binaries + cluster up) ~30min, baseline
-    # ~7min, experimental step-capped at 20min, teardown seconds.
-    timeout-minutes: 70
+    # ~7min, experimental step-capped at 20min, teardown seconds. The dw
+    # variant adds its up-to-28min control-plane warmup (wasm compile
+    # bound, see that step's comment), hence the larger budget.
+    timeout-minutes: ${{ matrix.controlplane == 'dw' && 95 || 70 }}
     steps:
       - name: Free disk space (remove unused preinstalled toolchains)
         run: |
