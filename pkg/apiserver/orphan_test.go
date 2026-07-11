@@ -9,20 +9,21 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// TestOrphanDependents exercises orphan.go's OrphanDependents, the one
-// propagationPolicy this apiserver still handles synchronously in its
-// own DELETE handler (see handler.go's HandleResource doc comment).
-// Background/Foreground cascade delete used to be tested here too
-// (this file's earlier TestOwnerReferenceCascadeDelete), but that's now
-// the real, unmodified upstream garbagecollector controller's job
-// (pkg/controllers/gc), running asynchronously in its own dynamic
-// worker -- which this suite's wrangler dev harness deliberately never
-// loads (setupWranglerDev sets KCM_DISABLED=1, gating every poke in
+// TestOrphanDependents exercises the apiserver half of the
+// graceful-deletion lifecycle (gracefuldelete.go): an Orphan delete
+// stamps deletionTimestamp + the "orphan" finalizer without removing
+// the owner or touching dependents, and clearing the last finalizer
+// completes the deletion. The OTHER half -- actually orphaning /
+// cascading dependents -- is the real, unmodified upstream
+// garbagecollector controller's job (pkg/controllers/gc), running
+// asynchronously in its own dynamic worker, which this suite's wrangler
+// dev harness deliberately never loads (setupWranglerDev sets
+// KCM_DISABLED=1, gating every poke in
 // workers/k8flare/src/controllers/index.ts's fetch(), gc included, so
-// pkg/apiserver's own Pods are never touched by a controller mid-test).
-// Cascade-delete coverage for the real controller lives in
-// e2e-conformance's upstream [sig-api-machinery] Garbage collector
-// suite instead, against a cluster where it actually runs.
+// pkg/apiserver's own objects are never touched by a controller
+// mid-test). GC-driven completion is covered by e2e-conformance's
+// upstream [sig-api-machinery] Garbage collector suite instead, against
+// a cluster where the GC actually runs.
 func TestOrphanDependents(t *testing.T) {
 	client := setupWranglerDev(t)
 	ctx := context.Background()
@@ -66,11 +67,46 @@ func TestOrphanDependents(t *testing.T) {
 		t.Fatalf("Delete deployment with Orphan policy: %v", err)
 	}
 
-	got, err := client.AppsV1().ReplicaSets(ns).Get(ctx, rs.Name, metav1.GetOptions{})
+	// Graceful-deletion lifecycle (gracefuldelete.go): the orphan DELETE
+	// must NOT remove the owner or touch its dependents itself -- it
+	// stamps deletionTimestamp + the "orphan" finalizer and leaves the
+	// actual orphaning to the real garbagecollector. This suite runs
+	// with KCM_DISABLED=1 (no GC dynamic worker), so the owner stays
+	// terminating and the dependent keeps its ownerReference; the full
+	// GC-driven completion is covered by e2e-conformance's
+	// [sig-api-machinery] Garbage collector group against a live GC.
+	gotDeploy, err := client.AppsV1().Deployments(ns).Get(ctx, deploy.Name, metav1.GetOptions{})
 	if err != nil {
-		t.Fatalf("expected orphaned ReplicaSet to still exist, got: %v", err)
+		t.Fatalf("expected terminating Deployment to still exist, got: %v", err)
 	}
-	if len(got.OwnerReferences) != 0 {
-		t.Errorf("expected ownerReferences to be stripped after Orphan delete, got: %+v", got.OwnerReferences)
+	if gotDeploy.DeletionTimestamp == nil {
+		t.Errorf("expected deletionTimestamp to be stamped on the orphan-deleted Deployment")
+	}
+	foundFinalizer := false
+	for _, f := range gotDeploy.Finalizers {
+		if f == metav1.FinalizerOrphanDependents {
+			foundFinalizer = true
+		}
+	}
+	if !foundFinalizer {
+		t.Errorf("expected %q finalizer on the orphan-deleted Deployment, got: %v", metav1.FinalizerOrphanDependents, gotDeploy.Finalizers)
+	}
+
+	gotRS, err := client.AppsV1().ReplicaSets(ns).Get(ctx, rs.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("expected ReplicaSet to still exist, got: %v", err)
+	}
+	if len(gotRS.OwnerReferences) != 1 {
+		t.Errorf("expected the ReplicaSet's ownerReference to be untouched (orphaning belongs to the GC), got: %+v", gotRS.OwnerReferences)
+	}
+
+	// Clearing the finalizer must complete the deletion (the write the
+	// real GC performs when it finishes orphaning).
+	gotDeploy.Finalizers = nil
+	if _, err := client.AppsV1().Deployments(ns).Update(ctx, gotDeploy, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("finalizer-clearing update: %v", err)
+	}
+	if _, err := client.AppsV1().Deployments(ns).Get(ctx, deploy.Name, metav1.GetOptions{}); err == nil {
+		t.Errorf("expected the Deployment to be gone after its last finalizer was cleared")
 	}
 }

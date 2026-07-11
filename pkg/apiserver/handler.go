@@ -301,6 +301,22 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		}
 		writeFieldValidationWarnings(w, warnings)
 
+		// A write that leaves a terminating object with no finalizers
+		// completes its deletion instead of persisting (upstream
+		// semantics; see gracefuldelete.go). This is how the real GC's
+		// finalizer-clearing patch/update actually removes an owner it
+		// finished orphaning or foreground-cascading.
+		if shouldFinalizeDelete(rObj) {
+			obj, err := store.Delete(ctx, namespace, name)
+			if err != nil {
+				writeResourceError(w, err, resource, name)
+				return
+			}
+			TriggerEndpointsReconcile(ctx, store.storage, namespace, obj)
+			writeRuntimeObject(w, http.StatusOK, obj)
+			return
+		}
+
 		obj, err := store.Update(ctx, namespace, name, rObj)
 		if err != nil {
 			writeResourceError(w, err, resource, name)
@@ -347,18 +363,16 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 				}
 			}
 
-			if store.namespaced && namespacedStores != nil && policy == metav1.DeletePropagationOrphan {
-				// Real GC (pkg/controllers/gc) handles Background/Foreground
-				// cascade delete asynchronously; Orphan is the one policy
-				// this apiserver still handles synchronously (see
-				// orphan.go). Strip dependents BEFORE the collection
-				// delete, for the same GC-race reason as the single-name
-				// path below (orphan-after-delete loses the race against
-				// the real GC's dangling-reference cascade). List first so
-				// the sweep runs against exactly the owners about to be
-				// removed; uses each item's own namespace, not the
-				// request's (which is "" for an all-namespaces collection
-				// delete).
+			if store.namespaced && namespacedStores != nil &&
+				(policy == metav1.DeletePropagationOrphan || policy == metav1.DeletePropagationForeground) {
+				// Graceful-deletion handoff, per matching item: mark each
+				// terminating (deletionTimestamp + policy finalizer) and
+				// return the list WITHOUT deleting anything -- the real
+				// garbagecollector orphans / foreground-cascades and
+				// completes each delete by clearing the finalizer, same
+				// as the single-name path below. Uses each item's own
+				// namespace, not the request's (which is "" for an
+				// all-namespaces collection delete).
 				listObj, err := store.List(ctx, namespace, "", labelSelector)
 				if err != nil {
 					writeInternalError(w, err)
@@ -366,30 +380,32 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 				}
 				items, err := meta.ExtractList(listObj)
 				if err != nil {
-					writeInternalError(w, fmt.Errorf("extract %s list for orphan: %w", resource, err))
+					writeInternalError(w, fmt.Errorf("extract %s list for graceful delete: %w", resource, err))
 					return
 				}
+				terminating := make([]runtime.Object, 0, len(items))
 				for _, item := range items {
 					m := getObjectMeta(item)
 					if m == nil {
 						continue
 					}
-					// Stamp deletionTimestamp before stripping, same
-					// controller-stand-down reasoning as the single-name
-					// path below.
-					if m.DeletionTimestamp == nil {
-						now := metav1.Now()
-						m.DeletionTimestamp = &now
-						if _, err := store.Update(ctx, m.Namespace, m.Name, item); err != nil && !isStatusReason(err, metav1.StatusReasonNotFound) {
-							writeInternalError(w, fmt.Errorf("mark %s %s/%s deleting: %w", resource, m.Namespace, m.Name, err))
-							return
-						}
+					marked, err := markForDeletion(ctx, store, m.Namespace, m.Name, finalizerForPolicy(policy))
+					if isStatusReason(err, metav1.StatusReasonNotFound) {
+						continue // vanished between the list and the mark
 					}
-					if err := OrphanDependents(ctx, namespacedStores, m.Namespace, m.UID); err != nil {
+					if err != nil {
 						writeInternalError(w, err)
 						return
 					}
+					terminating = append(terminating, marked)
 				}
+				resultList := store.newListFunc()
+				if err := meta.SetList(resultList, terminating); err != nil {
+					writeInternalError(w, fmt.Errorf("assemble %s graceful-delete list: %w", resource, err))
+					return
+				}
+				writeRuntimeObject(w, http.StatusOK, resultList)
+				return
 			}
 			obj, err := store.DeleteCollection(ctx, namespace, labelSelector)
 			if err != nil {
@@ -438,59 +454,23 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			}
 		}
 
-		if store.namespaced && namespacedStores != nil && policy == metav1.DeletePropagationOrphan {
-			// Real GC (pkg/controllers/gc) handles Background/Foreground
-			// cascade delete asynchronously; Orphan is the one policy
-			// this apiserver still handles synchronously (see orphan.go).
-			//
-			// Strip the dependents BEFORE deleting the owner, not after
-			// (same ordering argument as the namespace sweep above): the
-			// real garbagecollector races this handler. Reproduced live
-			// 2026-07-11 (wrangler dev; also the "should orphan RS
-			// created by deployment" conformance failure in run
-			// 29118462901): with the owner deleted first, the GC's
-			// owner-DELETED event still finds the dependent carrying the
-			// ownerRef, live-checks the owner, sees it absent -- a
-			// dangling reference -- and cascade-deletes the very
-			// dependents this request was supposed to orphan. Stripping
-			// first means the GC re-reads a dependent with no ownerRef
-			// and leaves it alone. If orphaning fails partway, the owner
-			// still exists and a client retry of the same DELETE is the
-			// correct, idempotent recovery.
-			// ...but stripping alone isn't enough while the owner's own
-			// controller is still managing it: with a 50-replica RC, the
-			// real replication controller re-adopts each just-stripped
-			// pod (its selector still matches, and adoption's
-			// canAdoptFunc re-fetches an owner that looks perfectly
-			// alive) and back-fills "missing" ones, so the final owner
-			// delete still leaves re-adopted pods dangling for the GC to
-			// cascade -- observed live as "expect 50 pods, got 13" in
-			// run 29134357997. Upstream prevents exactly this with the
-			// deletionTimestamp the orphan finalizer lifecycle sets:
-			// every workload controller stops managing (and refuses to
-			// adopt for) an owner whose fresh read carries a
-			// deletionTimestamp. This apiserver has no graceful-deletion
-			// lifecycle, but it can borrow that one signal: stamp
-			// deletionTimestamp on the owner FIRST, so controllers stand
-			// down, then strip, then hard-delete.
-			if cur, err := store.Get(ctx, namespace, name); err == nil {
-				if m := getObjectMeta(cur); m != nil && m.DeletionTimestamp == nil {
-					now := metav1.Now()
-					m.DeletionTimestamp = &now
-					if _, err := store.Update(ctx, namespace, name, cur); err != nil {
-						writeInternalError(w, fmt.Errorf("mark %s %s/%s deleting: %w", resource, namespace, name, err))
-						return
-					}
-				}
-				if m := getObjectMeta(cur); m != nil {
-					if err := OrphanDependents(ctx, namespacedStores, namespace, m.UID); err != nil {
-						writeInternalError(w, err)
-						return
-					}
-				}
+		if store.namespaced && namespacedStores != nil &&
+			(policy == metav1.DeletePropagationOrphan || policy == metav1.DeletePropagationForeground) {
+			// Graceful-deletion handoff to the real garbagecollector:
+			// stamp deletionTimestamp + the policy's finalizer and
+			// return the terminating object WITHOUT deleting it. The GC
+			// orphans (or foreground-cascades) the dependents and then
+			// patches the finalizer off, which completes the delete via
+			// shouldFinalizeDelete in the write paths. See
+			// gracefuldelete.go for why the earlier synchronous
+			// alternatives all raced the live controllers.
+			terminating, err := markForDeletion(ctx, store, namespace, name, finalizerForPolicy(policy))
+			if err != nil {
+				writeResourceError(w, err, resource, name)
+				return
 			}
-			// A Get error (e.g. NotFound) falls through to Delete below
-			// for the proper structured error response.
+			writeRuntimeObject(w, http.StatusOK, terminating)
+			return
 		}
 		obj, err := store.Delete(ctx, namespace, name)
 		if err != nil {
@@ -529,6 +509,19 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		patchedObj, err := applyPatch(currentObj, body, ct)
 		if err != nil {
 			writeStatusError(w, http.StatusBadRequest, "BadRequest", "patch failed: "+err.Error())
+			return
+		}
+
+		// Same finalizer-completion rule as the PUT path above (see
+		// gracefuldelete.go) -- the GC clears finalizers via PATCH.
+		if shouldFinalizeDelete(patchedObj) {
+			obj, err := store.Delete(ctx, namespace, name)
+			if err != nil {
+				writeResourceError(w, err, resource, name)
+				return
+			}
+			TriggerEndpointsReconcile(ctx, store.storage, namespace, obj)
+			writeRuntimeObject(w, http.StatusOK, obj)
 			return
 		}
 
