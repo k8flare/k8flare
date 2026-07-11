@@ -307,6 +307,10 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		// finalizer-clearing patch/update actually removes an owner it
 		// finished orphaning or foreground-cascading.
 		if shouldFinalizeDelete(rObj) {
+			if err := finalizeDeleteWithOrphanSweep(ctx, store, namespacedStores, namespace, name); err != nil {
+				writeResourceError(w, err, resource, name)
+				return
+			}
 			obj, err := store.Delete(ctx, namespace, name)
 			if err != nil {
 				writeResourceError(w, err, resource, name)
@@ -515,6 +519,10 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		// Same finalizer-completion rule as the PUT path above (see
 		// gracefuldelete.go) -- the GC clears finalizers via PATCH.
 		if shouldFinalizeDelete(patchedObj) {
+			if err := finalizeDeleteWithOrphanSweep(ctx, store, namespacedStores, namespace, name); err != nil {
+				writeResourceError(w, err, resource, name)
+				return
+			}
 			obj, err := store.Delete(ctx, namespace, name)
 			if err != nil {
 				writeResourceError(w, err, resource, name)
