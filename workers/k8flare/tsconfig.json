@@ -4,6 +4,15 @@
   // pass; wrangler bundles with its own esbuild pipeline).
   "compilerOptions": {
     "noEmit": true,
+    // Alias for build-output modules bundled into the script (the
+    // selector wasm + Go's js glue): tsc can't use wildcard ambient
+    // declarations for RELATIVE imports, and the real files only exist
+    // after `make wasm-selector` -- the alias lets src/modules.d.ts
+    // declare them by exact name while wrangler's esbuild (which also
+    // honors tsconfig paths) resolves the real files at bundle time.
+    "paths": {
+      "@wasm/*": ["./assets/wasm/*"]
+    },
     "composite": false,
     "declaration": false,
     "emitDeclarationOnly": false

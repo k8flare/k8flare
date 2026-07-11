@@ -2,11 +2,7 @@ import type { KineEvent, KineKV, WatchEvent } from "./types.ts";
 import { decodeKineValue } from "./helpers.ts";
 import { dwAuth } from "./auth.ts";
 import { urlToStoragePrefix, resourceKindForPath } from "./url-mapping.ts";
-import {
-  parseLabelSelector,
-  matchesLabelSelector,
-  type LabelRequirement,
-} from "./label-selector.ts";
+import { validateSelectors, objectMatchesSelectors } from "./selector-wasm.ts";
 
 /** Decode a kine KV's JSON value into an object, stamping resourceVersion. */
 function decodeKineValueObject(kv: KineKV): Record<string, unknown> {
@@ -49,64 +45,6 @@ export function kineEventToWatchEvent(kineEvent: KineEvent): WatchEvent {
   }
 
   return { type, object: decodeKineValueObject(kineEvent.kv) };
-}
-
-interface FieldSelectorTerm {
-  field: string;
-  value: string;
-  negate: boolean;
-}
-
-/** Parse a fieldSelector query param into individual terms. Supports both
- * "field=value" and "field!=value" (not-equal) terms, matching real
- * Kubernetes field selector syntax — real kube-scheduler's Pod informer, for
- * example, filters with "status.phase!=Succeeded,status.phase!=Failed". */
-function parseFieldSelector(param: string): FieldSelectorTerm[] {
-  if (!param) return [];
-  return param
-    .split(",")
-    .map((s): FieldSelectorTerm | null => {
-      // Check "!=" before "=", since "=" alone would otherwise match inside it.
-      const neIdx = s.indexOf("!=");
-      if (neIdx !== -1) {
-        return { field: s.slice(0, neIdx), value: s.slice(neIdx + 2), negate: true };
-      }
-      const eqIdx = s.indexOf("=");
-      if (eqIdx === -1) return null;
-      return { field: s.slice(0, eqIdx), value: s.slice(eqIdx + 1), negate: false };
-    })
-    .filter((t): t is FieldSelectorTerm => t !== null);
-}
-
-/** Read a dotted field path from a decoded object, or undefined if any segment is missing. */
-function getFieldValue(obj: Record<string, unknown>, field: string): unknown {
-  let current: unknown = obj;
-  for (const part of field.split(".")) {
-    if (current == null || typeof current !== "object") return undefined;
-    current = (current as Record<string, unknown>)[part];
-  }
-  return current;
-}
-
-/** Check whether a decoded object satisfies both the label and field selectors. */
-function objectMatchesSelectors(
-  obj: Record<string, unknown>,
-  labelRequirements: LabelRequirement[],
-  fieldSelectors: FieldSelectorTerm[],
-): boolean {
-  if (labelRequirements.length > 0) {
-    const metadata = obj.metadata as Record<string, unknown> | undefined;
-    const labels = metadata?.labels as Record<string, string> | undefined;
-    if (!matchesLabelSelector(labels, labelRequirements)) return false;
-  }
-  if (fieldSelectors.length > 0) {
-    const match = fieldSelectors.every(({ field, value, negate }) => {
-      const equal = getFieldValue(obj, field) === value;
-      return negate ? !equal : equal;
-    });
-    if (!match) return false;
-  }
-  return true;
 }
 
 /**
@@ -155,11 +93,29 @@ export async function handleWatch(
   const resourceKind = resourceKindForPath(url.pathname);
   const allowWatchBookmarks = url.searchParams.get("allowWatchBookmarks") === "true";
 
-  const fieldSelectors = parseFieldSelector(url.searchParams.get("fieldSelector") || "");
-
+  // Selector parsing and matching are the real apimachinery
+  // implementations (selector-wasm.ts). Validate once here so a bad
+  // selector 400s like upstream instead of being mis-applied per event
+  // -- the old TS parser silently accepted what it couldn't parse.
+  const fieldSelectorParam = url.searchParams.get("fieldSelector") || "";
   const labelSelectorParam = url.searchParams.get("labelSelector") || "";
-  const labelRequirements = parseLabelSelector(labelSelectorParam);
-  const hasSelectors = fieldSelectors.length > 0 || labelRequirements.length > 0;
+  const hasSelectors = fieldSelectorParam !== "" || labelSelectorParam !== "";
+  if (hasSelectors) {
+    const selErr = validateSelectors(labelSelectorParam, fieldSelectorParam);
+    if (selErr !== "") {
+      return new Response(
+        JSON.stringify({
+          kind: "Status",
+          apiVersion: "v1",
+          status: "Failure",
+          message: selErr,
+          reason: "BadRequest",
+          code: 400,
+        }),
+        { status: 400, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
 
   // Get WatchHub DO stub (fan-out in front of Cluster's single upstream
   // watch firehose -- see docs/multi-tenancy-and-hosting.md).
@@ -248,8 +204,8 @@ export async function handleWatch(
           if (hasSelectors) {
             const newMatches = objectMatchesSelectors(
               watchEvent.object,
-              labelRequirements,
-              fieldSelectors,
+              labelSelectorParam,
+              fieldSelectorParam,
             );
 
             if (watchEvent.type === "ADDED") {
@@ -258,7 +214,7 @@ export async function handleWatch(
               const oldObj = decodePrevValueObject(kineEvent.prevKV);
               const oldMatches =
                 oldObj !== null &&
-                objectMatchesSelectors(oldObj, labelRequirements, fieldSelectors);
+                objectMatchesSelectors(oldObj, labelSelectorParam, fieldSelectorParam);
               if (!oldMatches && !newMatches) continue;
             } else {
               // MODIFIED: a selector transition can turn this into a synthetic
@@ -268,7 +224,7 @@ export async function handleWatch(
               const oldObj = decodePrevValueObject(kineEvent.prevKV);
               const oldMatches =
                 oldObj !== null &&
-                objectMatchesSelectors(oldObj, labelRequirements, fieldSelectors);
+                objectMatchesSelectors(oldObj, labelSelectorParam, fieldSelectorParam);
               if (oldMatches && newMatches) {
                 // stays MODIFIED
               } else if (!oldMatches && newMatches) {

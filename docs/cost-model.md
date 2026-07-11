@@ -1134,3 +1134,18 @@ workload Running, restartPolicy semantics, Pod delete -> container stop
 emulation; the workflow header records the seven-iteration bring-up and
 the CI-only privileged/tmpfs shims real Firecracker microVMs won't
 need).
+
+## Task #1 (watch selector matching -> real apimachinery WASM) implementation (actual, 2026-07-12)
+
+The watch fan-out's label/field selector parsing+matching moved from a
+hand-rolled TS subset (label-selector.ts, deleted) to the real
+apimachinery parsers, compiled to a 4.58MB (-Oz; ~1.3MB gzip) wasm
+module BUNDLED into the gateway script (`make wasm-selector`;
+pkg/selectormatch). Cost shape: zero new requests/DOs/alarms/Loader
+ids -- one ~26ms Go-runtime instantiation per gateway isolate at first
+selector use, ~0ms per synchronous match call afterwards (execution
+model verified in docs/platform-verification.md S22). Bundle impact:
++1.3MB gzip against the Worker script's 10MiB deploy budget.
+Functional gains measured live: set-based operators (`in`, `!key`)
+now work, and invalid selectors 400 at watch open like upstream
+(previously silently mis-applied).

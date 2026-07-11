@@ -62,7 +62,7 @@ $(ASSETS)/wasm_exec.js: $(WASM_TOOLS)/patch-wasm-exec.ts $(WASM_TOOLS)/gomod.ts
 	node $(WASM_TOOLS)/patch-wasm-exec.ts "$$(go env GOROOT)/lib/wasm/wasm_exec.js" $@
 
 ## wasm: build all WASM chunks (apiserver + kcm + gc + sched); skipped per-binary if its inputs are unchanged
-wasm: $(ASSETS)/apiserver.manifest.json $(ASSETS)/kcm.manifest.json $(ASSETS)/gc.manifest.json $(ASSETS)/sched.manifest.json
+wasm: $(ASSETS)/apiserver.manifest.json $(ASSETS)/kcm.manifest.json $(ASSETS)/gc.manifest.json $(ASSETS)/sched.manifest.json $(ASSETS)/selector.wasm
 
 ## wasm-apiserver / wasm-kcm / wasm-gc: build just one chunk -- e.g. CI
 ## jobs that never touch KCM/GC skip their ~2min wasm-opt pass this way.
@@ -70,6 +70,8 @@ wasm-apiserver: $(ASSETS)/apiserver.manifest.json
 wasm-kcm: $(ASSETS)/kcm.manifest.json
 wasm-gc: $(ASSETS)/gc.manifest.json
 wasm-sched: $(ASSETS)/sched.manifest.json
+
+wasm-selector: $(ASSETS)/selector.wasm
 
 $(ASSETS)/apiserver.manifest.json: $(APISERVER_SRC) $(ASSETS)/wasm_exec.js | gen-mirrors
 	@command -v wasm-opt >/dev/null 2>&1 || { echo "wasm-opt not found -- install binaryen (mise: aqua:web-assembly/binaryen, apt/brew: binaryen)" >&2; exit 1; }
@@ -171,6 +173,30 @@ $(ASSETS)/sched.manifest.json: $(SCHED_SRC) $(ASSETS)/wasm_exec.js | gen-mirrors
 	echo "sched: $$raw bytes ($$(( ($(CAP) - $$raw) / 1024 ))KiB headroom under the 64MiB Loader cap)"; \
 	node $(WASM_TOOLS)/chunk-wasm.ts $(BUILD)/sched.opt.wasm $(ASSETS) sched
 
+SELECTOR_SRC := $(shell find pkg/selectormatch -name '*.go')
+
+# SELECTOR: the watch fan-out's label/field selector matcher (real
+# apimachinery parsers), bundled INTO the gateway Worker script as a
+# plain wasm module import -- NOT a Loader dynamic worker (production
+# Workers forbid runtime WebAssembly compilation, and a Loader hop
+# would put a cold start on the watch hot path). No chunking: 4.6MB
+# opt / ~1.3MB gzip rides well inside both the 25MiB ASSETS per-file
+# cap and the Worker script's 10MiB-gzip deploy budget. Execution
+# model and the S8-vs-synchronous-FuncOf verification behind it:
+# docs/platform-verification.md S22.
+$(ASSETS)/selector.wasm: $(SELECTOR_SRC)
+	@command -v wasm-opt >/dev/null 2>&1 || { echo "wasm-opt not found -- install binaryen (mise: aqua:web-assembly/binaryen, apt/brew: binaryen)" >&2; exit 1; }
+	@mkdir -p $(ASSETS) $(BUILD)
+	echo "== selector (./pkg/selectormatch/cmd/selector-wasm)"; \
+	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $(BUILD)/selector.wasm ./pkg/selectormatch/cmd/selector-wasm; \
+	wasm-opt -Oz \
+		--strip-debug --strip-producers \
+		--enable-bulk-memory --enable-nontrapping-float-to-int \
+		--enable-sign-ext --enable-mutable-globals \
+		$(BUILD)/selector.wasm -o $(BUILD)/selector.opt.wasm; \
+	cp $(BUILD)/selector.opt.wasm $(ASSETS)/selector.wasm; \
+	echo "selector: $$(wc -c < $(ASSETS)/selector.wasm | tr -d ' ') bytes (bundled import, no Loader cap)"
+
 ## gen: regenerate derived artifacts from pkg/apiserver/apidef.Table and go.mod's k8s.io/kubernetes pin
 gen: | gen-mirrors
 	go run ./cmd/k8flare-gen
@@ -221,6 +247,7 @@ clean-wasm:
 	rm -f $(ASSETS)/kcm.wasm.part* $(ASSETS)/kcm.manifest.json
 	rm -f $(ASSETS)/gc.wasm.part* $(ASSETS)/gc.manifest.json
 	rm -f $(ASSETS)/sched.wasm.part* $(ASSETS)/sched.manifest.json
+	rm -f $(ASSETS)/selector.wasm
 	rm -f $(ASSETS)/wasm_exec.js
 
 ## setup-tunnel: guided Cloudflare Tunnel + VPC Service setup for BYO-VM
