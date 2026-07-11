@@ -24,10 +24,10 @@ export async function handleNodes(request: Request, env: Env): Promise<Response>
   }
   const url = new URL(request.url);
   // Kubelet bridge for the gateway's logs/metrics proxy:
-  //   /kubelet/{podUID|nodeName}/10256/{kubelet path}
+  //   /kubelet/{podUID|nodeName}/10999/{kubelet path}
   // The scheduler DO resolves which NodeVM (and size tier) backs the
   // pod/node; the NodeVM DO containerFetches the in-VM kubelet port.
-  const kubeletMatch = url.pathname.match(/^\/kubelet\/([^/]+)(\/10256\/.*)$/);
+  const kubeletMatch = url.pathname.match(/^\/kubelet\/([^/]+)(\/10999\/.*)$/);
   if (kubeletMatch) {
     const [, key, portAndPath] = kubeletMatch;
     const scheduler = env.SCHEDULER.get(env.SCHEDULER.idFromName("default"));

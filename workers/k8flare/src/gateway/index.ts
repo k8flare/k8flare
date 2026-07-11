@@ -213,7 +213,7 @@ export async function handleGateway(
 
   // nodes/{name}/proxy/{path}: kubelet endpoints (stats/summary,
   // metrics, metrics/resource, pods) for Containers-backed per-Pod
-  // nodes -- the standard path metrics scrapers use. Port 10256 is
+  // nodes -- the standard path metrics scrapers use. Port 10999 is
   // cmd/agent's plain-HTTP front for the authenticated kubelet API
   // (k3s pins --read-only-port=0 as a CLI flag, which beats any
   // kubelet config drop-in, so 10255 never listens on these nodes).
@@ -236,7 +236,7 @@ export async function handleGateway(
       const node: any = await nodeResp.json();
       if (node.metadata?.labels?.["k8flare.com/backend"] === "containers") {
         const target = new URL(req.url);
-        target.pathname = `/kubelet/${nodeName}/10256${rest}`;
+        target.pathname = `/kubelet/${nodeName}/10999${rest}`;
         return handleNodes(
           new Request(target.toString(), {
             method: req.method,

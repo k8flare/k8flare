@@ -83,7 +83,7 @@ export async function handleKubeletProxy(
   // Per-Pod Containers-backed node (workers/nodes microVM): the compute-
   // class admission stamps this nodeSelector, so it reliably marks pods
   // whose kubelet lives inside a NodeVM. Reach it through the nodes
-  // handler's kubelet bridge (port 10256 = cmd/agent's plain-HTTP front
+  // handler's kubelet bridge (port 10999 = cmd/agent's plain-HTTP front
   // for the authenticated kubelet API) instead of the VPC binding, which
   // only dials BYO VMs. Post-consolidation (S19) this is a direct
   // function call, not a service binding -- there is no `env.NODES`
@@ -97,7 +97,7 @@ export async function handleKubeletProxy(
       return dwError(501, `${subresource} is not yet supported on the per-Pod node backend`);
     }
     const target = new URL(url);
-    target.pathname = `/kubelet/${pod.metadata.uid}/10256${kubeletPath.split("?")[0]}`;
+    target.pathname = `/kubelet/${pod.metadata.uid}/10999${kubeletPath.split("?")[0]}`;
     target.search = kubeletPath.includes("?") ? `?${kubeletPath.split("?")[1]}` : "";
     return handleNodes(
       new Request(target.toString(), {

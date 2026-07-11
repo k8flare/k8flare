@@ -68,7 +68,7 @@ export abstract class NodeVMBase extends Container<Env> {
 
   // Generic port bridge: the nodes Worker forwards gateway requests here
   // as /{port}/{path}. Two callers, same shape: the kubelet bridge (port
-  // 10256 -- cmd/agent's plain-HTTP proxy in front of the authenticated
+  // 10999 -- cmd/agent's plain-HTTP proxy in front of the authenticated
   // kubelet API, /containerLogs, /stats/summary, /metrics/resource; k3s
   // pins the read-only 10255 off via CLI flag) and, since `hostNetwork:
   // true` (computeclass.go) makes every container port directly

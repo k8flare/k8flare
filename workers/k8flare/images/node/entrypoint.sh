@@ -29,7 +29,11 @@ if [ ! -e /dev/net/tun ]; then
   mkdir -p /dev/net && mknod /dev/net/tun c 10 200 && chmod 600 /dev/net/tun || true
 fi
 # The gateway's logs/metrics bridge enters through the agent's
-# plain-HTTP kubelet proxy (:10256, -kubelet-plain-proxy-port below --
+# plain-HTTP kubelet proxy (:10999, -kubelet-plain-proxy-port below --
+# NOT 10256: that is kube-proxy's default healthz bind, and the two
+# fought over the port inside the NodeVM (kube-proxy lost and errored
+# every 5s -- found live in smoke-nodes' first full run, 2026-07-11).
+# 10999 sits outside every kube component's well-known port range. --
 # Workers can't TLS to the kubelet's self-signed 10250). Kubelet
 # security config stays STOCK k3s: anonymous disabled, webhook token
 # authentication and Webhook authorization -- the bridge forwards the
@@ -78,4 +82,4 @@ if [ -n "$MESH_CONNECTOR_TOKEN" ]; then
     sleep 1
   done
 fi
-exec k8flare-agent -server "$SERVER_URL" -node-name "$NODE_NAME" -token "$K3S_TOKEN" -with-node-id=false -node-labels "k8flare.com/backend=containers" -node-taints "k8flare.com/pod-on-containers=true:NoSchedule" -kubelet-plain-proxy-port 10256 -virtual-kube-proxy-cidr 10.43.0.0/16 -mesh-ip-as-node-ip=true
+exec k8flare-agent -server "$SERVER_URL" -node-name "$NODE_NAME" -token "$K3S_TOKEN" -with-node-id=false -node-labels "k8flare.com/backend=containers" -node-taints "k8flare.com/pod-on-containers=true:NoSchedule" -kubelet-plain-proxy-port 10999 -virtual-kube-proxy-cidr 10.43.0.0/16 -mesh-ip-as-node-ip=true

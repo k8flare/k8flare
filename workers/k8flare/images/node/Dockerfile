@@ -26,7 +26,7 @@ RUN chmod +x /entrypoint.sh /usr/local/bin/k8flare-agent
 # warning -- CLAUDE.md's documented pitfall, reproduced live 2026-07-11
 # in CI: "The container ... does not expose any ports"). 10250 is the
 # real kubelet port nodevm.ts's defaultPort/startAndWaitForPorts waits
-# on to consider a NodeVM booted; 10256 is entrypoint.sh's
+# on to consider a NodeVM booted; 10999 is entrypoint.sh's
 # -kubelet-plain-proxy-port, the plain-HTTP front the gateway's
 # logs/metrics bridge (nodes/index.ts's /kubelet/ route) actually calls
 # through containerFetch. Pod-on-Containers' own arbitrary container
@@ -34,5 +34,5 @@ RUN chmod +x /entrypoint.sh /usr/local/bin/k8flare-agent
 # can't be declared here -- they're only known per-Pod at runtime, not
 # at image build time; hostNetwork: true (computeclass.go) is what makes
 # them reachable at all despite not being EXPOSEd.
-EXPOSE 10250 10256
+EXPOSE 10250 10999
 ENTRYPOINT ["/entrypoint.sh"]
