@@ -98,6 +98,17 @@ func markForDeletion(ctx context.Context, rs *ResourceStore, namespace, name, fi
 		if !changed {
 			return obj, nil
 		}
+		// Unconditional write (empty resourceVersion), not CAS: against
+		// a 50-replica owner whose controller is hammering status, the
+		// CAS version of this loop lost the race for NINE SECONDS in
+		// run 29141585744 ("delete the rc" 06:02:41 -> stamped ~:50),
+		// and every back-fill created in that unstamped window sailed
+		// past the terminating-owner create guard because the owner
+		// wasn't terminating yet. The stamp must win in one round trip;
+		// clobbering a concurrent status write on an object that is
+		// being deleted is harmless (its controller re-writes status on
+		// its next sync, and the object is on its way out).
+		m.ResourceVersion = ""
 		updated, err := rs.Update(ctx, namespace, name, obj)
 		if err == nil {
 			return updated, nil
