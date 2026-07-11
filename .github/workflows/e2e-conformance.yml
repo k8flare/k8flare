@@ -218,7 +218,7 @@ jobs:
             --https-key-path "$RUNNER_TEMP/devtls/dev.key" \
             --https-cert-path "$RUNNER_TEMP/devtls/dev.crt" \
             --persist-to .wrangler/state \
-            --log-level error \
+            --log-level ${{ matrix.controlplane == 'dw' && 'info' || 'error' }} \
             > "$RUNNER_TEMP/wrangler.log" 2>&1 &
 
           echo "Waiting for wrangler dev on 127.0.0.1:8787..."
@@ -354,6 +354,16 @@ jobs:
           done
           [ "$PHASE" = "Running" ] || {
             echo "::error::dw control plane warmup: Pod never reached Running (last: $PHASE)"
+            echo "=== deployment ==="
+            curl -sk --max-time 10 "https://127.0.0.1:8787/apis/apps/v1/namespaces/default/deployments/dw-warmup" -H "$AUTH"
+            echo; echo "=== replicasets ==="
+            curl -sk --max-time 10 "https://127.0.0.1:8787/apis/apps/v1/namespaces/default/replicasets" -H "$AUTH"
+            echo; echo "=== pods ==="
+            curl -sk --max-time 10 "https://127.0.0.1:8787/api/v1/namespaces/default/pods" -H "$AUTH"
+            echo; echo "=== events ==="
+            curl -sk --max-time 10 "https://127.0.0.1:8787/api/v1/namespaces/default/events" -H "$AUTH"
+            echo; echo "=== wrangler.log tail ==="
+            tail -100 "$RUNNER_TEMP/wrangler.log" || true
             exit 1
           }
           echo "Warmup Pod Running. Deleting and waiting for the GC cascade..."
@@ -649,7 +659,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-conformance-logs
+          name: e2e-conformance-logs-${{ matrix.controlplane }}
           path: |
             ${{ runner.temp }}/wrangler.log
             ${{ runner.temp }}/agent.log
