@@ -94,7 +94,8 @@ S19 の 3 ゲート検証を経て単一 Worker に統合。旧クラスタの D
 
 ```
 pnpm install                     # 初回のみ
-make wasm                        # Go を変更したら必須。apiserver+KCM+GC のチャンクを
+make wasm                        # Go を変更したら必須。apiserver+KCM+GC+sched のチャンクと
+                                 # selector.wasm(gateway バンドル用)を
                                  # workers/k8flare/assets/wasm/ に生成(Make のファイル依存関係で
                                  # 差分ベースにスキップ。KCM の wasm-opt 込みで約2分だが、対象バイナリの
                                  # ソースが変わっていなければ即スキップ。強制再ビルドは `make clean-wasm wasm`)
