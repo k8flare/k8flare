@@ -58,6 +58,17 @@ fi
 # style as meshconnector.go's own bounded 30s waitForMeshIP poll -- a
 # one-time boot-sequence wait, not a resident poll loop (cost invariant
 # #3 is about DO alarms, not process startup).
+# CI/local-dev only: trust the harness's self-signed gateway CA.
+# pkg/agent's ReplaceServerCA swaps the k3s server-ca for the SYSTEM
+# bundle (production joins go to a publicly-trusted workers.dev/custom
+# domain), so a wrangler-dev gateway behind a self-signed cert is
+# unreachable from inside this VM unless that cert is in the system
+# bundle. smoke-nodes.yml sets K8FLARE_EXTRA_CA_B64 (base64 PEM, via
+# nodevm.ts's GATEWAY_CA_B64 passthrough); unset anywhere real, making
+# this a no-op. base64 avoids multiline-env quoting pitfalls.
+if [ -n "$K8FLARE_EXTRA_CA_B64" ]; then
+  echo "$K8FLARE_EXTRA_CA_B64" | base64 -d >> /etc/ssl/certs/ca-certificates.crt || true
+fi
 if [ -n "$MESH_CONNECTOR_TOKEN" ]; then
   warp-svc >/var/log/warp-svc.log 2>&1 &
   i=0

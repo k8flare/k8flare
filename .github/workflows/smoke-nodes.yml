@@ -110,26 +110,52 @@ jobs:
       # Docker-backed Containers this job actually exercises (a
       # separate concern, gated by --enable-containers, which this
       # step deliberately leaves at its default-enabled value).
+      # TLS + all-interfaces + GATEWAY_URL/CA overrides: the NodeVM's
+      # embedded k3s agent joins through env.GATEWAY_URL, whose committed
+      # default is the PRODUCTION workers.dev URL -- the first full run of
+      # this flow (2026-07-11, run 29118475273) showed the in-container
+      # agent looping on "https://k8flare.kooffice.workers.dev/v1-k3s/
+      # config: 401 Unauthorized" (found via the docker-logs diagnostics
+      # step, which is exactly why it exists). Inside a Docker container
+      # the local gateway is reachable at the default bridge gateway
+      # 172.17.0.1, not 127.0.0.1, so wrangler must listen on 0.0.0.0;
+      # and the join must be HTTPS (client-go refuses to send credentials
+      # over plain HTTP), so this generates a self-signed cert with the
+      # bridge IP in its SANs and hands the CA to the NodeVMs through
+      # GATEWAY_CA_B64 -> nodevm.ts -> entrypoint.sh's system-bundle
+      # append (pkg/agent's ReplaceServerCA trusts the SYSTEM bundle).
       - name: Start wrangler dev (the consolidated k8flare Worker)
         run: |
+          mkdir -p "$RUNNER_TEMP/devtls"
+          openssl req -x509 -nodes -newkey rsa:2048 -days 1 \
+            -keyout "$RUNNER_TEMP/devtls/dev.key" -out "$RUNNER_TEMP/devtls/dev.crt" \
+            -subj "/CN=172.17.0.1" -addext "subjectAltName=IP:172.17.0.1,IP:127.0.0.1,DNS:localhost"
+          GATEWAY_CA_B64=$(base64 -w0 < "$RUNNER_TEMP/devtls/dev.crt")
+
           nohup npx wrangler dev \
             -c workers/k8flare/wrangler.jsonc \
             --local \
+            --ip 0.0.0.0 \
             --port 8930 \
+            --local-protocol https \
+            --https-key-path "$RUNNER_TEMP/devtls/dev.key" \
+            --https-cert-path "$RUNNER_TEMP/devtls/dev.crt" \
+            --var GATEWAY_URL:https://172.17.0.1:8930 \
+            --var GATEWAY_CA_B64:"$GATEWAY_CA_B64" \
             --persist-to .wrangler/state \
             --log-level info \
             > "$RUNNER_TEMP/wrangler.log" 2>&1 &
 
           echo "Waiting for wrangler dev on 127.0.0.1:8930..."
           for _ in $(seq 1 60); do
-            if curl -sf -o /dev/null "http://127.0.0.1:8930/api/v1/namespaces" \
+            if curl -skf -o /dev/null "https://127.0.0.1:8930/api/v1/namespaces" \
               -H "Authorization: Bearer k8flare-dev-token"; then
               break
             fi
             sleep 1
           done
 
-          curl -skf -o /dev/null "http://127.0.0.1:8930/api/v1/namespaces" \
+          curl -skf -o /dev/null "https://127.0.0.1:8930/api/v1/namespaces" \
             -H "Authorization: Bearer k8flare-dev-token" || {
             echo "::error::wrangler dev did not come up cleanly"
             cat "$RUNNER_TEMP/wrangler.log"
@@ -168,7 +194,7 @@ jobs:
           # something a single attempt should treat as fatal.
           CREATE_BODY=""
           for i in $(seq 1 5); do
-            CREATE_BODY=$(curl -sf -X POST "http://127.0.0.1:8930/api/v1/namespaces/default/pods" \
+            CREATE_BODY=$(curl -skf -X POST "https://127.0.0.1:8930/api/v1/namespaces/default/pods" \
               -H "Authorization: Bearer k8flare-dev-token" -H "Content-Type: application/json" \
               -d '{
                 "apiVersion": "v1", "kind": "Pod",
@@ -192,7 +218,7 @@ jobs:
 
           echo "Waiting for $NODE_NAME to self-register Ready (its NodeVM's real kubelet)..."
           for _ in $(seq 1 60); do
-            READY=$(curl -sf "http://127.0.0.1:8930/api/v1/nodes/$NODE_NAME" \
+            READY=$(curl -skf "https://127.0.0.1:8930/api/v1/nodes/$NODE_NAME" \
               -H "Authorization: Bearer k8flare-dev-token" 2>/dev/null \
               | python3 -c "import json,sys; d=json.load(sys.stdin); print(any(c.get('type')=='Ready' and c.get('status')=='True' for c in d.get('status',{}).get('conditions',[])))" \
               2>/dev/null || echo False)
@@ -207,7 +233,7 @@ jobs:
 
           echo "Waiting for smoke-pod to become Running (real scheduler Bind + kubelet start)..."
           for _ in $(seq 1 30); do
-            PHASE=$(curl -sf "http://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod" \
+            PHASE=$(curl -skf "https://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod" \
               -H "Authorization: Bearer k8flare-dev-token" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',{}).get('phase',''))")
             [ "$PHASE" = "Running" ] && break
             sleep 2
@@ -239,7 +265,7 @@ jobs:
           # sched's event-broadcaster-sink fix, 088c7fe) -- confirms the
           # standard kubectl describe pod experience still works end to
           # end under the new design.
-          curl -sf "http://127.0.0.1:8930/api/v1/namespaces/default/events" \
+          curl -skf "https://127.0.0.1:8930/api/v1/namespaces/default/events" \
             -H "Authorization: Bearer k8flare-dev-token" | tee /dev/stderr \
             | grep -q '"reason": *"Scheduled"' || {
             echo "::error::no Scheduled Event recorded for smoke-pod"
@@ -262,7 +288,7 @@ jobs:
 
       - name: Delete the Pod (kubectl delete -> container actually stops, Node reaped)
         run: |
-          curl -sf -X DELETE "http://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod" \
+          curl -skf -X DELETE "https://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod" \
             -H "Authorization: Bearer k8flare-dev-token" -o /dev/null
           for _ in $(seq 1 20); do
             docker ps --filter "ancestor=cloudflare-dev/nodevmsmall" --filter "ancestor=cloudflare-dev/nodevmmedium" --filter "ancestor=cloudflare-dev/nodevmlarge" --format '{{.Names}}' | grep -q . || break
@@ -279,11 +305,11 @@ jobs:
           # Node to reap): nodes/scheduler.ts's teardown() must delete
           # the dedicated Node object too, not just the container.
           for _ in $(seq 1 20); do
-            curl -sf -o /dev/null -w '%{http_code}' "http://127.0.0.1:8930/api/v1/nodes/$NODE_NAME" \
+            curl -skf -o /dev/null -w '%{http_code}' "https://127.0.0.1:8930/api/v1/nodes/$NODE_NAME" \
               -H "Authorization: Bearer k8flare-dev-token" | grep -q '^404$' && break
             sleep 2
           done
-          curl -sf -o /dev/null -w '%{http_code}' "http://127.0.0.1:8930/api/v1/nodes/$NODE_NAME" \
+          curl -skf -o /dev/null -w '%{http_code}' "https://127.0.0.1:8930/api/v1/nodes/$NODE_NAME" \
             -H "Authorization: Bearer k8flare-dev-token" | grep -q '^404$' || {
             echo "::error::Node $NODE_NAME was not reaped after its Pod was deleted"
             exit 1
@@ -292,7 +318,7 @@ jobs:
 
       - name: restartPolicy=Never -- killed container is NOT restarted, Pod goes Failed
         run: |
-          curl -sf -X POST "http://127.0.0.1:8930/api/v1/namespaces/default/pods" \
+          curl -skf -X POST "https://127.0.0.1:8930/api/v1/namespaces/default/pods" \
             -H "Authorization: Bearer k8flare-dev-token" -H "Content-Type: application/json" \
             -d '{
               "apiVersion": "v1", "kind": "Pod",
@@ -312,7 +338,7 @@ jobs:
           docker stop "$CID"
 
           for _ in $(seq 1 20); do
-            PHASE=$(curl -sf "http://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod-never" \
+            PHASE=$(curl -skf "https://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod-never" \
               -H "Authorization: Bearer k8flare-dev-token" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',{}).get('phase',''))")
             if [ "$PHASE" = "Failed" ] || [ "$PHASE" = "Succeeded" ]; then break; fi
             sleep 2
@@ -326,12 +352,12 @@ jobs:
             exit 1
           }
           echo "Never: container left stopped, Pod marked Failed, as expected."
-          curl -sf -X DELETE "http://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod-never" \
+          curl -skf -X DELETE "https://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod-never" \
             -H "Authorization: Bearer k8flare-dev-token" -o /dev/null
 
       - name: restartPolicy=OnFailure -- killed (nonzero-exit) container IS restarted
         run: |
-          curl -sf -X POST "http://127.0.0.1:8930/api/v1/namespaces/default/pods" \
+          curl -skf -X POST "https://127.0.0.1:8930/api/v1/namespaces/default/pods" \
             -H "Authorization: Bearer k8flare-dev-token" -H "Content-Type: application/json" \
             -d '{
               "apiVersion": "v1", "kind": "Pod",
@@ -359,7 +385,7 @@ jobs:
             exit 1
           }
           echo "OnFailure: container restarted after nonzero exit, as expected."
-          curl -sf -X DELETE "http://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod-onfailure" \
+          curl -skf -X DELETE "https://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod-onfailure" \
             -H "Authorization: Bearer k8flare-dev-token" -o /dev/null
 
       # Renamed from "Image allowlist" (the previous version of this
@@ -375,7 +401,7 @@ jobs:
       # not as coverage of an allowlist this repo doesn't have.
       - name: A Pod naming an unpullable image ends up Failed
         run: |
-          curl -sf -X POST "http://127.0.0.1:8930/api/v1/namespaces/default/pods" \
+          curl -skf -X POST "https://127.0.0.1:8930/api/v1/namespaces/default/pods" \
             -H "Authorization: Bearer k8flare-dev-token" -H "Content-Type: application/json" \
             -d '{
               "apiVersion": "v1", "kind": "Pod",
@@ -387,7 +413,7 @@ jobs:
             }' -o /dev/null
 
           for _ in $(seq 1 30); do
-            PHASE=$(curl -sf "http://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod-badimage" \
+            PHASE=$(curl -skf "https://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod-badimage" \
               -H "Authorization: Bearer k8flare-dev-token" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',{}).get('phase',''))")
             [ "$PHASE" = "Failed" ] && break
             sleep 3
@@ -425,7 +451,7 @@ jobs:
       - name: Tear down
         if: always()
         run: |
-          curl -sf -X DELETE "http://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod-badimage" \
+          curl -skf -X DELETE "https://127.0.0.1:8930/api/v1/namespaces/default/pods/smoke-pod-badimage" \
             -H "Authorization: Bearer k8flare-dev-token" -o /dev/null || true
           pkill -f "wrangler dev" || true
 

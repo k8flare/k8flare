@@ -61,6 +61,11 @@ export interface Env {
   // Public URL in-VM k3s agents join through (microVMs dial out over
   // the internet; bindings don't reach them).
   GATEWAY_URL?: string;
+  // CI/local-dev only: base64 PEM CA appended to NodeVMs' system trust
+  // bundle (nodevm.ts -> entrypoint.sh) so agents can join a
+  // wrangler-dev GATEWAY_URL behind a self-signed cert. Never set in
+  // production.
+  GATEWAY_CA_B64?: string;
   // Test kill switch: "1" disables KCM pokes/loads so pkg/apiserver's
   // go test suite (whose Pods must not be touched by controllers) can
   // run against the consolidated single config. See CLAUDE.md's

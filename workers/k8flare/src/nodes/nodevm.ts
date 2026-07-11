@@ -46,6 +46,11 @@ export abstract class NodeVMBase extends Container<Env> {
       K3S_TOKEN: this.env.K3S_TOKEN ?? "k8flare-dev-token",
     };
     if (meshConnectorToken) envVars.MESH_CONNECTOR_TOKEN = meshConnectorToken;
+    // CI/local-dev only (smoke-nodes.yml): base64 PEM of the harness's
+    // self-signed gateway CA, appended to the VM's system bundle by
+    // entrypoint.sh so the embedded k3s agent can join a wrangler-dev
+    // gateway. Never set in production (GATEWAY_URL is publicly trusted).
+    if (this.env.GATEWAY_CA_B64) envVars.K8FLARE_EXTRA_CA_B64 = this.env.GATEWAY_CA_B64;
     await this.startAndWaitForPorts({
       ports: this.defaultPort,
       startOptions: { envVars },
