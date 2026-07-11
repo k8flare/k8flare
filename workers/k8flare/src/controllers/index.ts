@@ -164,6 +164,14 @@ export class Controllers {
     // make sig-scheduling tests flaky). Same treated-as-absent shape as
     // a missing manifest, so pokes/alarms stay quiet about it.
     if (name === "sched" && this.env.SCHED_DISABLED === "1") return null;
+    // Same shape for the workload controller-manager: e2e-conformance
+    // runs a HOST kube-controller-manager, and two live sets of
+    // workload controllers (each with its own informer lag) race each
+    // other's back-fills -- exactly the double-scheduler problem
+    // SCHED_DISABLED exists for. The gc component stays loadable: the
+    // host has no garbage collector, the gc dynamic worker is the only
+    // one.
+    if (name === "kcm" && this.env.CM_DISABLED === "1") return null;
     // Manifest absent = component not shipped in this deployment.
     // Treated as absent, not an error, so pokes/alarms stay quiet
     // about it.
@@ -281,6 +289,10 @@ export class Controllers {
       statuses.garbageCollector = "not loaded";
     }
     if (!kcmResp) {
+      if (this.env.CM_DISABLED === "1") {
+        statuses.controllerManager = "disabled (CM_DISABLED=1)";
+        return Response.json(statuses);
+      }
       statuses.controllerManager = "loading";
       return Response.json(statuses, { status: 202 });
     }

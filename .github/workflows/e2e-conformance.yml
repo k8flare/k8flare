@@ -185,11 +185,19 @@ jobs:
           # SCHED_DISABLED: this job runs a HOST kube-scheduler process
           # (control-plane step below); the in-Worker sched dynamic
           # worker must stay unloaded or two live schedulers race on
-          # Bindings and flake sig-scheduling.
+          # Bindings and flake sig-scheduling. CM_DISABLED for the same
+          # reason on the workload-controller side: the host
+          # kube-controller-manager is authoritative here, and running
+          # the kcm dynamic worker alongside it meant TWO replication
+          # controllers with independent informer lags racing each
+          # other's back-fills (part of the GC orphan canary's flake,
+          # see that step's comment). The gc dynamic worker stays live
+          # -- the host runs no garbage collector.
           nohup npx wrangler dev \
             -c workers/k8flare/wrangler.jsonc \
             --enable-containers=false \
             --var SCHED_DISABLED:1 \
+            --var CM_DISABLED:1 \
             --local \
             --port 8787 \
             --local-protocol https \

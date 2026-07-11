@@ -73,5 +73,17 @@ func RestConfig(bindingName, token, basePath string) *restclient.Config {
 		Host:        "https://" + bindingName + ".k8flare.internal" + basePath + "/",
 		BearerToken: token,
 		Transport:   client.HTTPClient(cffetch.RedirectModeFollow).Transport,
+		// Unset, client-go defaults to QPS=5/Burst=10 -- which
+		// rate-limited every resident controller in this repo to five
+		// API calls per second: the KCM took ~9s to create a 50-replica
+		// RC's pods (measured locally 2026-07-12, ~5.5 creates/s) and
+		// the GC took ~10s to strip 50 ownerReferences during an orphan
+		// delete, both of which read as "informer lag" in the GC
+		// conformance canary (e2e-conformance.yml's advisory step) but
+		// were mostly just this limiter. Same values cmd/scheduler's
+		// host binary already uses; upstream kube-controller-manager
+		// runs 20/30 by default and conformance setups raise it further.
+		QPS:   50,
+		Burst: 100,
 	}
 }
