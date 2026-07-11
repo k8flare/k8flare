@@ -285,12 +285,32 @@ func RejectCreateWithTerminatingController(ctx context.Context, namespacedStores
 			continue // cluster-scoped or unserved owner kind: allow
 		}
 		owner, err := ownerStore.Get(ctx, namespace, ref.Name)
+		if isStatusReason(err, metav1.StatusReasonNotFound) {
+			// Absent owner: also rejected. Run 29140842888 showed why
+			// terminating-only isn't enough -- under [Serial] load the
+			// KCM's owner informer lagged its pod informer by ~30s, so
+			// it kept back-filling for an owner that was ALREADY fully
+			// deleted; those creates carried a dangling controller ref
+			// from birth and raced the GC's cascade against the
+			// conformance count. No legitimate controller creates
+			// dependents for an owner it hasn't observed alive, and a
+			// human doing it manually is constructing instant GC food;
+			// upstream tolerates it only because its informers never
+			// lag enough to matter.
+			return fmt.Sprintf("cannot create %s: controller owner %s %q does not exist", m.Name, ref.Kind, ref.Name)
+		}
 		if err != nil {
-			continue // absent owner: allow; the GC cascades danglings
+			continue // transient read error: allow rather than block writes
 		}
 		om := getObjectMeta(owner)
 		if om != nil && om.UID == ref.UID && om.DeletionTimestamp != nil {
 			return fmt.Sprintf("cannot create %s: controller owner %s %q is being deleted", m.Name, ref.Kind, ref.Name)
+		}
+		if om != nil && om.UID != ref.UID {
+			// Same name, different UID: the referenced incarnation is
+			// gone (deleted and recreated) -- same dangling-from-birth
+			// situation as NotFound above.
+			return fmt.Sprintf("cannot create %s: controller owner %s %q (uid %s) no longer exists", m.Name, ref.Kind, ref.Name, ref.UID)
 		}
 	}
 	return ""
