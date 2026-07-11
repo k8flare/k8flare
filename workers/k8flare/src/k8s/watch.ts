@@ -90,7 +90,29 @@ export async function handleWatch(
   }
 
   const resourceVersion = url.searchParams.get("resourceVersion") || "0";
+  // Unknown resource = 404 Status, like upstream -- NOT an empty 200
+  // stream. RESOURCE_KINDS behind resourceKindForPath is generated from
+  // apidef.Table, so null here means the Go apiserver doesn't serve the
+  // resource at all; an empty stream for it can never carry the
+  // initial-events-end bookmark, and a WatchList-mode reflector then
+  // blocks its informer factory's WaitForCacheSync FOREVER -- exactly
+  // what wedged the scheduler bring-up when VolumeBinding's informers
+  // watched unserved VolumeAttachment/CSIStorageCapacity
+  // (docs/platform-verification.md S21, open item (a); closed here).
   const resourceKind = resourceKindForPath(url.pathname);
+  if (!resourceKind) {
+    return new Response(
+      JSON.stringify({
+        kind: "Status",
+        apiVersion: "v1",
+        status: "Failure",
+        message: `the server could not find the requested resource (watch: ${url.pathname})`,
+        reason: "NotFound",
+        code: 404,
+      }),
+      { status: 404, headers: { "Content-Type": "application/json" } },
+    );
+  }
   const allowWatchBookmarks = url.searchParams.get("allowWatchBookmarks") === "true";
 
   // Selector parsing and matching are the real apimachinery
