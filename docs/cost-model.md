@@ -1125,3 +1125,12 @@ design phase, 2026-07-10, that Ready-condition-alone does NOT gate the
 real scheduler) has not been exercised end-to-end in this sandbox (no
 Docker). `smoke-nodes.yml` was rewritten for the new flow but its own
 CI run is the first real check of that half.
+
+**Verified in CI (2026-07-11, run 29139610706)**: the full
+Pod-on-Containers flow -- admission provisioning, per-Pod NodeVM boot,
+kubelet self-registration of the pinned Node name, real-scheduler Bind,
+workload Running, restartPolicy semantics, Pod delete -> container stop
++ Node reap -- passes smoke-nodes.yml end to end (Docker-backed local
+emulation; the workflow header records the seven-iteration bring-up and
+the CI-only privileged/tmpfs shims real Firecracker microVMs won't
+need).

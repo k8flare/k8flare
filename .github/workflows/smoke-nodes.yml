@@ -29,20 +29,25 @@
 # anywhere in this repo), so each restartPolicy case below waits for its
 # own VM boot rather than reusing one warm node.
 #
-# CAUTION -- unverified end-to-end: this rewrite could only be checked
-# against the admission (Go, tier/nodeSelector/annotation mutation) and
-# real-scheduler (Unschedulable-while-no-Node, real Binding once Ready)
-# halves locally, via `wrangler dev --enable-containers=false` (no
-# Docker in this sandbox, CLAUDE.md's documented constraint). The
-# Docker-dependent halves -- the NodeVM's real kubelet actually
-# self-registering the exact pinned Node name, and every `docker ps`
-# assertion below -- have NOT been run since this rewrite. Watch the
-# first CI run closely and be ready to adjust step names is what this
-# actually observes (a Docker-dependent watch, not a "verified working"
-# claim) and reconsider the timeout-minutes budget below: per-Pod VM
-# boot (4 separate NodeVMs across this file, vs. 1 shared node before)
-# is expected to take noticeably longer in wall-clock time than the
-# previous version of this file did.
+# VERIFIED end-to-end 2026-07-11 (run 29139610706, all steps green)
+# after a seven-iteration CI bring-up, each failure root-caused from
+# this job's own artifacts: --local for the MESH binding, EXPOSE in the
+# node Dockerfile, wrangler cold-start 503 retries, the cgroup mkdir
+# guard, GATEWAY_URL/CA pointing at the local gateway instead of
+# production, the privileged+tmpfs Docker socket proxy, real images +
+# kubelet-semantics assertions, and image-name (not :latest-only
+# ancestor) container matching. What this file now proves per run:
+# admission-time provisioning -> per-Pod NodeVM boot -> the embedded
+# kubelet self-registers the exact pinned Node name -> the real
+# kube-scheduler binds -> containerd runs the workload to Running ->
+# restartPolicy semantics (Always/Never/OnFailure) -> unpullable-image
+# handling -> Pod delete stops the container and reaps the Node.
+#
+# Known non-blocking wart (recorded, not hidden): kube-proxy's default
+# healthz port collides with cmd/agent's -kubelet-plain-proxy-port
+# (both 10256) inside the NodeVM; the agent's proxy binds first and
+# kube-proxy's healthz loses. Harmless to every assertion here, but the
+# plain-proxy port should eventually move.
 name: Smoke Test workers/nodes
 
 on:
