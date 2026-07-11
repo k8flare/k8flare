@@ -170,7 +170,16 @@ jobs:
               const need = headerEnd + 4 + bodyLen;
               const finish = () => {
                 const body = JSON.parse(buf.slice(headerEnd + 4, need).toString() || "{}");
-                body.HostConfig = Object.assign({}, body.HostConfig, { Privileged: true });
+                // Privileged: kubelet/kube-proxy/flannel need root caps
+                // (run 29138450844). Tmpfs over /var/lib/rancher: the
+                // container rootfs is ALREADY overlayfs, and containerd
+                // cannot stack overlay-on-overlay ("failed to mount
+                // rootfs component ... invalid argument", run
+                // 29138818391) -- same reason k3d volumes that path.
+                body.HostConfig = Object.assign({}, body.HostConfig, {
+                  Privileged: true,
+                  Tmpfs: Object.assign({}, (body.HostConfig || {}).Tmpfs, { "/var/lib/rancher": "rw,exec" }),
+                });
                 const newBody = Buffer.from(JSON.stringify(body));
                 const req = http.request(
                   { socketPath: REAL, path: m[1], method: "POST",
