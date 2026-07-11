@@ -92,8 +92,13 @@ jobs:
       # so they're deliberately left unbuilt: workers/controllers'
       # loadComponent() resolves a missing manifest as "not shipped" and
       # moves on, it doesn't error.
-      - name: Build WASM (apiserver + sched)
-        run: make -B wasm-apiserver wasm-sched
+      # selector.wasm is not optional: it is a BUNDLED import of the
+      # gateway script (k8s/selector-wasm.ts), so `wrangler dev` fails
+      # its build outright without it -- run 29166215888 hung/failed on
+      # exactly "ENOENT ... @wasm/selector.wasm" because this step only
+      # built the two Loader binaries this job exercises.
+      - name: Build WASM (apiserver + sched + selector)
+        run: make -B wasm-apiserver wasm-sched wasm-selector
 
       # The consolidated config's containers[] docker-builds images/node,
       # whose Dockerfile COPYs the cross-compiled k8flare-agent.
