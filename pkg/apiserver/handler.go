@@ -504,42 +504,60 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		defer r.Body.Close()
 
 		ct := r.Header.Get("Content-Type")
-		currentObj, err := store.Get(ctx, namespace, name)
-		if err != nil {
-			writeResourceError(w, err, resource, name)
-			return
-		}
-
-		patchedObj, err := applyPatch(currentObj, body, ct)
-		if err != nil {
-			writeStatusError(w, http.StatusBadRequest, "BadRequest", "patch failed: "+err.Error())
-			return
-		}
-
-		// Same finalizer-completion rule as the PUT path above (see
-		// gracefuldelete.go) -- the GC clears finalizers via PATCH.
-		if shouldFinalizeDelete(patchedObj) {
-			if err := finalizeDeleteWithOrphanSweep(ctx, store, namespacedStores, namespace, name); err != nil {
-				writeResourceError(w, err, resource, name)
-				return
-			}
-			obj, err := store.Delete(ctx, namespace, name)
+		// Get -> apply -> conditional-update, retried on conflict: a
+		// patch expresses intent against WHATEVER the current object is
+		// (it carries no resourceVersion of its own), so when another
+		// writer lands between the read and the write, the correct
+		// behavior is to re-read and re-apply -- upstream's patch
+		// handler retries exactly this way. Without it, the GC circle
+		// conformance test flaked whenever the kubelet's status write
+		// raced the test's ownerReference patch ("the object has been
+		// modified", runs 29118462901/29139324774).
+		var lastPatchErr error
+		for attempt := 0; attempt < patchConflictRetries; attempt++ {
+			currentObj, err := store.Get(ctx, namespace, name)
 			if err != nil {
 				writeResourceError(w, err, resource, name)
 				return
 			}
-			TriggerEndpointsReconcile(ctx, store.storage, namespace, obj)
-			writeRuntimeObject(w, http.StatusOK, obj)
-			return
-		}
 
-		obj, err := store.Update(ctx, namespace, name, patchedObj)
-		if err != nil {
+			patchedObj, err := applyPatch(currentObj, body, ct)
+			if err != nil {
+				writeStatusError(w, http.StatusBadRequest, "BadRequest", "patch failed: "+err.Error())
+				return
+			}
+
+			// Same finalizer-completion rule as the PUT path above (see
+			// gracefuldelete.go) -- the GC clears finalizers via PATCH.
+			if shouldFinalizeDelete(patchedObj) {
+				if err := finalizeDeleteWithOrphanSweep(ctx, store, namespacedStores, namespace, name); err != nil {
+					writeResourceError(w, err, resource, name)
+					return
+				}
+				obj, err := store.Delete(ctx, namespace, name)
+				if err != nil {
+					writeResourceError(w, err, resource, name)
+					return
+				}
+				TriggerEndpointsReconcile(ctx, store.storage, namespace, obj)
+				writeRuntimeObject(w, http.StatusOK, obj)
+				return
+			}
+
+			obj, err := store.Update(ctx, namespace, name, patchedObj)
+			if err == nil {
+				TriggerEndpointsReconcile(ctx, store.storage, namespace, obj)
+				writeRuntimeObject(w, http.StatusOK, obj)
+				return
+			}
+			if isStatusReason(err, metav1.StatusReasonConflict) {
+				lastPatchErr = err
+				continue
+			}
 			writeResourceError(w, err, resource, name)
 			return
 		}
-		TriggerEndpointsReconcile(ctx, store.storage, namespace, obj)
-		writeRuntimeObject(w, http.StatusOK, obj)
+		writeResourceError(w, lastPatchErr, resource, name)
 
 	default:
 		writeStatusError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method "+r.Method+" is not supported")

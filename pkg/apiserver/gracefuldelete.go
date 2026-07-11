@@ -48,6 +48,11 @@ import (
 // markDeletionRetries bounds markForDeletion's conflict-retry loop.
 const markDeletionRetries = 5
 
+// patchConflictRetries bounds the PATCH handler's re-read-and-reapply
+// loop (handler.go) -- upstream's patch handler retries conflicts the
+// same way (its maxRetryWhenPatchConflicts).
+const patchConflictRetries = 5
+
 // finalizerForPolicy maps a propagation policy to the finalizer the real
 // garbagecollector acts on. Returns "" for policies that need no
 // finalizer (Background).
