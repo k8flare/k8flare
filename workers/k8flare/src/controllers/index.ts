@@ -99,24 +99,27 @@ export class Controllers {
     this.env = env;
   }
 
-  // Serializes loadComponent calls: loading a control-plane binary ends
-  // in a multi-10MB WebAssembly compile that runs as NATIVE code on the
-  // isolate's thread -- it cannot be interrupted, and wrangler dev runs
-  // every isolate on one event loop. Three concurrent ~40-60MB compiles
-  // starved a 2-vCPU CI runner for 20+ minutes with every API request
-  // (and even the V8 inspector) dead in the meantime, while the same
-  // runner loads a single binary fine every host-variant e2e run
-  // (found bisecting the dw-control-plane e2e bring-up, 2026-07-12).
-  // One-at-a-time keeps the worst case at "one compile blocks briefly",
-  // and also flattens the production cold-start CPU spike.
-  private loadChain: Promise<unknown> = Promise.resolve();
-
   private ensure(name: ComponentName): Promise<Fetcher | null> {
     const c = this.components[name];
     if (!c.loading) {
-      const queued = this.loadChain.then(() => this.loadComponent(name));
-      this.loadChain = queued.catch(() => {});
-      c.loading = queued.then(async (f) => {
+      // kcm/sched/gc load independently and concurrently -- NOT chained
+      // behind one another. An earlier version serialized every load
+      // behind a single shared promise, diagnosed at the time as
+      // avoiding concurrent multi-10MB WebAssembly compiles starving
+      // wrangler dev's single-threaded event loop (2026-07-12 dw-variant
+      // e2e bring-up). That diagnosis was itself superseded the same day
+      // (docs/platform-verification.md S23's addendum): the real cause
+      // was the per-request apiserver dynamic worker's instantiation
+      // stampede under an unbounded controller QPS, fixed at the source
+      // by capping QPS/Burst (pkg/controllers/restconfig), not by
+      // serialization here -- and S23 says outright that production's
+      // real Loader does not share one event loop the way wrangler dev
+      // does, so the original justification never applied there.
+      // Serializing anyway cost real latency for no benefit: kcm and
+      // sched are independent controllers with no reason for one to
+      // wait on the other, and doing so measurably delayed the
+      // scheduler becoming dispatchable behind an unrelated kcm load.
+      c.loading = this.loadComponent(name).then(async (f) => {
         c.entrypoint = f;
         // Warmup window: a freshly loaded component needs several pump
         // windows to get through informer sync plus the initial
