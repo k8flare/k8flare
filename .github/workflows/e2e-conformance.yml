@@ -20,26 +20,35 @@ on:
 
 jobs:
   e2e-conformance:
-    # Two control planes, one suite:
+    # Three control planes, one suite:
     #   host -- the REQUIRED gate: host kube-scheduler +
     #     kube-controller-manager processes, dynamic workers for kcm/sched
     #     disabled (gc dynamic worker always runs; the host has no GC).
-    #   dw -- the v3 PRODUCTION shape: NO host control-plane processes;
-    #     the kcm/sched/gc dynamic workers are the entire control plane.
-    #     Advisory (continue-on-error) until it has a green track record,
-    #     then it becomes required too -- before this matrix existed the
-    #     shape production actually runs had ZERO conformance coverage.
+    #   kcm-dw -- the kcm dynamic worker runs the workload controllers
+    #     (no host controller-manager); the scheduler stays host.
+    #   sched-dw -- the sched dynamic worker binds pods (no host
+    #     scheduler); the workload controllers stay host.
+    # Both dw variants are advisory (continue-on-error) until they have a
+    # green track record. They exist because the v3 production shape had
+    # ZERO conformance coverage; the FULL dw shape (all three dynamic
+    # workers, no host processes) additionally wedges wrangler dev's
+    # single workerd on standard runners -- four 40-63MB wasm modules in
+    # one process is a local-emulation limit, not a product one -- see
+    # docs/platform-verification.md S23 for the investigation and the
+    # conditions for adding it back. Each variant here keeps the resident
+    # module count at three (apiserver + two), the combination every
+    # green historical run also had.
     strategy:
       fail-fast: false
       matrix:
-        controlplane: [host, dw]
-    continue-on-error: ${{ matrix.controlplane == 'dw' }}
+        controlplane: [host, kcm-dw, sched-dw]
+    continue-on-error: ${{ matrix.controlplane != 'host' }}
     runs-on: ubuntu-latest
     # Budget: setup (deps + wasm + binaries + cluster up) ~30min, baseline
     # ~7min, experimental step-capped at 20min, teardown seconds. The dw
     # variant adds its up-to-28min control-plane warmup (wasm compile
     # bound, see that step's comment), hence the larger budget.
-    timeout-minutes: ${{ matrix.controlplane == 'dw' && 95 || 70 }}
+    timeout-minutes: ${{ matrix.controlplane != 'host' && 85 || 70 }}
     steps:
       - name: Free disk space (remove unused preinstalled toolchains)
         run: |
@@ -212,8 +221,8 @@ jobs:
           nohup npx wrangler dev \
             -c workers/k8flare/wrangler.jsonc \
             --enable-containers=false \
-            --var SCHED_DISABLED:${{ matrix.controlplane == 'host' && '1' || '0' }} \
-            --var CM_DISABLED:${{ matrix.controlplane == 'host' && '1' || '0' }} \
+            --var SCHED_DISABLED:${{ matrix.controlplane == 'sched-dw' && '0' || '1' }} \
+            --var CM_DISABLED:${{ matrix.controlplane == 'kcm-dw' && '0' || '1' }} \
             --local \
             --port 8787 \
             --local-protocol https \
@@ -290,7 +299,7 @@ jobs:
       # (root-owned-by-default) production default. --insecure-skip-tls-verify
       # is belt-and-suspenders on top of the system trust store install above.
       - name: Start scheduler (real kube-scheduler)
-        if: matrix.controlplane == 'host'
+        if: matrix.controlplane != 'sched-dw'
         run: |
           nohup ./bin/k8flare-scheduler \
             --server=https://127.0.0.1:8787 \
@@ -314,7 +323,7 @@ jobs:
       # enabled here pending its own verification pass (metadata-only
       # client + RESTMapper, see Phase 3's OwnerReference GC entry).
       - name: Start controller-manager (real kube-controller-manager)
-        if: matrix.controlplane == 'host'
+        if: matrix.controlplane != 'kcm-dw'
         run: |
           nohup ./bin/k8flare-controller-manager \
             --server=https://127.0.0.1:8787 \
@@ -338,8 +347,8 @@ jobs:
       # (gc) -- so the conformance clock never starts against a
       # still-loading control plane, and all three dynamic workers are
       # proven live before any test runs.
-      - name: Wait for the dynamic-worker control plane (kcm + sched + gc)
-        if: matrix.controlplane == 'dw'
+      - name: Wait for the dynamic-worker control plane (behavioral)
+        if: matrix.controlplane != 'host'
         # Generous, deliberately: the first poke loads kcm+sched+gc
         # (~150MB of wasm) CONCURRENTLY, and compiling that much wasm on
         # a 2-vCPU runner blocks workerd's event loop for many minutes
