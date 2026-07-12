@@ -99,10 +99,24 @@ export class Controllers {
     this.env = env;
   }
 
+  // Serializes loadComponent calls: loading a control-plane binary ends
+  // in a multi-10MB WebAssembly compile that runs as NATIVE code on the
+  // isolate's thread -- it cannot be interrupted, and wrangler dev runs
+  // every isolate on one event loop. Three concurrent ~40-60MB compiles
+  // starved a 2-vCPU CI runner for 20+ minutes with every API request
+  // (and even the V8 inspector) dead in the meantime, while the same
+  // runner loads a single binary fine every host-variant e2e run
+  // (found bisecting the dw-control-plane e2e bring-up, 2026-07-12).
+  // One-at-a-time keeps the worst case at "one compile blocks briefly",
+  // and also flattens the production cold-start CPU spike.
+  private loadChain: Promise<unknown> = Promise.resolve();
+
   private ensure(name: ComponentName): Promise<Fetcher | null> {
     const c = this.components[name];
     if (!c.loading) {
-      c.loading = this.loadComponent(name).then(async (f) => {
+      const queued = this.loadChain.then(() => this.loadComponent(name));
+      this.loadChain = queued.catch(() => {});
+      c.loading = queued.then(async (f) => {
         c.entrypoint = f;
         // Warmup window: a freshly loaded component needs several pump
         // windows to get through informer sync plus the initial
