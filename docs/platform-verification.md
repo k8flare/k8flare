@@ -3422,3 +3422,19 @@ e2e-conformance を matrix 化(controlplane: host|dw)し、v3 本番形態
 を回す (b) workerd の wasm コンパイル挙動(linux でのブロッキング)を上流に
 切り分け報告 (c) dw variant を 3 モジュール構成 2 種(kcm-dw / sched-dw)に
 分割して段階検証。いずれもコスト判断が要るため、ユーザー判断待ち。
+
+**S23 の解決(2026-07-12、同日訂正)**: dw wedge の根本原因が判明した。
+QPS=50 化によりコントローラー起動時の informer ストーム(kcm 15 +
+gc ~30 の LIST/WATCH が同時発火)が、**per-request 契約の apiserver DW
+= 1 リクエスト毎の ~63MB WebAssembly.Instance 生成(同期・データセグメント
+コピー)** を wrangler dev の単一イベントループ上に連続発生させ、
+informers のタイムアウト→再 LIST が積み上がる**ライブロック**を起こして
+いた(macOS の `sample` によるネイティブプロファイルで
+`InstanceBuilder::LoadDataSegments` / `memory_copy_wrapper` がホットと確認。
+Node+Deployment で決定論的に再現、Node+RC は margin 内で生存という
+不可解な差もストーム量の差で説明がつく)。**QPS=20/Burst=30(upstream
+kube-controller-manager デフォルト)へ変更で解消**: 同フローが 4 秒で完走、
+canary 要件も維持(50 Pod 作成 11s・orphan 完了 11s)。S22/S23 で疑った
+「wasm コンパイル」は誤りで、実体は**インスタンス化のスタンピード**だった
+(訂正として記録)。本番 Loader は単一イベントループを共有しないが、同じ
+スタンピードは実 CPU 課金を無駄に燃やすため、20/30 は本番にも正しい値。

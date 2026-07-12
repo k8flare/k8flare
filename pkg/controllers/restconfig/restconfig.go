@@ -76,14 +76,25 @@ func RestConfig(bindingName, token, basePath string) *restclient.Config {
 		// Unset, client-go defaults to QPS=5/Burst=10 -- which
 		// rate-limited every resident controller in this repo to five
 		// API calls per second: the KCM took ~9s to create a 50-replica
-		// RC's pods (measured locally 2026-07-12, ~5.5 creates/s) and
-		// the GC took ~10s to strip 50 ownerReferences during an orphan
-		// delete, both of which read as "informer lag" in the GC
-		// conformance canary (e2e-conformance.yml's advisory step) but
-		// were mostly just this limiter. Same values cmd/scheduler's
-		// host binary already uses; upstream kube-controller-manager
-		// runs 20/30 by default and conformance setups raise it further.
-		QPS:   50,
-		Burst: 100,
+		// RC's pods and the GC ~10s to strip 50 ownerReferences during
+		// an orphan delete, which flaked the GC conformance canary.
+		//
+		// 20/30 (upstream kube-controller-manager's defaults), NOT the
+		// 50/100 this briefly shipped with: at 50 the controllers' boot
+		// informer storm (kcm 15 + gc ~30 LIST/WATCHes at once) LIVELOCKED
+		// wrangler dev -- each API call instantiates the ~63MB apiserver
+		// wasm per request (the per-request contract), the synchronous
+		// WebAssembly.Instance data-segment copy monopolizes workerd's
+		// single dev event loop (native-profiled: InstanceBuilder::
+		// LoadDataSegments/memory_copy_wrapper hot), informers time out
+		// and re-list, and the pile never drains -- reproduced
+		// deterministically (node+deployment wedged, 100% CPU forever;
+		// 20/30 completes the same flow in 4s; measured 2026-07-12).
+		// Production's Loader doesn't share one event loop, but the same
+		// instantiation stampede would still burn real CPU-time there.
+		// At 20/30 the canary flow stays fast: 50-replica RC creation
+		// 11s, full orphan handoff 11s (measured).
+		QPS:   20,
+		Burst: 30,
 	}
 }
