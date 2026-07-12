@@ -3390,3 +3390,35 @@ kube-controller-manager と kcm DW の**二重コントローラーマネージ�
 走っていたこと。QPS=50/Burst=100 + CM_DISABLED(SCHED_DISABLED と対称)
 で run 29161962551 はカナリア含め全緑、GC required 群の実行時間も
 ~8 分→~3 分に短縮。GC conformance 7 テストは全て required に戻った。
+
+---
+
+## S23: dw 制御プレーン e2e(matrix)の現状 — wrangler dev の複数巨大 WASM 同居限界(2026-07-12、調査中断のチェックポイント)
+
+e2e-conformance を matrix 化(controlplane: host|dw)し、v3 本番形態
+(kcm/sched/gc DW のみ、ホストバイナリなし)の conformance 検証を追加した。
+**host variant(required)は全経過で緑**。dw variant は advisory のまま赤で、
+以下の調査結果を残して一旦中断する:
+
+- 症状: 最初の controllers poke(Deployment 作成)直後に wrangler dev の
+  workerd が完全に無応答化(全 API・console 出力・V8 inspector まで死ぬ =
+  ネイティブコードでイベントループ専有)。20 分以上回復しない。
+- 切り分け済み: メモリ天井ではない(12GB cgroup でも再現)、CPU クォータ
+  でもない(8 vCPU でも再現; いずれも linux-arm64 コンテナ)。単体ロードは
+  CI-x86 で実績あり(gc は host variant で毎回、sched は smoke-nodes で、
+  kcm+gc 同時も selector.wasm 導入以前の全 e2e run で成功)。
+- 対処として製品側に **DW ロードの直列化** を実装(controllers/index.ts の
+  loadChain)— コールドスタート CPU スパイクの平準化として本番にも妥当だが、
+  CI の dw wedge 自体は解消しなかった。
+- ローカル再現の罠: linux-arm64 workerd(OrbStack コンテナ)は CI-x86 と
+  挙動が異なり(kcm+gc だけでも wedge)、x86 エミュレーション(Rosetta)は
+  apiserver DW の cold start が 503 になるなど、どちらも忠実な再現環境に
+  ならなかった。
+- 本番影響なし: 実 Loader は Cloudflare 側でコンパイルするため、これは
+  wrangler dev(単一 workerd プロセス)へ 4 つの 40-63MB WASM を同居させた
+  ときだけの emulation 限界。
+
+再開する場合の選択肢: (a) より大きい self-hosted/larger runner で dw variant
+を回す (b) workerd の wasm コンパイル挙動(linux でのブロッキング)を上流に
+切り分け報告 (c) dw variant を 3 モジュール構成 2 種(kcm-dw / sched-dw)に
+分割して段階検証。いずれもコスト判断が要るため、ユーザー判断待ち。
