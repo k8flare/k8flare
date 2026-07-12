@@ -189,6 +189,7 @@ export class Controllers {
     // Manifest absent = component not shipped in this deployment.
     // Treated as absent, not an error, so pokes/alarms stay quiet
     // about it.
+    console.log(`controllers: ${name} load queued/starting`);
     const manifest = await fetchWasmManifest(this.env.ASSETS, name);
     if (!manifest) return null;
     const doName = this.clusterName();
@@ -201,6 +202,7 @@ export class Controllers {
     const worker = this.env.LOADER.get(
       `${name}:${doName}@${manifest.sha256}#${tokenTag}`,
       async () => {
+        console.log(`controllers: ${name} factory: assembling chunks`);
         const wasm = await assembleWasm(this.env.ASSETS, manifest);
         console.log(`controllers: ${name} chunks assembled (${wasm.byteLength} bytes)`);
         const wasmExec = await fetchWasmAsset(this.env.ASSETS, "wasm_exec.js").then((r) =>
@@ -228,6 +230,7 @@ export class Controllers {
         };
       },
     );
+    console.log(`controllers: ${name} LOADER.get returned (factory may still be pending)`);
     const entrypoint = worker.getEntrypoint();
     // Force the factory to actually run now (getEntrypoint alone is lazy)
     // and prove the dynamic worker is dispatchable before declaring it
