@@ -229,7 +229,7 @@ jobs:
             --https-key-path "$RUNNER_TEMP/devtls/dev.key" \
             --https-cert-path "$RUNNER_TEMP/devtls/dev.crt" \
             --persist-to .wrangler/state \
-            --log-level ${{ matrix.controlplane == 'dw' && 'info' || 'error' }} \
+            --log-level ${{ matrix.controlplane != 'host' && 'info' || 'error' }} \
             > "$RUNNER_TEMP/wrangler.log" 2>&1 &
 
           echo "Waiting for wrangler dev on 127.0.0.1:8787..."
