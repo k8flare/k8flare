@@ -24,26 +24,48 @@ func clusterDOName() string {
 // storageDo routes a kine request to THIS cluster's Cluster DO: the
 // STORAGE env Fetcher is the parent script's ClusterLoopback entrypoint,
 // which dispatches on the X-K8flare-Cluster header (DO namespaces cannot
-// cross the Loader env clone, S2 item 3a). The client is built lazily
-// (env bindings are only reachable once a request has actually arrived)
-// and memoized for this instance's lifetime via sync.OnceValue.
-var storageClient = sync.OnceValue(func() *http.Client {
-	return cffetch.NewClient(cffetch.WithBinding(cloudflare.GetBinding("STORAGE"))).
-		HTTPClient(cffetch.RedirectModeFollow)
-})
-
+// cross the Loader env clone, S2 item 3a).
+//
+// The STORAGE Fetcher is pulled from the CURRENT request's env
+// (BindingFromContext) and the client built per call -- NOT memoized.
+// This binary is resident now (one instance serves every request, see
+// main()), so a Fetcher captured from an earlier request would be reused
+// from a later request's dispatch, which Cloudflare rejects with "Cannot
+// perform I/O on behalf of a different request" once the capturing
+// request's IoContext ends. That was the S24 resident-apiserver
+// regression: the old sync.OnceValue-memoized client worked only within
+// the ~15s pump window of whichever request first instantiated the
+// isolate, then every storage write threw and stalled KCM's pod creation.
+// Sourcing the binding from req.Context() also attributes each storage
+// subrequest to its originating request, keeping per-invocation
+// subrequest counts bounded (an apiserver fans out to kine on behalf of
+// kubectl + kubelet + KCM + scheduler + gc). req.Context() carries the
+// env because pkg/apiserver handlers thread r.Context() into storage.go's
+// NewRequestWithContext calls and cfruntime's dispatch attaches this
+// request's env to it.
 func storageDo(req *http.Request) (*http.Response, error) {
 	req.Header.Set("X-K8flare-Cluster", clusterDOName())
-	return storageClient().Do(req)
+	client := cffetch.NewClient(cffetch.WithBinding(cloudflare.BindingFromContext(req.Context(), "STORAGE"))).
+		HTTPClient(cffetch.RedirectModeFollow)
+	return client.Do(req)
 }
 
 // getTokens returns every currently-valid token for this cluster: the
 // env token for the default cluster (rotation is `wrangler secret put`),
 // or the per-cluster token vault (a kine value at /ca/cluster-tokens,
 // read through storageDo and parsed by apiserver.DecodeVaultTokens) for
-// provisioned ones. Memoized via sync.OnceValue -- this binary is
-// instantiated fresh per request (S19's per-request worker.mjs
-// contract), so the memo only spans one request's lifetime anyway.
+// provisioned ones. Memoized via sync.OnceValue. The default-cluster
+// branch reads only a plain env-var STRING, which -- unlike a Fetcher --
+// is not request-scoped I/O and stays valid across this resident
+// instance's requests, so the memo is fine there.
+//
+// KNOWN GAP (resident shape): the provisioned branch calls storageDo with
+// a context-less http.NewRequest, so BindingFromContext falls back to the
+// Go.run-time global STORAGE binding instead of the caller's request-
+// scoped one -- the same cross-request-I/O hazard storageDo itself was
+// just fixed for. No default-cluster path (all of conformance) hits it;
+// provisioned-cluster token rotation needs storageDo to receive a live
+// request context before it can be relied on. Left as a follow-up.
 var getTokens = sync.OnceValue(func() []string {
 	if clusterDOName() == "default" {
 		return []string{cloudflare.GetenvDefault("K3S_TOKEN", "k8flare-dev-token")}

@@ -64,7 +64,12 @@ export default {
     if (!bindingPromise) bindingPromise = instantiate(env, ctx);
     const binding = await bindingPromise;
     ctx.waitUntil(new Promise((resolve) => setTimeout(resolve, PUMP_WINDOW_MS)));
-    return binding.handleRequest(request);
+    // Forward THIS request's env so a resident Go instance resolves
+    // request-scoped bindings from the current request instead of the one
+    // that first instantiated the isolate (handler_js.go dispatch). The
+    // env captured in instantiate() above is only used to run the Go
+    // program; per-request I/O bindings must come from here.
+    return binding.handleRequest(request, env);
   },
 };
 `;
