@@ -3557,3 +3557,79 @@ panic 無し)。wasm-opt と合わせて **62.9MB → 41.3MB(-34%)**、他バイ
 含む)、5 ラウンド持続の並行 20/20 全成功 + Deployment 10 replica が
 KCM→scheduler で 10/10 bind 収束、wedge/リーク/クラッシュ無し。**OOM 解消
 自体は 128MiB を強制する本番でしか観測できない** → 監視付き本番 run で確認。
+
+**続報 — resident 化が顕在化させた二次バグ「クロスリクエスト I/O」とその修正
+(2026-07-17、コミット ae088de)**: resident 化で OOM(メモリ例外)は本番で
+0 に消えた(41→29→0、監視付きデプロイ版 9d7fcb44 でノード 10s で Ready)。
+だが**それでも Pod が作られない**状態が残り、`wrangler tail --format json` で
+本番ログを見ると別の例外が出ていた:
+
+```
+outcome=exception url=.../api/v1/namespaces/default/pods ep=k8flare
+EXC: Cannot perform I/O on behalf of a different request. I/O objects
+     (such as streams, request/response bodies, and others) created in
+     the context of one request cannot be accessed from a different request.
+```
+
+根本原因: `main.go` の `storageDo` が STORAGE Fetcher を `sync.OnceValue` で
+**最初のリクエストの env から一度だけ**取得してメモ化していた。per-request
+時代はメモが 1 リクエストしか生きなかったので健全だった(コード内コメントも
+「instantiated fresh per request なので memo は 1 リクエスト分」と明記して
+いた)が、resident 化でこの前提が崩れた。サービスバインディング Fetcher は
+**リクエストスコープの I/O オブジェクト**で、それを生成したリクエストの
+IoContext が終わった後に別リクエストの dispatch から使うと上記例外になる。
+apiserver bootstrap の pump window(15s)が切れた直後から、以降の全 kine
+書き込みが例外化し KCM の Pod 作成が停止していた。**wrangler dev はこの
+クロスリクエスト I/O 規則を強制しないので dev では不可視**、単発リクエストの
+go test でも起きない — 実負荷の本番でしか出ない(S24 の OOM と同じ「本番
+限定」性質)。
+
+なぜ resident コントローラー(kcm/gc/sched)は同じパターンで壊れないのか:
+コントローラーは outbound バインディングを**自分の resident リクエストの
+WaitUntil 内(=そのリクエストがまだ生きている文脈)で一度だけ捕捉**し、
+以降もその生きた文脈の中からしか呼ばない(`restconfig.go`、`ResidentService`
+が `run(ctx)` を request-1 の waitUntil 下で永久実行)。apiserver は逆に
+**各リクエスト自身の dispatch 内で storage I/O する**ので、インスタンス化
+リクエストのバインディングではなく「今処理中のリクエスト」のバインディングが
+要る。
+
+修正(グローバル差し替えは並行 dispatch で競合するので不可 → リクエストの
+`context.Context` で通す):
+- `bootstrap.ts` が `handleRequest(request, env)` として**そのリクエストの
+  env** を第2引数で渡す(instantiate 時の env は Go プログラム起動専用)。
+- `handler_js.go` の dispatch が `cloudflare.WithEnv` で env を**dispatch
+  ごとのクロージャ**(共有状態なし)から req.Context() に付与。
+- `cloudflare` に `WithEnv`/`EnvFromContext`/`BindingFromContext` を追加。
+- `storageDo` が STORAGE を `req.Context()` から解決しクライアントを毎回構築
+  (メモ化撤去)。`pkg/apiserver` は既に `r.Context()` を storage.go の
+  `NewRequestWithContext` まで通していたので storage 層は無改変。
+- 副次効果: 各 storage サブリクエストが発生元リクエストに帰属するので、
+  1 インボケーションに全クラスタの kine トラフィックが積み上がる
+  (Cloudflare の per-invocation サブリクエスト上限に抵触する)問題も回避。
+  コントローラー流の「request-1 の文脈を永久 waitUntil で開いたまま全 I/O を
+  そこに集約」案(B)を採らず本案(A)にした決め手がこれ。
+
+コントローラーは無影響(env 引数なしで handleRequest を呼び、ハンドラは
+env-from-context を読まない)。**既知の follow-up**: `getTokens` の
+provisioned クラスタ vault 読み取りは context 無しの http.NewRequest で
+storageDo を呼ぶため resident 下ではグローバル(request-1)バインディングに
+フォールバックする(同じクロスリクエスト I/O 危険)。default クラスタ経路
+(conformance 全部)は踏まないので未修正のまま記録。
+
+本番検証(監視付き、Version ff7cc3d3): rm した clean 環境で Deployment →
+ReplicaSet → Pod → scheduler bind → tmpfs ノードの kubelet/containerd で
+**5/5 Pod Running**、新規 2 replica Deployment が **8 秒で 2/2 Running**、
+tail で**クロスリクエスト I/O 例外 0・メモリ例外 0**。default クラスタは
+私のノード込みでもアイドル ~0.7 req/s とほぼ静か(scale-to-zero 挙動の裏付け)。
+
+**別件の所見 — teardown 済みクラスタの残骸 `prod-smoke` の暴走(2026-07-17)**:
+tail に `/c/prod-smoke/` 宛の内部コントローラートラフィックが**無操作でも
+~8 req/s 継続**していた(外部からは 404「cluster not found」)。Cluster DO は
+消えているのに Controllers DO のアラーム/resident KCM が死んだクラスタへの
+informer を回し続けている疑い。管理 API の `DELETE /clusters/<id>` teardown は
+本番 `ADMIN_TOKENS` 必須で、シークレットはユーザー管理(deny-list)のため
+セッション内では停止不能 → **ユーザーに要 teardown として申し送り**。コスト
+不変条件 #3(アラームは未処理の仕事がある時だけ再武装しアイドルで自己解除)
+の観点で、**「Cluster DO が消えたのに Controllers 側が park しない」park 漏れ
+バグの可能性**。正常パス(default)は scale-to-zero を満たすので edge case だが、
+resident コントローラーの「バックエンド消失時の自己停止」は要追検討。
