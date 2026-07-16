@@ -3510,8 +3510,8 @@ client-go の go test 全通過で機能無傷を確認。コンパイル済み 
 ビルド時のみの変更でランタイム挙動は不変。
 
 **天井を上げる作業 その2 — フル client-go クライアントセットの刈り込み
-(未着手、推定さらに数 MB)**: attribution(wasm name section)で apiserver
-肥大の主因が判明した。`pkg/apiserver` は (1) `rbac.go` が
+(実施済み、-10.4MB → apiserver 41.3MB)**: attribution(wasm name section)で
+apiserver 肥大の主因が判明した。`pkg/apiserver` は (1) `rbac.go` が
 `k8s.io/kubernetes/plugin/pkg/auth/authorizer/rbac/bootstrappolicy`(RBAC
 既定ロール)、(2) `serviceaccounttoken.go` が
 `k8s.io/kubernetes/pkg/serviceaccount`(SA トークン生成/検証)を import し、
@@ -3522,8 +3522,17 @@ resource/DRA(×4 版 2.5MB)・extensions/v1beta1・apps/networking/storage の
 beta 版などの型 + それぞれの typed client + applyconfigurations が全部リンク
 される(apiserver は**サーバー**でありこれらの client アクセサは一切呼ばない
 デッドコード)。controllers(kcm/gc/sched)はこれを go.wasm.mod の
-clientgo-lean-mirror(幅刈り込み)で解決済みだが、**apiserver は go.wasm.mod
-を使わず素の go.mod(フル client-go)でビルドしている**。修正案: apiserver も
-`-modfile=go.wasm.mod` でビルドし、bootstrappolicy/serviceaccount が
-幅刈り込み後の Clientset に対してコンパイル・動作するようにする(必要なら
-apiserver 用の width を lean mirror に追加)。腰を据えた作業。
+clientgo-lean-mirror(幅刈り込み)で解決済みだが、apiserver は go.wasm.mod を
+使わず素の go.mod(フル client-go)でビルドしていた。**修正: apiserver も
+`-modfile=go.wasm.mod -tags leanwidth` でビルド**(controllers と同じ)。
+apiserver は**サーバー**で刈られた client アクセサを実行時に一切呼ばないため、
+既存の leanwidth 幅で追加 width 不要でそのままコンパイル・動作した。実
+wrangler dev + 実 client-go の go test 全通過で機能無傷を確認(刈られた stub の
+panic 無し)。wasm-opt と合わせて **62.9MB → 41.3MB(-34%)**、他バイナリ
+(kcm 42 / gc 41 / sched 45MB)と同水準、チャンクも 3→2 に減った。
+
+**結論**: apiserver DW のコンパイル済み Module ベースラインが 62.9→41.3MB
+(-34%)に下がり、同じ 128MiB でより多くの並行インスタンスが乗る。これで
+S24 の OOM 天井が実用上十分に上がったかは、監視付き本番 run 1 回で確認する
+(このサイズ削減はローカルの go test/vet で機能検証済み・コミット済みだが、
+128MiB 強制下での OOM 解消自体は本番でしか観測できない)。

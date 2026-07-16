@@ -23,7 +23,7 @@ ASSETS := workers/k8flare/assets/wasm
 BUILD := .build/wasm
 CAP := 67108864 # the Worker Loader's 64MiB total-module-bytes cap (S14 Part 2)
 
-APISERVER_SRC := $(shell find pkg/apiserver -name '*.go') go.mod go.sum
+APISERVER_SRC := $(shell find pkg/apiserver -name '*.go') go.wasm.mod
 # KCM_SRC excludes pkg/controllers/gc and its cmd/gc-wasm entrypoint: they
 # share the pkg/controllers/cmd parent directory but not a package with
 # controllermanager.go (see pkg/controllers/gc's doc comment), so kcm.
@@ -77,7 +77,7 @@ $(ASSETS)/apiserver.manifest.json: $(APISERVER_SRC) $(ASSETS)/wasm_exec.js | gen
 	@command -v wasm-opt >/dev/null 2>&1 || { echo "wasm-opt not found -- install binaryen (mise: aqua:web-assembly/binaryen, apt/brew: binaryen)" >&2; exit 1; }
 	@mkdir -p $(ASSETS) $(BUILD)
 	echo "== apiserver (./pkg/apiserver/cmd/apiserver-wasm)"; \
-	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $(BUILD)/apiserver.wasm ./pkg/apiserver/cmd/apiserver-wasm; \
+	GOFLAGS=-modfile=go.wasm.mod GOOS=js GOARCH=wasm go build -tags leanwidth -ldflags="-s -w" -trimpath -o $(BUILD)/apiserver.wasm ./pkg/apiserver/cmd/apiserver-wasm; \
 	wasm-opt -Oz \
 		--strip-debug --strip-producers \
 		--enable-bulk-memory --enable-nontrapping-float-to-int \
