@@ -78,13 +78,18 @@ $(ASSETS)/apiserver.manifest.json: $(APISERVER_SRC) $(ASSETS)/wasm_exec.js | gen
 	@mkdir -p $(ASSETS) $(BUILD)
 	echo "== apiserver (./pkg/apiserver/cmd/apiserver-wasm)"; \
 	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $(BUILD)/apiserver.wasm ./pkg/apiserver/cmd/apiserver-wasm; \
-	raw=$$(wc -c < $(BUILD)/apiserver.wasm | tr -d ' '); \
+	wasm-opt -Oz \
+		--strip-debug --strip-producers \
+		--enable-bulk-memory --enable-nontrapping-float-to-int \
+		--enable-sign-ext --enable-mutable-globals \
+		$(BUILD)/apiserver.wasm -o $(BUILD)/apiserver.opt.wasm; \
+	raw=$$(wc -c < $(BUILD)/apiserver.opt.wasm | tr -d ' '); \
 	if [ "$$raw" -ge $(CAP) ]; then \
 		echo "::error::apiserver ($$raw bytes) exceeds the Worker Loader's 64MiB cap ($(CAP) bytes) -- the dynamic worker cannot load. Trim dependencies (see docs/platform-verification.md S14)." >&2; \
 		exit 1; \
 	fi; \
 	echo "apiserver: $$raw bytes ($$(( ($(CAP) - $$raw) / 1024 ))KiB headroom under the 64MiB Loader cap)"; \
-	node $(WASM_TOOLS)/chunk-wasm.ts $(BUILD)/apiserver.wasm $(ASSETS) apiserver
+	node $(WASM_TOOLS)/chunk-wasm.ts $(BUILD)/apiserver.opt.wasm $(ASSETS) apiserver
 
 # KCM: built against go.wasm.mod (k8s.io/client-go -> width-pruned
 # .build/clientgo-lean-mirror) with -tags leanwidth (narrow

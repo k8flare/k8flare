@@ -3500,3 +3500,30 @@ rotation の memo(sync.OnceValue、per-request 前提)の見直し、S8 の IoCo
 DW が 128MiB を超えて散発的に OOM する既知の天井が残る)。軽〜中負荷では
 機能し、conformance の SchedulerPredicates 系のような重い並行を伴うテストで
 顕在化する。
+
+**天井を上げる作業 その1 — wasm-opt -Oz(実施済み、-11.2MB)**: apiserver の
+ビルドレシピは他 3 バイナリと違い wasm-opt を通していなかった(生の
+`go build` 出力 62.9MB をそのまま chunk していた)。他と同じ `-Oz` を
+Makefile に追加して **62.9MB→51.8MB(-17.8%)**。実 wrangler dev + 実
+client-go の go test 全通過で機能無傷を確認。コンパイル済み Module の
+ベースラインが ~18% 下がり、同じ 128MiB でより多くの並行インスタンスが乗る。
+ビルド時のみの変更でランタイム挙動は不変。
+
+**天井を上げる作業 その2 — フル client-go クライアントセットの刈り込み
+(未着手、推定さらに数 MB)**: attribution(wasm name section)で apiserver
+肥大の主因が判明した。`pkg/apiserver` は (1) `rbac.go` が
+`k8s.io/kubernetes/plugin/pkg/auth/authorizer/rbac/bootstrappolicy`(RBAC
+既定ロール)、(2) `serviceaccounttoken.go` が
+`k8s.io/kubernetes/pkg/serviceaccount`(SA トークン生成/検証)を import し、
+どちらも **`k8s.io/client-go/kubernetes` の集約 Clientset 型**(全 API 群の
+フィールドを持つ)を推移的に引き込む。結果、apiserver が提供しない
+flowcontrol(×4 版 1.3MB)・admissionregistration(×3 版 1.66MB)・
+resource/DRA(×4 版 2.5MB)・extensions/v1beta1・apps/networking/storage の
+beta 版などの型 + それぞれの typed client + applyconfigurations が全部リンク
+される(apiserver は**サーバー**でありこれらの client アクセサは一切呼ばない
+デッドコード)。controllers(kcm/gc/sched)はこれを go.wasm.mod の
+clientgo-lean-mirror(幅刈り込み)で解決済みだが、**apiserver は go.wasm.mod
+を使わず素の go.mod(フル client-go)でビルドしている**。修正案: apiserver も
+`-modfile=go.wasm.mod` でビルドし、bootstrappolicy/serviceaccount が
+幅刈り込み後の Clientset に対してコンパイル・動作するようにする(必要なら
+apiserver 用の width を lean mirror に追加)。腰を据えた作業。
