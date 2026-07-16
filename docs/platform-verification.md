@@ -3531,8 +3531,29 @@ wrangler dev + 実 client-go の go test 全通過で機能無傷を確認(刈�
 panic 無し)。wasm-opt と合わせて **62.9MB → 41.3MB(-34%)**、他バイナリ
 (kcm 42 / gc 41 / sched 45MB)と同水準、チャンクも 3→2 に減った。
 
-**結論**: apiserver DW のコンパイル済み Module ベースラインが 62.9→41.3MB
-(-34%)に下がり、同じ 128MiB でより多くの並行インスタンスが乗る。これで
-S24 の OOM 天井が実用上十分に上がったかは、監視付き本番 run 1 回で確認する
-(このサイズ削減はローカルの go test/vet で機能検証済み・コミット済みだが、
-128MiB 強制下での OOM 解消自体は本番でしか観測できない)。
+**天井を上げる作業の中間結果**: apiserver DW のコンパイル済み Module
+ベースラインが 62.9→41.3MB(-34%)に下がったが、**本番で実測したら OOM は
+減った(例外 41→29/45s)だけで解消せず、KCM の書き込みはまだ壊れ Pod が
+作られなかった**(2026-07-17)。per-request インスタンス化という**アーキ
+テクチャ**が根本問題で、サイズ削減だけでは足りない。
+
+**根本修正 — apiserver の resident 化(2026-07-17)**: apiserver を per-request
+(リクエスト毎に新規 Go インスタンス=新規線形メモリ)から **resident(isolate
+毎に 1 インスタンスが全リクエストを処理)** に変えた。1 線形メモリを Go GC が
+リクエスト間で回収するので、並行数によらずメモリが積み上がらない。並行
+リクエストは 1 インスタンス内の並行 goroutine で捌く(通常の Go http サーバと
+同じ)。実装:
+- `pkg/apiserver/cmd/apiserver-wasm/main.go` の main() を `workers.Serve`(1
+  dispatch で exit)から `ServeNonBlock + Ready + select{}`(park)へ。S19 の
+  「dispatch 2 で Go program exited」は resident **bootstrap** に exit する
+  Go main() を組み合わせた不整合が原因で、main() を park させれば解消(KCM/
+  gc/sched と同じ)。
+- **panic recovery ミドルウェア追加**(resident では 1 ハンドラの panic が
+  共有インスタンス全体を殺す、S19 警告。実 kube-apiserver も同じ filter を持つ)。
+- `loader/apiserver.ts` を resident bootstrap(pump window 15s)へ。apiserver は
+  バックグラウンド goroutine が無い(検証済み)ので pump は正当性には不要、
+  kubelet heartbeat 間の暖機のためだけ。アイドルで退避 → scale-to-zero 維持。
+ローカル検証: go test 全通過(実 wrangler dev + 実 client-go、dispatch 2+
+含む)、5 ラウンド持続の並行 20/20 全成功 + Deployment 10 replica が
+KCM→scheduler で 10/10 bind 収束、wedge/リーク/クラッシュ無し。**OOM 解消
+自体は 128MiB を強制する本番でしか観測できない** → 監視付き本番 run で確認。

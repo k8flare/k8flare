@@ -1,16 +1,28 @@
-// Bootstrap module sources for Loader dynamic workers hosting syumai/
-// workers Go WASM binaries. Two shapes, matching how the binary itself
-// behaves (S19 finding -- they are NOT interchangeable):
+// Bootstrap module source for Loader dynamic workers hosting syumai/
+// workers Go WASM binaries. All four binaries (apiserver, kcm, sched,
+// gc) now use the RESIDENT shape: instantiate once per isolate, the Go
+// program parks forever (select{}), and one instance serves every
+// dispatch over the isolate's lifetime. The Go side signals readiness
+// via `workers: { ready }` so the bootstrap knows the js.FuncOf exports
+// are installed before dispatching. The per-request shape the apiserver
+// used to run (fresh Go()+Instance per request) was retired 2026-07-17:
+// under concurrent controller load its stacked per-request linear
+// memories blew the 128MiB production isolate cap (S24), while the
+// resident instance's single GC'd heap does not. S19 had recorded that
+// the apiserver "dies on dispatch 2" under the resident shape -- that
+// was the resident BOOTSTRAP paired with a Go main() that still exited
+// after one dispatch (workers.Serve); the fix was to make main() park
+// (workers.ServeNonBlock + Ready + select{}) like the controllers, plus
+// per-request panic recovery so one handler panic can't take down the
+// shared instance (see pkg/apiserver/cmd/apiserver-wasm/main.go).
 //
-//  - resident (KCM): instantiate once per isolate; the Go program parks
-//    forever (select{}) and needs a bounded pump window per poke or its
-//    goroutines freeze when the dispatch response completes (S14).
-//    Trying the per-request shape would restart every informer per poke.
-//  - per-request (apiserver): syumai's generated worker.mjs contract --
-//    fresh Go()+Instance per request over the cached compiled Module;
-//    the Go program serves one request and exits. Trying the resident
-//    shape dies on dispatch 2 with "Go program has already exited"
-//    (observed live, spikes/s19-single-worker).
+// The pump window keeps a resident instance warm between dispatches:
+// KCM/gc/sched NEED it (their controllers run background goroutines that
+// must progress between pokes -- S14/S8, they freeze when the dispatch
+// response completes otherwise); the apiserver does NOT need it for
+// correctness (no background goroutines -- each request is fully handled
+// within its own dispatch's IoContext) and uses a shorter window purely
+// to stay warm across the kubelet's heartbeats (loader/apiserver.ts).
 
 const COMMON = `
 import "./wasm_exec.js";
@@ -52,39 +64,6 @@ export default {
     if (!bindingPromise) bindingPromise = instantiate(env, ctx);
     const binding = await bindingPromise;
     ctx.waitUntil(new Promise((resolve) => setTimeout(resolve, PUMP_WINDOW_MS)));
-    return binding.handleRequest(request);
-  },
-};
-`;
-}
-
-// makePerRequestBootstrapJS: fresh Go()+Instance per request. Every
-// concurrent request in this isolate instantiates its OWN
-// WebAssembly.Instance (its own Go linear memory) on top of the shared
-// 63MB compiled Module, whose code alone already claims a large share
-// of the 128MiB production isolate cap; a burst of concurrent requests
-// (KCM/scheduler informer LISTs, kubectl discovery fan-out) stacks
-// enough coexisting linear memories to blow it. Observed live against
-// the real deployment (wrangler tail, 2026-07-17, S24): 41 "Worker
-// exceeded memory limit" exceptions in 45s under real controller load.
-//
-// A concurrency cap here was tried and REVERTED (S24): bounding
-// in-flight instances did eliminate the OOM, but the queueing it added
-// pushed the kubelet's deadline-sensitive registration requests past
-// their deadline -- the kubelet canceled them, the node never went
-// Ready, and the cancellations cascaded into the apiserver's own
-// storageDo subrequests. Trading OOM for latency-induced cancellation
-// was a net loss. The real fixes raise the concurrency ceiling instead
-// of throttling it: shrink apiserver.wasm (63MB, the biggest binary) so
-// the compiled-module baseline leaves room for more concurrent
-// instances, and/or make the apiserver resident (one instance, one
-// linear memory, no per-request stacking). Both are larger efforts,
-// tracked in S24.
-export function makePerRequestBootstrapJS(): string {
-  return `${COMMON}
-export default {
-  async fetch(request, env, ctx) {
-    const binding = await instantiate(env, ctx);
     return binding.handleRequest(request);
   },
 };

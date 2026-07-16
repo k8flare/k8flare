@@ -1,7 +1,20 @@
 import type { Env } from "../env.ts";
 import { CLUSTER_HEADER } from "../entrypoints.ts";
-import { makePerRequestBootstrapJS } from "./bootstrap.ts";
+import { makeResidentBootstrapJS } from "./bootstrap.ts";
 import { assembleWasm, fetchWasmAsset, fetchWasmManifest, type WasmManifest } from "./chunks.ts";
+
+// The apiserver Go instance is now RESIDENT (one instance per isolate
+// serves every request; see pkg/apiserver/cmd/apiserver-wasm/main.go's
+// ServeNonBlock+park). The old per-request shape instantiated a fresh
+// ~40MB Go linear memory per concurrent request and stacked past the
+// 128MiB isolate cap under controller load (S24 OOM). The pump window
+// keeps the single resident instance warm between requests -- long
+// enough to bridge the kubelet's ~10s heartbeats so the hot path stays
+// warm, short enough that a truly idle cluster's apiserver isolate
+// evicts and scale-to-zero holds (cost invariant #1). It is NOT needed
+// for correctness (the apiserver has no cross-request background
+// goroutines), only for warmth.
+const APISERVER_PUMP_WINDOW_MS = 15000;
 
 // The Go apiserver as a Loader dynamic worker (S19 G3). Contract notes,
 // all verified live by spikes/s19-single-worker:
@@ -49,7 +62,7 @@ async function apiserverEntrypoint(env: Env): Promise<Fetcher> {
       compatibilityDate: "2026-07-01",
       mainModule: "index.js",
       modules: {
-        "index.js": makePerRequestBootstrapJS(),
+        "index.js": makeResidentBootstrapJS(APISERVER_PUMP_WINDOW_MS),
         "wasm_exec.js": wasmExec,
         "app.wasm": { wasm: wasm.buffer as ArrayBuffer },
       },
