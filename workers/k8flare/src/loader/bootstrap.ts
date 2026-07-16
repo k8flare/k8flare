@@ -58,12 +58,52 @@ export default {
 `;
 }
 
-export function makePerRequestBootstrapJS(): string {
+// makePerRequestBootstrapJS: fresh Go()+Instance per request. Because
+// every concurrent request in this isolate instantiates its OWN
+// WebAssembly.Instance (its own Go linear memory) ON TOP of the shared
+// compiled Module -- and the apiserver module is 63MB, so the compiled
+// code alone already claims a large share of the 128MiB production
+// isolate cap -- a burst of concurrent requests (kubectl discovery's
+// ~30-way fan-out, or the KCM/scheduler informers' LIST bursts) piles
+// up enough coexisting linear memories to blow the cap. Observed live
+// against the real deployment (wrangler tail, 2026-07-17): 41
+// "Worker exceeded memory limit" exceptions in 45s under real
+// controller load, which stalled KCM's writes so Deployments never
+// materialized their ReplicaSets/Pods -- while single-request wrangler
+// dev testing (which never enforces 128MiB) always passed.
+//
+// maxInFlight caps how many Go instances are live at once in THIS
+// isolate; excess requests queue on a FIFO. The cap runs inside the
+// isolate that actually OOMs, so it bounds that isolate's peak memory
+// no matter how many gateway isolates fan requests into it, and no
+// matter how many apiserver isolates workerd spins up (each enforces
+// its own cap). Requests are short (~12-24ms warm), so queueing adds
+// little latency; a stalled control plane is far worse than a few ms of
+// queue wait. Conservative default -- tune from a watched production
+// run (this is the S24 knob, docs/platform-verification.md).
+export function makePerRequestBootstrapJS(maxInFlight = 4): string {
   return `${COMMON}
+const MAX_INFLIGHT = ${maxInFlight};
+let inFlight = 0;
+const waiters = [];
+function acquire() {
+  if (inFlight < MAX_INFLIGHT) { inFlight++; return Promise.resolve(); }
+  return new Promise((resolve) => waiters.push(resolve));
+}
+function release() {
+  const next = waiters.shift();
+  if (next) next(); else inFlight--;
+}
+
 export default {
   async fetch(request, env, ctx) {
-    const binding = await instantiate(env, ctx);
-    return binding.handleRequest(request);
+    await acquire();
+    try {
+      const binding = await instantiate(env, ctx);
+      return await binding.handleRequest(request);
+    } finally {
+      release();
+    }
   },
 };
 `;

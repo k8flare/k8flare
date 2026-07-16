@@ -3438,3 +3438,51 @@ canary 要件も維持(50 Pod 作成 11s・orphan 完了 11s)。S22/S23 で疑�
 「wasm コンパイル」は誤りで、実体は**インスタンス化のスタンピード**だった
 (訂正として記録)。本番 Loader は単一イベントループを共有しないが、同じ
 スタンピードは実 CPU 課金を無駄に燃やすため、20/30 は本番にも正しい値。
+
+---
+
+## S24: apiserver DW の per-request インスタンス化が本番 128MiB isolate を超過(2026-07-17、実デプロイで実測)
+
+**症状**: 実デプロイ(k8flare.kooffice.workers.dev)に実ノードを join させ
+baseline conformance を回すと、`SchedulerPredicates` 系が Pod Pending の
+まま 2〜5 分でタイムアウト。当初スケジューラの問題に見えたが、`wrangler
+tail`(このセッションで初めて本番の実ログを取得)で真因が判明: 45 秒間に
+**`Worker exceeded memory limit` 例外が 41 件**。KCM は実際に動いていて
+ReplicaSet/Pod を作っていた(ログに `live-probe-<rs-hash>-<pod>` が見える)
+が、その **apiserver DW 呼び出し(RS 作成・status 更新・events 書き込み)が
+軒並みメモリ超過で落ち**、永続化されなかったため GET すると空に見えていた。
+
+**機構**: apiserver は per-request 契約(`pkg/cfruntime`.Serve が
+`<-dispatchDone` で 1 リクエスト処理後に main() 終了)。`bootstrap.ts` の
+`makePerRequestBootstrapJS` が **リクエスト毎に新規 `WebAssembly.Instance`
+(= 新規 Go 線形メモリ)を同一 isolate 内に生成**する。apiserver.wasm は
+62.9MB で 4 バイナリ中最大 —— **コンパイル済み Module(isolate 内で 1 回・
+全インスタンス共有)だけで 128MiB の大半を占有**し、残ヘッドルームに複数の
+並行 Go インスタンスの線形メモリが乗り切らない。KCM 15 informer + scheduler
++ kubelet + e2e の LIST バーストで並行数が跳ね、超過する。さらに
+`apiserverFetch` は GET/HEAD の 500 を最大 3 回リトライするため、OOM の 500
+がインスタンスを増やす**リトライストーム**として増幅していた(41 例外の一因)。
+watch は WatchHub DO 経由で apiserver DW を使わない(short な watch-open 時の
+1 往復のみ)ため、並行数の主因は短命 LIST/GET/POST バーストのみ。
+
+**なぜ今まで不可視だったか**: wrangler dev は 128MiB を強制しない(chunk
+assembly コメントが既に「wrangler dev never enforces」と明記)。go test も
+手動 curl も単発リクエストで、並行インスタンスが積み上がらない。**本番
+デプロイに実コントローラー負荷をかけて初めて顕在化する**、本番固有の症状。
+
+**一次修正(このコミット)**: OOM する isolate 自身(per-request
+bootstrap)に**並行インスタンス数の上限**(`maxInFlight`、FIFO キュー)を
+入れ、当該 isolate の peak メモリを境界化。どの gateway isolate 経由でも、
+workerd が apiserver isolate を何個立てても、各 isolate が自身の上限を守る。
+リクエストは短命(warm ~12-24ms)なのでキュー待ちのコストは小さく、制御
+プレーン停止よりはるかにマシ。ローカルでは正常収束が壊れないことのみ確認
+(OOM 防止自体は 128MiB を強制する本番でしか検証できない)。
+
+**残課題**: (a) `maxInFlight` の値は監視付き本番 run で実測チューニングが
+必要(デフォルト 4 は保守的な当て)。(b) 相補的なヘッドルーム拡大策として
+apiserver.wasm(62.9MB、最大)のサイズ削減 —— kcm/gc/sched でやった依存
+切断と同じ手法。コンパイル済み Module のベースラインを下げれば上限を安全に
+上げられる。(c) 根本的には apiserver を resident 化(1 インスタンス再利用)
+すれば並行×メモリ問題自体が消えるが、token rotation の memo(sync.OnceValue)
+と「dispatch 2 で Go program exited」という S19 スパイク結果の再調査が要る
+大きめの変更。
