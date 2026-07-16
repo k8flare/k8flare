@@ -58,52 +58,34 @@ export default {
 `;
 }
 
-// makePerRequestBootstrapJS: fresh Go()+Instance per request. Because
-// every concurrent request in this isolate instantiates its OWN
-// WebAssembly.Instance (its own Go linear memory) ON TOP of the shared
-// compiled Module -- and the apiserver module is 63MB, so the compiled
-// code alone already claims a large share of the 128MiB production
-// isolate cap -- a burst of concurrent requests (kubectl discovery's
-// ~30-way fan-out, or the KCM/scheduler informers' LIST bursts) piles
-// up enough coexisting linear memories to blow the cap. Observed live
-// against the real deployment (wrangler tail, 2026-07-17): 41
-// "Worker exceeded memory limit" exceptions in 45s under real
-// controller load, which stalled KCM's writes so Deployments never
-// materialized their ReplicaSets/Pods -- while single-request wrangler
-// dev testing (which never enforces 128MiB) always passed.
+// makePerRequestBootstrapJS: fresh Go()+Instance per request. Every
+// concurrent request in this isolate instantiates its OWN
+// WebAssembly.Instance (its own Go linear memory) on top of the shared
+// 63MB compiled Module, whose code alone already claims a large share
+// of the 128MiB production isolate cap; a burst of concurrent requests
+// (KCM/scheduler informer LISTs, kubectl discovery fan-out) stacks
+// enough coexisting linear memories to blow it. Observed live against
+// the real deployment (wrangler tail, 2026-07-17, S24): 41 "Worker
+// exceeded memory limit" exceptions in 45s under real controller load.
 //
-// maxInFlight caps how many Go instances are live at once in THIS
-// isolate; excess requests queue on a FIFO. The cap runs inside the
-// isolate that actually OOMs, so it bounds that isolate's peak memory
-// no matter how many gateway isolates fan requests into it, and no
-// matter how many apiserver isolates workerd spins up (each enforces
-// its own cap). Requests are short (~12-24ms warm), so queueing adds
-// little latency; a stalled control plane is far worse than a few ms of
-// queue wait. Conservative default -- tune from a watched production
-// run (this is the S24 knob, docs/platform-verification.md).
-export function makePerRequestBootstrapJS(maxInFlight = 4): string {
+// A concurrency cap here was tried and REVERTED (S24): bounding
+// in-flight instances did eliminate the OOM, but the queueing it added
+// pushed the kubelet's deadline-sensitive registration requests past
+// their deadline -- the kubelet canceled them, the node never went
+// Ready, and the cancellations cascaded into the apiserver's own
+// storageDo subrequests. Trading OOM for latency-induced cancellation
+// was a net loss. The real fixes raise the concurrency ceiling instead
+// of throttling it: shrink apiserver.wasm (63MB, the biggest binary) so
+// the compiled-module baseline leaves room for more concurrent
+// instances, and/or make the apiserver resident (one instance, one
+// linear memory, no per-request stacking). Both are larger efforts,
+// tracked in S24.
+export function makePerRequestBootstrapJS(): string {
   return `${COMMON}
-const MAX_INFLIGHT = ${maxInFlight};
-let inFlight = 0;
-const waiters = [];
-function acquire() {
-  if (inFlight < MAX_INFLIGHT) { inFlight++; return Promise.resolve(); }
-  return new Promise((resolve) => waiters.push(resolve));
-}
-function release() {
-  const next = waiters.shift();
-  if (next) next(); else inFlight--;
-}
-
 export default {
   async fetch(request, env, ctx) {
-    await acquire();
-    try {
-      const binding = await instantiate(env, ctx);
-      return await binding.handleRequest(request);
-    } finally {
-      release();
-    }
+    const binding = await instantiate(env, ctx);
+    return binding.handleRequest(request);
   },
 };
 `;

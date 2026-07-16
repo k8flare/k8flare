@@ -3470,19 +3470,33 @@ assembly コメントが既に「wrangler dev never enforces」と明記)。go t
 手動 curl も単発リクエストで、並行インスタンスが積み上がらない。**本番
 デプロイに実コントローラー負荷をかけて初めて顕在化する**、本番固有の症状。
 
-**一次修正(このコミット)**: OOM する isolate 自身(per-request
-bootstrap)に**並行インスタンス数の上限**(`maxInFlight`、FIFO キュー)を
-入れ、当該 isolate の peak メモリを境界化。どの gateway isolate 経由でも、
-workerd が apiserver isolate を何個立てても、各 isolate が自身の上限を守る。
-リクエストは短命(warm ~12-24ms)なのでキュー待ちのコストは小さく、制御
-プレーン停止よりはるかにマシ。ローカルでは正常収束が壊れないことのみ確認
-(OOM 防止自体は 128MiB を強制する本番でしか検証できない)。
+**試行して撤回した一次修正(並行上限)**: OOM する isolate 自身
+(per-request bootstrap)に並行インスタンス数の上限(FIFO キュー)を入れる
+案を実装・実デプロイして検証したが、**net で悪化したため撤回**した。上限は
+確かに OOM を消した(`wrangler tail` で memory 例外 41→0)が、**キュー滞留の
+レイテンシが kubelet のデッドライン制約付き登録リクエストをデッドライン超過
+させ、kubelet がキャンセル → ノードが永久に Ready にならず、そのキャンセルが
+apiserver 自身の storageDo サブリクエストにも連鎖**した(実デプロイで確認、
+2026-07-17: cap 無しならノードは ~40 秒で Ready、cap=4 も cap=10 も Ready に
+ならない。唯一の差分は cap)。OOM をレイテンシ起因のキャンセルに置き換えた
+だけ。並行を絞る方向は、デッドライン制約のある登録経路と両立しない。
 
-**残課題**: (a) `maxInFlight` の値は監視付き本番 run で実測チューニングが
-必要(デフォルト 4 は保守的な当て)。(b) 相補的なヘッドルーム拡大策として
-apiserver.wasm(62.9MB、最大)のサイズ削減 —— kcm/gc/sched でやった依存
-切断と同じ手法。コンパイル済み Module のベースラインを下げれば上限を安全に
-上げられる。(c) 根本的には apiserver を resident 化(1 インスタンス再利用)
-すれば並行×メモリ問題自体が消えるが、token rotation の memo(sync.OnceValue)
-と「dispatch 2 で Go program exited」という S19 スパイク結果の再調査が要る
-大きめの変更。
+**真の修正候補(並行を絞るのではなく天井を上げる方向)**:
+(a) **apiserver.wasm(62.9MB、4 バイナリ中最大)のサイズ削減** —— kcm/gc/
+sched でやった依存切断(cri-client / CEL 等)と同じ手法。コンパイル済み
+Module のベースラインを下げれば、同じ 128MiB でより多くの並行インスタンスが
+乗る。他 3 バイナリは 41〜45MB なので、apiserver も同水準まで削れれば OOM
+閾値が大きく上がる(場合によっては上限機構なしで足りる)。yield は未知だが
+確立した手法。(b) **apiserver の resident 化**(ServeNonBlock + park で 1
+インスタンス再利用): 並行×メモリ問題そのものが消える(1 線形メモリ)。ただし
+「dispatch 2 で Go program exited」という S19 スパイク結果の再調査、token
+rotation の memo(sync.OnceValue、per-request 前提)の見直し、S8 の IoContext
+制約(request を跨ぐ goroutine の凍結)の確認が要る大きめの変更。apiserver の
+ハンドラは request-scoped で跨ぎ goroutine を持たないため原理的には可能。
+どちらもこのセッションでは未着手 —— ユーザー判断待ち。
+
+**現状の deployed state**: 上記の撤回により、deployed Worker は cap 導入前と
+同じ(ノードは Ready 化し制御プレーンは機能するが、重い並行負荷では apiserver
+DW が 128MiB を超えて散発的に OOM する既知の天井が残る)。軽〜中負荷では
+機能し、conformance の SchedulerPredicates 系のような重い並行を伴うテストで
+顕在化する。
