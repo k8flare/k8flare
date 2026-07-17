@@ -3619,8 +3619,13 @@ storageDo を呼ぶため resident 下ではグローバル(request-1)バイン�
 本番検証(監視付き、Version ff7cc3d3): rm した clean 環境で Deployment →
 ReplicaSet → Pod → scheduler bind → tmpfs ノードの kubelet/containerd で
 **5/5 Pod Running**、新規 2 replica Deployment が **8 秒で 2/2 Running**、
-tail で**クロスリクエスト I/O 例外 0・メモリ例外 0**。default クラスタは
-私のノード込みでもアイドル ~0.7 req/s とほぼ静か(scale-to-zero 挙動の裏付け)。
+tail で**クロスリクエスト I/O 例外 0・メモリ例外 0**。この時点の default
+クラスタは**ノード稼働 + ワークロード収束済み**の状態で tail レートが低かった
+(~0.7 req/s、うち大半がノードの心拍)——これは「アクティブなクラスタの書き込み
+単価が低い」ことの実測であって、**true-idle(ノード無し)クラスタが常駐ゼロに
+パークする scale-to-zero そのものの実証ではない**(後日、収束不能ワークロードを
+残した状態では tail が ~4.5 req/s の churn を示した。上の「訂正 — stale read」を
+参照)。
 
 **別件の所見 — teardown 済みクラスタの残骸 `prod-smoke` の暴走(2026-07-17)**:
 tail に `/c/prod-smoke/` 宛の内部コントローラートラフィックが**無操作でも
