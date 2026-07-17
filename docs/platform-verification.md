@@ -3634,6 +3634,32 @@ informer を回し続けている疑い。管理 API の `DELETE /clusters/<id>`
 バグの可能性**。正常パス(default)は scale-to-zero を満たすので edge case だが、
 resident コントローラーの「バックエンド消失時の自己停止」は要追検討。
 
+**訂正 — 「アイドル静穏」判定は stale read に騙されていた(2026-07-17)**:
+generation デプロイ(99d1a763)後の idle 検証中、`GET` した resourceVersion が
+凍結(tailtest rv=7206・global rv=14603)していたため「アイドルで書き込み
+ゼロ=scale-to-zero 成立」と一旦判定した。**これは誤り**だった:`wrangler tail`
+(キャッシュ非経由の ground truth)で測ると、default クラスタは無操作でも
+**~4.5 req/s で書き込み継続**(0ノードで収束不能な Deployment の pod を KCM が
+作り続ける自己 poke ループ)。**API の読み取りが stale キャッシュから返ることが
+あり、「rv 凍結」はアイドルの証拠にならない** — 書き込みの有無は tail で確認
+すること(CLAUDE.md ローカル開発の落とし穴に既出の「読み取り専用ポーリングでは
+発火しない」の一般化)。教訓: **ノードをテアダウンする前に、そのノードに
+依存する Deployment を先に消す**(不要になった unconverged Deployment を残すと
+KCM が延々 churn する)。
+
+**未解決バグ — write-wedged Deployment(2026-07-17、要追調査)**: 上記の KCM
+hot-loop churn を長く受けた Deployment(tailtest)が、`GET` は rv=7206 を返す
+のに実 rv はより高い(`PUT` を rv=7206 で送ると 409「object has been modified」、
+`DELETE` は「store delete: conflicted 5 times」)状態に陥り、**delete も update も
+CAS が stale read を使うため永久に競合して API から一切変更できなくなった**
+(KCM を無効化して churn を止めても解消せず、rv 7206 固着のまま)。store.Delete は
+Update パス非経由なので generation 変更(Create/Update のみ)とは無関係で、
+同時期の他 Deployment(clean-run/concept-final)は正常に削除できた。読み取りの
+stale がどの層(Cluster DO の kine キャッシュか、hot-loop churn が生んだ kine
+ログの不整合か)で生じているかは未特定。**根本解消にはクラスタ teardown/リセット
+(fresh クラスタなら wedged オブジェクトは存在しない)が必要**。ホットループ churn
+がストレージの読み取り整合性を壊しうる、という点自体が調査対象。
+
 **generation 維持の実装と、それが露呈させた GC レイテンシの根本原因
 (2026-07-17、コミット 2e2fb3c)**: apiserver が `metadata.generation` を
 一切維持していなかった(3 つの advisory conformance spec に跨る Deployment
