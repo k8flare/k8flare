@@ -17,7 +17,10 @@ documentation or guesswork alone has a proven cost.
 
 - Each spike is defined in the v2 rewrite plan's Phase 1 as "throwaway code
   is fine, only the results need to be recorded." The verification code
-  itself doesn't need to stay in the repo.
+  itself doesn't need to stay in the repo — and as of 2026-07-17 it doesn't:
+  the `spikes/` tree was deleted from the working tree. Any `spikes/...`
+  path referenced in this repo's docs is retrievable from git history
+  (`git log --oneline -- spikes/`).
 - **Status** is one of: `not started` / `partially confirmed` / `verified`.
 - **Confirmed facts** must always carry a source (commit hash, official doc
   name, changelog date). If the source URL isn't recorded in this document,
