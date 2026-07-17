@@ -17,7 +17,10 @@ documentation or guesswork alone has a proven cost.
 
 - Each spike is defined in the v2 rewrite plan's Phase 1 as "throwaway code
   is fine, only the results need to be recorded." The verification code
-  itself doesn't need to stay in the repo.
+  itself doesn't need to stay in the repo — and as of 2026-07-17 it doesn't:
+  the `spikes/` tree was deleted from the working tree. Any `spikes/...`
+  path referenced in this repo's docs is retrievable from git history
+  (`git log --oneline -- spikes/`).
 - **Status** is one of: `not started` / `partially confirmed` / `verified`.
 - **Confirmed facts** must always carry a source (commit hash, official doc
   name, changelog date). If the source URL isn't recorded in this document,
@@ -3557,3 +3560,149 @@ panic 無し)。wasm-opt と合わせて **62.9MB → 41.3MB(-34%)**、他バイ
 含む)、5 ラウンド持続の並行 20/20 全成功 + Deployment 10 replica が
 KCM→scheduler で 10/10 bind 収束、wedge/リーク/クラッシュ無し。**OOM 解消
 自体は 128MiB を強制する本番でしか観測できない** → 監視付き本番 run で確認。
+
+**続報 — resident 化が顕在化させた二次バグ「クロスリクエスト I/O」とその修正
+(2026-07-17、コミット ae088de)**: resident 化で OOM(メモリ例外)は本番で
+0 に消えた(41→29→0、監視付きデプロイ版 9d7fcb44 でノード 10s で Ready)。
+だが**それでも Pod が作られない**状態が残り、`wrangler tail --format json` で
+本番ログを見ると別の例外が出ていた:
+
+```
+outcome=exception url=.../api/v1/namespaces/default/pods ep=k8flare
+EXC: Cannot perform I/O on behalf of a different request. I/O objects
+     (such as streams, request/response bodies, and others) created in
+     the context of one request cannot be accessed from a different request.
+```
+
+根本原因: `main.go` の `storageDo` が STORAGE Fetcher を `sync.OnceValue` で
+**最初のリクエストの env から一度だけ**取得してメモ化していた。per-request
+時代はメモが 1 リクエストしか生きなかったので健全だった(コード内コメントも
+「instantiated fresh per request なので memo は 1 リクエスト分」と明記して
+いた)が、resident 化でこの前提が崩れた。サービスバインディング Fetcher は
+**リクエストスコープの I/O オブジェクト**で、それを生成したリクエストの
+IoContext が終わった後に別リクエストの dispatch から使うと上記例外になる。
+apiserver bootstrap の pump window(15s)が切れた直後から、以降の全 kine
+書き込みが例外化し KCM の Pod 作成が停止していた。**wrangler dev はこの
+クロスリクエスト I/O 規則を強制しないので dev では不可視**、単発リクエストの
+go test でも起きない — 実負荷の本番でしか出ない(S24 の OOM と同じ「本番
+限定」性質)。
+
+なぜ resident コントローラー(kcm/gc/sched)は同じパターンで壊れないのか:
+コントローラーは outbound バインディングを**自分の resident リクエストの
+WaitUntil 内(=そのリクエストがまだ生きている文脈)で一度だけ捕捉**し、
+以降もその生きた文脈の中からしか呼ばない(`restconfig.go`、`ResidentService`
+が `run(ctx)` を request-1 の waitUntil 下で永久実行)。apiserver は逆に
+**各リクエスト自身の dispatch 内で storage I/O する**ので、インスタンス化
+リクエストのバインディングではなく「今処理中のリクエスト」のバインディングが
+要る。
+
+修正(グローバル差し替えは並行 dispatch で競合するので不可 → リクエストの
+`context.Context` で通す):
+- `bootstrap.ts` が `handleRequest(request, env)` として**そのリクエストの
+  env** を第2引数で渡す(instantiate 時の env は Go プログラム起動専用)。
+- `handler_js.go` の dispatch が `cloudflare.WithEnv` で env を**dispatch
+  ごとのクロージャ**(共有状態なし)から req.Context() に付与。
+- `cloudflare` に `WithEnv`/`EnvFromContext`/`BindingFromContext` を追加。
+- `storageDo` が STORAGE を `req.Context()` から解決しクライアントを毎回構築
+  (メモ化撤去)。`pkg/apiserver` は既に `r.Context()` を storage.go の
+  `NewRequestWithContext` まで通していたので storage 層は無改変。
+- 副次効果: 各 storage サブリクエストが発生元リクエストに帰属するので、
+  1 インボケーションに全クラスタの kine トラフィックが積み上がる
+  (Cloudflare の per-invocation サブリクエスト上限に抵触する)問題も回避。
+  コントローラー流の「request-1 の文脈を永久 waitUntil で開いたまま全 I/O を
+  そこに集約」案(B)を採らず本案(A)にした決め手がこれ。
+
+コントローラーは無影響(env 引数なしで handleRequest を呼び、ハンドラは
+env-from-context を読まない)。**既知の follow-up**: `getTokens` の
+provisioned クラスタ vault 読み取りは context 無しの http.NewRequest で
+storageDo を呼ぶため resident 下ではグローバル(request-1)バインディングに
+フォールバックする(同じクロスリクエスト I/O 危険)。default クラスタ経路
+(conformance 全部)は踏まないので未修正のまま記録。
+
+本番検証(監視付き、Version ff7cc3d3): rm した clean 環境で Deployment →
+ReplicaSet → Pod → scheduler bind → tmpfs ノードの kubelet/containerd で
+**5/5 Pod Running**、新規 2 replica Deployment が **8 秒で 2/2 Running**、
+tail で**クロスリクエスト I/O 例外 0・メモリ例外 0**。この時点の default
+クラスタは**ノード稼働 + ワークロード収束済み**の状態で tail レートが低かった
+(~0.7 req/s、うち大半がノードの心拍)——これは「アクティブなクラスタの書き込み
+単価が低い」ことの実測であって、**true-idle(ノード無し)クラスタが常駐ゼロに
+パークする scale-to-zero そのものの実証ではない**(後日、収束不能ワークロードを
+残した状態では tail が ~4.5 req/s の churn を示した。上の「訂正 — stale read」を
+参照)。
+
+**別件の所見 — teardown 済みクラスタの残骸 `prod-smoke` の暴走(2026-07-17)**:
+tail に `/c/prod-smoke/` 宛の内部コントローラートラフィックが**無操作でも
+~8 req/s 継続**していた(外部からは 404「cluster not found」)。Cluster DO は
+消えているのに Controllers DO のアラーム/resident KCM が死んだクラスタへの
+informer を回し続けている疑い。管理 API の `DELETE /clusters/<id>` teardown は
+本番 `ADMIN_TOKENS` 必須で、シークレットはユーザー管理(deny-list)のため
+セッション内では停止不能 → **ユーザーに要 teardown として申し送り**。コスト
+不変条件 #3(アラームは未処理の仕事がある時だけ再武装しアイドルで自己解除)
+の観点で、**「Cluster DO が消えたのに Controllers 側が park しない」park 漏れ
+バグの可能性**。正常パス(default)は scale-to-zero を満たすので edge case だが、
+resident コントローラーの「バックエンド消失時の自己停止」は要追検討。
+
+**訂正 — 「アイドル静穏」判定は stale read に騙されていた(2026-07-17)**:
+generation デプロイ(99d1a763)後の idle 検証中、`GET` した resourceVersion が
+凍結(tailtest rv=7206・global rv=14603)していたため「アイドルで書き込み
+ゼロ=scale-to-zero 成立」と一旦判定した。**これは誤り**だった:`wrangler tail`
+(キャッシュ非経由の ground truth)で測ると、default クラスタは無操作でも
+**~4.5 req/s で書き込み継続**(0ノードで収束不能な Deployment の pod を KCM が
+作り続ける自己 poke ループ)。**API の読み取りが stale キャッシュから返ることが
+あり、「rv 凍結」はアイドルの証拠にならない** — 書き込みの有無は tail で確認
+すること(CLAUDE.md ローカル開発の落とし穴に既出の「読み取り専用ポーリングでは
+発火しない」の一般化)。教訓: **ノードをテアダウンする前に、そのノードに
+依存する Deployment を先に消す**(不要になった unconverged Deployment を残すと
+KCM が延々 churn する)。
+
+**未解決バグ — write-wedged Deployment(2026-07-17、要追調査)**: 上記の KCM
+hot-loop churn を長く受けた Deployment(tailtest)が、`GET` は rv=7206 を返す
+のに実 rv はより高い(`PUT` を rv=7206 で送ると 409「object has been modified」、
+`DELETE` は「store delete: conflicted 5 times」)状態に陥り、**delete も update も
+CAS が stale read を使うため永久に競合して API から一切変更できなくなった**
+(KCM を無効化して churn を止めても解消せず、rv 7206 固着のまま)。store.Delete は
+Update パス非経由なので generation 変更(Create/Update のみ)とは無関係で、
+同時期の他 Deployment(clean-run/concept-final)は正常に削除できた。読み取りの
+stale がどの層(Cluster DO の kine キャッシュか、hot-loop churn が生んだ kine
+ログの不整合か)で生じているかは未特定。**根本解消にはクラスタ teardown/リセット
+(fresh クラスタなら wedged オブジェクトは存在しない)が必要**。ホットループ churn
+がストレージの読み取り整合性を壊しうる、という点自体が調査対象。
+
+**generation 維持の実装と、それが露呈させた GC レイテンシの根本原因
+(2026-07-17、コミット 2e2fb3c)**: apiserver が `metadata.generation` を
+一切維持していなかった(3 つの advisory conformance spec に跨る Deployment
+revision-tracking ギャップの根)。store の Create/Update に汎用実装を追加:
+status subresource を宣言するリソース(= k8s が generation を bump する
+spec/status 分割集合、かつ subresource.go の copyStatus が spec を保持する
+集合)に限定してゲートし、Create で 1、Update は「spec が実際に変わった時だけ
++1(サーバー管理、クライアント不可侵)」。spec 比較は `reflect.DeepEqual`
+ではなく `apiequality.Semantic.DeepEqual` — resource.Quantity や metav1.Time が
+no-op RMW で内部表現だけ変わる("1Gi"↔"1073741824")場合の spurious bump を
+防ぐ。status 書き込みは spec を保持するので equal ブランチに落ちて bump し
+ない(status 更新は generation を変えてはならない不変条件)。テスト
+`TestGenerationSemantics` は「bump してはいけない」2 ケース(status 書き込み・
+no-op RMW)を含めて検証、apiserver スイート全緑。
+
+副次効果 — この generation 修正が、既に inert だったコントローラー DO の
+アラーム収束予測子を設計通り復活させた: `hasUnconvergedWork()`
+(controllers/index.ts)は `status.observedGeneration < metadata.generation`
+で Deployment 収束を判定していたが、generation が常に 0 だったため今まで
+このチェックは常に false。generation が正しく動くことで、実 KCM が
+observedGeneration を進めるまでアラームが正しく armed に留まる。
+
+**GC eventual 削除の ~90-130s レイテンシの根本原因(未修正・要検討)**:
+サブエージェント判定で GC 回収が実 k8s(数秒)より大幅に遅い ~90-130s と
+実測された。原因は上記 `hasUnconvergedWork()` が **GC 待ちの orphan(削除
+された Deployment の dangling ownerRef を持つ RS/Pod)を「未処理の仕事」に
+数えない**こと。Background 削除後、orphan の RS は status==spec で「収束」
+扱いになり予測子が false を返す → `SAFETY_NET_INTERVAL_MS`(60s)のアラームが
+park → GC は削除 poke の pump window + 次の 60s tick でしか進めない(GC が
+1 件削除すると、その削除書き込みが pingControllers を再トリガして次をカスケード
+削除するが、最初の「グラフ再構築 → orphan 検知 → 初回削除」に窓が数回要る)。
+安全な改善案: 予測子に「GC 待ち orphan の存在」を足せばアラームが 15s cadence
+で armed のまま GC を早く完了させ、片付いたら park できる(コスト不変条件
+#1/#3 と整合 — orphan は真に unconverged な仕事)。ただし dangling 検知の
+list コスト、または gc-wasm のキュー深さを /healthz で露出するプラミングが
+必要で非自明。GC の非同期 eventual 自体はユーザー承認済み(CLAUDE.md「kubectl
+delete は非同期 eventually-consistent」)なので、コスト感応な予測子変更を
+急がず、根本原因のみ記録して据え置く。

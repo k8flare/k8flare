@@ -1191,6 +1191,114 @@ func TestWorkloadStatusSubresources(t *testing.T) {
 	})
 }
 
+// TestGenerationSemantics verifies server-managed metadata.generation for a
+// resource that tracks it (Deployment, which has a status subresource). The
+// happy path (spec change bumps) is trivial; the cases a careless impl gets
+// wrong -- and that k8s's generation-vs-observedGeneration revision tracking
+// depends on -- are the two that must NOT bump: a /status write and a no-op
+// read-modify-write. It also checks a resource without a status subresource
+// (ConfigMap) never gets a generation at all.
+func TestGenerationSemantics(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+	ns := "default"
+
+	client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: ns},
+	}, metav1.CreateOptions{})
+
+	name := "gen-test-dep"
+	_ = client.AppsV1().Deployments(ns).Delete(ctx, name, metav1.DeleteOptions{})
+	podTemplate := corev1.PodTemplateSpec{
+		ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "gen-test"}},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "busybox"}}},
+	}
+	replicas1 := int32(1)
+	dep, err := client.AppsV1().Deployments(ns).Create(ctx, &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas1,
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "gen-test"}},
+			Template: podTemplate,
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = client.AppsV1().Deployments(ns).Delete(context.Background(), name, metav1.DeleteOptions{})
+	})
+
+	// (a) create -> generation 1
+	if dep.Generation != 1 {
+		t.Fatalf("(a) create: generation = %d, want 1", dep.Generation)
+	}
+
+	// (b) spec change (replicas 1 -> 3) -> generation 2
+	replicas3 := int32(3)
+	dep.Spec.Replicas = &replicas3
+	dep, err = client.AppsV1().Deployments(ns).Update(ctx, dep, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("(b) spec Update: %v", err)
+	}
+	if dep.Generation != 2 {
+		t.Fatalf("(b) spec change: generation = %d, want 2", dep.Generation)
+	}
+
+	// (c) status subresource write -> generation MUST stay 2
+	dep.Status.Replicas = 3
+	dep.Status.ObservedGeneration = dep.Generation
+	dep, err = client.AppsV1().Deployments(ns).UpdateStatus(ctx, dep, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("(c) UpdateStatus: %v", err)
+	}
+	if dep.Generation != 2 {
+		t.Errorf("(c) status write must not bump generation: got %d, want 2", dep.Generation)
+	}
+
+	// (d) no-op read-modify-write (GET then Update unchanged) -> generation MUST stay 2.
+	// This is the case a naive reflect.DeepEqual spec compare fails on: the
+	// spec round-trips through the client (quantities/intstr/time re-encoded),
+	// so only Semantic.DeepEqual sees it as unchanged.
+	got, err := client.AppsV1().Deployments(ns).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("(d) Get: %v", err)
+	}
+	genBefore := got.Generation
+	got, err = client.AppsV1().Deployments(ns).Update(ctx, got, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("(d) no-op Update: %v", err)
+	}
+	if got.Generation != genBefore {
+		t.Errorf("(d) no-op read-modify-write must not bump generation: got %d, want %d", got.Generation, genBefore)
+	}
+
+	// A resource with no status subresource (ConfigMap) never gets a generation.
+	cmName := "gen-test-cm"
+	_ = client.CoreV1().ConfigMaps(ns).Delete(ctx, cmName, metav1.DeleteOptions{})
+	cm, err := client.CoreV1().ConfigMaps(ns).Create(ctx, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: ns},
+		Data:       map[string]string{"k": "v"},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("ConfigMap Create: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = client.CoreV1().ConfigMaps(ns).Delete(context.Background(), cmName, metav1.DeleteOptions{})
+	})
+	if cm.Generation != 0 {
+		t.Errorf("ConfigMap (no status subresource) must not get a generation: got %d, want 0", cm.Generation)
+	}
+	cm.Data["k"] = "v2"
+	cm, err = client.CoreV1().ConfigMaps(ns).Update(ctx, cm, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("ConfigMap Update: %v", err)
+	}
+	if cm.Generation != 0 {
+		t.Errorf("ConfigMap update must not set a generation: got %d, want 0", cm.Generation)
+	}
+}
+
 // TestScaleSubresource exercises `kubectl scale --replicas=N` against every
 // resource apidef.Table declares a "scale" subresource for, via the real
 // typed GetScale/UpdateScale client-go calls (the same ones `kubectl scale`

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"syscall/js"
+
+	"github.com/k8flare/k8flare/pkg/cfruntime/cloudflare"
 )
 
 var httpHandler http.Handler
@@ -19,6 +21,20 @@ func init() {
 	var handleRequestFn js.Func
 	handleRequestFn = js.FuncOf(func(this js.Value, args []js.Value) any {
 		reqObj := args[0]
+		// The JS bootstrap forwards this request's env as a second arg for
+		// resident binaries (loader/bootstrap.ts). Threading it per request
+		// -- instead of relying on the module-global env from Go.run time --
+		// lets a resident handler resolve request-scoped bindings, which a
+		// long-lived instance must do or it reuses the instantiating
+		// request's Fetcher and hits "Cannot perform I/O on behalf of a
+		// different request" (S24). Absent (controllers' pokes pass only the
+		// request), env stays undefined and dispatch leaves the context
+		// alone.
+		var env js.Value
+		hasEnv := len(args) > 1 && !args[1].IsUndefined() && !args[1].IsNull()
+		if hasEnv {
+			env = args[1]
+		}
 		var executor js.Func
 		executor = js.FuncOf(func(_ js.Value, promiseArgs []js.Value) any {
 			defer executor.Release()
@@ -46,7 +62,7 @@ func init() {
 				// boundary, which the JS spec guarantees fully drains the
 				// microtask queue first -- verified fixed live.
 				defer signalDispatchDone()
-				respObj, err := dispatch(reqObj)
+				respObj, err := dispatch(reqObj, env, hasEnv)
 				if err != nil {
 					reject.Invoke(js.Global().Get("Error").New(err.Error()))
 					yieldToEventLoop()
@@ -107,7 +123,7 @@ func yieldToEventLoop() {
 // would matter (watch) is a stub that returns immediately -- real watch
 // streaming happens over WebSocket in TypeScript, never through this Go
 // WASM entrypoint.
-func dispatch(reqObj js.Value) (js.Value, error) {
+func dispatch(reqObj js.Value, env js.Value, hasEnv bool) (js.Value, error) {
 	if httpHandler == nil {
 		return js.Value{}, fmt.Errorf("workers: Serve/ResidentService must be called before a request is dispatched")
 	}
@@ -115,6 +131,9 @@ func dispatch(reqObj js.Value) (js.Value, error) {
 	req, err := requestFromJS(reqObj)
 	if err != nil {
 		return js.Value{}, fmt.Errorf("workers: decode request: %w", err)
+	}
+	if hasEnv {
+		req = req.WithContext(cloudflare.WithEnv(req.Context(), env))
 	}
 
 	rec := &responseRecorder{header: make(http.Header), status: http.StatusOK}
