@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
@@ -16,6 +18,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/apiserver/pkg/storage/names"
+
+	"github.com/k8flare/k8flare/pkg/apiserver/apidef"
 )
 
 // ResourceStore handles CRUD for a single resource type (e.g. configmaps).
@@ -117,6 +121,34 @@ func getObjectMeta(obj runtime.Object) *metav1.ObjectMeta {
 		return nil
 	}
 	return accessor.GetObjectMeta().(*metav1.ObjectMeta)
+}
+
+// specForGeneration returns obj's top-level Spec field and true when this
+// resource is one k8flare maintains metadata.generation for. The gate is
+// "declares a status subresource" (apidef), not "has a Spec field via
+// reflection": it's the exact spec/status-split set k8s bumps generation
+// for, it matches precisely where the status subresource handler preserves
+// spec (subresource.go's copyStatus), and it leaves every resource without
+// a status subresource (ConfigMap, Secret, Endpoints, ...) with zero
+// behavior change. k8s controllers compare generation against
+// status.observedGeneration for revision tracking -- real KCM's Deployment
+// controller does, which is why the value must actually move.
+func (rs *ResourceStore) specForGeneration(obj runtime.Object) (reflect.Value, bool) {
+	if !apidef.HasSubresource(rs.resource, "status") {
+		return reflect.Value{}, false
+	}
+	v := reflect.ValueOf(obj)
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return reflect.Value{}, false
+	}
+	f := v.FieldByName("Spec")
+	if !f.IsValid() {
+		return reflect.Value{}, false
+	}
+	return f, true
 }
 
 // setResourceVersion sets the ResourceVersion field on the object to the given revision.
@@ -391,6 +423,12 @@ func (rs *ResourceStore) Create(ctx context.Context, namespace string, obj runti
 	if rs.namespaced {
 		meta.Namespace = namespace
 	}
+	// metadata.generation is server-managed and starts at 1 for resources
+	// that track it (those with a status subresource). Left unset (0) for
+	// the rest, matching k8s.
+	if _, ok := rs.specForGeneration(obj); ok {
+		meta.Generation = 1
+	}
 	// Clear resource version before encoding for storage
 	meta.ResourceVersion = ""
 
@@ -458,6 +496,25 @@ func (rs *ResourceStore) Update(ctx context.Context, namespace, name string, obj
 		meta.CreationTimestamp = oldMeta.CreationTimestamp
 	} else if !meta.CreationTimestamp.Equal(&oldMeta.CreationTimestamp) {
 		return nil, &StatusError{Status: immutableFieldStatus(rs.resource, name, "creationTimestamp")}
+	}
+
+	// metadata.generation is server-managed, not client-settable: carry the
+	// stored value forward and bump it only when the spec actually changed.
+	// Semantic.DeepEqual (not reflect.DeepEqual) so a resource.Quantity or
+	// metav1.Time that round-trips to a different internal representation
+	// ("1Gi" <-> "1073741824") on a no-op read-modify-write does not
+	// spuriously bump. The status subresource preserves spec byte-for-byte
+	// (subresource.go's copyStatus), so a /status write lands in the equal
+	// branch and never bumps -- the invariant a status update must not
+	// change generation. A pre-existing generation-0 object stays 0 until a
+	// real spec change first moves it to 1.
+	if newSpec, ok := rs.specForGeneration(obj); ok {
+		if oldSpec, oldOk := rs.specForGeneration(oldObj); oldOk &&
+			apiequality.Semantic.DeepEqual(oldSpec.Interface(), newSpec.Interface()) {
+			meta.Generation = oldMeta.Generation
+		} else {
+			meta.Generation = oldMeta.Generation + 1
+		}
 	}
 
 	var currentRevision int64
