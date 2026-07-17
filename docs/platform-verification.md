@@ -3633,3 +3633,42 @@ informer を回し続けている疑い。管理 API の `DELETE /clusters/<id>`
 の観点で、**「Cluster DO が消えたのに Controllers 側が park しない」park 漏れ
 バグの可能性**。正常パス(default)は scale-to-zero を満たすので edge case だが、
 resident コントローラーの「バックエンド消失時の自己停止」は要追検討。
+
+**generation 維持の実装と、それが露呈させた GC レイテンシの根本原因
+(2026-07-17、コミット 2e2fb3c)**: apiserver が `metadata.generation` を
+一切維持していなかった(3 つの advisory conformance spec に跨る Deployment
+revision-tracking ギャップの根)。store の Create/Update に汎用実装を追加:
+status subresource を宣言するリソース(= k8s が generation を bump する
+spec/status 分割集合、かつ subresource.go の copyStatus が spec を保持する
+集合)に限定してゲートし、Create で 1、Update は「spec が実際に変わった時だけ
++1(サーバー管理、クライアント不可侵)」。spec 比較は `reflect.DeepEqual`
+ではなく `apiequality.Semantic.DeepEqual` — resource.Quantity や metav1.Time が
+no-op RMW で内部表現だけ変わる("1Gi"↔"1073741824")場合の spurious bump を
+防ぐ。status 書き込みは spec を保持するので equal ブランチに落ちて bump し
+ない(status 更新は generation を変えてはならない不変条件)。テスト
+`TestGenerationSemantics` は「bump してはいけない」2 ケース(status 書き込み・
+no-op RMW)を含めて検証、apiserver スイート全緑。
+
+副次効果 — この generation 修正が、既に inert だったコントローラー DO の
+アラーム収束予測子を設計通り復活させた: `hasUnconvergedWork()`
+(controllers/index.ts)は `status.observedGeneration < metadata.generation`
+で Deployment 収束を判定していたが、generation が常に 0 だったため今まで
+このチェックは常に false。generation が正しく動くことで、実 KCM が
+observedGeneration を進めるまでアラームが正しく armed に留まる。
+
+**GC eventual 削除の ~90-130s レイテンシの根本原因(未修正・要検討)**:
+サブエージェント判定で GC 回収が実 k8s(数秒)より大幅に遅い ~90-130s と
+実測された。原因は上記 `hasUnconvergedWork()` が **GC 待ちの orphan(削除
+された Deployment の dangling ownerRef を持つ RS/Pod)を「未処理の仕事」に
+数えない**こと。Background 削除後、orphan の RS は status==spec で「収束」
+扱いになり予測子が false を返す → `SAFETY_NET_INTERVAL_MS`(60s)のアラームが
+park → GC は削除 poke の pump window + 次の 60s tick でしか進めない(GC が
+1 件削除すると、その削除書き込みが pingControllers を再トリガして次をカスケード
+削除するが、最初の「グラフ再構築 → orphan 検知 → 初回削除」に窓が数回要る)。
+安全な改善案: 予測子に「GC 待ち orphan の存在」を足せばアラームが 15s cadence
+で armed のまま GC を早く完了させ、片付いたら park できる(コスト不変条件
+#1/#3 と整合 — orphan は真に unconverged な仕事)。ただし dangling 検知の
+list コスト、または gc-wasm のキュー深さを /healthz で露出するプラミングが
+必要で非自明。GC の非同期 eventual 自体はユーザー承認済み(CLAUDE.md「kubectl
+delete は非同期 eventually-consistent」)なので、コスト感応な予測子変更を
+急がず、根本原因のみ記録して据え置く。
