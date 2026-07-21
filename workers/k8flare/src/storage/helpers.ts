@@ -1,17 +1,3 @@
-/** Decode a kine value (base64 string or Uint8Array) to a UTF-8 string. */
-export function decodeKineValue(v: string | ArrayBuffer | Uint8Array): string {
-  if (typeof v === "string") return atob(v);
-  return new TextDecoder().decode(new Uint8Array(v));
-}
-
-/**
- * Escape special characters for use in SQL LIKE patterns with ESCAPE '\'.
- * Characters %, _, and \ are prefixed with a backslash so they match literally.
- */
-export function escapeLike(str: string): string {
-  return str.replace(/[\\%_]/g, (ch) => "\\" + ch);
-}
-
 /**
  * Compute the exclusive upper bound for a prefix range query.
  * For "/registry/pods/", returns "/registry/pods0" (0x30 = '/' + 1).

@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"syscall/js"
 
 	"github.com/k8flare/k8flare/pkg/cfruntime/cloudflare"
@@ -40,28 +39,21 @@ func init() {
 			defer executor.Release()
 			resolve, reject := promiseArgs[0], promiseArgs[1]
 			go func() {
-				// signalDispatchDone must fire only after JS has actually
-				// finished delivering the resolved/rejected value to
-				// whoever is awaiting this promise (bootstrap.ts's `return
-				// binding.handleRequest(request)`, in turn awaited by
-				// apiserver.ts's `ep.fetch(...)`) -- Serve() blocks main()
-				// on dispatchDone closing, and once main() returns, Go's
-				// runtime treats this WASM instance as exited. resolve/
-				// reject.Invoke only *schedules* that delivery as a
-				// microtask; it does not run it synchronously, so calling
-				// signalDispatchDone right after Invoke returns races the
-				// still-pending continuation and intermittently (deterministically
-				// for a fast/synchronous handler with nothing else to
-				// interleave against) tears the instance down before the
-				// continuation runs -- observed live as a JS-side "Cannot
-				// read properties of undefined (reading 'exports')" crash
-				// on every retry, 100% reproducible for a zero-I/O handler
-				// like GET /version, absent for a handler that awaits real
-				// I/O (which incidentally gives the microtask queue time to
-				// drain first). yieldToEventLoop forces a macrotask
-				// boundary, which the JS spec guarantees fully drains the
-				// microtask queue first -- verified fixed live.
-				defer signalDispatchDone()
+				// This goroutine must not let the instance be considered
+				// done until JS has actually finished delivering the
+				// resolved/rejected value to whoever is awaiting this
+				// promise (bootstrap.ts's `return binding.handleRequest(
+				// request)`, in turn awaited by apiserver.ts's
+				// `ep.fetch(...)`). resolve/reject.Invoke only *schedules*
+				// that delivery as a microtask; it does not run it
+				// synchronously, so returning right after Invoke races the
+				// still-pending continuation -- observed live (in the old
+				// per-request shape) as a JS-side "Cannot read properties
+				// of undefined (reading 'exports')" crash, 100%
+				// reproducible for a zero-I/O handler like GET /version.
+				// yieldToEventLoop forces a macrotask boundary, which the
+				// JS spec guarantees fully drains the microtask queue
+				// first -- verified fixed live.
 				respObj, err := dispatch(reqObj, env, hasEnv)
 				if err != nil {
 					reject.Invoke(js.Global().Get("Error").New(err.Error()))
@@ -76,23 +68,6 @@ func init() {
 		return js.Global().Get("Promise").New(executor)
 	})
 	binding.Set("handleRequest", handleRequestFn)
-}
-
-var (
-	dispatchDone     = make(chan struct{})
-	dispatchDoneOnce sync.Once
-)
-
-// signalDispatchDone marks one dispatch complete. Guarded by sync.Once
-// because dispatch is shared between the per-request shape (Serve, which
-// awaits this exactly once per WASM instance) and the resident shape
-// (ResidentService, which never reads it but still runs dispatch again on
-// every pump-window poke against the same instance) -- closing an
-// already-closed channel panics, and previously did exactly that in the
-// resident shape before an equivalent guard was added (S8 finding,
-// docs/platform-verification.md).
-func signalDispatchDone() {
-	dispatchDoneOnce.Do(func() { close(dispatchDone) })
 }
 
 // yieldToEventLoop blocks the calling goroutine until a fresh JS
@@ -272,21 +247,11 @@ func awaitPromise(promise js.Value) (js.Value, error) {
 	}
 }
 
-// Serve registers handler and blocks until the current dispatch has been
-// fully resolved back to JS. Used by the per-request execution shape
-// (pkg/apiserver/cmd/apiserver-wasm: a fresh Go program instance per
-// request, see its own doc comment) so main() doesn't return before its
-// one response has actually been handed off.
-func Serve(handler http.Handler) {
-	ServeNonBlock(handler)
-	Ready()
-	<-dispatchDone
-}
-
 // ServeNonBlock registers handler to serve every dispatched request but
-// does not block or signal readiness -- pair with Ready(). Used by the
-// resident execution shape (ResidentService: one long-lived instance
-// dispatches many requests over its lifetime).
+// does not block or signal readiness -- pair with Ready(). Both execution
+// shapes (the resident apiserver's parked main() and ResidentService)
+// use this; the old blocking Serve() went away with the per-request
+// shape (S24).
 func ServeNonBlock(handler http.Handler) {
 	if handler == nil {
 		handler = http.DefaultServeMux

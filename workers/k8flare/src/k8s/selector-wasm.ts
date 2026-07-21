@@ -41,7 +41,7 @@ function ensureBooted(): SelectorExports {
     // the time run() yields (S22). The promise only settles if the Go
     // runtime dies -- surface that so the next call re-instantiates.
     void go.run(instance).catch((e) => {
-      console.log(`selector-wasm: Go runtime exited: ${e}`);
+      console.error(`selector-wasm: Go runtime exited: ${e}`);
       booted = false;
     });
     booted = true;

@@ -1,6 +1,6 @@
-// Thin REST client for pkg/apiserver, used by virtualnode.ts/podcontainer.ts
-// to register the virtual Node, renew its Lease, and read/write Pods bound to
-// it. Mirrors pkg/cacert/flannel.go's getNodePodCIDR pattern (plain fetch +
+// Thin REST client for pkg/apiserver, used by the nodes subtree to read
+// Nodes/Pods (NodeVM scheduling, pod proxy target resolution).
+// Mirrors pkg/cacert/flannel.go's getNodePodCIDR pattern (plain fetch +
 // Bearer token + JSON decode) rather than pulling in a generated client --
 // workers/nodes is a TypeScript Worker, so there is no client-go available,
 // and the REST surface it needs is small (a handful of fixed paths).
@@ -51,13 +51,6 @@ export interface NodeObject {
     addresses?: Array<{ type: string; address: string }>;
     nodeInfo?: Record<string, string>;
   };
-}
-
-export interface LeaseObject {
-  apiVersion: "coordination.k8s.io/v1";
-  kind: "Lease";
-  metadata: { name: string };
-  spec: { holderIdentity?: string; leaseDurationSeconds?: number; renewTime?: string };
 }
 
 export interface PodObject {
@@ -121,141 +114,6 @@ export async function getNode(env: Env, name: string): Promise<NodeObject | null
   if (resp.status === 404) return null;
   if (!resp.ok) throw new Error(`getNode ${name}: ${resp.status} ${await resp.text()}`);
   return resp.json();
-}
-
-/** POST /api/v1/nodes. Ignores 409 (already exists) -- idempotent create, same shape as pkg/apiserver/bootstrap.go's BootstrapCluster. */
-export async function createNode(env: Env, node: NodeObject): Promise<void> {
-  const resp = await apiFetch(env, "/api/v1/nodes", { method: "POST", body: JSON.stringify(node) });
-  if (!resp.ok && resp.status !== 409) {
-    throw new Error(`createNode ${node.metadata.name}: ${resp.status} ${await resp.text()}`);
-  }
-}
-
-/** PUT /api/v1/nodes/{name}/status. */
-export async function updateNodeStatus(env: Env, node: NodeObject): Promise<void> {
-  const resp = await apiFetch(env, `/api/v1/nodes/${node.metadata.name}/status`, {
-    method: "PUT",
-    body: JSON.stringify(node),
-  });
-  if (!resp.ok)
-    throw new Error(`updateNodeStatus ${node.metadata.name}: ${resp.status} ${await resp.text()}`);
-}
-
-const LEASE_NS = "kube-node-lease";
-
-// coordinationv1.LeaseSpec.RenewTime is a *metav1.MicroTime, whose
-// UnmarshalJSON requires exactly microsecond (6-digit) fractional-second
-// precision (Go's fixed-width time.RFC3339Micro layout) -- unlike
-// metav1.Time (used for every other timestamp this file sends, e.g. Node/Pod
-// .status.conditions), which parses any valid RFC3339 string regardless of
-// fractional digit count. JavaScript's `Date.toISOString()` only produces
-// millisecond (3-digit) precision, so passing it straight through fails
-// server-side with "cannot parse \".839Z\" as \".000000\"" -- found by
-// actually running this against wrangler dev (CLAUDE.md rule 2: this was NOT
-// caught by reading either side's code first), not a hypothetical. Padding
-// with 3 zeros produces a valid 6-digit fraction.
-function toMicroTime(date: Date): string {
-  return date.toISOString().replace("Z", "000Z");
-}
-
-/** GET .../namespaces/kube-node-lease/leases/{name}. Returns null on 404. */
-export async function getLease(env: Env, name: string): Promise<LeaseObject | null> {
-  const resp = await apiFetch(
-    env,
-    `/apis/coordination.k8s.io/v1/namespaces/${LEASE_NS}/leases/${name}`,
-  );
-  if (resp.status === 404) return null;
-  if (!resp.ok) throw new Error(`getLease ${name}: ${resp.status} ${await resp.text()}`);
-  return resp.json();
-}
-
-/** POST .../leases (create). Ignores 409 -- caller falls back to renewLease. */
-export async function createLease(env: Env, name: string, renewTime: Date): Promise<void> {
-  const lease: LeaseObject = {
-    apiVersion: "coordination.k8s.io/v1",
-    kind: "Lease",
-    metadata: { name },
-    spec: {
-      holderIdentity: name,
-      leaseDurationSeconds: NODE_LEASE_DURATION_SECONDS,
-      renewTime: toMicroTime(renewTime),
-    },
-  };
-  const resp = await apiFetch(env, `/apis/coordination.k8s.io/v1/namespaces/${LEASE_NS}/leases`, {
-    method: "POST",
-    body: JSON.stringify(lease),
-  });
-  if (!resp.ok && resp.status !== 409) {
-    throw new Error(`createLease ${name}: ${resp.status} ${await resp.text()}`);
-  }
-}
-
-/** PUT .../leases/{name}: whole-object renew (matches nodelifecycle_test.go's mustCreateLease shape). */
-export async function renewLease(env: Env, name: string, renewTime: Date): Promise<void> {
-  const lease: LeaseObject = {
-    apiVersion: "coordination.k8s.io/v1",
-    kind: "Lease",
-    metadata: { name },
-    spec: {
-      holderIdentity: name,
-      leaseDurationSeconds: NODE_LEASE_DURATION_SECONDS,
-      renewTime: toMicroTime(renewTime),
-    },
-  };
-  const resp = await apiFetch(
-    env,
-    `/apis/coordination.k8s.io/v1/namespaces/${LEASE_NS}/leases/${name}`,
-    {
-      method: "PUT",
-      body: JSON.stringify(lease),
-    },
-  );
-  if (!resp.ok) throw new Error(`renewLease ${name}: ${resp.status} ${await resp.text()}`);
-}
-
-// Matches real kubelet's default (pkg/kubelet/kubelet.go's
-// NodeLeaseDurationSeconds default = 40s, renew every 1/4 of that = 10s --
-// see nodeLeaseRenewIntervalFraction). Comfortably under
-// pkg/apiserver/nodelifecycle.go's real-upstream-sourced
-// NodeMonitorGracePeriod (measured 50s), same margin a real kubelet gets.
-export const NODE_LEASE_DURATION_SECONDS = 40;
-export const NODE_LEASE_RENEW_INTERVAL_MS = 10_000;
-
-/** GET /api/v1/pods?fieldSelector=spec.nodeName=<name> (all namespaces -- pkg/apiserver/store.go supports spec.nodeName as a real field selector). */
-export async function listPodsForNode(env: Env, nodeName: string): Promise<PodObject[]> {
-  const resp = await apiFetch(
-    env,
-    `/api/v1/pods?fieldSelector=${encodeURIComponent(`spec.nodeName=${nodeName}`)}`,
-  );
-  if (!resp.ok) throw new Error(`listPodsForNode ${nodeName}: ${resp.status} ${await resp.text()}`);
-  const list: PodList = await resp.json();
-  return list.items ?? [];
-}
-
-/** PUT /api/v1/namespaces/{ns}/pods/{name}/status. */
-export async function updatePodStatus(env: Env, pod: PodObject): Promise<void> {
-  const resp = await apiFetch(
-    env,
-    `/api/v1/namespaces/${pod.metadata.namespace}/pods/${pod.metadata.name}/status`,
-    {
-      method: "PUT",
-      body: JSON.stringify(pod),
-    },
-  );
-  if (!resp.ok)
-    throw new Error(
-      `updatePodStatus ${pod.metadata.namespace}/${pod.metadata.name}: ${resp.status} ${await resp.text()}`,
-    );
-}
-
-/** DELETE /api/v1/namespaces/{ns}/pods/{name}. Ignores 404 (already gone). */
-export async function deletePod(env: Env, namespace: string, name: string): Promise<void> {
-  const resp = await apiFetch(env, `/api/v1/namespaces/${namespace}/pods/${name}`, {
-    method: "DELETE",
-  });
-  if (!resp.ok && resp.status !== 404) {
-    throw new Error(`deletePod ${namespace}/${name}: ${resp.status} ${await resp.text()}`);
-  }
 }
 
 // The static marker pkg/apiserver/computeclass.go's MutatePodForComputeClass

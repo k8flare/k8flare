@@ -262,7 +262,6 @@ func finalizeDeleteWithOrphanSweep(ctx context.Context, rs *ResourceStore, names
 	return sweepOrphanStragglers(ctx, namespacedStores, namespace, string(m.UID))
 }
 
-
 // RejectCreateWithTerminatingController blocks creating a namespaced
 // object whose controller ownerReference points at an owner that is
 // currently terminating (deletionTimestamp set). Upstream has no such

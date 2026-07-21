@@ -205,9 +205,7 @@ export class Controllers {
     const worker = this.env.LOADER.get(
       `${name}:${doName}@${manifest.sha256}#${tokenTag}`,
       async () => {
-        console.log(`controllers: ${name} factory: assembling chunks`);
         const wasm = await assembleWasm(this.env.ASSETS, manifest);
-        console.log(`controllers: ${name} chunks assembled (${wasm.byteLength} bytes)`);
         const wasmExec = await fetchWasmAsset(this.env.ASSETS, "wasm_exec.js").then((r) =>
           r.text(),
         );
@@ -233,7 +231,6 @@ export class Controllers {
         };
       },
     );
-    console.log(`controllers: ${name} LOADER.get returned (factory may still be pending)`);
     const entrypoint = worker.getEntrypoint();
     // Force the factory to actually run now (getEntrypoint alone is lazy)
     // and prove the dynamic worker is dispatchable before declaring it

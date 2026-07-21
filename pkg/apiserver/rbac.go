@@ -59,7 +59,7 @@ type rbacPolicy struct {
 }
 
 var (
-	rbacBootstrapOnce                sync.Once
+	rbacBootstrapOnce            sync.Once
 	bootstrapClusterRoles        map[string]*rbacv1.ClusterRole
 	bootstrapClusterRoleBindings []*rbacv1.ClusterRoleBinding
 	bootstrapNamespaceRoles      map[string]map[string]*rbacv1.Role

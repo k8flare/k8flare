@@ -140,18 +140,8 @@ func Encode(obj runtime.Object) ([]byte, error) {
 	return runtime.Encode(jsonSerializer, obj)
 }
 
-// Decode deserializes JSON bytes into a runtime.Object.
-// If gvk is nil, the type is inferred from the JSON payload.
-func Decode(data []byte, gvk *schema.GroupVersionKind) (runtime.Object, error) {
-	obj, _, err := jsonSerializer.Decode(data, gvk, nil)
-	if err != nil {
-		return nil, fmt.Errorf("decode: %w", err)
-	}
-	return obj, nil
-}
-
-// DecodeStrict deserializes JSON bytes into a runtime.Object the same way
-// Decode does, but additionally reports every unknown or duplicate field
+// DecodeStrict deserializes JSON bytes into a runtime.Object, and
+// additionally reports every unknown or duplicate field
 // found (fieldvalidation.go's `?fieldValidation=Strict`/`Warn` support). obj
 // is still populated even when strictErrs is non-empty -- matching
 // strictJSONSerializer's own contract (see its doc comment) -- callers

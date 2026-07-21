@@ -32,7 +32,7 @@ type ServerConfig struct {
 // and one auth+authz-wrapped route per GroupVersion in apidef.Table.
 // This is every piece of wiring a *-wasm entrypoint's main() used to do
 // by hand; entrypoints now only need to supply the small ServerConfig
-// above and call workers.Serve on the result.
+// above and call workers.ServeNonBlock on the result.
 func NewServer(cfg ServerConfig) *http.ServeMux {
 	mux := http.NewServeMux()
 

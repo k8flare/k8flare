@@ -23,20 +23,24 @@ ASSETS := workers/k8flare/assets/wasm
 BUILD := .build/wasm
 CAP := 67108864 # the Worker Loader's 64MiB total-module-bytes cap (S14 Part 2)
 
-APISERVER_SRC := $(shell find pkg/apiserver -name '*.go') go.wasm.mod
+# Every wasm entrypoint links pkg/cfruntime (the JS dispatch shim); it was
+# missing from all four lists until 2026-07-21, silently leaving chunks
+# stale after cfruntime-only edits.
+CFRUNTIME_SRC := $(shell find pkg/cfruntime -name '*.go')
+APISERVER_SRC := $(shell find pkg/apiserver -name '*.go') $(CFRUNTIME_SRC) go.wasm.mod
 # KCM_SRC excludes pkg/controllers/gc and its cmd/gc-wasm entrypoint: they
 # share the pkg/controllers/cmd parent directory but not a package with
 # controllermanager.go (see pkg/controllers/gc's doc comment), so kcm.
 # manifest.json has no reason to rebuild when only GC-specific source
 # changes.
 KCM_SRC := $(shell find pkg/controllers pkg/leanclient -name '*.go' -not -path 'pkg/controllers/gc/*' -not -path 'pkg/controllers/cmd/gc-wasm/*') \
-	go.wasm.mod \
+	$(CFRUNTIME_SRC) go.wasm.mod \
 	$(shell find pkg/clientgo-lean-overlays pkg/k8s-js-overlays -type f)
 GC_SRC := $(shell find pkg/controllers/gc pkg/controllers/restconfig pkg/controllers/cmd/gc-wasm pkg/leanclient pkg/apiserver/apidef -name '*.go') \
-	go.wasm.mod \
+	$(CFRUNTIME_SRC) go.wasm.mod \
 	$(shell find pkg/clientgo-lean-overlays pkg/k8s-js-overlays -type f)
 SCHED_SRC := $(shell find pkg/controllers/sched pkg/controllers/restconfig pkg/controllers/cmd/kcm-wasm/scheduler pkg/leanclient -name '*.go') \
-	go.wasm.mod \
+	$(CFRUNTIME_SRC) go.wasm.mod \
 	$(shell find pkg/clientgo-lean-overlays pkg/k8s-js-overlays -type f)
 NODES_AGENT_SRC := $(shell find pkg/agent cmd/agent -name '*.go') go.mod go.sum
 

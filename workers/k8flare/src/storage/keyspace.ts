@@ -106,8 +106,3 @@ export function classifyPrefix(prefix: string): PrefixClass {
   }
   return { kind: "all-namespaces", resource };
 }
-
-/** Whether a key belongs to a facet at all (vs. staying in the parent's own log). */
-export function isFacetKey(cls: KeyClass): cls is Exclude<KeyClass, { kind: "cluster" }> {
-  return cls.kind !== "cluster";
-}
