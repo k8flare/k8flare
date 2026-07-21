@@ -116,6 +116,35 @@
         "NodeVMLarge",
       ],
     },
+    {
+      "tag": "v3",
+      "deleted_classes": [
+        "Cluster",
+        "WatchHub",
+        "Controllers",
+        "ClusterRegistry",
+        "CFContainersScheduler",
+        "NodeVMSmall",
+        "NodeVMMedium",
+        "NodeVMLarge",
+      ],
+    },
+    {
+      // 2026-07-21: pre-production data wipe (user-approved). v3+v4 in one
+      // deploy deletes every DO's storage (all k8s state, CA vault,
+      // registry) and recreates the same classes empty.
+      "tag": "v4",
+      "new_sqlite_classes": [
+        "Cluster",
+        "WatchHub",
+        "Controllers",
+        "ClusterRegistry",
+        "CFContainersScheduler",
+        "NodeVMSmall",
+        "NodeVMMedium",
+        "NodeVMLarge",
+      ],
+    },
   ],
   "observability": { "enabled": true, "head_sampling_rate": 1 },
 }
