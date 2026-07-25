@@ -60,6 +60,7 @@ help:
 gen-mirrors:
 	node $(WASM_TOOLS)/gen-k8s-js-mirror.ts
 	node $(WASM_TOOLS)/gen-clientgo-lean-mirror.ts
+	node $(WASM_TOOLS)/gen-apiserver-js-mirror.ts
 
 $(ASSETS)/wasm_exec.js: $(WASM_TOOLS)/patch-wasm-exec.ts $(WASM_TOOLS)/gomod.ts
 	@mkdir -p $(ASSETS)

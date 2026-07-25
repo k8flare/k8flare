@@ -35,7 +35,7 @@ replace (
 	k8s.io/api => github.com/k3s-io/kubernetes/staging/src/k8s.io/api v1.36.2-k3s1
 	k8s.io/apiextensions-apiserver => github.com/k3s-io/kubernetes/staging/src/k8s.io/apiextensions-apiserver v1.36.2-k3s1
 	k8s.io/apimachinery => github.com/k3s-io/kubernetes/staging/src/k8s.io/apimachinery v1.36.2-k3s1
-	k8s.io/apiserver => github.com/k3s-io/kubernetes/staging/src/k8s.io/apiserver v1.36.2-k3s1
+	k8s.io/apiserver => ./.build/apiserver-js-mirror
 	k8s.io/cli-runtime => github.com/k3s-io/kubernetes/staging/src/k8s.io/cli-runtime v1.36.2-k3s1
 	k8s.io/client-go => ./.build/clientgo-lean-mirror
 	k8s.io/cloud-provider => github.com/k3s-io/kubernetes/staging/src/k8s.io/cloud-provider v1.36.2-k3s1

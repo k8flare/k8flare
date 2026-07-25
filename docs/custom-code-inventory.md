@@ -165,6 +165,10 @@ conformance CI の required に昇格させた上で段階的に退役する方�
 
 ## 7. 縮小候補 (今後 upstream 置換を検討する価値がある順)
 
+(2026-07-26 追記: 本丸の generic registry 置換はフェーズ 0 スパイクで
+**GO 判定** — js リンク可・wasm-opt 後 64.99MB で cap 内。実測と
+オーバーレイの詳細は docs/platform-verification.md S25。)
+
 1. [table.go](../pkg/apiserver/table.go) (376 行) — upstream の
    `printers/internalversion` テーブルジェネレーターは internal 型前提だが、
    `k8s.io/apiserver` の tableconvertor (external 型対応) は載る可能性がある。

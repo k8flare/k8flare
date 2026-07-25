@@ -3706,3 +3706,45 @@ list コスト、または gc-wasm のキュー深さを /healthz で露出す�
 必要で非自明。GC の非同期 eventual 自体はユーザー承認済み(CLAUDE.md「kubectl
 delete は非同期 eventually-consistent」)なので、コスト感応な予測子変更を
 急がず、根本原因のみ記録して据え置く。
+
+## S25: upstream generic registry の js/wasm リンク可否とサイズ実測 (2026-07-26、GO 判定)
+
+pkg/apiserver の手書き generic-registry 相当 (handler/store/table/
+subresource ≈2,330 行) を upstream の
+`k8s.io/apiserver/pkg/registry/generic/registry` (genericregistry.Store +
+storage.Interface) に置き換えられるかのフェーズ 0 スパイク。判定材料は
+2 つ: (1) GOOS=js でリンクできるか (2) 64MiB Loader cap に収まるか。
+
+**結果: 両方 YES。**
+
+- 素の import は etcd クライアント (syscall.Flock) と go-systemd/journal
+  で即コンパイル不能。依存経路は 3 本:
+  `registry/generic → storagebackend/factory → etcd3 クライアント`、
+  `storagebackend/config.go → etcd3 (LeaseManagerConfig のためだけ)`、
+  `cacher/cache_watcher.go → util/flowcontrol (APF) → lean client-go に
+  無い flowcontrol informer`。加えて 1.36 の新規
+  `genericregistry → pkg/sharding → CEL パーサ` が cel-go 一式 (実測
+  -5.7MB 分) を引き込む。
+- 対処は KCM 移植と同型のミラー+オーバーレイ 5 点
+  (pkg/k8s-js-overlays/apiserver/、gen-apiserver-js-mirror.ts が
+  .build/apiserver-js-mirror を生成、go.wasm.mod の k8s.io/apiserver
+  replace がそこを指す。go.mod=ホスト側は無改変 upstream のまま)。
+- サイズ実測 (leanwidth, -s -w, trimpath):
+  - 現行 apiserver 単体: 48.98MB (raw) → 41.3MB (wasm-opt -Oz 後)
+  - 現行 apiserver + genericregistry+cacher 閉包を足した合成 (手書き
+    コードを何も消していない最悪ケース): 82.3MB → sharding/CEL
+    オーバーレイ後 76.6MB (raw) → **64.99MB (wasm-opt 後)**。
+    cap 67.11MB に対し残 2.0MB。
+- 手書き側の削除で若干戻るが、ヘッドルームは薄い。採用フェーズでは
+  make wasm のサイズゲートを注視し、fieldmanager/admission (SSA 機構、
+  genericregistry が無条件 import) の要否を次の削減候補として検討する。
+
+スパイク手順の再現: `tmp-regspike/main.go` に genericregistry +
+pkg/apiserver を import する main を置き、
+`GOFLAGS=-modfile=go.wasm.mod GOOS=js GOARCH=wasm go build -tags
+leanwidth` → wasm-opt -Oz で計測 (ディレクトリ自体はコミットしない)。
+
+次フェーズ (未着手): DO ストレージ上に storage.Interface を実装し、
+1 リソース (configmaps) を genericregistry.Store 経由に切り替えて
+conformance の該当テストで挙動同値を確認 → apidef.Table 全体へ展開 →
+手書き handler/store/table/subresource を段階削除。
