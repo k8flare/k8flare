@@ -102,10 +102,8 @@ func NewServer(cfg ServerConfig) *http.ServeMux {
 	// Internal endpoints, service-binding-only (/internal/*)
 	RegisterInternalHandlers(mux, storage)
 
-	// One auth-wrapped route per GroupVersion in apidef.Table. core/v1
-	// additionally bootstraps the cluster's baseline namespaces/
-	// ServiceAccounts on first request and sweeps dependents on Namespace
-	// delete ("namespaces" never exists as a key in a non-core stores
+	// One auth-wrapped route per GroupVersion in apidef.Table. Namespace
+	// dependents are swept on Namespace delete ("namespaces" never exists as a key in a non-core stores
 	// map, so that branch of HandleResource's DELETE case is a no-op for
 	// every other group even though they all pass the same
 	// namespacedStores). namespacedStores is passed to every group, not
@@ -122,17 +120,25 @@ func NewServer(cfg ServerConfig) *http.ServeMux {
 	// HandleResource call the same way namespacedStores is (see
 	// HandleResource's doc comment).
 	priorityClassStore := storesByGV[schedulingv1.SchemeGroupVersion]["priorityclasses"]
+	// Threaded into every group's HandleResource for namespace-lifecycle
+	// admission on create (see handler.go's POST case): only the core map
+	// has "namespaces", but apps/batch/... creates need the check too.
+	namespaceStore := storesByGV[corev1.SchemeGroupVersion]["namespaces"]
+
+	// Bootstrap runs on the first request to ANY group, not just core/v1
+	// (sync.Once-guarded, so the steady-state cost is a no-op check):
+	// namespace-lifecycle admission above means a create to e.g. apps/v1
+	// must be able to find "default" in the namespaces store, even when
+	// no core/v1 request has arrived yet in this instance's lifetime.
+	coreStores := storesByGV[corev1.SchemeGroupVersion]
 
 	for _, gv := range apidef.GroupVersions() {
 		prefix := apidef.APIPrefix(gv)
 		stores := storesByGV[gv]
-		isCore := gv == corev1.SchemeGroupVersion
 
 		mux.Handle(prefix, AuthMiddleware(cfg.Tokens, AuthzMiddleware(authz, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if isCore {
-				BootstrapCluster(r.Context(), stores)
-			}
-			HandleResource(w, r, prefix, stores, namespacedStores, priorityClassStore)
+			BootstrapCluster(r.Context(), coreStores)
+			HandleResource(w, r, prefix, stores, namespacedStores, priorityClassStore, namespaceStore)
 		}))))
 	}
 

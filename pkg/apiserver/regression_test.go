@@ -271,3 +271,46 @@ func TestNamespacesReportActivePhase(t *testing.T) {
 		t.Errorf("created namespace phase = %q, want Active", created.Status.Phase)
 	}
 }
+
+// TestCreateInMissingNamespaceIs404 guards the namespace-lifecycle
+// admission added 2026-07-25: creating any namespaced object in a
+// namespace that doesn't exist must 404 (upstream's NamespaceLifecycle
+// plugin). Before the check, such creates returned 201 -- observed live
+// as KCM resurrecting Events into a namespace right after `kubectl
+// delete ns` swept it, leaving permanent orphans in `get events -A`.
+func TestCreateInMissingNamespaceIs404(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+
+	_, err := client.CoreV1().ConfigMaps("no-such-namespace").Create(ctx, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "cm", Namespace: "no-such-namespace"},
+		Data:       map[string]string{"a": "b"},
+	}, metav1.CreateOptions{})
+	if err == nil {
+		t.Fatal("expected create in missing namespace to fail, got nil")
+	}
+	if !apierrors.IsNotFound(err) {
+		t.Errorf("expected NotFound, got: %v", err)
+	}
+
+	// Deleting a namespace must leave no way to write into it afterwards.
+	name := "test-ns-lifecycle"
+	_, err = client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create namespace: %v", err)
+	}
+	if err := client.CoreV1().Namespaces().Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+		t.Fatalf("Delete namespace: %v", err)
+	}
+	_, err = client.CoreV1().Events(name).Create(ctx, &corev1.Event{
+		ObjectMeta:     metav1.ObjectMeta{Name: "ev", Namespace: name},
+		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: "p", Namespace: name},
+		Reason:         "Test",
+		Type:           corev1.EventTypeNormal,
+	}, metav1.CreateOptions{})
+	if !apierrors.IsNotFound(err) {
+		t.Errorf("expected NotFound creating Event in deleted namespace, got: %v", err)
+	}
+}

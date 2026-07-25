@@ -114,7 +114,7 @@ func decodeBody(body []byte) (runtime.Object, error) {
 // before parsing and in whether a watch query parameter was checked at all
 // (HandleGroupAPI's watch requests fell through to a duplicated list
 // pathway -- a real drift merging them fixes, not just a line-count cut).
-func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, stores map[string]*ResourceStore, namespacedStores []*ResourceStore, priorityClassStore *ResourceStore) {
+func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, stores map[string]*ResourceStore, namespacedStores []*ResourceStore, priorityClassStore *ResourceStore, namespaceStore *ResourceStore) {
 	trimmed := strings.TrimPrefix(r.URL.Path, prefix)
 
 	if r.URL.Query().Get("watch") == "true" {
@@ -182,6 +182,27 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			return
 		}
 		writeFieldValidationWarnings(w, warnings)
+
+		// Namespace-lifecycle admission (upstream's NamespaceLifecycle
+		// plugin): creating a namespaced object requires its namespace to
+		// exist. Without this, anything could be created into a deleted
+		// namespace -- observed live 2026-07-25 as KCM resurrecting Events
+		// into a namespace right after `kubectl delete ns` had swept it,
+		// leaving permanent orphans (`kubectl get events -A` showed rows
+		// for a 404 namespace). The check-then-create race window remains,
+		// same as upstream's admission plugin; upstream closes it with the
+		// namespace controller's re-sweep, which this project doesn't need
+		// at its scale.
+		if namespace != "" && resource != "namespaces" && namespaceStore != nil {
+			if _, err := namespaceStore.Get(ctx, "", namespace); err != nil {
+				if errors.Is(err, ErrNotFound) {
+					writeStatusError(w, http.StatusNotFound, "NotFound", "namespaces \""+namespace+"\" not found")
+				} else {
+					writeResourceError(w, err, "namespaces", namespace)
+				}
+				return
+			}
+		}
 
 		ApplyDefaults(rObj)
 
