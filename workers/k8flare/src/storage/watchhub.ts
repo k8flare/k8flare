@@ -150,7 +150,17 @@ export class WatchHub {
     reason: string,
     _wasClean: boolean,
   ): Promise<void> {
-    ws.close(code, reason);
+    // Acknowledge the close. Echoing the peer's code verbatim throws
+    // InvalidAccessError for reserved codes -- an abruptly-killed client
+    // (e.g. an evicted KCM dynamic-worker isolate) surfaces as 1006, and
+    // an over-long reason also throws. Observed live 2026-07-25 as an
+    // exception storm (one per subscribed watch) that skipped this ack
+    // for every socket at once. Fall back to a bare legal close.
+    try {
+      ws.close(code, reason);
+    } catch {
+      ws.close(1000);
+    }
   }
 
   async webSocketError(ws: WebSocket, _error: unknown): Promise<void> {
