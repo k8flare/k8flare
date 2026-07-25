@@ -230,6 +230,14 @@ vet: | gen-mirrors
 test: wasm
 	go test -count=1 ./pkg/apiserver/...
 
+## test-kcm: dw control-plane smoke -- real KCM/GC/sched dynamic workers
+## enabled (the combination `test` deliberately disables). Slower: the
+## first poke compiles three ~40MB WASM modules inside workerd. This is
+## the local stand-in for e2e-conformance.yml's dw variants on machines
+## that can't run a Linux kubelet.
+test-kcm: wasm
+	K8FLARE_KCM_TEST=1 go test -count=1 -run TestKCMDynamicWorkerControlPlane -timeout 15m -v ./pkg/apiserver/
+
 ## dev: local wrangler dev server
 dev:
 	wrangler dev -c workers/k8flare/wrangler.jsonc --persist-to .wrangler/state
