@@ -25,6 +25,9 @@ func BootstrapCluster(ctx context.Context, stores map[string]*ResourceStore) {
 			// Create namespace (ignore AlreadyExists)
 			nsStore.Create(ctx, "", &corev1.Namespace{
 				ObjectMeta: metav1.ObjectMeta{Name: ns},
+				// Same stamp ApplyDefaults gives API-created namespaces
+				// (this path bypasses the handler, so set it directly).
+				Status: corev1.NamespaceStatus{Phase: corev1.NamespaceActive},
 			})
 
 			// Create default ServiceAccount in each namespace

@@ -237,3 +237,37 @@ func TestTableRowObjectsCarryTypeMeta(t *testing.T) {
 		}
 	}
 }
+
+// TestNamespacesReportActivePhase: upstream stamps Status.Phase=Active on
+// namespace creation (registry strategy); this apiserver does it in
+// ApplyDefaults + BootstrapCluster (2026-07-25). kubectl's STATUS column
+// was rendering empty for every namespace before that.
+func TestNamespacesReportActivePhase(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+
+	// Bootstrap-created.
+	ns, err := client.CoreV1().Namespaces().Get(ctx, "default", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Get default namespace: %v", err)
+	}
+	if ns.Status.Phase != corev1.NamespaceActive {
+		t.Errorf("bootstrap namespace phase = %q, want Active", ns.Status.Phase)
+	}
+
+	// API-created.
+	name := "test-ns-phase"
+	_ = client.CoreV1().Namespaces().Delete(ctx, name, metav1.DeleteOptions{})
+	created, err := client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create namespace: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = client.CoreV1().Namespaces().Delete(context.Background(), name, metav1.DeleteOptions{})
+	})
+	if created.Status.Phase != corev1.NamespaceActive {
+		t.Errorf("created namespace phase = %q, want Active", created.Status.Phase)
+	}
+}

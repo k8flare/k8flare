@@ -20,6 +20,17 @@ func ApplyDefaults(obj runtime.Object) {
 		}
 	}
 
+	// Upstream's namespace registry strategy (PrepareForCreate) stamps
+	// Status.Phase = Active on every created Namespace; kubectl's STATUS
+	// column reads it. This apiserver has no registry strategies, so set
+	// it here, same as the Pod phase above. (Terminating is not modeled:
+	// namespace delete is a synchronous sweep, see namespacedelete.go.)
+	if ns, ok := obj.(*corev1.Namespace); ok {
+		if ns.Status.Phase == "" {
+			ns.Status.Phase = corev1.NamespaceActive
+		}
+	}
+
 	// Real upstream versioned defaulters registered on Scheme (scheme.go,
 	// zz_generated_defaulters.go): core/v1 Pod spec defaults (RestartPolicy,
 	// DNSPolicy, SecurityContext, TerminationGracePeriodSeconds,
