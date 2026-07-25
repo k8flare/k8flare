@@ -22,6 +22,12 @@
 | Go オーバーレイ (D) | 約 1,300 |
 | Go テスト | 5,818 (全て [pkg/apiserver](../pkg/apiserver)) |
 | TypeScript 手書き (全てプラットフォームグルー) | 約 5,400 |
+| TypeScript 生成 (C) | 49 |
+| 生成アセット (OpenAPI v2/v3 + discovery 文書, コミット済み) | 約 220,000 (≈10MB) |
+
+生成コードの視点で言えば、このリポジトリの「実効的な手書き量」は Go+TS 合わせて約 19,000 行で、
+残り(生成 2.2k + アセット 220k + オーバーレイ 1.3k)はジェネレーター 1,454 行
+([cmd/k8flare-gen](../cmd/k8flare-gen)) と upstream ピンから機械的に導出される。
 
 ## 1. Go ツリー
 
@@ -86,7 +92,35 @@ doc comment を確認した結果、多くは「upstream の実物を配線す�
 | [loader/](../workers/k8flare/src/loader) | 229 | Dynamic Worker (LOADER) 呼び出し |
 | src 直下 | 151 | エントリポイント/env |
 
-## 4. 「upstream をそのまま使わない」判断の記録
+## 4. 生成パイプライン
+
+単一の情報源は **[pkg/apiserver/apidef/table.go](../pkg/apiserver/apidef/table.go)(リソーステーブル)と
+go.mod の k8s.io/kubernetes ピン**。`make gen`(= `go run ./cmd/k8flare-gen`)が 6 ステップで
+以下を再生成し、CI は `git diff --exit-code` でドリフトを検出する
+(手編集は [.claude/hooks/gen-guard.sh](../.claude/hooks/gen-guard.sh) でもブロック)。
+
+| ステップ | 出力 | 行数 | 内容 |
+|---|---|---|---|
+| defaulters | [pkg/apiserver/zz_generated_defaulters.go](../pkg/apiserver/zz_generated_defaulters.go) | 33 | 全 API グループの**実 upstream versioned defaulters** を Scheme に登録 |
+| version | [pkg/apiserver/zz_generated_version.go](../pkg/apiserver/zz_generated_version.go) | 14 | `/version` が返す値を k8s ピンから導出(手書きリテラル排除) |
+| resource-kinds | [workers/k8flare/src/k8s/gen/resource-kinds.gen.ts](../workers/k8flare/src/k8s/gen/resource-kinds.gen.ts) | 49 | plural→Kind 表(gateway/watch 層用) |
+| openapi | [workers/k8flare/assets/openapi/](../workers/k8flare/assets/openapi) | ≈10MB | **実 upstream OpenAPI v2/v3 文書**。Static Assets 配信で `kubectl apply` がクライアント検証込みで動く |
+| discovery-assets | [workers/k8flare/assets/api/](../workers/k8flare/assets/api) / [apis/](../workers/k8flare/assets/apis) | 小 | discovery 文書の静的配信版 |
+| leanclient | [pkg/leanclient/gen/](../pkg/leanclient/gen) | 2,052 | WASM コントローラー用の typed client 8 グループ(client-go 全部をリンクしないための narrow 版) |
+
+このほかに**ビルド時生成(コミットしない)**が 2 層ある:
+
+- `.build/` ミラー([packages/wasm-build](../packages/wasm-build) の gen-k8s-js-mirror / gen-clientgo-lean-mirror):
+  upstream ソースを js/wasm ビルド可能な形にミラーし、[pkg/k8s-js-overlays](../pkg/k8s-js-overlays) /
+  [pkg/clientgo-lean-overlays](../pkg/clientgo-lean-overlays) のオーバーレイを重ねる。ビルド入力なので
+  再生成前の退避が必要(CLAUDE.md「ローカル開発の落とし穴」参照)。
+- `workers/k8flare/assets/wasm/` チャンク(`make wasm`): apiserver/kcm/gc/sched の Go バイナリを
+  wasm-opt → 24MiB 分割 + sha256 manifest 化した Loader 供給物。
+
+k8s バージョンを上げる手順は [docs/k8s-version-bump.md](k8s-version-bump.md)
+(ピン更新 → `make gen` → `make wasm` → conformance CI)。
+
+## 5. 「upstream をそのまま使わない」判断の記録
 
 不可侵ルール 3 (実物優先) に対し、手書きが残っている理由は 3 パターンに分類できる:
 
@@ -120,7 +154,7 @@ upstream プラグとの既知の差分 (未実装、必要になったら追加
   Terminating 状態を持たない ([namespacedelete.go](../pkg/apiserver/namespacedelete.go))。
   代わりに削除後の events 再 sweep で race を閉じている (commit `a012a01`)。
 
-## 5. 縮小候補 (今後 upstream 置換を検討する価値がある順)
+## 6. 縮小候補 (今後 upstream 置換を検討する価値がある順)
 
 1. [table.go](../pkg/apiserver/table.go) (376 行) — upstream の
    `printers/internalversion` テーブルジェネレーターは internal 型前提だが、
