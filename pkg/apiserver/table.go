@@ -173,9 +173,12 @@ func columnDefinitionsFor(kind string) []metav1.TableColumnDefinition {
 
 // tableRowFor builds one TableRow for a single (non-list) item. Object is
 // set from Encode(item) -- reusing Encode rather than a bare json.Marshal
-// means the embedded object gets the same Kind/APIVersion TypeMeta filled in
-// that Encode already fills in for top-level responses (see scheme.go), not
-// just bare struct fields.
+// so the embedded object gets Kind/APIVersion stamped. (Correction
+// 2026-07-25: this comment used to claim Encode already did that, but it
+// only passed through whatever TypeMeta the stored bytes had -- objects
+// created server-side without TypeMeta produced Kind-less rows, which made
+// kubectl blank the entire table. Encode now really stamps GVK; see
+// scheme.go.)
 func tableRowFor(item runtime.Object) (metav1.TableRow, error) {
 	raw, err := Encode(item)
 	if err != nil {

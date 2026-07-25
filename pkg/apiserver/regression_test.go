@@ -2,6 +2,7 @@ package apiserver_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -191,5 +192,48 @@ func TestMalformedFieldSelectorIsBadRequestNotInternalError(t *testing.T) {
 	}
 	if !apierrors.IsBadRequest(err) {
 		t.Errorf("expected a BadRequest-shaped (400) error, got: %v", err)
+	}
+}
+
+// TestTableRowObjectsCarryTypeMeta guards the 2026-07-25 fix in
+// scheme.go's Encode: objects stored WITHOUT TypeMeta (anything created
+// server-side -- the bootstrap namespaces here are guaranteed examples)
+// used to be embedded Kind-less in Table rows, which makes kubectl's
+// Table printer abort the whole listing and render blank NAME columns.
+// Every row's embedded object must decode with a non-empty kind.
+func TestTableRowObjectsCarryTypeMeta(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+
+	raw, err := client.CoreV1().RESTClient().Get().
+		AbsPath("/api/v1/namespaces").
+		SetHeader("Accept", "application/json;as=Table;v=v1;g=meta.k8s.io,application/json").
+		Do(ctx).
+		Raw()
+	if err != nil {
+		t.Fatalf("GET namespaces as Table: %v", err)
+	}
+
+	var table metav1.Table
+	if err := json.Unmarshal(raw, &table); err != nil {
+		t.Fatalf("decode Table: %v", err)
+	}
+	if table.Kind != "Table" {
+		t.Fatalf("expected kind Table, got %q", table.Kind)
+	}
+	if len(table.Rows) == 0 {
+		t.Fatal("expected at least the bootstrap namespaces in the table")
+	}
+	for i, row := range table.Rows {
+		var obj struct {
+			Kind       string `json:"kind"`
+			APIVersion string `json:"apiVersion"`
+		}
+		if err := json.Unmarshal(row.Object.Raw, &obj); err != nil {
+			t.Fatalf("row %d: decode embedded object: %v", i, err)
+		}
+		if obj.Kind == "" || obj.APIVersion == "" {
+			t.Errorf("row %d: embedded object missing TypeMeta (kind=%q apiVersion=%q); kubectl blanks the whole table on this", i, obj.Kind, obj.APIVersion)
+		}
 	}
 }

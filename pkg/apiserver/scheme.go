@@ -135,8 +135,22 @@ func init() {
 	)
 }
 
-// Encode serializes a runtime.Object to JSON bytes.
+// Encode serializes a runtime.Object to JSON bytes, stamping
+// Kind/APIVersion from the Scheme when the object doesn't carry them.
+// Objects decoded from storage may have been STORED without TypeMeta
+// (anything created server-side, e.g. bootstrap namespaces or
+// controller-written ConfigMaps), and jsonSerializer marshals the struct
+// as-is -- until 2026-07-25 Encode passed that Kind-less JSON through,
+// which made kubectl's Table printer abort the whole listing and render
+// blank NAME rows (its row-object decode requires TypeMeta). The
+// versioning encoder is how upstream stamps GVK on responses; it sets
+// and restores TypeMeta around the encode, so obj is not left mutated.
 func Encode(obj runtime.Object) ([]byte, error) {
+	if obj.GetObjectKind().GroupVersionKind().Empty() {
+		if gvks, _, err := Scheme.ObjectKinds(obj); err == nil && len(gvks) > 0 {
+			return runtime.Encode(Codecs.EncoderForVersion(jsonSerializer, gvks[0].GroupVersion()), obj)
+		}
+	}
 	return runtime.Encode(jsonSerializer, obj)
 }
 
