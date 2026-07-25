@@ -154,7 +154,16 @@ upstream プラグとの既知の差分 (未実装、必要になったら追加
   Terminating 状態を持たない ([namespacedelete.go](../pkg/apiserver/namespacedelete.go))。
   代わりに削除後の events 再 sweep で race を閉じている (commit `a012a01`)。
 
-## 6. 縮小候補 (今後 upstream 置換を検討する価値がある順)
+## 6. ホストバイナリの退役方針 (2026-07-25 ユーザー決定)
+
+`cmd/scheduler` / `cmd/controller-manager` は WASM 版 (sched/kcm 動的ワーカー) を
+conformance CI の required に昇格させた上で段階的に退役する方針。手順:
+(1) GitHub Actions 枠の回復後、dw モードの e2e を回して green を確認
+(2) dw モードを required 昇格 (required set は増やすのみ、host モードは当面併記)
+(3) 安定後に release.yml の配布と host モードを落とし、両 cmd を削除。
+それまでは import グラフ上「現役」のまま維持する。
+
+## 7. 縮小候補 (今後 upstream 置換を検討する価値がある順)
 
 1. [table.go](../pkg/apiserver/table.go) (376 行) — upstream の
    `printers/internalversion` テーブルジェネレーターは internal 型前提だが、
