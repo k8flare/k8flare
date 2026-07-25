@@ -511,6 +511,26 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			writeResourceError(w, err, resource, name)
 			return
 		}
+		if resource == "namespaces" && namespacedStores != nil {
+			// Second events sweep AFTER the Namespace object is gone:
+			// controllers race the pre-delete dependents sweep (a KCM
+			// Event POSTed between the events sweep and this Delete
+			// passes namespace-lifecycle admission because the namespace
+			// still existed -- observed live 2026-07-25 as 4 orphan
+			// Events surviving `kubectl delete ns`). Now that the
+			// namespace 404s, admission blocks any further create, so
+			// whatever this pass catches is the last of it. Events only:
+			// nothing else writes into a deleting namespace on its own.
+			for _, rs := range namespacedStores {
+				if rs.resource == "events" {
+					if _, err := rs.DeleteAllInNamespace(ctx, name); err != nil {
+						writeInternalError(w, fmt.Errorf("post-delete events sweep for namespace %q: %w", name, err))
+						return
+					}
+					break
+				}
+			}
+		}
 		if svc, ok := obj.(*corev1.Service); ok {
 			ReleaseClusterIP(ctx, store.storage, svc)
 			DeleteServiceEndpoints(ctx, store.storage, namespace, svc.Name)
