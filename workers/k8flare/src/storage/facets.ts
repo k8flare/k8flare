@@ -61,6 +61,11 @@ function rowToRaw(row) {
   };
 }
 
+// NOT schema.ts's SCHEMA, on purpose -- do not "unify" them: no
+// AUTOINCREMENT (ids are supplied by the parent, the revision authority),
+// no compact_rev subquery (facets aren't compacted), and no UNIQUE
+// (name, prev_revision) conflict index (the parent DO serializes every
+// facet write, so same-revision races can't reach here).
 const SCHEMA = [
   "CREATE TABLE IF NOT EXISTS kine (id INTEGER PRIMARY KEY, name TEXT, created INTEGER, deleted INTEGER, create_revision INTEGER, prev_revision INTEGER, lease INTEGER, value BLOB, old_value BLOB)",
   "CREATE INDEX IF NOT EXISTS kine_name_index ON kine (name)",

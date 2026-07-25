@@ -47,6 +47,27 @@ func DeleteNamespaceDependents(ctx context.Context, namespacedStores []*Resource
 	return nil
 }
 
+// SweepNamespaceEventsAfterDelete is the SECOND events sweep, run right
+// after the Namespace object itself is deleted (handler.go's DELETE
+// case): controllers race the pre-delete dependents sweep above -- a KCM
+// Event POSTed between that sweep and the Namespace delete passes
+// namespace-lifecycle admission because the namespace still existed
+// (observed live 2026-07-25 as 4 orphan Events surviving `kubectl
+// delete ns`). Once the namespace 404s, admission blocks any further
+// create, so whatever this pass catches is the last of it. Events only:
+// nothing else writes into a deleting namespace on its own.
+func SweepNamespaceEventsAfterDelete(ctx context.Context, namespacedStores []*ResourceStore, namespace string) error {
+	for _, rs := range namespacedStores {
+		if rs.resource == "events" {
+			if _, err := rs.DeleteAllInNamespace(ctx, namespace); err != nil {
+				return fmt.Errorf("post-delete events sweep for namespace %q: %w", namespace, err)
+			}
+			return nil
+		}
+	}
+	return nil
+}
+
 // releaseNamespaceServiceClusterIPs releases the ClusterIP of every Service
 // in namespace back to the pool, best-effort (see ReleaseClusterIP).
 func releaseNamespaceServiceClusterIPs(ctx context.Context, rs *ResourceStore, namespace string) error {

@@ -34,7 +34,7 @@ import { makeResidentBootstrapJS } from "../loader/bootstrap.ts";
 import { assembleWasm, fetchWasmAsset, fetchWasmManifest } from "../loader/chunks.ts";
 
 // Safety-net alarm interval: mirrors workers/storage's Cluster DO
-// SAFETY_NET_INTERVAL_MS (workers/storage/src/index.ts) -- this is purely
+// SAFETY_NET_INTERVAL_MS (workers/k8flare/src/storage/index.ts) -- this is purely
 // a liveness/resurrection check (is the resident controller-manager
 // still alive after a redeploy/panic/eviction?), not a reconciliation
 // trigger: the real controllers, once running, watch continuously via
@@ -63,7 +63,7 @@ interface LoadedComponent {
 
 // The control-plane binaries this DO hosts as dynamic workers. Separate
 // binaries, not one combined: each is already close to the Loader's
-// 64MiB cap alone (workers/controllers/scheduler/main.go's doc comment
+// 64MiB cap alone (pkg/controllers/cmd/kcm-wasm/scheduler/main.go's doc comment
 // has kcm/sched's numbers; pkg/controllers/gc's doc comment has gc's --
 // combining any two would exceed it). All LOADER.get() calls happen
 // here in the parent -- a loaded worker cannot load further workers
@@ -263,9 +263,7 @@ export class Controllers {
     if (new URL(request.url).pathname === "/admin/destroy" && request.method === "POST") {
       await this.state.storage.deleteAlarm();
       await this.state.storage.deleteAll();
-      this.components.kcm = { entrypoint: null, loading: null };
-      this.components.sched = { entrypoint: null, loading: null };
-      this.components.gc = { entrypoint: null, loading: null };
+      for (const name of COMPONENTS) this.components[name] = { entrypoint: null, loading: null };
       return Response.json({ destroyed: true });
     }
     // Test kill switch (see Env.KCM_DISABLED): pkg/apiserver's go test
@@ -277,7 +275,7 @@ export class Controllers {
     // Arm the safety net if it isn't already, so a redeploy/panic/
     // eviction that resets the dynamic workers still gets noticed and
     // restarted even if no further relevant write happens to re-trigger
-    // storage's pingControllers (workers/storage/src/index.ts). Cheap
+    // storage's pingControllers (workers/k8flare/src/storage/index.ts). Cheap
     // local check -- no cross-DO call on this hot path. Armed before the
     // dispatch so a still-loading component gets a completion poke even
     // if no further write ever arrives.
@@ -291,19 +289,15 @@ export class Controllers {
     const schedResp = this.poke("sched");
     const gcResp = this.poke("gc");
     const statuses: Record<string, unknown> = {};
-    if (schedResp) {
-      statuses.scheduler = await schedResp
-        .then((r) => r.json<Record<string, unknown>>().then((j) => j.scheduler ?? "up"))
-        .catch((err) => `dispatch failed: ${err}`);
-    } else {
-      statuses.scheduler = "not loaded";
-    }
-    if (gcResp) {
-      statuses.garbageCollector = await gcResp
-        .then((r) => r.json<Record<string, unknown>>().then((j) => j.garbageCollector ?? "up"))
-        .catch((err) => `dispatch failed: ${err}`);
-    } else {
-      statuses.garbageCollector = "not loaded";
+    for (const [field, resp] of [
+      ["scheduler", schedResp],
+      ["garbageCollector", gcResp],
+    ] as const) {
+      statuses[field] = resp
+        ? await resp
+            .then((r) => r.json<Record<string, unknown>>().then((j) => j[field] ?? "up"))
+            .catch((err) => `dispatch failed: ${err}`)
+        : "not loaded";
     }
     if (!kcmResp) {
       if (this.env.CM_DISABLED === "1") {
@@ -428,7 +422,3 @@ export class Controllers {
     return false;
   }
 }
-
-// (The former standalone-Worker default export that forwarded to the
-// Controllers DO is gone: post-consolidation, storage's pingControllers
-// reaches the DO binding directly.)

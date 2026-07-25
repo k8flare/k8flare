@@ -417,7 +417,6 @@ func (rs *ResourceStore) Create(ctx context.Context, namespace string, obj runti
 		meta.Name = name
 	}
 
-	// Set metadata for creation
 	meta.UID = uuid.NewUUID()
 	meta.CreationTimestamp = metav1.Now()
 	if rs.namespaced {
@@ -429,7 +428,6 @@ func (rs *ResourceStore) Create(ctx context.Context, namespace string, obj runti
 	if _, ok := rs.specForGeneration(obj); ok {
 		meta.Generation = 1
 	}
-	// Clear resource version before encoding for storage
 	meta.ResourceVersion = ""
 
 	if job, ok := obj.(*batchv1.Job); ok {
@@ -528,7 +526,6 @@ func (rs *ResourceStore) Update(ctx context.Context, namespace, name string, obj
 		}
 	}
 
-	// Clear resource version before encoding for storage
 	meta.ResourceVersion = ""
 
 	data, err := EncodeToStorage(obj)
@@ -564,8 +561,7 @@ func (rs *ResourceStore) Delete(ctx context.Context, namespace, name string) (ru
 	// its latest revision is. Each retry re-reads the fresh revision;
 	// an object that vanished mid-retry is a plain NotFound, same as if
 	// it had been gone at the start.
-	var lastErr error
-	for attempt := 0; attempt < deleteConflictRetries; attempt++ {
+	obj, err := casRetry(deleteConflictRetries, func() (runtime.Object, error) {
 		stored, err := rs.storage.Get(ctx, key)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
@@ -574,25 +570,22 @@ func (rs *ResourceStore) Delete(ctx context.Context, namespace, name string) (ru
 			return nil, fmt.Errorf("store delete: get current: %w", err)
 		}
 
-		// Decode the current object to return it
 		obj := rs.newFunc()
 		if err := DecodeFromStorage(stored.Value, obj); err != nil {
 			return nil, fmt.Errorf("store delete: decode: %w", err)
 		}
 		setResourceVersion(obj, stored.ModRevision)
 
-		// Delete from storage using the current revision
-		_, err = rs.storage.Delete(ctx, key, stored.ModRevision)
-		if err == nil {
-			return obj, nil
+		if _, err := rs.storage.Delete(ctx, key, stored.ModRevision); err != nil {
+			// %w keeps ErrConflict visible to casRetry's errors.Is check.
+			return nil, fmt.Errorf("store delete: %w", err)
 		}
-		if errors.Is(err, ErrConflict) {
-			lastErr = err
-			continue
-		}
-		return nil, fmt.Errorf("store delete: %w", err)
+		return obj, nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("store delete: conflicted %d times: %w", deleteConflictRetries, lastErr)
+	return obj, nil
 }
 
 // DeleteCollection deletes every object of this resource type in namespace

@@ -2,6 +2,7 @@ package apiserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -192,9 +193,13 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		// for a 404 namespace). The check-then-create race window remains,
 		// same as upstream's admission plugin; upstream closes it with the
 		// namespace controller's re-sweep, which this project doesn't need
-		// at its scale.
+		// at its scale. The fetched Namespace is kept: the Pod
+		// compute-class routing below reads its labels, so this is the
+		// one namespace read on the create path.
+		var nsObj runtime.Object
 		if namespace != "" && resource != "namespaces" && namespaceStore != nil {
-			if _, err := namespaceStore.Get(ctx, "", namespace); err != nil {
+			obj, err := namespaceStore.Get(ctx, "", namespace)
+			if err != nil {
 				if errors.Is(err, ErrNotFound) {
 					writeStatusError(w, http.StatusNotFound, "NotFound", "namespaces \""+namespace+"\" not found")
 				} else {
@@ -202,6 +207,7 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 				}
 				return
 			}
+			nsObj = obj
 		}
 
 		ApplyDefaults(rObj)
@@ -237,16 +243,12 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			}
 
 			// Compute-class routing (namespace-first; see computeclass.go).
-			// stores["namespaces"] only exists in the core/v1 stores map,
-			// which is also the only map that can contain pods -- so the
-			// lookup is always available on this path.
+			// nsObj was fetched by namespace-lifecycle admission above --
+			// a Pod create always has a namespace, so it's non-nil here
+			// whenever a namespaces store exists at all.
 			var nsLabels map[string]string
-			if nsStore, exists := stores["namespaces"]; exists {
-				if nsObj, err := nsStore.Get(ctx, "", namespace); err == nil {
-					if nsTyped, ok := nsObj.(*corev1.Namespace); ok {
-						nsLabels = nsTyped.Labels
-					}
-				}
+			if nsTyped, ok := nsObj.(*corev1.Namespace); ok {
+				nsLabels = nsTyped.Labels
 			}
 			wantsContainers := PodWantsContainers(pod, nsLabels)
 			if wantsContainers {
@@ -337,16 +339,11 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		// finalizer-clearing patch/update actually removes an owner it
 		// finished orphaning or foreground-cascading.
 		if shouldFinalizeDelete(rObj) {
-			if err := finalizeDeleteWithOrphanSweep(ctx, store, namespacedStores, namespace, name); err != nil {
-				writeResourceError(w, err, resource, name)
-				return
-			}
-			obj, err := store.Delete(ctx, namespace, name)
+			obj, err := finalizeDelete(ctx, store, namespacedStores, namespace, name)
 			if err != nil {
 				writeResourceError(w, err, resource, name)
 				return
 			}
-			TriggerEndpointsReconcile(ctx, store.storage, namespace, obj)
 			writeRuntimeObject(w, http.StatusOK, obj)
 			return
 		}
@@ -512,33 +509,12 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			return
 		}
 		if resource == "namespaces" && namespacedStores != nil {
-			// Second events sweep AFTER the Namespace object is gone:
-			// controllers race the pre-delete dependents sweep (a KCM
-			// Event POSTed between the events sweep and this Delete
-			// passes namespace-lifecycle admission because the namespace
-			// still existed -- observed live 2026-07-25 as 4 orphan
-			// Events surviving `kubectl delete ns`). Now that the
-			// namespace 404s, admission blocks any further create, so
-			// whatever this pass catches is the last of it. Events only:
-			// nothing else writes into a deleting namespace on its own.
-			for _, rs := range namespacedStores {
-				if rs.resource == "events" {
-					if _, err := rs.DeleteAllInNamespace(ctx, name); err != nil {
-						writeInternalError(w, fmt.Errorf("post-delete events sweep for namespace %q: %w", name, err))
-						return
-					}
-					break
-				}
+			if err := SweepNamespaceEventsAfterDelete(ctx, namespacedStores, name); err != nil {
+				writeInternalError(w, err)
+				return
 			}
 		}
-		if svc, ok := obj.(*corev1.Service); ok {
-			ReleaseClusterIP(ctx, store.storage, svc)
-			DeleteServiceEndpoints(ctx, store.storage, namespace, svc.Name)
-		}
-		if node, ok := obj.(*corev1.Node); ok {
-			ReleasePodCIDR(ctx, store.storage, node)
-		}
-		TriggerEndpointsReconcile(ctx, store.storage, namespace, obj)
+		settleDeletedObject(ctx, store.storage, namespace, obj)
 		writeRuntimeObject(w, http.StatusOK, obj)
 
 	case http.MethodPatch:
@@ -580,16 +556,11 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			// Same finalizer-completion rule as the PUT path above (see
 			// gracefuldelete.go) -- the GC clears finalizers via PATCH.
 			if shouldFinalizeDelete(patchedObj) {
-				if err := finalizeDeleteWithOrphanSweep(ctx, store, namespacedStores, namespace, name); err != nil {
-					writeResourceError(w, err, resource, name)
-					return
-				}
-				obj, err := store.Delete(ctx, namespace, name)
+				obj, err := finalizeDelete(ctx, store, namespacedStores, namespace, name)
 				if err != nil {
 					writeResourceError(w, err, resource, name)
 					return
 				}
-				TriggerEndpointsReconcile(ctx, store.storage, namespace, obj)
 				writeRuntimeObject(w, http.StatusOK, obj)
 				return
 			}
@@ -612,6 +583,40 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 	default:
 		writeStatusError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method "+r.Method+" is not supported")
 	}
+}
+
+// settleDeletedObject runs the per-resource effects every COMPLETED
+// deletion needs: ClusterIP release + Endpoints removal for Services,
+// PodCIDR release for Nodes, and the endpoints reconcile trigger. Shared
+// by the DELETE path and finalizeDelete -- before 2026-07-25 the
+// finalizer-completion deletes (PUT/PATCH) skipped the Service/Node
+// effects, leaking the ClusterIP of any Service that finished deleting
+// via a cleared finalizer (found by review).
+func settleDeletedObject(ctx context.Context, storage *Storage, namespace string, obj runtime.Object) {
+	if svc, ok := obj.(*corev1.Service); ok {
+		ReleaseClusterIP(ctx, storage, svc)
+		DeleteServiceEndpoints(ctx, storage, namespace, svc.Name)
+	}
+	if node, ok := obj.(*corev1.Node); ok {
+		ReleasePodCIDR(ctx, storage, node)
+	}
+	TriggerEndpointsReconcile(ctx, storage, namespace, obj)
+}
+
+// finalizeDelete completes the deletion of an object whose last
+// finalizer was just cleared (shouldFinalizeDelete): orphan-straggler
+// sweep, storage delete, per-resource settle. Shared by the PUT and
+// PATCH finalizer-completion paths.
+func finalizeDelete(ctx context.Context, store *ResourceStore, namespacedStores []*ResourceStore, namespace, name string) (runtime.Object, error) {
+	if err := finalizeDeleteWithOrphanSweep(ctx, store, namespacedStores, namespace, name); err != nil {
+		return nil, err
+	}
+	obj, err := store.Delete(ctx, namespace, name)
+	if err != nil {
+		return nil, err
+	}
+	settleDeletedObject(ctx, store.storage, namespace, obj)
+	return obj, nil
 }
 
 // parseResourcePath extracts resource, namespace, name, and subresource

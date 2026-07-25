@@ -182,8 +182,14 @@ export class Cluster {
     }
   }
 
+  /** This DO's own instance name IS the cluster identity ("default" or
+   * "<id>@<uid>") -- sibling DOs of the same cluster share it. */
+  private selfName(): string {
+    return this.ctx.id?.name ?? "default";
+  }
+
   /**
-   * Fire-and-forget ping to workers/controllers (see
+   * Fire-and-forget ping to the Controllers DO (see
    * CONTROLLER_RELEVANT_PREFIXES/needsControllersPing above), ensuring the
    * real kube-controller-manager it hosts is instantiated and its resident
    * reconcile loop running. Best-effort AND fire-and-forget: a failure
@@ -197,10 +203,13 @@ export class Cluster {
    * detached promise keeps running past the response; errors are
    * swallowed here.
    */
-  /** This DO's own instance name IS the cluster identity ("default" or
-   * "<id>@<uid>") -- sibling DOs of the same cluster share it. */
-  private selfName(): string {
-    return this.ctx.id?.name ?? "default";
+  /** Post-write side effects shared by the create/update/delete paths:
+   * arm the safety-net alarm and poke the controller/node reconcilers
+   * when the written key warrants it. */
+  private async afterWrite(key: string): Promise<void> {
+    if (needsNodeLifecycleAttention(key)) await this.armSafetyNetSoon();
+    if (needsControllersPing(key)) void this.pingControllers();
+    if (needsNodesPing(key)) void this.pingNodes();
   }
 
   private async pingControllers(): Promise<void> {
@@ -330,9 +339,7 @@ export class Cluster {
         null,
       );
       await broadcastEvent(this.host, this.sql, key, id);
-      if (needsNodeLifecycleAttention(key)) await this.armSafetyNetSoon();
-      if (needsControllersPing(key)) void this.pingControllers();
-      if (needsNodesPing(key)) void this.pingNodes();
+      await this.afterWrite(key);
       return jsonResponse({ revision: id }, 201);
     } else {
       const { rev, event } = await storeGetCurrent(this.sql, this.host, key, false);
@@ -360,9 +367,7 @@ export class Cluster {
         lease,
       };
       await broadcastEvent(this.host, this.sql, key, id);
-      if (needsNodeLifecycleAttention(key)) await this.armSafetyNetSoon();
-      if (needsControllersPing(key)) void this.pingControllers();
-      if (needsNodesPing(key)) void this.pingNodes();
+      await this.afterWrite(key);
       return jsonResponse({ revision: id, kv, updated: true });
     }
   }
@@ -387,9 +392,7 @@ export class Cluster {
       oldValue,
     );
     await broadcastEvent(this.host, this.sql, key, id);
-    if (needsNodeLifecycleAttention(key)) await this.armSafetyNetSoon();
-    if (needsControllersPing(key)) void this.pingControllers();
-    if (needsNodesPing(key)) void this.pingNodes();
+    await this.afterWrite(key);
 
     // Namespace deletion does NOT call ctx.facets.delete() here, despite the
     // original plan calling for it as a GC nicety. Empirically reproduced
@@ -475,7 +478,5 @@ export class Cluster {
   }
 }
 
-// (The former standalone-Worker default export is gone: post-consolidation
-// this module only exports the Cluster/WatchHub DO classes, re-exported by
-// ../index.ts. The DOs remain unreachable from public URLs -- nothing in
-// gateway/index.ts routes raw storage paths to them.)
+// The DO classes here remain unreachable from public URLs -- nothing in
+// gateway/index.ts routes raw storage paths to them.

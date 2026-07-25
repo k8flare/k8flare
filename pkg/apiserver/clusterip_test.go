@@ -112,7 +112,7 @@ func TestClusterIPAllocation_SynchronousAndNoDoubleAllocation(t *testing.T) {
 		// earlier in this test run. The DO's alarm() handler
 		// unconditionally runs allocateClusterIPs on every firing (not
 		// just when needsServiceIPAttention triggered the wake) -- see
-		// workers/storage/src/index.ts -- so IF it fires during this
+		// workers/k8flare/src/storage/index.ts -- so IF it fires during this
 		// sleep, this exercises the exact "TS pass runs again after Go
 		// already allocated" race the boundary condition is about.
 		// Known gap (Phase 5): this subtest can silently stop exercising
