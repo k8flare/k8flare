@@ -8,7 +8,7 @@ import type { Env } from "../env.ts";
 // No alarms, no WebSockets: idle cost is storage alone (cost invariant
 // #1). DO instance names are "<id>@<uid>" -- the uid indirection means a
 // recreated cluster id NEVER reuses a DO/facet name (the facet
-// name-reuse wedge, workers/k8flare/src/storage/index.ts handleDelete),
+// name-reuse wedge, packages/k8flare-worker/src/storage/index.ts handleDelete),
 // and deleting the record makes the old tree unreachable immediately.
 
 export interface ClusterRecord {

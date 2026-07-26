@@ -1,11 +1,11 @@
 //go:build js && wasm
 
 // Command scheduler is the Go WASM entrypoint for the second dynamic
-// worker workers/k8flare's Controllers DO loads (alongside the
+// worker packages/k8flare-worker's Controllers DO loads (alongside the
 // kube-controller-manager one built from the parent directory): the
 // real, unmodified upstream kube-scheduler, started via
 // pkg/controllers.RunScheduler. It is NOT a separately deployed Worker --
-// its wasm-opt'd binary ships in workers/k8flare's Static Assets
+// its wasm-opt'd binary ships in packages/k8flare-worker's Static Assets
 // (sched.* chunks, `make wasm`) and runs as a Loader-loaded dynamic
 // worker, exactly like the KCM binary.
 //

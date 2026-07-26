@@ -57,7 +57,7 @@ jobs:
       - name: Verify generated code is up to date
         run: |
           go run ./cmd/k8flare-gen
-          git diff --exit-code -- pkg/apiserver/zz_generated_*.go workers/k8flare/src/k8s/gen workers/k8flare/assets/openapi workers/k8flare/assets/api workers/k8flare/assets/apis || {
+          git diff --exit-code -- pkg/apiserver/zz_generated_*.go packages/k8flare-worker/src/k8s/gen packages/k8flare-worker/assets/openapi packages/k8flare-worker/assets/api packages/k8flare-worker/assets/apis || {
             echo "::error::cmd/k8flare-gen output differs from what's committed. Run 'go run ./cmd/k8flare-gen' and commit the result." >&2
             exit 1
           }
@@ -72,8 +72,8 @@ jobs:
       # belt-and-suspenders coverage for the whole merged src tree -- real
       # errors were caught this way that `vp check` missed (a bare
       # `DurableObjectNamespace` return type erasing RPC method types).
-      - name: TypeScript check (workers/k8flare, direct tsc)
-        run: npx tsc --noEmit -p workers/k8flare/tsconfig.json
+      - name: TypeScript check (packages/k8flare-worker, direct tsc)
+        run: npx tsc --noEmit -p packages/k8flare-worker/tsconfig.json
 
       # binaryen's wasm-opt is required by the Makefile's kcm.manifest.json
       # recipe (the KCM WASM only fits under the Worker Loader's hard

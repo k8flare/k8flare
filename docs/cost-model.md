@@ -725,7 +725,7 @@ above's shape: reuse of infrastructure the Pod already pays for):**
    `--no-install-recommends` notwithstanding) that is very likely dead
    weight for a headless connector-only use -- confirmed by actually
    building the switched-to-`debian:bookworm-slim` node image
-   (`workers/k8flare/images/node/Dockerfile`) locally: the image grew to
+   (`packages/k8flare-worker/images/node/Dockerfile`) locally: the image grew to
    **1.48GB** (vs. the prior Alpine base's much smaller footprint,
    effectively all statically-linked Go + a bare k3s binary). This is a
    one-time-per-deploy image pull cost, not a per-Pod cost, but it likely
@@ -810,7 +810,7 @@ end-to-end against the live `k8flare` Worker. Two real, reproducible
 concurrency bugs were found and fixed in `cf-containers-scheduler` along
 the way (both leaked a Mesh connector against the 50-node cap under
 overlapping `reconcile()` invocations -- see the code comments in
-`workers/k8flare/src/nodes/scheduler.ts` for the exact mechanism), and
+`packages/k8flare-worker/src/nodes/scheduler.ts` for the exact mechanism), and
 `cmd/agent`'s hard `log.Fatalf` on Mesh-join failure was made non-fatal
 (matching this repo's existing "log and continue" posture for optional
 enhancements) after it was found to leave a Pod stuck in `Pending`
@@ -922,7 +922,7 @@ while the actually-dominant costs (a ~13MiB `strategicpatch` PATCH
 dependency, RBAC authorization, ServiceAccount token authentication)
 would have to be duplicated into every split binary anyway, since they
 gate every request/every resource today. **Cost-model consequence:
-none** -- `workers/k8flare` still loads exactly one apiserver Loader
+none** -- `packages/k8flare-worker` still loads exactly one apiserver Loader
 dynamic worker id per active cluster-day, same as the "Single-Worker
 consolidation" estimate above; this investigation did not add a second
 one.
@@ -1028,7 +1028,7 @@ permanent no-op for the same reason).
 Single-Worker consolidation table above) -- idle clusters load nothing,
 same as kcm/apiserver. No new alarm: gc is poked the same
 `fetch()`-driven + safety-net-alarm-driven way kcm/sched already are
-(`workers/k8flare/src/controllers/index.ts`'s `COMPONENTS` array), no
+(`packages/k8flare-worker/src/controllers/index.ts`'s `COMPONENTS` array), no
 independent polling loop of its own.
 
 **User-visible behavior change, not just an implementation swap.** The
@@ -1057,7 +1057,7 @@ also shrank kcm 65.0->41.8MB and gc 65.2->41.2MB as a side effect.
 ($0.002/cluster/active-day, same primitive as kcm/gc/apiserver's
 existing lines). Same poke/event-armed execution shape as kcm/gc -- no
 new alarm, no polling; idle clusters load nothing. Replaces nothing yet
-(the TS binder in workers/k8flare/src/nodes/scheduler.ts still runs for
+(the TS binder in packages/k8flare-worker/src/nodes/scheduler.ts still runs for
 Pod-on-Containers nodes; retiring it in favor of this scheduler is task
 #2's design work), so for now the sched DW adds capability (real
 scheduling semantics for BYO-VM-node clusters without a host scheduler)

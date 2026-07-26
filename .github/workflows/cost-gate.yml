@@ -103,7 +103,7 @@ jobs:
       - name: Start wrangler dev (real Workers + Durable Object storage)
         run: |
           nohup npx wrangler dev \
-            -c workers/k8flare/wrangler.jsonc \
+            -c packages/k8flare-worker/wrangler.jsonc \
             --enable-containers=false \
             --port 8787 \
             --persist-to .wrangler/state \

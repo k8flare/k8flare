@@ -14,13 +14,13 @@ import (
 )
 
 // genDiscoveryAssets writes the per-group-version discovery documents
-// (APIResourceList) as Static Assets under workers/k8flare/assets/, so
+// (APIResourceList) as Static Assets under packages/k8flare-worker/assets/, so
 // kubectl's parallel discovery fan-out (~30 concurrent requests on a
 // cold cache) is served by Cloudflare's asset handler without ever
 // touching the 43MB apiserver WASM -- instantiating that under the burst
 // intermittently blew the isolate startup CPU budget and surfaced as
 // kubectl's `couldn't get resource list ... ("unknown")` (see the
-// gateway's cold-start-retry comment in workers/k8flare/src/loader/apiserver.ts;
+// gateway's cold-start-retry comment in packages/k8flare-worker/src/loader/apiserver.ts;
 // this generator is the root fix, the retry stays as belt-and-braces).
 //
 // Only two-plus-segment paths are generated: `apis/<group>/<version>`

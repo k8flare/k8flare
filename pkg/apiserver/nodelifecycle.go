@@ -80,7 +80,7 @@ var nodeUnknownConditionTypes = []corev1.NodeConditionType{
 // Unlike AssignClusterIP/AssignPodCIDR/ReconcileNamespaceEndpoints (all
 // triggered by a specific write), staleness is detected by the ABSENCE of
 // an expected Lease renewal -- there is no write to hook this to. It must
-// run periodically; see workers/k8flare/src/storage/index.ts's alarm loop, which
+// run periodically; see packages/k8flare-worker/src/storage/index.ts's alarm loop, which
 // calls this via a service-binding fetch to apiserver's
 // /internal/reconcile-node-lifecycle route (main.go) on its existing
 // event-armed safety-net alarm, extended to also re-arm while any Node is
@@ -293,7 +293,7 @@ func podToleratesUnreachableForever(pod *corev1.Pod) bool {
 // (index.ts's pingControllers).
 //
 // POST /internal/reconcile-node-lifecycle runs ReconcileNodeLifecycle once.
-// Called from workers/k8flare/src/storage/index.ts's Cluster DO alarm loop, since
+// Called from packages/k8flare-worker/src/storage/index.ts's Cluster DO alarm loop, since
 // Lease staleness has no write to hook a synchronous call to (see
 // ReconcileNodeLifecycle's doc comment).
 func RegisterInternalHandlers(mux *http.ServeMux, storage *Storage) {

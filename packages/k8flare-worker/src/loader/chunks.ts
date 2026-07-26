@@ -20,7 +20,7 @@ export async function fetchWasmManifest(
   if (resp.status === 404) return null; // component not shipped
   if (!resp.ok) {
     throw new Error(
-      `wasm/${name}.manifest.json: HTTP ${resp.status} -- workers/k8flare/assets/wasm/ is missing; run npm run build:wasm first`,
+      `wasm/${name}.manifest.json: HTTP ${resp.status} -- packages/k8flare-worker/assets/wasm/ is missing; run npm run build:wasm first`,
     );
   }
   return resp.json();

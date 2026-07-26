@@ -6,7 +6,7 @@ k8flare を自分の Cloudflare アカウントにデプロイし、クラスタ
 
 ## 1. 全体像
 
-デプロイするのは Worker 1 つ (`workers/k8flare`) だけです。その中に:
+デプロイするのは Worker 1 つ (`packages/k8flare-worker`) だけです。その中に:
 
 - **apiserver / controller-manager / scheduler / GC** — 実物の upstream
   Kubernetes コード (WASM)。リクエストが来たときだけ動きます
@@ -23,7 +23,7 @@ k8flare を自分の Cloudflare アカウントにデプロイし、クラスタ
 ```sh
 pnpm install
 make wasm                                     # WASM チャンク生成 (~2分)
-npx wrangler deploy -c workers/k8flare/wrangler.jsonc
+npx wrangler deploy -c packages/k8flare-worker/wrangler.jsonc
 ```
 
 シークレットは **`ADMIN_TOKENS` の 1 つだけ**です(クラスタ管理 API の認証。
@@ -49,7 +49,7 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" $B/clusters/default/kubeconfig >
 
 管理 API は Cloudflare Access でも保護できます
 (`ACCESS_TEAM_DOMAIN` + `ACCESS_AUD` を設定。実装:
-`workers/k8flare/src/clusters/adminauth.ts`)。
+`packages/k8flare-worker/src/clusters/adminauth.ts`)。
 
 ### コスト上の注意 (重要)
 
@@ -95,7 +95,7 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" $B/clusters/team-a/kubeconfig > 
 Linux VM に agent バイナリを置いて起動するだけです:
 
 ```sh
-make nodes-agent    # workers/k8flare/images/node/k8flare-agent (linux/amd64)
+make nodes-agent    # packages/k8flare-worker/images/node/k8flare-agent (linux/amd64)
 ./k8flare-agent --server https://<your-worker>.workers.dev --token <クラスタのトークン>
 ```
 
@@ -119,7 +119,7 @@ wireguard を使います([cloudflare-mesh-networking.md](cloudflare-mesh-networ
 ```sh
 git pull
 make wasm && make test && make test-kcm   # ローカル検証
-npx wrangler deploy -c workers/k8flare/wrangler.jsonc
+npx wrangler deploy -c packages/k8flare-worker/wrangler.jsonc
 ```
 
 デプロイは無停止です(進行中のリクエストは旧バージョンで完走)。k8s

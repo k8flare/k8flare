@@ -19,7 +19,7 @@
 SHELL := /usr/bin/env bash
 
 WASM_TOOLS := packages/wasm-build/src
-ASSETS := workers/k8flare/assets/wasm
+ASSETS := packages/k8flare-worker/assets/wasm
 BUILD := .build/wasm
 CAP := 67108864 # the Worker Loader's 64MiB total-module-bytes cap (S14 Part 2)
 
@@ -241,23 +241,23 @@ test-kcm: wasm
 
 ## dev: local wrangler dev server
 dev:
-	wrangler dev -c workers/k8flare/wrangler.jsonc --persist-to .wrangler/state
+	wrangler dev -c packages/k8flare-worker/wrangler.jsonc --persist-to .wrangler/state
 
 ## nodes-agent: cross-compile the unmodified k3s agent embed (cmd/agent)
-## for linux/amd64 into workers/k8flare/images/node/, where the node-image
+## for linux/amd64 into packages/k8flare-worker/images/node/, where the node-image
 ## Dockerfile COPYs it -- Cloudflare Containers run amd64, and building
 ## the full k8s tree under qemu on ARM Macs would take 20+ minutes, so
 ## the Go build happens on the host (S15 round-2 lesson). Run before
-## `make deploy` (workers/k8flare).
-nodes-agent: workers/k8flare/images/node/k8flare-agent
+## `make deploy` (packages/k8flare-worker).
+nodes-agent: packages/k8flare-worker/images/node/k8flare-agent
 
-workers/k8flare/images/node/k8flare-agent: $(NODES_AGENT_SRC) | gen-mirrors
+packages/k8flare-worker/images/node/k8flare-agent: $(NODES_AGENT_SRC) | gen-mirrors
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o $@ ./cmd/agent
 	echo "$@: $$(wc -c < $@ | tr -d ' ') bytes"
 
 ## deploy: build node agent images, then wrangler deploy (uses whatever wasm is already committed -- run `make wasm` first if it needs rebuilding)
 deploy: nodes-agent
-	wrangler deploy --config workers/k8flare/wrangler.jsonc
+	wrangler deploy --config packages/k8flare-worker/wrangler.jsonc
 
 ## clean-wasm: drop the built chunks so the next `make wasm` rebuilds from scratch
 clean-wasm:

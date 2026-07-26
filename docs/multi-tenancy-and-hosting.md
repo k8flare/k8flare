@@ -442,7 +442,7 @@ Each phase keeps the live cluster working and the conformance CI green.
 ### Implementation record (2026-07-06): path-prefix multi-cluster shipped
 
 Phase 0 of the table above, plus the `POST /clusters` slice of Phase 5's
-management plane, shipped in `workers/k8flare/src/clusters/` — with one
+management plane, shipped in `packages/k8flare-worker/src/clusters/` — with one
 deliberate deviation: cluster resolution is a **`/c/<id>` path prefix**
 (the Rancher `/k8s/clusters/<id>` precedent), not the Host-based wildcard
 routing described under "Routing" above. Path prefixes work today on

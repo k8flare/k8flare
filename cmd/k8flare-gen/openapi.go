@@ -14,19 +14,19 @@ import (
 	"github.com/k8flare/k8flare/pkg/apiserver/apidef"
 )
 
-// assetsDir is where workers/k8flare/wrangler.jsonc's "assets.directory"
+// assetsDir is where packages/k8flare-worker/wrangler.jsonc's "assets.directory"
 // points -- Cloudflare serves any file placed here directly at the matching
 // URL path, without invoking the Worker at all (confirmed via wrangler
 // dev; see cmd/k8flare-gen's git history / final report for the
 // verification note), so no Go route handling is needed for /openapi/*.
 // (The wasm/ subtree next to these is Loader chunk supply, owned by
 // `make wasm` and excluded via run_worker_first.)
-const assetsDir = "workers/k8flare/assets"
+const assetsDir = "packages/k8flare-worker/assets"
 
 // genOpenAPI copies the real upstream OpenAPI v2 (Swagger 2.0) and v3
 // documents for every apidef.Table GroupVersion out of the k8s.io/kubernetes
 // module (resolved via go.mod's replace to the k3s-io/kubernetes fork) into
-// workers/k8flare's Static Assets directory, plus a generated v3
+// packages/k8flare-worker's Static Assets directory, plus a generated v3
 // discovery index. This is real upstream content, copied byte-for-byte
 // (the v2 document verbatim; the v3 documents verbatim per-file) -- nothing
 // here hand-writes or hand-filters an OpenAPI schema, matching the "don't
@@ -132,7 +132,7 @@ package apiserver
 // RegisterOpenAPIDiscovery, openapi.go): a {"paths": {...}} map from each
 // served GroupVersion's OpenAPI v3 document path to its Static-Assets URL
 // and content hash. Generated from the real per-group-version documents
-// copied into workers/k8flare/assets/openapi/v3/ -- see
+// copied into packages/k8flare-worker/assets/openapi/v3/ -- see
 // cmd/k8flare-gen/openapi.go.
 var OpenAPIV3Discovery = []byte(%s)
 `, generatedHeader, goRawOrQuoted(indexData))

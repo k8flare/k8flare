@@ -2017,7 +2017,7 @@ multi-cluster plan, run against the real 43MB apiserver WASM in
 ## S20: virtual kube-proxy TCP intercept — real bug found and fixed, node-half end-to-end proven (2026-07-07, task #13)
 
 Continuation of the WIP `pkg/vkubeproxy` (node-side TUN + gVisor
-`pkg/tcpip` userspace forwarder) and `workers/k8flare/src/nodes/podproxy.ts`
+`pkg/tcpip` userspace forwarder) and `packages/k8flare-worker/src/nodes/podproxy.ts`
 (`handlePodProxy`/`handleVKubeProxy`) from the previous session. That pass
 had wired the routes but never actually run the TUN intercept against a
 real kernel — this pass did, per CLAUDE.md rule 2 ("実際に動かして検証す
@@ -3004,9 +3004,9 @@ other 5 generated artifacts). Result:
   64,019,374 bytes / 3,017 KiB headroom, unchanged from before this
   investigation.
 
-`workers/k8flare/wrangler.jsonc`, the Loader routing in
-`workers/k8flare/src/loader/apiserver.ts` /
-`workers/k8flare/src/controllers/index.ts`, and
+`packages/k8flare-worker/wrangler.jsonc`, the Loader routing in
+`packages/k8flare-worker/src/loader/apiserver.ts` /
+`packages/k8flare-worker/src/controllers/index.ts`, and
 `scripts/build-wasm-chunks.sh` are all unchanged -- this stays a
 single apiserver Loader dynamic worker, same as before. If apiserver's
 headroom becomes tight again, the next-highest-leverage lever found
@@ -3173,13 +3173,13 @@ enough to stop here per this task's own branch condition:
 
 **On the coordinator's Facets-based hosting suggestion, evaluated at
 the design level but not prototyped:** mid-investigation, the
-orchestrating session correctly pointed out that `workers/k8flare/src/
+orchestrating session correctly pointed out that `packages/k8flare-worker/src/
 storage/facets.ts`'s `ctx.facets.get(name, factory)` mechanism (a
 Durable-Object-owned, lazily-created, independently-stateful facet
 instance, backed by the same `env.LOADER.get(...).getDurableObjectClass(...)`
 delivery already used for `cmd/apiserver-wasm`/`cmd/kcm-wasm`) is the
 right-shaped existing primitive for a lazy delegate, not a bare new
-Loader-worker binding -- and that `workers/k8flare/src/controllers/
+Loader-worker binding -- and that `packages/k8flare-worker/src/controllers/
 index.ts`'s `Controllers` DO already has a stubbed, gracefully-handled
 `"sched"` `loadComponent` case and a `GATEWAY` fetcher
 (`dynamicEnv.GATEWAY = this.env.SELF`) in the shape that

@@ -17,7 +17,7 @@ milliseconds.
 kubectl / kubelet (BYO VM: unmodified k3s embed, cmd/agent)
    │ HTTPS + token
    ▼
-workers/k8flare  — the ONE deployed Worker (routing, auth, watch streaming,
+packages/k8flare-worker  — the ONE deployed Worker (routing, auth, watch streaming,
    │               kubelet proxy)
    ├─► apiserver   (Go WASM, dynamic worker; real generic registry over DO storage)
    ├─► kcm         (real kube-controller-manager: 7 workload controllers)
@@ -97,8 +97,8 @@ make test-kcm    # control-plane smoke with the real KCM/GC/sched dynamic worker
 Build and run the agent on a Linux VM:
 
 ```sh
-make nodes-agent   # builds workers/k8flare/images/node/k8flare-agent (linux/amd64)
-./workers/k8flare/images/node/k8flare-agent --server https://<your-worker>.workers.dev --token <cluster token>
+make nodes-agent   # builds packages/k8flare-worker/images/node/k8flare-agent (linux/amd64)
+./packages/k8flare-worker/images/node/k8flare-agent --server https://<your-worker>.workers.dev --token <cluster token>
 ```
 
 See `cmd/agent/main.go` for Mesh networking, labels/taints, and the other
@@ -106,7 +106,7 @@ flags.
 
 ## Deploying
 
-`wrangler deploy -c workers/k8flare/wrangler.jsonc` — set `ADMIN_TOKENS`
+`wrangler deploy -c packages/k8flare-worker/wrangler.jsonc` — set `ADMIN_TOKENS`
 (the management-API secret, the only Worker secret) and then mint cluster
 tokens through the admin API (`POST /clusters/default/tokens`); a cluster
 with no minted tokens is a dev posture. The `containers` section provisions NodeVM

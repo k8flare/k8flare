@@ -13,7 +13,7 @@ import (
 // mutating webhook plays on managed per-Pod-node platforms). Every
 // Pod-on-Containers NodeVM self-registers with a
 // `k8flare.com/pod-on-containers=true:NoSchedule` taint (its own real
-// kubelet, given `-node-taints` by workers/k8flare/images/node/
+// kubelet, given `-node-taints` by packages/k8flare-worker/images/node/
 // entrypoint.sh), so un-annotated Pods can never land on the Containers
 // backend, and annotated Pods schedule ONLY there.
 //
@@ -76,7 +76,7 @@ func PodWantsContainers(pod *corev1.Pod, nsLabels map[string]string) bool {
 // registration, not from the Ready condition alone. This repo never
 // creates Node objects itself for this backend for exactly that reason:
 // every Pod-on-Containers Node is self-registered by its own real
-// kubelet (workers/k8flare/images/node/entrypoint.sh), which carries
+// kubelet (packages/k8flare-worker/images/node/entrypoint.sh), which carries
 // that taint machinery for free.)
 func MutatePodForComputeClass(pod *corev1.Pod) {
 	if pod.Spec.NodeSelector == nil {

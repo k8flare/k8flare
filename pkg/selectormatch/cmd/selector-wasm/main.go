@@ -1,6 +1,6 @@
 //go:build js && wasm
 
-// The gateway's watch fan-out (workers/k8flare/src/k8s/watch.ts) used
+// The gateway's watch fan-out (packages/k8flare-worker/src/k8s/watch.ts) used
 // to re-implement Kubernetes label/field selector parsing and matching
 // in TypeScript -- a hand-rolled subset that silently accepted syntax
 // the real apimachinery parsers reject and missed operators they

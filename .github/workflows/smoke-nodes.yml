@@ -5,7 +5,7 @@
 # this task asked for: kubectl-equivalent create -> Running, delete ->
 # container actually stops, and restartPolicy's three modes.
 #
-# Post-consolidation this runs against the single workers/k8flare config;
+# Post-consolidation this runs against the single packages/k8flare-worker config;
 # the /nodes/* operator surface the old CI-only debug proxy invented is
 # now a native route of the consolidated Worker (gateway/index.ts), so
 # the proxy -- and the multi-config first-port workaround it existed
@@ -228,7 +228,7 @@ jobs:
           GATEWAY_CA_B64=$(base64 -w0 < "$RUNNER_TEMP/devtls/dev.crt")
 
           nohup npx wrangler dev \
-            -c workers/k8flare/wrangler.jsonc \
+            -c packages/k8flare-worker/wrangler.jsonc \
             --local \
             --ip 0.0.0.0 \
             --port 8930 \

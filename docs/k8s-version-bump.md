@@ -20,7 +20,7 @@ process.
      `pkg/apiserver/zz_generated_version.go`, so `GET /version` reports the
      new version automatically.
    - Re-copies the new pin's real OpenAPI v2/v3 documents into
-     `workers/k8flare/assets/openapi/`.
+     `packages/k8flare-worker/assets/openapi/`.
    - Re-emits `pkg/apiserver/zz_generated_defaulters.go` from
      `pkg/apiserver/apidef.Table` crossed with
      `cmd/k8flare-gen/defaulters.go`'s hand-maintained group->package map.

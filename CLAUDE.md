@@ -38,7 +38,7 @@ Kubernetes offers scale-to-zero control planes")。**この特性を壊す変更
 3. **ASSETS = 静的。** デプロイ毎に不変なもの: WASM チャンク(≤24MiB×N +
    sha256 manifest)・patched wasm_exec.js・OpenAPI / discovery 文書。
 
-シェル Worker は workers/k8flare の 1 つだけ(唯一のデプロイ単位・唯一の公開
+シェル Worker は packages/k8flare-worker の 1 つだけ(唯一のデプロイ単位・唯一の公開
 fetch)。その TS の役割は (1) ルーティング/認証 (2) LOADER 呼び出し(loaded
 worker からは不可、S14) (3) DO クラスの器 (4) bindings グルー、に限定し、
 **ビジネスロジックを TS に書かない**(Go-first の徹底)。
@@ -47,7 +47,7 @@ worker からは不可、S14) (3) DO クラスの器 (4) bindings グルー、�
 kubectl / kubelet(BYO VM: cmd/agent 無改変 k3s embed)
    │ HTTPS + token
    ▼
-workers/k8flare(シェル: 認証一元化・watch ストリーミング・kubelet proxy・
+packages/k8flare-worker(シェル: 認証一元化・watch ストリーミング・kubelet proxy・
    │            /nodes/* オペレータ面。/internal/* は外部からはクラスタトークン必須)
    ├──► apiserver DW(per-request。apidef テーブル駆動、
    │      pkg/apiserver/cmd/apiserver-wasm。kine への経路は STORAGE 自己バインディング
@@ -96,14 +96,14 @@ S19 の 3 ゲート検証を経て単一 Worker に統合。旧クラスタの D
 pnpm install                     # 初回のみ
 make wasm                        # Go を変更したら必須。apiserver+KCM+GC+sched のチャンクと
                                  # selector.wasm(gateway バンドル用)を
-                                 # workers/k8flare/assets/wasm/ に生成(Make のファイル依存関係で
+                                 # packages/k8flare-worker/assets/wasm/ に生成(Make のファイル依存関係で
                                  # 差分ベースにスキップ。KCM の wasm-opt 込みで約2分だが、対象バイナリの
                                  # ソースが変わっていなければ即スキップ。強制再ビルドは `make clean-wasm wasm`)
-make dev                         # wrangler dev(単一 config: workers/k8flare/wrangler.jsonc)。
-                                 # Docker なし環境は `wrangler dev -c workers/k8flare/wrangler.jsonc
+make dev                         # wrangler dev(単一 config: packages/k8flare-worker/wrangler.jsonc)。
+                                 # Docker なし環境は `wrangler dev -c packages/k8flare-worker/wrangler.jsonc
                                  # --persist-to .wrangler/state --enable-containers=false` を直接叩く
 make check                       # TypeScript 型チェック(vp check)
-npx tsc --noEmit -p workers/k8flare/tsconfig.json   # vp check が拾わない型面の直接チェック
+npx tsc --noEmit -p packages/k8flare-worker/tsconfig.json   # vp check が拾わない型面の直接チェック
 make vet                         # go vet ./pkg/... ./cmd/k8flare-gen/...
 make test                        # go test ./pkg/apiserver/... (wasm ターゲットに依存、自動で先にビルドされる)
                                  # 自前で `npx wrangler dev` を起動して実 client-go で駆動する
@@ -142,7 +142,7 @@ CI ゲート(`.github/workflows/`): `ci.yml`(vp check / build:wasm / go vet+test
 - `wrangler dev` の alarm エミュレーションは、読み取り専用のポーリングだけでは発火しないことがある。「動いていない」と結論する前に書き込みを1件試すこと。
 - `kubectl apply` に `--validate=false` はもう不要(OpenAPI v2/v3 を Static Assets で配信、実 kubectl で確認済み)。ただし plain HTTP(`wrangler dev` そのまま)だと client-go の `clientcmd` が TLS 以外への認証情報送信を拒否するため、kubeconfig 経由の実 kubectl 検証にはローカル TLS 終端(自己署名証明書 + リバースプロキシ)が要る — Go の `rest.Config{BearerToken: ...}` を直接使う `go test` はこの制約を受けない。サーバー側の strict field validation は実装済みで既定 Strict(pkg/apiserver/fieldvalidation.go。この行の旧記述「未実装」は 2026-07-27 の docs 監査で誤りと判明し訂正)。
 - `wrangler deploy` / `wrangler secret put` は実アカウントに影響するので、指示なく実行しない(`.claude/settings.json` の deny 設定でもブロックされる)。
-- 単一 Worker 統合後(2026-07-06)、`npm run dev` は常に全コンポーネント(実 KCM 含む)を含む。**`go test ./pkg/apiserver/...` は同じ単一 config を `--var KCM_DISABLED:1` 付きで起動する** — テスト内の Pod は KCM に触られない前提で書かれており、このキルスイッチ(storage の pingControllers と Controllers DO の early-return)がその前提を守る。「dev では Pod が動くのに test では KCM が反応しない」はこの差が原因。KCM を動かすには先に `npm run build:wasm`(KCM の wasm-opt 込みで約2分)で `workers/k8flare/assets/wasm/` を生成しておくこと(apiserver チャンクがないと dev は API 応答自体ができない)。
+- 単一 Worker 統合後(2026-07-06)、`npm run dev` は常に全コンポーネント(実 KCM 含む)を含む。**`go test ./pkg/apiserver/...` は同じ単一 config を `--var KCM_DISABLED:1` 付きで起動する** — テスト内の Pod は KCM に触られない前提で書かれており、このキルスイッチ(storage の pingControllers と Controllers DO の early-return)がその前提を守る。「dev では Pod が動くのに test では KCM が反応しない」はこの差が原因。KCM を動かすには先に `npm run build:wasm`(KCM の wasm-opt 込みで約2分)で `packages/k8flare-worker/assets/wasm/` を生成しておくこと(apiserver チャンクがないと dev は API 応答自体ができない)。
 - **Docker が動いていない環境では `wrangler dev` は containers 定義で hard fail する。** `--enable-containers=false` を付けること(go test / e2e / cost-gate の各ハーネスは付与済み)。コンテナイメージには EXPOSE が必須(ないと dev が起動拒否、S19 実測)。
 - `go test ./pkg/apiserver/...` は repo ルートの `.wrangler/state` を**クリアせずに**使う。中断された前回実行の残骸があると「already exists」で決定論的に落ちる(2026-07-05 実測)。落ちたらまず `rm -rf .wrangler/state` してから再実行し、flaky と結論しない。
 - **`.build/` のミラー(k8s-js-mirror / clientgo-lean-mirror)を再生成する前に、必ず現物を退避すること**(`cp -Rc .build/k8s-js-mirror .build/k8s-js-mirror.bak-$(date +%s)` 等)。2026-07-05 に、稼働中の 62.5MB KCM WASM を生んでいたディスク上のミラー状態が `rm -rf` 込みの再生成で失われ、コミット済みツリーからは 98.6MB(64MiB cap 超過)しか再現できなくなる回帰が起きた(docs/platform-verification.md の OPEN REGRESSION 参照)。gitignore された生成物でも、それがビルド入力である限り「消して作り直せば同じ」とは限らない。
@@ -150,8 +150,8 @@ CI ゲート(`.github/workflows/`): `ci.yml`(vp check / build:wasm / go vet+test
 ## コード規約
 
 - **Go-first。** 新しい制御プレーンロジックは Go(`pkg/`)に書き、k8s.io / k3s-io のパッケージを再利用する。TypeScript はプラットフォームが要求する部分(Worker エントリポイント、DO クラスのグルー、bindings)に限定する。手書き行数を減らすこと自体が目標。
-- **生成コードは手編集しない。** `gen/` ディレクトリ配下、または `Code generated by k8flare-gen. DO NOT EDIT.` ヘッダーを持つファイルは編集禁止(hook でもブロックされる)。変更したい場合はジェネレーター(`cmd/k8flare-gen`)を直して `go generate ./...` を再実行し、生成結果をコミットする。`workers/k8flare/assets/wasm/` などのビルド出力も同様に直接編集しない。
-- **レイアウト**: `workers/k8flare/`(唯一のデプロイ単位・唯一の TypeScript ワークスペース。src/ 配下に gateway/ storage/ controllers/ nodes/ clusters(予定)/ k8s(旧 `packages/k8s`、2026-07-08 統合)のサブツリー)+ Go モジュールはルート単一(k3s-io の replace 群をモジュール間で重複させない)。`cmd/` は BYO VM / ホストプロセスで動く独立した実行ファイル専用(`cmd/agent` `cmd/scheduler` `cmd/controller-manager` `cmd/k8flare-gen`)。k8flare Worker 自身の WASM エントリーポイント(独立実行ファイルではなく Worker のビルド成果物の一部)は対応する `pkg/` 配下の `cmd/` サブディレクトリに置く: `pkg/apiserver/cmd/apiserver-wasm` / `pkg/controllers/cmd/kcm-wasm`(2026-07-08、旧リポジトリ直下の `cmd/apiserver-wasm` / `cmd/kcm-wasm` から移動)。
+- **生成コードは手編集しない。** `gen/` ディレクトリ配下、または `Code generated by k8flare-gen. DO NOT EDIT.` ヘッダーを持つファイルは編集禁止(hook でもブロックされる)。変更したい場合はジェネレーター(`cmd/k8flare-gen`)を直して `go generate ./...` を再実行し、生成結果をコミットする。`packages/k8flare-worker/assets/wasm/` などのビルド出力も同様に直接編集しない。
+- **レイアウト**: `packages/k8flare-worker/`(唯一のデプロイ単位・唯一の TypeScript ワークスペース。src/ 配下に gateway/ storage/ controllers/ nodes/ clusters(予定)/ k8s(旧 `packages/k8s`、2026-07-08 統合)のサブツリー)+ Go モジュールはルート単一(k3s-io の replace 群をモジュール間で重複させない)。`cmd/` は BYO VM / ホストプロセスで動く独立した実行ファイル専用(`cmd/agent` `cmd/scheduler` `cmd/controller-manager` `cmd/k8flare-gen`)。k8flare Worker 自身の WASM エントリーポイント(独立実行ファイルではなく Worker のビルド成果物の一部)は対応する `pkg/` 配下の `cmd/` サブディレクトリに置く: `pkg/apiserver/cmd/apiserver-wasm` / `pkg/controllers/cmd/kcm-wasm`(2026-07-08、旧リポジトリ直下の `cmd/apiserver-wasm` / `cmd/kcm-wasm` から移動)。
 - **ブランチ**: `feat/*` | `fix/*` | `docs/*`。main への直接コミット禁止。
 
 ## docs 索引

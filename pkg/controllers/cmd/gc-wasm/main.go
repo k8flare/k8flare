@@ -2,7 +2,7 @@
 
 // Command gc is the Go WASM entrypoint for the real, unmodified upstream
 // garbagecollector controller (ownerReferences cascade delete), hosted
-// as a THIRD Loader-loaded dynamic worker inside workers/k8flare's
+// as a THIRD Loader-loaded dynamic worker inside packages/k8flare-worker's
 // Controllers Durable Object (src/controllers/index.ts), alongside the
 // kube-controller-manager one built from ../kcm-wasm and the (not yet
 // buildable) scheduler one. Deliberately its own isolate rather than

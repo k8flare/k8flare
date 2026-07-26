@@ -258,7 +258,7 @@ func (s *Storage) Delete(ctx context.Context, key string, revision int64) (int64
 	}
 
 	// handleDelete reports a revision-CAS mismatch as HTTP 200 with
-	// deleted:false (workers/k8flare/src/storage/index.ts), NOT as an
+	// deleted:false (packages/k8flare-worker/src/storage/index.ts), NOT as an
 	// error status. Treating that as success meant a delete racing a
 	// concurrent update silently left the object alive while the
 	// apiserver told the client it was gone -- same retry contract as

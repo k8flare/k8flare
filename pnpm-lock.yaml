@@ -21,17 +21,17 @@ importers:
         specifier: ^4.106.0
         version: 4.106.0(@cloudflare/workers-types@4.20260317.1)
 
+  packages/k8flare-worker:
+    dependencies:
+      '@cloudflare/containers':
+        specifier: ^0.3.7
+        version: 0.3.7
+
   packages/wasm-build:
     devDependencies:
       '@types/node':
         specifier: ^24.0.0
         version: 24.13.3
-
-  workers/k8flare:
-    dependencies:
-      '@cloudflare/containers':
-        specifier: ^0.3.7
-        version: 0.3.7
 
 packages:
 

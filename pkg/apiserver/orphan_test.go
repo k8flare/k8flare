@@ -19,7 +19,7 @@ import (
 // asynchronously in its own dynamic worker, which this suite's wrangler
 // dev harness deliberately never loads (setupWranglerDev sets
 // KCM_DISABLED=1, gating every poke in
-// workers/k8flare/src/controllers/index.ts's fetch(), gc included, so
+// packages/k8flare-worker/src/controllers/index.ts's fetch(), gc included, so
 // pkg/apiserver's own objects are never touched by a controller
 // mid-test). GC-driven completion is covered by e2e-conformance's
 // upstream [sig-api-machinery] Garbage collector suite instead, against

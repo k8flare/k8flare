@@ -10,7 +10,7 @@ import (
 // body (kv.value base64-encoded JSON, {"tokens":[{"secret":"..."}]})
 // into the list of currently valid cluster-token secrets for a
 // provisioned (non-default) cluster. Shape owned by
-// workers/k8flare/src/clusters/tokens.ts. This package's own
+// packages/k8flare-worker/src/clusters/tokens.ts. This package's own
 // cmd/apiserver-wasm/main.go
 // makes the actual HTTP round-trip (only it can reach the STORAGE
 // binding) and passes the response body here for the host-testable

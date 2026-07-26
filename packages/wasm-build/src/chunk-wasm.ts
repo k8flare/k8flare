@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Splits a WASM binary into Static-Assets-safe chunks (Cloudflare's ASSETS
 // per-file cap is 25MiB) and writes a manifest consumed at Loader-factory
-// time by workers/k8flare/src/loader/*.ts. The manifest's sha256 doubles
+// time by packages/k8flare-worker/src/loader/*.ts. The manifest's sha256 doubles
 // as the Loader isolate cache key, so a rebuilt binary naturally busts the
 // dynamic worker cache on next load.
 import { createHash } from "node:crypto";

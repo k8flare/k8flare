@@ -180,7 +180,7 @@ func RegisterGroupDiscovery(mux *http.ServeMux) {
 // RegisterOpenAPIDiscovery registers GET /openapi/v3, the one OpenAPI route
 // this Go binary answers directly. Every other OpenAPI path --
 // /openapi/v2, and each /openapi/v3/... per-group-version document -- is
-// served straight out of workers/k8flare/assets/openapi/ as a Static
+// served straight out of packages/k8flare-worker/assets/openapi/ as a Static
 // Asset without ever reaching this binary (see wrangler.jsonc's "assets"
 // config); the bare "/openapi/v3" discovery index can't join them there
 // because it would need to be both a file and (for its children) a

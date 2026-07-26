@@ -9,7 +9,7 @@ import (
 )
 
 // context returns this invocation's {env, ctx, connect, binding} object
-// -- Go.run's second argument (workers/k8flare/src/loader/bootstrap.ts's
+// -- Go.run's second argument (packages/k8flare-worker/src/loader/bootstrap.ts's
 // runtimeCtx), threaded into globalThis by the patched wasm_exec.js (see
 // pkg/cfruntime/README.md and packages/wasm-build/src/patch-wasm-exec.ts).
 func context() js.Value {

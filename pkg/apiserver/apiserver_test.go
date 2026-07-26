@@ -56,7 +56,7 @@ func setupWranglerDev(t *testing.T) *kubernetes.Clientset {
 		testPort = findFreePort(t)
 		projectRoot := findProjectRoot(t)
 
-		// Single consolidated config (workers/k8flare). Flags keep the old
+		// Single consolidated config (packages/k8flare-worker). Flags keep the old
 		// 4-Worker harness semantics:
 		//   --enable-containers=false -- no Docker needed (S19 G1); the
 		//     NodeVM containers are irrelevant to these tests.
@@ -79,7 +79,7 @@ func setupWranglerDev(t *testing.T) *kubernetes.Clientset {
 		//     --local disables remote bindings outright; nothing in this
 		//     suite needs MESH.
 		devCmd = exec.Command("npx", "wrangler", "dev",
-			"-c", "workers/k8flare/wrangler.jsonc",
+			"-c", "packages/k8flare-worker/wrangler.jsonc",
 			"--enable-containers=false",
 			"--local",
 			"--var", "KCM_DISABLED:1",

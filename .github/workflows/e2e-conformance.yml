@@ -212,7 +212,7 @@ jobs:
           # see that step's comment). The gc dynamic worker stays live
           # -- the host runs no garbage collector.
           nohup npx wrangler dev \
-            -c workers/k8flare/wrangler.jsonc \
+            -c packages/k8flare-worker/wrangler.jsonc \
             --enable-containers=false \
             --var SCHED_DISABLED:${{ matrix.controlplane == 'sched-dw' && '0' || '1' }} \
             --var CM_DISABLED:${{ matrix.controlplane == 'kcm-dw' && '0' || '1' }} \

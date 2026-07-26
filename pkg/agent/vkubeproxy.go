@@ -13,7 +13,7 @@
 // kube-controller-manager (rule #3): gVisor's pkg/tcpip terminates each
 // ClusterIP-bound TCP connection a Pod opens, and this file re-issues
 // it as a plain outbound HTTP request against the control plane's
-// /nodes/vkubeproxy endpoint (workers/k8flare/src/nodes/podproxy.ts),
+// /nodes/vkubeproxy endpoint (packages/k8flare-worker/src/nodes/podproxy.ts),
 // which resolves the target Service via EndpointSlice and forwards to the
 // backing Pod's own NodeVM.
 //

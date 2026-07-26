@@ -79,17 +79,17 @@ doc comment を確認した結果、多くは「upstream の実物を配線す�
 | [server.go](../pkg/apiserver/server.go) | 146 | B: サーバー組み立て |
 | その他 15 ファイル | ≈1,300 | A/B 混在: auth/vkubeproxy/ssar/priority/fieldvalidation/sa/tokenreview/namespacedelete/nodepassword/bootstrap/tokenvault/stores/casretry/watch |
 
-## 3. TypeScript ([workers/k8flare/src](../workers/k8flare/src)) — 全て手書きプラットフォームグルー(設計上 TS にビジネスロジックを置かない)
+## 3. TypeScript ([packages/k8flare-worker/src](../packages/k8flare-worker/src)) — 全て手書きプラットフォームグルー(設計上 TS にビジネスロジックを置かない)
 
 | subtree | 行数 | 役割 |
 |---|---|---|
-| [storage/](../workers/k8flare/src/storage) | 1,678 | Cluster DO + WatchHub DO (kine ストア・facets・watch fan-out) |
-| [nodes/](../workers/k8flare/src/nodes) | 961 | Containers スケジューラ + NodeVM DO |
-| [clusters/](../workers/k8flare/src/clusters) | 676 | クラスタレジストリ/トークン/管理 API 認証 |
-| [k8s/](../workers/k8flare/src/k8s) | 671 | watch ストリーミング・URL マッピング・selector-wasm ブリッジ |
-| [gateway/](../workers/k8flare/src/gateway) | 660 | シェルルーティング/認証/kubelet・exec プロキシ |
-| [controllers/](../workers/k8flare/src/controllers) | 436 | resident KCM/GC/sched の poke ポンプ DO |
-| [loader/](../workers/k8flare/src/loader) | 229 | Dynamic Worker (LOADER) 呼び出し |
+| [storage/](../packages/k8flare-worker/src/storage) | 1,678 | Cluster DO + WatchHub DO (kine ストア・facets・watch fan-out) |
+| [nodes/](../packages/k8flare-worker/src/nodes) | 961 | Containers スケジューラ + NodeVM DO |
+| [clusters/](../packages/k8flare-worker/src/clusters) | 676 | クラスタレジストリ/トークン/管理 API 認証 |
+| [k8s/](../packages/k8flare-worker/src/k8s) | 671 | watch ストリーミング・URL マッピング・selector-wasm ブリッジ |
+| [gateway/](../packages/k8flare-worker/src/gateway) | 660 | シェルルーティング/認証/kubelet・exec プロキシ |
+| [controllers/](../packages/k8flare-worker/src/controllers) | 436 | resident KCM/GC/sched の poke ポンプ DO |
+| [loader/](../packages/k8flare-worker/src/loader) | 229 | Dynamic Worker (LOADER) 呼び出し |
 | src 直下 | 151 | エントリポイント/env |
 
 ## 4. 生成パイプライン
@@ -103,9 +103,9 @@ go.mod の k8s.io/kubernetes ピン**。`make gen`(= `go run ./cmd/k8flare-gen`)
 |---|---|---|---|
 | defaulters | [pkg/apiserver/zz_generated_defaulters.go](../pkg/apiserver/zz_generated_defaulters.go) | 33 | 全 API グループの**実 upstream versioned defaulters** を Scheme に登録 |
 | version | [pkg/apiserver/zz_generated_version.go](../pkg/apiserver/zz_generated_version.go) | 14 | `/version` が返す値を k8s ピンから導出(手書きリテラル排除) |
-| resource-kinds | [workers/k8flare/src/k8s/gen/resource-kinds.gen.ts](../workers/k8flare/src/k8s/gen/resource-kinds.gen.ts) | 49 | plural→Kind 表(gateway/watch 層用) |
-| openapi | [workers/k8flare/assets/openapi/](../workers/k8flare/assets/openapi) | ≈10MB | **実 upstream OpenAPI v2/v3 文書**。Static Assets 配信で `kubectl apply` がクライアント検証込みで動く |
-| discovery-assets | [workers/k8flare/assets/api/](../workers/k8flare/assets/api) / [apis/](../workers/k8flare/assets/apis) | 小 | discovery 文書の静的配信版 |
+| resource-kinds | [packages/k8flare-worker/src/k8s/gen/resource-kinds.gen.ts](../packages/k8flare-worker/src/k8s/gen/resource-kinds.gen.ts) | 49 | plural→Kind 表(gateway/watch 層用) |
+| openapi | [packages/k8flare-worker/assets/openapi/](../packages/k8flare-worker/assets/openapi) | ≈10MB | **実 upstream OpenAPI v2/v3 文書**。Static Assets 配信で `kubectl apply` がクライアント検証込みで動く |
+| discovery-assets | [packages/k8flare-worker/assets/api/](../packages/k8flare-worker/assets/api) / [apis/](../packages/k8flare-worker/assets/apis) | 小 | discovery 文書の静的配信版 |
 | leanclient | [pkg/leanclient/gen/](../pkg/leanclient/gen) | 2,052 | WASM コントローラー用の typed client 8 グループ(client-go 全部をリンクしないための narrow 版) |
 
 このほかに**ビルド時生成(コミットしない)**が 2 層ある:
@@ -114,7 +114,7 @@ go.mod の k8s.io/kubernetes ピン**。`make gen`(= `go run ./cmd/k8flare-gen`)
   upstream ソースを js/wasm ビルド可能な形にミラーし、[pkg/k8s-js-overlays](../pkg/k8s-js-overlays) /
   [pkg/clientgo-lean-overlays](../pkg/clientgo-lean-overlays) のオーバーレイを重ねる。ビルド入力なので
   再生成前の退避が必要(CLAUDE.md「ローカル開発の落とし穴」参照)。
-- `workers/k8flare/assets/wasm/` チャンク(`make wasm`): apiserver/kcm/gc/sched の Go バイナリを
+- `packages/k8flare-worker/assets/wasm/` チャンク(`make wasm`): apiserver/kcm/gc/sched の Go バイナリを
   wasm-opt → 24MiB 分割 + sha256 manifest 化した Loader 供給物。
 
 k8s バージョンを上げる手順は [docs/k8s-version-bump.md](k8s-version-bump.md)
@@ -164,7 +164,7 @@ upstream プラグとの既知の差分 (未実装、必要になったら追加
   NamespaceLifecycle と同じパターン 2 (持ち込みが過大) に該当する。
   リンク実測はしていないため、apiserver チャンクの headroom (現在
   ~1.9MB) に余裕ができたら再評価する。
-- [storage/index.ts](../workers/k8flare/src/storage/index.ts) の
+- [storage/index.ts](../packages/k8flare-worker/src/storage/index.ts) の
   node-lifecycle 安全網 alarm は「live Node が存在する間は 60 秒間隔」
   で、厳密には固定間隔。ノードが居る間は kubelet ハートビート
   (10s) がどのみち走るため実害は小さいが、Lease 期限からの

@@ -34,7 +34,7 @@ import { makeResidentBootstrapJS } from "../loader/bootstrap.ts";
 import { assembleWasm, fetchWasmAsset, fetchWasmManifest } from "../loader/chunks.ts";
 
 // Safety-net alarm interval: mirrors workers/storage's Cluster DO
-// SAFETY_NET_INTERVAL_MS (workers/k8flare/src/storage/index.ts) -- this is purely
+// SAFETY_NET_INTERVAL_MS (packages/k8flare-worker/src/storage/index.ts) -- this is purely
 // a liveness/resurrection check (is the resident controller-manager
 // still alive after a redeploy/panic/eviction?), not a reconciliation
 // trigger: the real controllers, once running, watch continuously via
@@ -285,7 +285,7 @@ export class Controllers {
     // Arm the safety net if it isn't already, so a redeploy/panic/
     // eviction that resets the dynamic workers still gets noticed and
     // restarted even if no further relevant write happens to re-trigger
-    // storage's pingControllers (workers/k8flare/src/storage/index.ts). Cheap
+    // storage's pingControllers (packages/k8flare-worker/src/storage/index.ts). Cheap
     // local check -- no cross-DO call on this hot path. Armed before the
     // dispatch so a still-loading component gets a completion poke even
     // if no further write ever arrives.

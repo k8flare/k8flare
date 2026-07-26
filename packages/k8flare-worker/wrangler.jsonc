@@ -82,7 +82,7 @@
   ],
   "vars": {
     // Public URL the in-VM k3s agents dial from outside (service
-    // bindings don't reach into microVMs) -- workers/k8flare/src/nodes.
+    // bindings don't reach into microVMs) -- packages/k8flare-worker/src/nodes.
     "GATEWAY_URL": "https://k8flare.kooffice.workers.dev",
   },
   // Cloudflare Mesh (spikes/s17-mesh-nodevm/FINDINGS.md): reaches any

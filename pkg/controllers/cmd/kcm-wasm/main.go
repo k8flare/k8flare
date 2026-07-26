@@ -1,7 +1,7 @@
 //go:build js && wasm
 
 // Command controllers is the Go WASM entrypoint hosted inside
-// workers/k8flare's Controllers Durable Object (src/controllers/index.ts). It
+// packages/k8flare-worker's Controllers Durable Object (src/controllers/index.ts). It
 // starts the real, unmodified upstream kube-controller-manager (via
 // pkg/controllers.RunControllerManager) once per DO instance and keeps it
 // running for as long as that instance stays resident -- see

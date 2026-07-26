@@ -53,7 +53,7 @@ exec`**, previously served by Cloudflare Tunnel + Workers VPC Service
 (`infra/setup-tunnel.sh`). User decision 2026-07-07: replace that
 path with Mesh (`spikes/s17-mesh-nodevm/FINDINGS.md` gates 1-2, closed
 that day) -- README's setup section and
-`workers/k8flare/src/gateway/proxy/target.ts` reflect this (Mesh
+`packages/k8flare-worker/src/gateway/proxy/target.ts` reflect this (Mesh
 preferred, Tunnel+VPC Service kept as a fallback for existing
 deployments).
 

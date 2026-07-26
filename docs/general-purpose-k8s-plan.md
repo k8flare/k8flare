@@ -247,7 +247,7 @@ while setting up this verification** (both are genuine fixes, not workarounds
 specific to the Docker-based test rig):
 
 1. **`wrangler dev` startup now hard-fails with no Cloudflare credentials, a
-   silent regression from `b6d4340`.** `workers/k8flare/wrangler.jsonc`'s
+   silent regression from `b6d4340`.** `packages/k8flare-worker/wrangler.jsonc`'s
    `vpc_networks` MESH binding has zero local-dev emulation — confirmed
    directly that `remote: true` vs `false` makes no difference, and that
    even a syntactically-valid but wrong `CLOUDFLARE_API_TOKEN` still hard
@@ -308,14 +308,14 @@ test -count=1 ./pkg/apiserver/...` now passes with `HOME` pointed at an
 **CI wiring investigated and NOT adopted**: wiring Mesh into
 `e2e-conformance.yml` so the upstream `kubectl exec`-based test could pass
 there was investigated concretely, not just considered abstractly.
-`workers/k8flare/src/gateway/proxy/target.ts`'s `resolveKubeletTarget` —
+`packages/k8flare-worker/src/gateway/proxy/target.ts`'s `resolveKubeletTarget` —
 used by **both** `kubectl logs` and `kubectl exec` for BYO-VM nodes, a
 correction to this task's own premise that logs is exec-free for this node
 type — requires either the `MESH` binding (real Cloudflare infrastructure,
 see bug 1 above) or the legacy `KUBELET_VPC` Tunnel+VPC Service binding
 (same "no local emulation" property). Making this test pass in CI would mean
 minting a real Mesh connector token per ephemeral CI run (the same API calls
-`workers/k8flare/src/nodes/meshconnector.ts` already makes for per-Pod
+`packages/k8flare-worker/src/nodes/meshconnector.ts` already makes for per-Pod
 Mesh, verified against the real KOOFFICE account per
 `spikes/s17-mesh-nodevm/FINDINGS.md`), a new sensitive
 `CLOUDFLARE_API_TOKEN` CI secret (Zero Trust/Tunnel scope), and per-run
@@ -568,7 +568,7 @@ statefulset`'s own import graph touches `mount-utils`/`probe`/
      `pkg/controllers/controllermanager.go`'s doc comment already states.
 
    **Verified end-to-end** against a real local `wrangler dev` instance
-   (`workers/k8flare/wrangler.jsonc`, `--enable-containers=false`) with the
+   (`packages/k8flare-worker/wrangler.jsonc`, `--enable-containers=false`) with the
    real WASM Controllers DO controller-manager (not the BYO-VM binary —
    the harder, more representative path since it's the actual production
    code) driving a real `StatefulSet` created directly against the running

@@ -46,7 +46,7 @@ func TestKCMDynamicWorkerControlPlane(t *testing.T) {
 	// KCM_DISABLED, plus an isolated state dir so this run can't inherit
 	// or clobber the main suite's persisted DO state.
 	cmd := exec.Command("npx", "wrangler", "dev",
-		"-c", "workers/k8flare/wrangler.jsonc",
+		"-c", "packages/k8flare-worker/wrangler.jsonc",
 		"--enable-containers=false",
 		"--local",
 		"--port", fmt.Sprintf("%d", port),

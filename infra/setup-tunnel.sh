@@ -45,7 +45,7 @@ SERVICE_NAME="${SERVICE_NAME:-kubelet-vpc}"
 KUBELET_PORT="${KUBELET_PORT:-10250}"
 NODE_INTERNAL_IP="${NODE_INTERNAL_IP:-}"
 DRY_RUN="${DRY_RUN:-0}"
-WRANGLER_CONFIG="${WRANGLER_CONFIG:-workers/k8flare/wrangler.jsonc}"
+WRANGLER_CONFIG="${WRANGLER_CONFIG:-packages/k8flare-worker/wrangler.jsonc}"
 
 # Script directory (for resolving relative paths)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

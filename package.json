@@ -2,13 +2,12 @@
   "name": "k8flare",
   "private": true,
   "workspaces": [
-    "packages/*",
-    "workers/*"
+    "packages/*"
   ],
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev -c workers/k8flare/wrangler.jsonc --persist-to .wrangler/state",
-    "deploy": "make -B nodes-agent && wrangler deploy --config workers/k8flare/wrangler.jsonc",
+    "dev": "wrangler dev -c packages/k8flare-worker/wrangler.jsonc --persist-to .wrangler/state",
+    "deploy": "make -B nodes-agent && wrangler deploy --config packages/k8flare-worker/wrangler.jsonc",
     "check": "vp check",
     "test": "vitest",
     "build:wasm": "make -B wasm"
