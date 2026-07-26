@@ -340,7 +340,7 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		// finalizer-clearing patch/update actually removes an owner it
 		// finished orphaning or foreground-cascading.
 		if shouldFinalizeDelete(rObj) {
-			obj, err := finalizeDelete(ctx, store, namespacedStores, namespace, name)
+			obj, err := finalizeDelete(ctx, store, namespacedStores, namespace, name, rObj)
 			if err != nil {
 				writeResourceError(w, err, resource, name)
 				return
@@ -421,7 +421,7 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 					if m == nil {
 						continue
 					}
-					marked, err := markForDeletion(ctx, store, m.Namespace, m.Name, finalizerForPolicy(policy))
+					marked, err := markForDeletion(ctx, store, m.Namespace, m.Name, policy)
 					if isStatusReason(err, metav1.StatusReasonNotFound) {
 						continue // vanished between the list and the mark
 					}
@@ -496,7 +496,7 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			// shouldFinalizeDelete in the write paths. See
 			// gracefuldelete.go for why the earlier synchronous
 			// alternatives all raced the live controllers.
-			terminating, err := markForDeletion(ctx, store, namespace, name, finalizerForPolicy(policy))
+			terminating, err := markForDeletion(ctx, store, namespace, name, policy)
 			if err != nil {
 				writeResourceError(w, err, resource, name)
 				return
@@ -557,7 +557,7 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			// Same finalizer-completion rule as the PUT path above (see
 			// gracefuldelete.go) -- the GC clears finalizers via PATCH.
 			if shouldFinalizeDelete(patchedObj) {
-				obj, err := finalizeDelete(ctx, store, namespacedStores, namespace, name)
+				obj, err := finalizeDelete(ctx, store, namespacedStores, namespace, name, patchedObj)
 				if err != nil {
 					writeResourceError(w, err, resource, name)
 					return
@@ -608,11 +608,23 @@ func settleDeletedObject(ctx context.Context, storage *Storage, namespace string
 // finalizer was just cleared (shouldFinalizeDelete): orphan-straggler
 // sweep, storage delete, per-resource settle. Shared by the PUT and
 // PATCH finalizer-completion paths.
-func finalizeDelete(ctx context.Context, store *ResourceStore, namespacedStores []*ResourceStore, namespace, name string) (runtime.Object, error) {
+func finalizeDelete(ctx context.Context, store *ResourceStore, namespacedStores []*ResourceStore, namespace, name string, write runtime.Object) (runtime.Object, error) {
 	if err := finalizeDeleteWithOrphanSweep(ctx, store, namespacedStores, namespace, name); err != nil {
 		return nil, err
 	}
-	obj, err := store.Delete(ctx, namespace, name)
+	// For a migrated resource, the write itself is what completes the
+	// deletion: upstream's Store.Update detects that the update empties
+	// the finalizers of an object already marked for deletion and removes
+	// it (ShouldDeleteDuringUpdate), returning the object it deleted. A
+	// plain Delete would NOT do it -- upstream treats a delete of an
+	// already-terminating object as a no-op that just reports the object.
+	del := store.Delete
+	if store.upstream != nil {
+		del = func(ctx context.Context, namespace, name string) (runtime.Object, error) {
+			return store.Update(ctx, namespace, name, write)
+		}
+	}
+	obj, err := del(ctx, namespace, name)
 	if err != nil {
 		return nil, err
 	}

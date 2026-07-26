@@ -113,7 +113,7 @@ func TestDeleteNamespaceDependents_ReleasesServiceClusterIPs(t *testing.T) {
 	ctx := context.Background()
 	ns := "ns-release-test"
 
-	svcStore := NewResourceStore(storage, "services", true,
+	svcStore := NewResourceStore(storage, corev1.SchemeGroupVersion, "services", "service", true,
 		func() runtime.Object { return &corev1.Service{} },
 		func() runtime.Object { return &corev1.ServiceList{} },
 	)

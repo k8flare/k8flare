@@ -16,24 +16,9 @@ import (
 func NewResourceStoresForGroupVersion(s *Storage, gv schema.GroupVersion) map[string]*ResourceStore {
 	stores := map[string]*ResourceStore{}
 	for _, def := range apidef.ForGroupVersion(gv) {
-		rs := NewResourceStore(s, def.Resource, def.Namespaced, def.New, def.NewList)
-		// Migration to upstream genericregistry.Store (S25 phase 1b),
-		// resource by resource: a listed resource routes its
-		// single-object verbs through the real upstream registry
-		// (ObjectMeta lifecycle, preconditions, finalizer-aware delete)
-		// instead of the hand-written store.go path. Grow this set as
-		// each resource's behavior is verified equivalent by the suite.
-		if upstreamMigrated[gv.String()+"/"+def.Resource] {
-			rs.upstream = NewUpstreamStore(s, gv, def.Resource, def.Singular, def.Namespaced, def.New, def.NewList)
-		}
-		stores[def.Resource] = rs
+		stores[def.Resource] = NewResourceStore(s, gv, def.Resource, def.Singular, def.Namespaced, def.New, def.NewList)
 	}
 	return stores
-}
-
-// upstreamMigrated lists the resources served by genericregistry.Store.
-var upstreamMigrated = map[string]bool{
-	"v1/configmaps": true,
 }
 
 // NamespacedResourceStores collects every ResourceStore that is namespaced

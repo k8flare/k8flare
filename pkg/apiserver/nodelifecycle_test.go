@@ -12,14 +12,14 @@ import (
 )
 
 func testNodesStore(storage *Storage) *ResourceStore {
-	return NewResourceStore(storage, "nodes", false,
+	return NewResourceStore(storage, corev1.SchemeGroupVersion, "nodes", "node", false,
 		func() runtime.Object { return &corev1.Node{} },
 		func() runtime.Object { return &corev1.NodeList{} },
 	)
 }
 
 func testLeasesStore(storage *Storage) *ResourceStore {
-	return NewResourceStore(storage, "leases", true,
+	return NewResourceStore(storage, coordinationv1.SchemeGroupVersion, "leases", "lease", true,
 		func() runtime.Object { return &coordinationv1.Lease{} },
 		func() runtime.Object { return &coordinationv1.LeaseList{} },
 	)

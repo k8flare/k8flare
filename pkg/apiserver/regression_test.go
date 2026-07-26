@@ -314,3 +314,67 @@ func TestCreateInMissingNamespaceIs404(t *testing.T) {
 		t.Errorf("expected NotFound creating Event in deleted namespace, got: %v", err)
 	}
 }
+
+// TestPodListFieldSelectors guards the two field-selector behaviors the
+// S25 migration to genericregistry.Store silently broke, neither of which
+// any existing test covered (both were caught by hand against a live
+// wrangler dev, then pinned here):
+//
+//   - a non-metadata selector such as "spec.nodeName=<node>" -- what
+//     kube-scheduler and the kubelet list Pods with -- matched nothing,
+//     because upstream's default attr func only exposes metadata.name and
+//     metadata.namespace unless the store supplies its own.
+//   - "metadata.name=<name>" matched nothing, because the Store turns a
+//     name-pinned predicate into a NON-recursive storage list of that one
+//     key, which the kine adapter was treating as a prefix.
+func TestPodListFieldSelectors(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+	ns := "default"
+	name := "test-fieldselector-pod"
+
+	_ = client.CoreV1().Pods(ns).Delete(ctx, name, metav1.DeleteOptions{})
+	if _, err := client.CoreV1().Pods(ns).Create(ctx, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: corev1.PodSpec{
+			NodeName:   "test-fieldselector-node",
+			Containers: []corev1.Container{{Name: "c", Image: "nginx"}},
+		},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("Create pod: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = client.CoreV1().Pods(ns).Delete(context.Background(), name, metav1.DeleteOptions{})
+	})
+
+	for _, tc := range []struct {
+		selector string
+		want     bool
+	}{
+		{"spec.nodeName=test-fieldselector-node", true},
+		{"spec.nodeName=somewhere-else", false},
+		{"metadata.name=" + name, true},
+		{"metadata.name=no-such-pod", false},
+	} {
+		list, err := client.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{FieldSelector: tc.selector})
+		if err != nil {
+			t.Fatalf("List with %q: %v", tc.selector, err)
+		}
+		found := false
+		for _, p := range list.Items {
+			if p.Name == name {
+				found = true
+			}
+		}
+		if found != tc.want {
+			t.Errorf("List with %q: found=%v, want %v", tc.selector, found, tc.want)
+		}
+	}
+
+	// A selector on a field nothing populates stays a client error rather
+	// than an always-empty match (the pre-migration behavior).
+	_, err := client.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{FieldSelector: "spec.bogusField=x"})
+	if !apierrors.IsBadRequest(err) {
+		t.Errorf("List with an unsupported field selector: got %v, want a 400", err)
+	}
+}

@@ -2,7 +2,6 @@ package apiserver
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 
@@ -29,28 +28,28 @@ const (
 )
 
 func endpointsResourceStore(storage *Storage) *ResourceStore {
-	return NewResourceStore(storage, "endpoints", true,
+	return NewResourceStore(storage, corev1.SchemeGroupVersion, "endpoints", "endpoints", true,
 		func() runtime.Object { return &corev1.Endpoints{} },
 		func() runtime.Object { return &corev1.EndpointsList{} },
 	)
 }
 
 func endpointSlicesResourceStore(storage *Storage) *ResourceStore {
-	return NewResourceStore(storage, "endpointslices", true,
+	return NewResourceStore(storage, discoveryv1.SchemeGroupVersion, "endpointslices", "endpointslice", true,
 		func() runtime.Object { return &discoveryv1.EndpointSlice{} },
 		func() runtime.Object { return &discoveryv1.EndpointSliceList{} },
 	)
 }
 
 func servicesResourceStore(storage *Storage) *ResourceStore {
-	return NewResourceStore(storage, "services", true,
+	return NewResourceStore(storage, corev1.SchemeGroupVersion, "services", "service", true,
 		func() runtime.Object { return &corev1.Service{} },
 		func() runtime.Object { return &corev1.ServiceList{} },
 	)
 }
 
 func podsResourceStore(storage *Storage) *ResourceStore {
-	return NewResourceStore(storage, "pods", true,
+	return NewResourceStore(storage, corev1.SchemeGroupVersion, "pods", "pod", true,
 		func() runtime.Object { return &corev1.Pod{} },
 		func() runtime.Object { return &corev1.PodList{} },
 	)
@@ -131,9 +130,10 @@ func DeleteServiceEndpoints(ctx context.Context, storage *Storage, namespace, na
 	}
 }
 
+// isNotFoundErr matches both error shapes (this project's *StatusError
+// and upstream's apierrors, which genericregistry.Store returns).
 func isNotFoundErr(err error) bool {
-	var se *StatusError
-	return errors.As(err, &se) && se.Status.Reason == metav1.StatusReasonNotFound
+	return isStatusReason(err, metav1.StatusReasonNotFound)
 }
 
 // reconcileServiceEndpoints computes and upserts the Endpoints and

@@ -5,20 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"strconv"
 	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/uuid"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
-	"k8s.io/apiserver/pkg/storage/names"
 
 	"github.com/k8flare/k8flare/pkg/apiserver/apidef"
 )
@@ -31,8 +28,10 @@ type ResourceStore struct {
 	namespaced  bool
 	newFunc     func() runtime.Object // creates a new empty object (e.g. &corev1.ConfigMap{})
 	newListFunc func() runtime.Object // creates a new empty list object (e.g. &corev1.ConfigMapList{})
-	// upstream, when set, serves the single-object verbs via the real
-	// genericregistry.Store (S25 migration) -- see upstreamregistry.go.
+	// upstream serves the single-object verbs: the real
+	// genericregistry.Store on top of KineStorage (see
+	// upstreamregistry.go). Every resource in apidef.Table goes through
+	// it since the S25 migration finished.
 	upstream *genericregistry.Store
 }
 
@@ -45,7 +44,8 @@ type ResourceStore struct {
 // supply here.
 func NewResourceStore(
 	storage *Storage,
-	resource string,
+	gv schema.GroupVersion,
+	resource, singular string,
 	namespaced bool,
 	newFunc, newListFunc func() runtime.Object,
 ) *ResourceStore {
@@ -55,6 +55,7 @@ func NewResourceStore(
 		namespaced:  namespaced,
 		newFunc:     newFunc,
 		newListFunc: newListFunc,
+		upstream:    NewUpstreamStore(storage, gv, resource, singular, namespaced, newFunc, newListFunc),
 	}
 }
 
@@ -137,8 +138,8 @@ func getObjectMeta(obj runtime.Object) *metav1.ObjectMeta {
 // behavior change. k8s controllers compare generation against
 // status.observedGeneration for revision tracking -- real KCM's Deployment
 // controller does, which is why the value must actually move.
-func (rs *ResourceStore) specForGeneration(obj runtime.Object) (reflect.Value, bool) {
-	if !apidef.HasSubresource(rs.resource, "status") {
+func specForGeneration(resource string, obj runtime.Object) (reflect.Value, bool) {
+	if !apidef.HasSubresource(resource, "status") {
 		return reflect.Value{}, false
 	}
 	v := reflect.ValueOf(obj)
@@ -155,14 +156,6 @@ func (rs *ResourceStore) specForGeneration(obj runtime.Object) (reflect.Value, b
 	return f, true
 }
 
-// setResourceVersion sets the ResourceVersion field on the object to the given revision.
-func setResourceVersion(obj runtime.Object, revision int64) {
-	meta := getObjectMeta(obj)
-	if meta != nil {
-		meta.ResourceVersion = strconv.FormatInt(revision, 10)
-	}
-}
-
 // notFoundStatus returns a metav1.Status indicating the resource was not found.
 func notFoundStatus(resource, name string) *metav1.Status {
 	return &metav1.Status{
@@ -171,40 +164,6 @@ func notFoundStatus(resource, name string) *metav1.Status {
 		Message:  fmt.Sprintf("%s %q not found", resource, name),
 		Reason:   metav1.StatusReasonNotFound,
 		Code:     404,
-	}
-}
-
-// conflictStatus returns a metav1.Status indicating a resource version conflict.
-func conflictStatus(resource, name string) *metav1.Status {
-	return &metav1.Status{
-		TypeMeta: metav1.TypeMeta{Kind: "Status", APIVersion: "v1"},
-		Status:   metav1.StatusFailure,
-		Message:  fmt.Sprintf("operation cannot be fulfilled on %s %q: the object has been modified", resource, name),
-		Reason:   metav1.StatusReasonConflict,
-		Code:     409,
-	}
-}
-
-// alreadyExistsStatus returns a metav1.Status indicating the resource already exists.
-func alreadyExistsStatus(resource, name string) *metav1.Status {
-	return &metav1.Status{
-		TypeMeta: metav1.TypeMeta{Kind: "Status", APIVersion: "v1"},
-		Status:   metav1.StatusFailure,
-		Message:  fmt.Sprintf("%s %q already exists", resource, name),
-		Reason:   metav1.StatusReasonAlreadyExists,
-		Code:     409,
-	}
-}
-
-// immutableFieldStatus returns a metav1.Status indicating a client tried to
-// change a server-assigned, immutable metadata field on update.
-func immutableFieldStatus(resource, name, field string) *metav1.Status {
-	return &metav1.Status{
-		TypeMeta: metav1.TypeMeta{Kind: "Status", APIVersion: "v1"},
-		Status:   metav1.StatusFailure,
-		Message:  fmt.Sprintf("%s %q is invalid: metadata.%s: field is immutable", resource, name, field),
-		Reason:   metav1.StatusReasonInvalid,
-		Code:     422,
 	}
 }
 
@@ -236,71 +195,16 @@ func (e *StatusError) Error() string {
 	return e.Status.Message
 }
 
-// Get retrieves a single resource from storage by namespace and name.
+// Get returns one object via the upstream registry (genericregistry.Store).
 func (rs *ResourceStore) Get(ctx context.Context, namespace, name string) (runtime.Object, error) {
-	if rs.upstream != nil {
-		return rs.upstreamGet(namespace, name)
-	}
-	key := rs.storageKey(namespace, name)
-	stored, err := rs.storage.Get(ctx, key)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return nil, &StatusError{Status: notFoundStatus(rs.resource, name)}
-		}
-		return nil, fmt.Errorf("store get: %w", err)
-	}
-
-	obj := rs.newFunc()
-	if err := DecodeFromStorage(stored.Value, obj); err != nil {
-		return nil, fmt.Errorf("store get: decode: %w", err)
-	}
-	setResourceVersion(obj, stored.ModRevision)
-	return obj, nil
+	return rs.upstreamGet(ctx, namespace, name)
 }
 
-// List retrieves all resources matching the given namespace (empty string for all namespaces
-// or cluster-scoped resources). Results are filtered by fieldSelector and labelSelector, if
-// either is non-empty.
+// List returns matching objects via the upstream registry; selector
+// semantics (including the per-resource custom field selectors) live in
+// upstreamregistry.go's attr funcs.
 func (rs *ResourceStore) List(ctx context.Context, namespace string, fieldSelector string, labelSelector string) (runtime.Object, error) {
-	if rs.upstream != nil {
-		return rs.upstreamList(namespace, fieldSelector, labelSelector)
-	}
-	prefix := rs.storagePrefix(namespace)
-	storedObjects, rev, err := rs.storage.List(ctx, prefix, 0, 0)
-	if err != nil {
-		return nil, fmt.Errorf("store list: %w", err)
-	}
-
-	items := make([]runtime.Object, 0, len(storedObjects))
-	for _, stored := range storedObjects {
-		obj := rs.newFunc()
-		if err := DecodeFromStorage(stored.Value, obj); err != nil {
-			return nil, fmt.Errorf("store list: decode item: %w", err)
-		}
-		setResourceVersion(obj, stored.ModRevision)
-		items = append(items, obj)
-	}
-
-	items, err = applyFieldSelector(items, fieldSelector)
-	if err != nil {
-		return nil, fmt.Errorf("store list: %w", err)
-	}
-	items, err = applyLabelSelector(items, labelSelector)
-	if err != nil {
-		return nil, fmt.Errorf("store list: %w", err)
-	}
-
-	listObj := rs.newListFunc()
-	if err := meta.SetList(listObj, items); err != nil {
-		return nil, fmt.Errorf("store list: set items: %w", err)
-	}
-
-	// Set list-level resourceVersion for watch continuation
-	if accessor, ok := listObj.(metav1.ListMetaAccessor); ok {
-		accessor.GetListMeta().SetResourceVersion(strconv.FormatInt(rev, 10))
-	}
-
-	return listObj, nil
+	return rs.upstreamList(ctx, namespace, fieldSelector, labelSelector)
 }
 
 // applyLabelSelector filters a list of runtime.Object by the given Kubernetes label
@@ -406,205 +310,24 @@ func applyFieldSelector(items []runtime.Object, fieldSelector string) ([]runtime
 	return filtered, nil
 }
 
-// Create stores a new resource in storage. It sets UID, creation timestamp,
-// namespace, and resource version on the object.
+// Create persists a new object via the upstream registry (UID/
+// creationTimestamp/generation stamping, generateName, AlreadyExists --
+// all rest.BeforeCreate + genericStrategy).
 func (rs *ResourceStore) Create(ctx context.Context, namespace string, obj runtime.Object) (runtime.Object, error) {
-	if rs.upstream != nil {
-		return rs.upstreamCreate(namespace, obj)
-	}
-	meta := getObjectMeta(obj)
-	if meta == nil {
-		return nil, fmt.Errorf("store create: object does not implement ObjectMetaAccessor")
-	}
-
-	name := meta.Name
-	if name == "" {
-		if meta.GenerateName == "" {
-			return nil, fmt.Errorf("store create: name is required")
-		}
-		// Real controllers (ReplicaSet, Deployment, DaemonSet, Job, ...)
-		// create Pods this way rather than picking an explicit name
-		// themselves. names.SimpleNameGenerator is the exact upstream
-		// apiserver behavior: base + 5 random alphanumerics.
-		name = names.SimpleNameGenerator.GenerateName(meta.GenerateName)
-		meta.Name = name
-	}
-
-	meta.UID = uuid.NewUUID()
-	meta.CreationTimestamp = metav1.Now()
-	if rs.namespaced {
-		meta.Namespace = namespace
-	}
-	// metadata.generation is server-managed and starts at 1 for resources
-	// that track it (those with a status subresource). Left unset (0) for
-	// the rest, matching k8s.
-	if _, ok := rs.specForGeneration(obj); ok {
-		meta.Generation = 1
-	}
-	meta.ResourceVersion = ""
-
-	if job, ok := obj.(*batchv1.Job); ok {
-		prepareJobForCreate(job)
-	}
-
-	data, err := EncodeToStorage(obj)
-	if err != nil {
-		return nil, fmt.Errorf("store create: encode: %w", err)
-	}
-
-	key := rs.storageKey(namespace, name)
-	revision, err := rs.storage.Create(ctx, key, data)
-	if err != nil {
-		if errors.Is(err, ErrKeyExists) {
-			return nil, &StatusError{Status: alreadyExistsStatus(rs.resource, name)}
-		}
-		return nil, fmt.Errorf("store create: %w", err)
-	}
-
-	setResourceVersion(obj, revision)
-	return obj, nil
+	return rs.upstreamCreate(ctx, namespace, obj)
 }
 
-// Update performs a compare-and-swap update on an existing resource.
-// If the object's ResourceVersion is set, it must match the current stored
-// revision. An empty ResourceVersion means an unconditional update, matching
-// Kubernetes' behavior for updates that omit resourceVersion: the current
-// stored revision is fetched and used as the CAS token.
+// Update persists changes via the upstream registry (immutable-field
+// preservation, UID preconditions, generation bump, finalizer-aware
+// deletion completion -- rest.BeforeUpdate + genericStrategy).
 func (rs *ResourceStore) Update(ctx context.Context, namespace, name string, obj runtime.Object) (runtime.Object, error) {
-	if rs.upstream != nil {
-		return rs.upstreamUpdate(namespace, name, obj)
-	}
-	meta := getObjectMeta(obj)
-	if meta == nil {
-		return nil, fmt.Errorf("store update: object does not implement ObjectMetaAccessor")
-	}
-
-	key := rs.storageKey(namespace, name)
-
-	stored, err := rs.storage.Get(ctx, key)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return nil, &StatusError{Status: notFoundStatus(rs.resource, name)}
-		}
-		return nil, fmt.Errorf("store update: get current: %w", err)
-	}
-
-	oldObj := rs.newFunc()
-	if err := DecodeFromStorage(stored.Value, oldObj); err != nil {
-		return nil, fmt.Errorf("store update: decode current: %w", err)
-	}
-	oldMeta := getObjectMeta(oldObj)
-
-	// UID and CreationTimestamp are server-assigned on Create (see above) and
-	// immutable afterward. A client that omits one gets the existing value
-	// filled in; a client that sends a different value is rejected. Without
-	// this, a client PUT that drops these fields would silently overwrite
-	// them, breaking anything that compares against the original UID (e.g.
-	// ownerReferences).
-	if meta.UID == "" {
-		meta.UID = oldMeta.UID
-	} else if meta.UID != oldMeta.UID {
-		return nil, &StatusError{Status: immutableFieldStatus(rs.resource, name, "uid")}
-	}
-	if meta.CreationTimestamp.IsZero() {
-		meta.CreationTimestamp = oldMeta.CreationTimestamp
-	} else if !meta.CreationTimestamp.Equal(&oldMeta.CreationTimestamp) {
-		return nil, &StatusError{Status: immutableFieldStatus(rs.resource, name, "creationTimestamp")}
-	}
-
-	// metadata.generation is server-managed, not client-settable: carry the
-	// stored value forward and bump it only when the spec actually changed.
-	// Semantic.DeepEqual (not reflect.DeepEqual) so a resource.Quantity or
-	// metav1.Time that round-trips to a different internal representation
-	// ("1Gi" <-> "1073741824") on a no-op read-modify-write does not
-	// spuriously bump. The status subresource preserves spec byte-for-byte
-	// (subresource.go's copyStatus), so a /status write lands in the equal
-	// branch and never bumps -- the invariant a status update must not
-	// change generation. A pre-existing generation-0 object stays 0 until a
-	// real spec change first moves it to 1.
-	if newSpec, ok := rs.specForGeneration(obj); ok {
-		if oldSpec, oldOk := rs.specForGeneration(oldObj); oldOk &&
-			apiequality.Semantic.DeepEqual(oldSpec.Interface(), newSpec.Interface()) {
-			meta.Generation = oldMeta.Generation
-		} else {
-			meta.Generation = oldMeta.Generation + 1
-		}
-	}
-
-	var currentRevision int64
-	if meta.ResourceVersion == "" {
-		currentRevision = stored.ModRevision
-	} else {
-		// Parse the resource version from the incoming object for CAS
-		currentRevision, err = strconv.ParseInt(meta.ResourceVersion, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("store update: invalid resource version %q: %w", meta.ResourceVersion, err)
-		}
-	}
-
-	meta.ResourceVersion = ""
-
-	data, err := EncodeToStorage(obj)
-	if err != nil {
-		return nil, fmt.Errorf("store update: encode: %w", err)
-	}
-
-	newRevision, updated, err := rs.storage.Update(ctx, key, data, currentRevision)
-	if err != nil {
-		if errors.Is(err, ErrConflict) {
-			return nil, &StatusError{Status: conflictStatus(rs.resource, name)}
-		}
-		return nil, fmt.Errorf("store update: %w", err)
-	}
-
-	if !updated {
-		return nil, &StatusError{Status: conflictStatus(rs.resource, name)}
-	}
-
-	setResourceVersion(obj, newRevision)
-	return obj, nil
+	return rs.upstreamUpdate(ctx, namespace, name, obj)
 }
 
-// Delete removes a resource from storage and returns the deleted object.
+// Delete removes one object via the upstream registry and returns the
+// deleted state.
 func (rs *ResourceStore) Delete(ctx context.Context, namespace, name string) (runtime.Object, error) {
-	if rs.upstream != nil {
-		return rs.upstreamDelete(namespace, name)
-	}
-	key := rs.storageKey(namespace, name)
-
-	// Get-then-CAS-delete, retried on conflict: unlike an update, a
-	// DELETE without preconditions must not fail just because someone
-	// else wrote the object between the read and the delete (a
-	// controller status write, a concurrent kine-log insert racing for
-	// the same revision) -- real apiservers delete the object whatever
-	// its latest revision is. Each retry re-reads the fresh revision;
-	// an object that vanished mid-retry is a plain NotFound, same as if
-	// it had been gone at the start.
-	obj, err := casRetry(deleteConflictRetries, func() (runtime.Object, error) {
-		stored, err := rs.storage.Get(ctx, key)
-		if err != nil {
-			if errors.Is(err, ErrNotFound) {
-				return nil, &StatusError{Status: notFoundStatus(rs.resource, name)}
-			}
-			return nil, fmt.Errorf("store delete: get current: %w", err)
-		}
-
-		obj := rs.newFunc()
-		if err := DecodeFromStorage(stored.Value, obj); err != nil {
-			return nil, fmt.Errorf("store delete: decode: %w", err)
-		}
-		setResourceVersion(obj, stored.ModRevision)
-
-		if _, err := rs.storage.Delete(ctx, key, stored.ModRevision); err != nil {
-			// %w keeps ErrConflict visible to casRetry's errors.Is check.
-			return nil, fmt.Errorf("store delete: %w", err)
-		}
-		return obj, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return obj, nil
+	return rs.upstreamDelete(ctx, namespace, name)
 }
 
 // DeleteCollection deletes every object of this resource type in namespace
