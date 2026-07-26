@@ -164,4 +164,5 @@ CI ゲート(`.github/workflows/`): `ci.yml`(vp check / build:wasm / go vet+test
 - `docs/cost-model.md` — コンポーネント毎のアイドル/アクティブ単価の見積もりと実測
 - `docs/custom-code-inventory.md` — 手書きコード vs upstream 再利用の棚卸しと「実物を使わない」判断の記録
 - `docs/k8s-version-bump.md` — go.mod の k8s.io/kubernetes pin 更新手順(regen → build → conformance CI)
+- `docs/admin-guide.md` / `docs/user-guide.md` — 管理者向け・クラスタ利用者向けガイド
 - `README.md` — ユーザー向け API サポート状況・デプロイ手順

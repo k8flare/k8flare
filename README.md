@@ -115,6 +115,8 @@ Pod-on-Containers.
 
 | Doc | What's in it |
 |---|---|
+| [docs/admin-guide.md](docs/admin-guide.md) | Operator guide: deploy, secrets, cluster issuance, cost ops (Japanese) |
+| [docs/user-guide.md](docs/user-guide.md) | Cluster user guide: kubeconfig, what works, quirks (Japanese) |
 | [docs/custom-code-inventory.md](docs/custom-code-inventory.md) | Hand-written vs upstream code, generation pipeline |
 | [docs/platform-verification.md](docs/platform-verification.md) | Every platform spike + measured finding (S1–S25) |
 | [docs/cost-model.md](docs/cost-model.md) | Idle/active cost per component, cost invariants |
