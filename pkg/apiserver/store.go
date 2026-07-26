@@ -137,8 +137,8 @@ func getObjectMeta(obj runtime.Object) *metav1.ObjectMeta {
 // behavior change. k8s controllers compare generation against
 // status.observedGeneration for revision tracking -- real KCM's Deployment
 // controller does, which is why the value must actually move.
-func (rs *ResourceStore) specForGeneration(obj runtime.Object) (reflect.Value, bool) {
-	if !apidef.HasSubresource(rs.resource, "status") {
+func specForGeneration(resource string, obj runtime.Object) (reflect.Value, bool) {
+	if !apidef.HasSubresource(resource, "status") {
 		return reflect.Value{}, false
 	}
 	v := reflect.ValueOf(obj)
@@ -438,7 +438,7 @@ func (rs *ResourceStore) Create(ctx context.Context, namespace string, obj runti
 	// metadata.generation is server-managed and starts at 1 for resources
 	// that track it (those with a status subresource). Left unset (0) for
 	// the rest, matching k8s.
-	if _, ok := rs.specForGeneration(obj); ok {
+	if _, ok := specForGeneration(rs.resource, obj); ok {
 		meta.Generation = 1
 	}
 	meta.ResourceVersion = ""
@@ -522,8 +522,8 @@ func (rs *ResourceStore) Update(ctx context.Context, namespace, name string, obj
 	// branch and never bumps -- the invariant a status update must not
 	// change generation. A pre-existing generation-0 object stays 0 until a
 	// real spec change first moves it to 1.
-	if newSpec, ok := rs.specForGeneration(obj); ok {
-		if oldSpec, oldOk := rs.specForGeneration(oldObj); oldOk &&
+	if newSpec, ok := specForGeneration(rs.resource, obj); ok {
+		if oldSpec, oldOk := specForGeneration(rs.resource, oldObj); oldOk &&
 			apiequality.Semantic.DeepEqual(oldSpec.Interface(), newSpec.Interface()) {
 			meta.Generation = oldMeta.Generation
 		} else {

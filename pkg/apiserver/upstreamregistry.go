@@ -3,6 +3,8 @@ package apiserver
 import (
 	"context"
 
+	batchv1 "k8s.io/api/batch/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metainternalversion "k8s.io/apimachinery/pkg/apis/meta/internalversion"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,12 +30,27 @@ import (
 type genericStrategy struct {
 	runtime.ObjectTyper
 	names.NameGenerator
+	resource   string
 	namespaced bool
 }
 
 func (g genericStrategy) NamespaceScoped() bool { return g.namespaced }
 
-func (genericStrategy) PrepareForCreate(context.Context, runtime.Object) {}
+// PrepareForCreate carries over the two create-time normalizations the
+// hand-written store.Create did after assigning a UID. Upstream's
+// Store.create fills the system metadata fields (UID included) before
+// calling BeforeCreate, which is what invokes this -- so the UID that
+// prepareJobForCreate needs is already set here.
+func (g genericStrategy) PrepareForCreate(_ context.Context, obj runtime.Object) {
+	if _, ok := specForGeneration(g.resource, obj); ok {
+		if m := getObjectMeta(obj); m != nil {
+			m.Generation = 1
+		}
+	}
+	if job, ok := obj.(*batchv1.Job); ok {
+		prepareJobForCreate(job)
+	}
+}
 
 func (genericStrategy) Validate(context.Context, runtime.Object) field.ErrorList { return nil }
 
@@ -43,7 +60,26 @@ func (genericStrategy) Canonicalize(runtime.Object) {}
 
 func (genericStrategy) AllowCreateOnUpdate() bool { return false }
 
-func (genericStrategy) PrepareForUpdate(context.Context, runtime.Object, runtime.Object) {}
+// PrepareForUpdate replicates the hand-written store.Update's
+// metadata.generation bump. BeforeUpdate has already reset the incoming
+// object's generation to the stored one (clients can't set it), so this
+// only has to decide whether to move it: bump when the spec actually
+// changed, for the resources that declare a status subresource. See
+// specForGeneration (store.go) for why that gate, and why the comparison
+// is Semantic.DeepEqual.
+func (g genericStrategy) PrepareForUpdate(_ context.Context, obj, old runtime.Object) {
+	newSpec, ok := specForGeneration(g.resource, obj)
+	if !ok {
+		return
+	}
+	oldSpec, oldOk := specForGeneration(g.resource, old)
+	if oldOk && apiequality.Semantic.DeepEqual(oldSpec.Interface(), newSpec.Interface()) {
+		return
+	}
+	if m := getObjectMeta(obj); m != nil {
+		m.Generation++
+	}
+}
 
 func (genericStrategy) ValidateUpdate(context.Context, runtime.Object, runtime.Object) field.ErrorList {
 	return nil
@@ -69,6 +105,7 @@ func NewUpstreamStore(
 	strat := genericStrategy{
 		ObjectTyper:   Scheme,
 		NameGenerator: names.SimpleNameGenerator,
+		resource:      resource,
 		namespaced:    namespaced,
 	}
 	prefix := "/" + resource
@@ -82,9 +119,18 @@ func NewUpstreamStore(
 		NewListFunc:               newListFunc,
 		DefaultQualifiedResource:  gr,
 		SingularQualifiedResource: gv.WithResource(singular).GroupResource(),
-		CreateStrategy:            strat,
-		UpdateStrategy:            strat,
-		DeleteStrategy:            strat,
+		// Upstream's default DELETE response is a metav1.Status; the
+		// hand-written store returned the deleted object, and this
+		// project's callers depend on that (DeleteCollection assembles a
+		// typed list from it, settleDeletedObject type-switches on
+		// *corev1.Service / *corev1.Node to release the ClusterIP and
+		// PodCIDR). Keeping the object makes the migration a no-op at the
+		// HTTP boundary; upstream sets this flag on its own stores
+		// wherever the deleted object matters.
+		ReturnDeletedObject: true,
+		CreateStrategy:      strat,
+		UpdateStrategy:      strat,
+		DeleteStrategy:      strat,
 		// Normally filled in by CompleteWithOptions, which this project
 		// bypasses (it requires RESTOptions -> the etcd storagebackend
 		// factory). Everything it would default must be set explicitly;
@@ -131,11 +177,12 @@ func NewUpstreamStore(
 // byte-compatible storage makes that safe.
 
 func (rs *ResourceStore) upstreamCtx(namespace string) context.Context {
-	ctx := genericapirequest.NewContext()
-	if namespace != "" {
-		ctx = genericapirequest.WithNamespace(ctx, namespace)
-	}
-	return ctx
+	// Always stamp the namespace, empty included: rest.BeforeCreate /
+	// BeforeUpdate treat a context with no namespace VALUE AT ALL as an
+	// internal error, so a cluster-scoped resource (which legitimately has
+	// "") must still carry the key. Leaving it off made every
+	// PriorityClass create fail with a 500 (found by the suite).
+	return genericapirequest.WithNamespace(genericapirequest.NewContext(), namespace)
 }
 
 func (rs *ResourceStore) upstreamGet(namespace, name string) (runtime.Object, error) {

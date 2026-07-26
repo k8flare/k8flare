@@ -33,7 +33,14 @@ func NewResourceStoresForGroupVersion(s *Storage, gv schema.GroupVersion) map[st
 
 // upstreamMigrated lists the resources served by genericregistry.Store.
 var upstreamMigrated = map[string]bool{
-	"v1/configmaps": true,
+	"v1/configmaps":                        true,
+	"v1/secrets":                           true,
+	"v1/serviceaccounts":                   true,
+	"v1/limitranges":                       true,
+	"v1/resourcequotas":                    true,
+	"policy/v1/poddisruptionbudgets":       true,
+	"scheduling.k8s.io/v1/priorityclasses": true,
+	"coordination.k8s.io/v1/leases":        true,
 }
 
 // NamespacedResourceStores collects every ResourceStore that is namespaced
