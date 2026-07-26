@@ -1149,3 +1149,21 @@ model verified in docs/platform-verification.md S22). Bundle impact:
 Functional gains measured live: set-based operators (`in`, `!key`)
 now work, and invalid selectors 400 at watch open like upstream
 (previously silently mis-applied).
+
+## Idle-behavior measurement (2026-07-26/27, production, wrangler tail)
+
+Method: `wrangler tail k8flare --format json` against the deployed Worker
+with an EMPTY cluster (no namespaces beyond bootstrap, no workloads, no
+nodes), two ~25-minute windows.
+
+- **Before** commit c1eebe6: 286 events / 24.6 min, including **94
+  Controllers-DO alarm firings**, each reloading the kcm/sched/gc dynamic
+  workers — the safety-net alarm was self-perpetuating through the warmup
+  window (violated cost invariants #1/#3; root cause and fix in that
+  commit).
+- **After**: 392 events all within the first 2.7 minutes (residual warmup
+  drain + 7 alarm firings running the cheap convergence probe), then
+  **zero invocations and zero alarms for the remaining 21+ minutes** —
+  the control plane is fully parked while idle. Dollar figures still TBD
+  (billing-grade numbers need a longer window via the dashboard/GraphQL),
+  but the *activity* half of scale-to-zero is now measured, not assumed.
