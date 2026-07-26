@@ -74,7 +74,11 @@ func finalizerForPolicy(policy metav1.DeletionPropagation) string {
 // keeps returning 200 with the terminating object, same as upstream.
 // Conflicts (a controller writing the object between the read and the
 // update) are retried against a fresh read.
-func markForDeletion(ctx context.Context, rs *ResourceStore, namespace, name, finalizer string) (runtime.Object, error) {
+func markForDeletion(ctx context.Context, rs *ResourceStore, namespace, name string, policy metav1.DeletionPropagation) (runtime.Object, error) {
+	if rs.upstream != nil {
+		return rs.upstreamMarkForDeletion(namespace, name, policy)
+	}
+	finalizer := finalizerForPolicy(policy)
 	var lastErr error
 	for attempt := 0; attempt < markDeletionRetries; attempt++ {
 		obj, err := rs.Get(ctx, namespace, name)

@@ -66,6 +66,15 @@ var upstreamMigrated = map[string]bool{
 	"rbac.authorization.k8s.io/v1/rolebindings":        true,
 	"rbac.authorization.k8s.io/v1/clusterroles":        true,
 	"rbac.authorization.k8s.io/v1/clusterrolebindings": true,
+
+	"v1/replicationcontrollers":               true,
+	"apps/v1/deployments":                     true,
+	"apps/v1/replicasets":                     true,
+	"apps/v1/statefulsets":                    true,
+	"apps/v1/daemonsets":                      true,
+	"batch/v1/jobs":                           true,
+	"batch/v1/cronjobs":                       true,
+	"autoscaling/v2/horizontalpodautoscalers": true,
 }
 
 // NamespacedResourceStores collects every ResourceStore that is namespaced

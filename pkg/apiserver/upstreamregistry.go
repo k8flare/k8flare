@@ -128,9 +128,17 @@ func NewUpstreamStore(
 		// HTTP boundary; upstream sets this flag on its own stores
 		// wherever the deleted object matters.
 		ReturnDeletedObject: true,
-		CreateStrategy:      strat,
-		UpdateStrategy:      strat,
-		DeleteStrategy:      strat,
+		// Lets Store.Delete run upstream's own graceful-deletion
+		// bookkeeping for Orphan/Foreground: stamp deletionTimestamp and
+		// the policy's finalizer, and keep the object. Without it,
+		// markForDeletion has to write the timestamp itself through
+		// Update, which upstream rejects
+		// ("metadata.deletionTimestamp: field is immutable" -- only the
+		// registry may set it).
+		EnableGarbageCollection: true,
+		CreateStrategy:          strat,
+		UpdateStrategy:          strat,
+		DeleteStrategy:          strat,
 		// Normally filled in by CompleteWithOptions, which this project
 		// bypasses (it requires RESTOptions -> the etcd storagebackend
 		// factory). Everything it would default must be set explicitly;
@@ -223,5 +231,18 @@ func (rs *ResourceStore) upstreamUpdate(namespace, name string, obj runtime.Obje
 
 func (rs *ResourceStore) upstreamDelete(namespace, name string) (runtime.Object, error) {
 	out, _, err := rs.upstream.Delete(rs.upstreamCtx(namespace), name, rest.ValidateAllObjectFunc, &metav1.DeleteOptions{})
+	return out, err
+}
+
+// upstreamMarkForDeletion is the graceful-deletion half of DELETE for a
+// migrated resource: handing the propagation policy to Store.Delete makes
+// upstream stamp deletionTimestamp + the policy's finalizer and return the
+// still-visible terminating object, which is exactly what
+// markForDeletion (gracefuldelete.go) does by hand for the resources still
+// on the old path. Idempotent for the same reason: a second DELETE finds
+// the object already deleting and returns it unchanged.
+func (rs *ResourceStore) upstreamMarkForDeletion(namespace, name string, policy metav1.DeletionPropagation) (runtime.Object, error) {
+	out, _, err := rs.upstream.Delete(rs.upstreamCtx(namespace), name, rest.ValidateAllObjectFunc,
+		&metav1.DeleteOptions{PropagationPolicy: &policy})
 	return out, err
 }
