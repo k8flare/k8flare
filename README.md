@@ -8,8 +8,7 @@ WASM and executed on demand as Worker Loader dynamic workers. Cluster state
 lives in Durable Objects. When nobody talks to the cluster, nothing runs:
 no processes, no polling alarms, no resident WebSockets — idle cost
 approaches storage cost alone. A write wakes the control plane in
-milliseconds. No other hosted Kubernetes offers a scale-to-zero control
-plane.
+milliseconds.
 
 ## Architecture
 
