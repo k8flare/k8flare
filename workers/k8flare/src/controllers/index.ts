@@ -99,7 +99,8 @@ export class Controllers {
     this.env = env;
   }
 
-  private ensure(name: ComponentName): Promise<Fetcher | null> {
+  private ensure(name: ComponentName, opts?: { armWarmup?: boolean }): Promise<Fetcher | null> {
+    const armWarmup = opts?.armWarmup !== false;
     const c = this.components[name];
     if (!c.loading) {
       // kcm/sched/gc load independently and concurrently -- NOT chained
@@ -128,10 +129,19 @@ export class Controllers {
         // without this nothing would ever poke it again (observed live:
         // a Deployment created on an idle cluster never got its
         // ReplicaSet until a redeploy forced a reload). Bounded and
-        // event-armed: only arms after an actual load, and alarm()
-        // stops re-arming once the window passes.
-        await this.state.storage.put("warmupUntil", Date.now() + 3 * 60_000);
-        await this.state.storage.setAlarm(Date.now() + 5_000);
+        // event-armed: only arms after a load triggered by a real WRITE
+        // poke -- NOT by the safety-net alarm itself. Alarm-triggered
+        // loads must not re-arm the window: every alarm wakes a fresh
+        // (hibernated) DO instance whose in-memory components are empty,
+        // so its ensure() always reloads, and a load that re-arms warmup
+        // re-arms the alarm -- a self-perpetuating chain measured live
+        // at 94 alarm firings / 25 idle minutes (2026-07-26, wrangler
+        // tail against an EMPTY production cluster; cost invariants
+        // #1/#3 violated).
+        if (armWarmup) {
+          await this.state.storage.put("warmupUntil", Date.now() + 3 * 60_000);
+          await this.state.storage.setAlarm(Date.now() + 5_000);
+        }
         return f;
       });
       // Don't cache failures -- the next poke retries the load.
@@ -317,13 +327,30 @@ export class Controllers {
 
   async alarm(): Promise<void> {
     if (this.env.KCM_DISABLED === "1") return; // test kill switch; do not re-arm
+    // Park check FIRST, before touching any dynamic worker: an alarm
+    // firing on an idle cluster used to ensure()+load all three ~40MB
+    // components just to then decide to park -- and on a hibernated DO
+    // that load re-armed the warmup window, chaining the alarm forever
+    // (see ensure()'s warmup comment; measured live 2026-07-26). The
+    // convergence probe below costs 2-3 apiserver list calls and no
+    // controller loads.
+    const warmupUntil = (await this.state.storage.get<number>("warmupUntil")) ?? 0;
+    const warmupActive = Date.now() < warmupUntil;
+    const unconverged = await this.hasUnconvergedWork();
+    if (!warmupActive && !unconverged) {
+      await this.state.storage.put("unconvergedTicks", 0);
+      return; // park: no work, no fresh load to nurse -- no reload, no re-arm
+    }
+
     // Hitting /healthz both confirms liveness and (re-)triggers the Go
     // side's ensureStarted() if a dynamic worker's isolate was evicted
     // since the last request (the Loader factory then reruns too). The
     // alarm context has no client to cancel it, so awaiting the loads
     // here is safe (and is what completes a load whose pokes all died).
+    // armWarmup:false -- alarm-triggered loads must not extend the
+    // warmup window (see ensure()).
     for (const name of COMPONENTS) {
-      const c = await this.ensure(name);
+      const c = await this.ensure(name, { armWarmup: false });
       if (c) await c.fetch("http://controllers.internal/healthz");
     }
 
@@ -342,24 +369,20 @@ export class Controllers {
     // exactly workload convergence: any Deployment/ReplicaSet/Job whose
     // status lags its spec. Checked via the same gateway API the KCM
     // itself uses; 2-3 cheap list calls per tick, and only while ticking.
-    const warmupUntil = (await this.state.storage.get<number>("warmupUntil")) ?? 0;
-    if (Date.now() < warmupUntil) {
+    if (warmupActive) {
       await this.state.storage.put("unconvergedTicks", 0);
       this.state.storage.setAlarm(Date.now() + 15_000);
       return;
     }
-    if (await this.hasUnconvergedWork()) {
-      // Exponential backoff bounds the cost of work that will never
-      // converge (e.g. a Deployment whose pods are unschedulable on a
-      // node-less cluster): 15s doubling to a 10min ceiling. Any fresh
-      // relevant write resets the cadence via fetch() below.
-      const ticks = ((await this.state.storage.get<number>("unconvergedTicks")) ?? 0) + 1;
-      await this.state.storage.put("unconvergedTicks", ticks);
-      const interval = Math.min(15_000 * 2 ** Math.max(0, ticks - 4), 600_000);
-      this.state.storage.setAlarm(Date.now() + interval);
-    } else {
-      await this.state.storage.put("unconvergedTicks", 0);
-    }
+    // unconverged is necessarily true here (the park check returned
+    // otherwise). Exponential backoff bounds the cost of work that will
+    // never converge (e.g. a Deployment whose pods are unschedulable on
+    // a node-less cluster): 15s doubling to a 10min ceiling. Any fresh
+    // relevant write resets the cadence via fetch() below.
+    const ticks = ((await this.state.storage.get<number>("unconvergedTicks")) ?? 0) + 1;
+    await this.state.storage.put("unconvergedTicks", ticks);
+    const interval = Math.min(15_000 * 2 ** Math.max(0, ticks - 4), 600_000);
+    this.state.storage.setAlarm(Date.now() + interval);
   }
 
   private async apiGet(path: string): Promise<Record<string, unknown> | null> {
