@@ -67,6 +67,7 @@ var upstreamMigrated = map[string]bool{
 	"rbac.authorization.k8s.io/v1/clusterroles":        true,
 	"rbac.authorization.k8s.io/v1/clusterrolebindings": true,
 
+	"v1/pods":                                 true,
 	"v1/replicationcontrollers":               true,
 	"apps/v1/deployments":                     true,
 	"apps/v1/replicasets":                     true,
