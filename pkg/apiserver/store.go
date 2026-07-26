@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/uuid"
+	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
 	"k8s.io/apiserver/pkg/storage/names"
 
 	"github.com/k8flare/k8flare/pkg/apiserver/apidef"
@@ -30,6 +31,9 @@ type ResourceStore struct {
 	namespaced  bool
 	newFunc     func() runtime.Object // creates a new empty object (e.g. &corev1.ConfigMap{})
 	newListFunc func() runtime.Object // creates a new empty list object (e.g. &corev1.ConfigMapList{})
+	// upstream, when set, serves the single-object verbs via the real
+	// genericregistry.Store (S25 migration) -- see upstreamregistry.go.
+	upstream *genericregistry.Store
 }
 
 // NewResourceStore creates a ResourceStore for the given resource type.
@@ -234,6 +238,9 @@ func (e *StatusError) Error() string {
 
 // Get retrieves a single resource from storage by namespace and name.
 func (rs *ResourceStore) Get(ctx context.Context, namespace, name string) (runtime.Object, error) {
+	if rs.upstream != nil {
+		return rs.upstreamGet(namespace, name)
+	}
 	key := rs.storageKey(namespace, name)
 	stored, err := rs.storage.Get(ctx, key)
 	if err != nil {
@@ -255,6 +262,9 @@ func (rs *ResourceStore) Get(ctx context.Context, namespace, name string) (runti
 // or cluster-scoped resources). Results are filtered by fieldSelector and labelSelector, if
 // either is non-empty.
 func (rs *ResourceStore) List(ctx context.Context, namespace string, fieldSelector string, labelSelector string) (runtime.Object, error) {
+	if rs.upstream != nil {
+		return rs.upstreamList(namespace, fieldSelector, labelSelector)
+	}
 	prefix := rs.storagePrefix(namespace)
 	storedObjects, rev, err := rs.storage.List(ctx, prefix, 0, 0)
 	if err != nil {
@@ -399,6 +409,9 @@ func applyFieldSelector(items []runtime.Object, fieldSelector string) ([]runtime
 // Create stores a new resource in storage. It sets UID, creation timestamp,
 // namespace, and resource version on the object.
 func (rs *ResourceStore) Create(ctx context.Context, namespace string, obj runtime.Object) (runtime.Object, error) {
+	if rs.upstream != nil {
+		return rs.upstreamCreate(namespace, obj)
+	}
 	meta := getObjectMeta(obj)
 	if meta == nil {
 		return nil, fmt.Errorf("store create: object does not implement ObjectMetaAccessor")
@@ -458,6 +471,9 @@ func (rs *ResourceStore) Create(ctx context.Context, namespace string, obj runti
 // Kubernetes' behavior for updates that omit resourceVersion: the current
 // stored revision is fetched and used as the CAS token.
 func (rs *ResourceStore) Update(ctx context.Context, namespace, name string, obj runtime.Object) (runtime.Object, error) {
+	if rs.upstream != nil {
+		return rs.upstreamUpdate(namespace, name, obj)
+	}
 	meta := getObjectMeta(obj)
 	if meta == nil {
 		return nil, fmt.Errorf("store update: object does not implement ObjectMetaAccessor")
@@ -551,6 +567,9 @@ func (rs *ResourceStore) Update(ctx context.Context, namespace, name string, obj
 
 // Delete removes a resource from storage and returns the deleted object.
 func (rs *ResourceStore) Delete(ctx context.Context, namespace, name string) (runtime.Object, error) {
+	if rs.upstream != nil {
+		return rs.upstreamDelete(namespace, name)
+	}
 	key := rs.storageKey(namespace, name)
 
 	// Get-then-CAS-delete, retried on conflict: unlike an update, a

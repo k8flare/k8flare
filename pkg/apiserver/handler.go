@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -728,6 +729,17 @@ func writeResourceError(w http.ResponseWriter, err error, resource string, name 
 	var se *StatusError
 	if errors.As(err, &se) {
 		writeJSON(w, int(se.Status.Code), se.Status)
+		return
+	}
+	// Upstream registry errors (genericregistry.Store, S25 migration)
+	// arrive as apierrors.StatusError -- pass their Status through so
+	// clients get the real apiserver-shaped error body.
+	if status, ok := err.(apierrors.APIStatus); ok || errors.As(err, &status) {
+		st := status.Status()
+		if st.Code == 0 {
+			st.Code = http.StatusInternalServerError
+		}
+		writeJSON(w, int(st.Code), st)
 		return
 	}
 	writeInternalError(w, err)

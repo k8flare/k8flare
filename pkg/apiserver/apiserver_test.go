@@ -544,8 +544,15 @@ func TestConfigMapCRUD(t *testing.T) {
 		cm, _ := client.CoreV1().ConfigMaps(ns).Get(ctx, name, metav1.GetOptions{})
 		cm.UID = types.UID("wrong-uid-should-be-rejected")
 		_, err := client.CoreV1().ConfigMaps(ns).Update(ctx, cm, metav1.UpdateOptions{})
-		if !errors.IsInvalid(err) {
-			t.Errorf("Expected Invalid, got: %v", err)
+		// A real kube-apiserver treats a mismatched UID on update as a
+		// failed UID precondition -> 409 Conflict (genericregistry.Store
+		// turns it into a delete-and-recreate signal for controllers).
+		// The old hand-written store returned 422 Invalid; configmaps
+		// answer with upstream semantics since the S25 phase 1b
+		// migration, and this test follows the resource onto the real
+		// behavior.
+		if !errors.IsConflict(err) {
+			t.Errorf("Expected Conflict (upstream UID-precondition semantics), got: %v", err)
 		}
 	})
 

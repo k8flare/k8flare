@@ -3748,3 +3748,28 @@ leanwidth` → wasm-opt -Oz で計測 (ディレクトリ自体はコミット�
 1 リソース (configmaps) を genericregistry.Store 経由に切り替えて
 conformance の該当テストで挙動同値を確認 → apidef.Table 全体へ展開 →
 手書き handler/store/table/subresource を段階削除。
+
+### S25 phase 1 実装 (2026-07-26): configmaps が実 genericregistry.Store で稼働
+
+- `pkg/apiserver/upstreamstorage.go` — KineStorage: storage.Interface を
+  Cluster DO の kine プロトコル上に実装 (EncodeToStorage/DecodeFromStorage
+  でバイト互換、リソース単位でどちらの層にも切替可能)。Watch は TS 層の
+  まま (Store の非 watch verb は呼ばない)。
+- `pkg/apiserver/upstreamregistry.go` — 全リソース共通の genericStrategy
+  (外部型 + SimpleNameGenerator、Prepare/Validate は既存の
+  ApplyDefaults/admission 層に委ねる) + NewUpstreamStore。
+  CompleteWithOptions は経由しない (etcd の storagebackend factory を
+  要求するため) — それが既定化するフィールドは明示設定が必要で、
+  ObjectNameFunc の設定漏れは初回 create で即 panic した (実測)。
+- 移行スイッチは stores.go の upstreamMigrated (現在 "v1/configmaps"
+  のみ)。single-object 5 verb が upstream 経由、コレクション系
+  (DeleteCollection / 名前空間 sweep) はバイト互換の生パスのまま。
+- 挙動差分は 1 件だけスイートに現れた: UID 不一致の update を手書き層は
+  422 Invalid にしていたが、実 apiserver は UID precondition 失敗 =
+  409 Conflict。テストを upstream セマンティクスに追随させた
+  (TestConfigMapCRUD/UpdateMismatchedUID)。
+- サイズ: apiserver チャンク 41.4MB → 65.18MB (wasm-opt 後、3 分割)。
+  cap 67.11MB に対し残 1.9MB — 以後のリソース追加ではなくコード削除で
+  戻る見込みだが、fieldmanager/admission の削減余地を次に検討する。
+- 検証: フルスイート + make test-kcm green (実 KCM が configmaps を
+  読む informer 経路含む)。
