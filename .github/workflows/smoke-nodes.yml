@@ -50,13 +50,9 @@
 # plain-proxy port should eventually move.
 name: Smoke Test workers/nodes
 
+# NOTE (2026-07-26): automatic triggers disabled -- GitHub Actions quota
+# is limited; run manually via workflow_dispatch until re-enabled.
 on:
-  pull_request:
-    paths:
-      - "workers/k8flare/**"
-      - "pkg/apiserver/nodecidr.go"
-      - "pkg/apiserver/computeclass.go"
-      - "pkg/controllers/sched/**"
   workflow_dispatch:
 
 jobs:

@@ -6,16 +6,9 @@
 # runner (127.0.0.1) — this never touches the deployed Cloudflare Worker.
 name: E2E Conformance
 
+# NOTE (2026-07-26): automatic triggers disabled -- GitHub Actions quota
+# is limited; run manually via workflow_dispatch until re-enabled.
 on:
-  pull_request:
-    paths:
-      - "pkg/apiserver/**"
-      - "cmd/scheduler/**"
-      - "cmd/controller-manager/**"
-      - "cmd/agent/**"
-      - "workers/k8flare/**"
-      - "go.mod"
-      - "go.sum"
   workflow_dispatch:
 
 jobs:

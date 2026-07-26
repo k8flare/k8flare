@@ -36,15 +36,9 @@
 #       workers/controllers ever becomes deployable.
 name: Cost Gate
 
+# NOTE (2026-07-26): automatic triggers disabled -- GitHub Actions quota
+# is limited; run manually via workflow_dispatch until re-enabled.
 on:
-  pull_request:
-    paths:
-      - "pkg/apiserver/**"
-      - "pkg/controllers/**"
-      - "workers/k8flare/**"
-      - "go.mod"
-      - "go.sum"
-      - ".github/workflows/cost-gate.yml"
   workflow_dispatch:
 
 jobs:
