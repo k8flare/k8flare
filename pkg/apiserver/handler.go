@@ -618,13 +618,7 @@ func finalizeDelete(ctx context.Context, store *ResourceStore, namespacedStores 
 	// it (ShouldDeleteDuringUpdate), returning the object it deleted. A
 	// plain Delete would NOT do it -- upstream treats a delete of an
 	// already-terminating object as a no-op that just reports the object.
-	del := store.Delete
-	if store.upstream != nil {
-		del = func(ctx context.Context, namespace, name string) (runtime.Object, error) {
-			return store.Update(ctx, namespace, name, write)
-		}
-	}
-	obj, err := del(ctx, namespace, name)
+	obj, err := store.Update(ctx, namespace, name, write)
 	if err != nil {
 		return nil, err
 	}

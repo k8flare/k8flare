@@ -12,7 +12,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
@@ -57,16 +56,6 @@ func NewResourceStore(
 		newListFunc: newListFunc,
 		upstream:    NewUpstreamStore(storage, gv, resource, singular, namespaced, newFunc, newListFunc),
 	}
-}
-
-// storageKey builds the storage key for the given resource.
-// Namespaced: /{resource}/{namespace}/{name}
-// Cluster-scoped: /{resource}/{name}
-func (rs *ResourceStore) storageKey(namespace, name string) string {
-	if rs.namespaced {
-		return "/" + rs.resource + "/" + namespace + "/" + name
-	}
-	return "/" + rs.resource + "/" + name
 }
 
 // storagePrefix builds the storage prefix for listing resources.
@@ -207,26 +196,6 @@ func (rs *ResourceStore) List(ctx context.Context, namespace string, fieldSelect
 	return rs.upstreamList(ctx, namespace, fieldSelector, labelSelector)
 }
 
-// applyLabelSelector filters a list of runtime.Object by the given Kubernetes label
-// selector string (e.g. "env=prod,tier in (web,api)"). An empty selector matches everything.
-func applyLabelSelector(items []runtime.Object, labelSelector string) ([]runtime.Object, error) {
-	if labelSelector == "" {
-		return items, nil
-	}
-	selector, err := labels.Parse(labelSelector)
-	if err != nil {
-		return nil, fmt.Errorf("parse label selector %q: %w", labelSelector, err)
-	}
-	filtered := make([]runtime.Object, 0, len(items))
-	for _, item := range items {
-		meta := getObjectMeta(item)
-		if meta != nil && selector.Matches(labels.Set(meta.Labels)) {
-			filtered = append(filtered, item)
-		}
-	}
-	return filtered, nil
-}
-
 // knownSelectableFields is every field path selectableFieldsFor (below)
 // ever populates. applyFieldSelector rejects a selector term naming a field
 // outside this set (400 Bad Request, matching real kube-apiserver's
@@ -275,39 +244,6 @@ func selectableFieldsFor(obj runtime.Object) fields.Set {
 		set["spec.unschedulable"] = fmt.Sprint(o.Spec.Unschedulable)
 	}
 	return set
-}
-
-// applyFieldSelector filters items by fieldSelector (real Kubernetes field
-// selector syntax, e.g. "status.phase!=Succeeded,status.phase!=Failed" or
-// "spec.clusterIP!=None"), using k8s.io/apimachinery/pkg/fields' real
-// parser and matcher rather than a hand-rolled one.
-func applyFieldSelector(items []runtime.Object, fieldSelector string) ([]runtime.Object, error) {
-	if fieldSelector == "" {
-		return items, nil
-	}
-	selector, err := fields.ParseSelector(fieldSelector)
-	if err != nil {
-		// A malformed selector is a client mistake (400), same as the
-		// unsupported-field case just below -- not a server failure.
-		// Found by review: this used to be a plain wrapped error, which
-		// writeResourceError's errors.As can't unwrap to anything but a
-		// generic 500 (handler.go), misreporting a typo in
-		// --field-selector as a server crash.
-		return nil, &StatusError{Status: badRequestStatus(fmt.Sprintf("invalid field selector %q: %v", fieldSelector, err))}
-	}
-	for _, req := range selector.Requirements() {
-		if !knownSelectableFields[req.Field] {
-			return nil, &StatusError{Status: badRequestStatus(fmt.Sprintf("field label not supported: %s", req.Field))}
-		}
-	}
-
-	filtered := make([]runtime.Object, 0, len(items))
-	for _, item := range items {
-		if selector.Matches(selectableFieldsFor(item)) {
-			filtered = append(filtered, item)
-		}
-	}
-	return filtered, nil
 }
 
 // Create persists a new object via the upstream registry (UID/

@@ -120,6 +120,16 @@ export class CFContainersScheduler extends DurableObject<Env> {
       await this.ctx.storage.deleteAll();
       return Response.json({ destroyed: true, vms: Object.keys(tracked).length });
     }
+    // NodeVM leak guard (nodevm.ts onActivityExpired): is this pod UID
+    // still a tracked VM? Read-only, no reconcile side effects.
+    {
+      const url = new URL(request.url);
+      if (url.pathname === "/internal/vm-tracked") {
+        const uid = url.searchParams.get("uid") ?? "";
+        const tracked = await this.trackedVMs();
+        return Response.json({ tracked: Boolean(tracked[uid]) });
+      }
+    }
     // Pokes are cheap and idempotent; real work happens in reconcile().
     // Never let a caller's cancellation tear reconciliation down
     // mid-flight: run it detached, exactly like workers/controllers'

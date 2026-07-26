@@ -16,10 +16,35 @@ export abstract class NodeVMBase extends Container<Env> {
   // the future logs/exec bridge.
   defaultPort = 10250;
   // Required by @cloudflare/containers to arm its monitoring alarm at all;
-  // lifecycle is owned by the scheduler DO (destroy on pod termination),
-  // never by inactivity.
+  // lifecycle is owned by the scheduler DO (destroy on pod termination) --
+  // but onActivityExpired below is the ask-before-sleep safety net cost
+  // invariant #2 requires, NOT a no-op: if the scheduler's teardown ever
+  // leaks a VM (the 2026-07-16 incident left 21 provisioned instances
+  // billing wall-clock for days), the VM asks the scheduler whether it is
+  // still tracked and destroys itself when it isn't.
   sleepAfter = "10m";
-  override async onActivityExpired(): Promise<void> {}
+
+  override async onActivityExpired(): Promise<void> {
+    // This DO's name is the owning Pod's UID (scheduler.ts vmStub()).
+    const uid = this.ctx.id?.name;
+    if (!uid) return;
+    try {
+      const sched = this.env.SCHEDULER.get(this.env.SCHEDULER.idFromName("default"));
+      const resp = await sched.fetch(
+        `http://scheduler.internal/internal/vm-tracked?uid=${encodeURIComponent(uid)}`,
+      );
+      const body = (await resp.json()) as { tracked?: boolean };
+      if (resp.ok && body.tracked === false) {
+        console.log(`NodeVM ${uid}: untracked at activity expiry -- destroying (leak guard)`);
+        await this.destroy();
+      }
+      // Tracked (a Pod still owns this VM) or the check failed: stay up;
+      // the next expiry re-asks. Conservative on error so a transient
+      // scheduler hiccup can't kill a live workload.
+    } catch (err) {
+      console.log(`NodeVM ${uid}: leak-guard check failed (staying up): ${err}`);
+    }
+  }
 
   override onError(error: unknown): unknown {
     console.error(`NodeVM error: ${String(error)}`);

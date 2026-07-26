@@ -154,6 +154,22 @@ upstream プラグとの既知の差分 (未実装、必要になったら追加
   Terminating 状態を持たない ([namespacedelete.go](../pkg/apiserver/namespacedelete.go))。
   代わりに削除後の events 再 sweep で race を閉じている (commit `a012a01`)。
 
+
+### 追記 (2026-07-27, Codex レビュー指摘への回答)
+
+- [priority.go](../pkg/apiserver/priority.go) / LimitRange 系
+  ([defaults.go](../pkg/apiserver/defaults.go)) は upstream admission
+  プラグイン (`plugin/pkg/admission/priority` / `limitranger`) の部分
+  ミラー。実物は internal 型 + admission.Attributes + informer 前提で、
+  NamespaceLifecycle と同じパターン 2 (持ち込みが過大) に該当する。
+  リンク実測はしていないため、apiserver チャンクの headroom (現在
+  ~1.9MB) に余裕ができたら再評価する。
+- [storage/index.ts](../workers/k8flare/src/storage/index.ts) の
+  node-lifecycle 安全網 alarm は「live Node が存在する間は 60 秒間隔」
+  で、厳密には固定間隔。ノードが居る間は kubelet ハートビート
+  (10s) がどのみち走るため実害は小さいが、Lease 期限からの
+  deadline-armed 化が正しい形 — 縮小候補として記録。
+
 ## 6. ホストバイナリの退役方針 (2026-07-25 ユーザー決定)
 
 `cmd/scheduler` / `cmd/controller-manager` は WASM 版 (sched/kcm 動的ワーカー) を
