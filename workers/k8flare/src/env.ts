@@ -50,11 +50,17 @@ export interface Env {
   CLOUDFLARE_API_TOKEN?: string;
   CLOUDFLARE_ACCOUNT_ID?: string;
 
+  // NEVER a Worker secret (abolished 2026-07-27; every cluster --
+  // "default" included -- authenticates against its per-cluster token
+  // vault, minted via the admin API). Present only on DERIVED envs:
+  // clusters/clusterenv.ts sets it to the door-verified presented token
+  // so downstream dwAuth-style re-checks pass, and nodes/scheduler.ts
+  // sets it to the cluster's vault token for its own API calls.
   K3S_TOKEN?: string;
   // Management-API auth (clusters/adminauth.ts): comma-separated
   // rotatable admin secrets, and/or Cloudflare Access JWT verification
   // (team domain + application AUD). Neither set = dev fallback token,
-  // same posture as K3S_TOKEN's dev fallback.
+  // same posture as the cluster-token dev fallback.
   ADMIN_TOKENS?: string;
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD?: string;
@@ -91,10 +97,4 @@ export interface Env {
   // Multi-cluster: the public URL path prefix ("/c/<id>", "" for
   // default) the supervisor advertises to joining agents.
   CLUSTER_BASE_PATH?: string;
-  // Multi-cluster: the PRISTINE wrangler-level K3S_TOKEN, preserved by
-  // clusters/clusterenv.ts when it overwrites K3S_TOKEN with the
-  // caller's presented token -- loader/apiserver.ts must bake the env
-  // token (a stable fallback), never whichever presented token happened
-  // to arrive first on a cold isolate.
-  ENV_K3S_TOKEN?: string;
 }

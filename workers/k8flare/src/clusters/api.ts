@@ -81,16 +81,32 @@ export async function handleClustersAPI(
   }
 
   const id = parts[1];
-  if (!CLUSTER_ID_RE.test(id) || id === "default") {
+  if (!CLUSTER_ID_RE.test(id) && id !== "default") {
     return Response.json({ error: "invalid cluster id" }, { status: 400 });
   }
-  const recResp = await registryStub(env).fetch(`http://registry.internal/clusters/${id}`);
-  if (!recResp.ok) return new Response("cluster not found", { status: 404 });
-  const rec = (await recResp.json()) as ClusterRecord;
-  const doName = clusterDOName(rec);
+  // "default" is the zero-config cluster: it has no registry record and
+  // cannot be created or deleted, but its TOKEN routes work exactly like
+  // a provisioned cluster's -- the K3S_TOKEN Worker secret is abolished
+  // and every cluster (default included) authenticates against its own
+  // vault, minted/rotated through this API. A fresh deployment has an
+  // empty default vault (dev posture: the dev fallback token applies
+  // until the first real token is minted here).
+  let rec: ClusterRecord | null = null;
+  let doName: string;
+  if (id === "default") {
+    if (parts.length === 2 && req.method === "DELETE") {
+      return Response.json({ error: '"default" cannot be deleted' }, { status: 400 });
+    }
+    doName = "default";
+  } else {
+    const recResp = await registryStub(env).fetch(`http://registry.internal/clusters/${id}`);
+    if (!recResp.ok) return new Response("cluster not found", { status: 404 });
+    rec = (await recResp.json()) as ClusterRecord;
+    doName = clusterDOName(rec);
+  }
 
   if (parts.length === 2 && req.method === "GET") {
-    return Response.json(rec);
+    return Response.json(rec ?? { id: "default", doName: "default" });
   }
 
   if (parts.length === 3 && parts[2] === "kubeconfig" && req.method === "GET") {
@@ -105,9 +121,10 @@ export async function handleClustersAPI(
 
   if (parts.length === 3 && parts[2] === "tokens" && req.method === "POST") {
     const vault = await readClusterTokens(env, doName);
-    if (!vault) return Response.json({ error: "cluster has no token vault" }, { status: 409 });
     const token = mintToken();
-    await writeClusterTokens(env, doName, [...vault.tokens, token], vault.revision);
+    // revision 0 creates the vault -- the default cluster starts without
+    // one (provisioned clusters get theirs at POST /clusters time).
+    await writeClusterTokens(env, doName, [...(vault?.tokens ?? []), token], vault?.revision ?? 0);
     invalidateTokenCache(doName);
     return Response.json({ tokenId: token.tokenId, token: token.secret }, { status: 201 });
   }
@@ -128,7 +145,7 @@ export async function handleClustersAPI(
     return new Response(null, { status: 204 });
   }
 
-  if (parts.length === 2 && req.method === "DELETE") {
+  if (parts.length === 2 && req.method === "DELETE" && rec !== null) {
     return teardownCluster(env, ctx, rec);
   }
 

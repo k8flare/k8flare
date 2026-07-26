@@ -83,17 +83,15 @@ const tokenCache = new Map<string, { secrets: string[]; expires: number }>();
 export async function clusterSecrets(env: Env, doName: string): Promise<string[]> {
   const hit = tokenCache.get(doName);
   if (hit && hit.expires > Date.now()) return hit.secrets;
-  let secrets: string[];
-  if (doName === "default") {
-    // Zero-config path: STRICTLY the env token (rotation = wrangler
-    // secret). Deliberately no vault read here -- the Go apiserver is
-    // per-request (no cross-request cache, S19) and mirrors this rule,
-    // so a default-cluster vault would either cost it a storage read on
-    // every request or silently diverge between the two layers.
-    secrets = [env.K3S_TOKEN || "k8flare-dev-token"];
-  } else {
-    const vault = await readClusterTokens(env, doName);
-    secrets = vault?.tokens.map((t) => t.secret) ?? [];
+  // Every cluster -- "default" included -- authenticates against its own
+  // vault (K3S_TOKEN as a Worker secret is abolished, 2026-07-27; tokens
+  // are minted via POST /clusters/<id>/tokens, admin-authenticated). A
+  // cluster whose vault is empty is a dev posture: the dev fallback token
+  // applies, same rule the Go side has always had.
+  const vault = await readClusterTokens(env, doName);
+  let secrets = vault?.tokens.map((t) => t.secret) ?? [];
+  if (secrets.length === 0 && doName === "default") {
+    secrets = ["k8flare-dev-token"];
   }
   tokenCache.set(doName, { secrets, expires: Date.now() + TOKEN_CACHE_TTL_MS });
   return secrets;

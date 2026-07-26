@@ -138,19 +138,25 @@ export async function handleGateway(
   req = resolved.req;
   url = resolved.url;
 
+  // EVERY cluster (default included, since the K3S_TOKEN secret was
+  // abolished) authenticates AT THE DOOR against the cluster's own token
+  // vault. This is what prevents cross-cluster token reuse: downstream
+  // dwAuth-style checks compare against env.K3S_TOKEN, so the derived
+  // env carries the verified presented token -- and an unverified
+  // request never reaches them.
   let env: Env;
-  if (cluster.doName === "default") {
-    // Default keeps its exact pre-multi-cluster auth semantics: the env
-    // token, enforced downstream (Go AuthMiddleware, dwAuth, handleNodes).
-    env = clusterEnv(outerEnv, cluster);
-  } else {
-    // Provisioned clusters authenticate AT THE DOOR against the
-    // cluster's own token vault. This is what prevents cross-cluster
-    // token reuse: downstream dwAuth-style checks compare against
-    // env.K3S_TOKEN, so the derived env carries the verified presented
-    // token -- and an unverified request never reaches them.
+  {
     const presented = await verifyClusterToken(req, outerEnv, cluster.doName);
-    if (!presented && !isUnauthenticatedPath(url)) {
+    // ServiceAccount JWTs are not vault tokens: they pass the door and
+    // are authenticated by the Go apiserver's own SA-JWT authenticator
+    // (signature/audience/expiry) with RBAC applied -- rejects still
+    // 401 there. The derived env gets a random placeholder token in
+    // that case, NOT the JWT, so the dwAuth-compared extras (kubelet
+    // proxy, /nodes/*) never treat an SA identity as the cluster token.
+    const auth = req.headers.get("Authorization") || "";
+    const bearer = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    const isJWT = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(bearer);
+    if (!presented && !isJWT && !isUnauthenticatedPath(url)) {
       return Response.json(
         {
           kind: "Status",

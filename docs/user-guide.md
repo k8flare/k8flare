@@ -38,10 +38,9 @@ root 権限と同じと考えてください。
 
 - `kubectl get/describe/apply/delete/edit/patch` — 主要リソース一式
   (Pod, Deployment, ReplicaSet, StatefulSet, DaemonSet, Job, CronJob,
-  Service, ConfigMap, Secret, Namespace, ServiceAccount, PDB, HPA,
-  NetworkPolicy, Ingress ほか約 38 種類)
-- `kubectl get -w`(watch)、`kubectl logs` / `exec` / `port-forward`
-  (ノード側の対応が前提)
+  Service, ConfigMap, Secret, Namespace, ServiceAccount ほか全 41 種類)
+- `kubectl get -w`(watch)、`kubectl logs` / `exec`(ノード側の対応が前提。
+  `port-forward` は未対応 → 制限の表を参照)
 - Deployment のローリング更新、Job/CronJob、RBAC、ServiceAccount トークン
 - Service (ClusterIP) とクラスタ DNS、EndpointSlice
 - `kubectl apply` のクライアント側検証(OpenAPI 配信済み。
@@ -58,7 +57,8 @@ root 権限と同じと考えてください。
 | **最初の 1 リクエストが遅いことがある** | 完全アイドルから起きるとき、コントロールプレーンのロードに数秒〜数十秒かかることがあります。以降は速い(ミリ秒台)です。`kubectl create` 直後に Pod が出るまで数十秒待つのは正常 |
 | **削除は eventually-consistent** | `kubectl delete` のカスケード(依存オブジェクトの削除)は非同期 GC が行います。実 k8s と同じですが、数十秒残って見えることがあります |
 | **PVC は Pending のまま** | 動的プロビジョナー未実装。PV/PVC/StorageClass のオブジェクト自体は作れますが、ボリュームは供給されません |
-| **未知フィールドはサーバーで黙って受理** | サーバー側 strict validation (`--field-validation=Strict`) は未実装。typo はクライアント検証頼み |
+| **`kubectl port-forward` は未対応** | 501 が返ります。`kubectl exec` / `logs` は使えます |
+| **PDB / HPA / NetworkPolicy は「作れるが効かない」** | オブジェクトの CRUD はできますが、それを実行するコントローラー/エンフォーサが未稼働です |
 | **Pod はノードがないと Pending** | ノード(Linux VM)の追加は管理者に依頼してください |
 | **admission webhook / CRD は未対応** | MutatingWebhook・ValidatingWebhook・CustomResourceDefinition は使えません |
 | **RBAC はトークンでバイパスされる** | 渡されたクラスタトークンは system:masters 相当。個別ユーザー/権限分離が必要なら管理者に相談 |

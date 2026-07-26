@@ -91,13 +91,11 @@ export class CFContainersScheduler extends DurableObject<Env> {
   // (default keeps the env token; see clusters/tokens.ts).
   private async apiEnv(): Promise<Env> {
     const name = this.clusterName();
-    if (name === "default") return this.env;
     const [secret] = await clusterSecrets(this.env, name);
     return {
       ...this.env,
       CLUSTER_DO_NAME: name,
-      ENV_K3S_TOKEN: this.env.K3S_TOKEN,
-      K3S_TOKEN: secret ?? this.env.K3S_TOKEN,
+      K3S_TOKEN: secret ?? "k8flare-dev-token",
     };
   }
 
@@ -261,7 +259,8 @@ export class CFContainersScheduler extends DurableObject<Env> {
       tracked[uid].meshConnectorId = mesh?.id;
       await this.ctx.storage.put("vms", tracked);
       const stub = this.vmStub(tier, uid);
-      await stub.up(nodeName, mesh?.token);
+      const [joinSecret] = await clusterSecrets(this.env, this.clusterName());
+      await stub.up(nodeName, mesh?.token, joinSecret);
       dirty = true;
       console.log(`cf-containers-scheduler: booting ${nodeName} for ${uid}`);
     }

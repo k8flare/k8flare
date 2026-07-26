@@ -2,9 +2,10 @@
 
 A Kubernetes control plane that runs on Cloudflare — and scales to zero.
 
-The apiserver, controller-manager, scheduler, and garbage collector are the
-**real upstream Kubernetes binaries** (k8s v1.36, k3s-flavored), compiled to
-WASM and executed on demand as Worker Loader dynamic workers. Cluster state
+The control plane is built from the **real upstream Kubernetes packages**
+(k8s v1.36, k3s-flavored) — the actual controller-manager/scheduler/GC
+controller code and the upstream generic registry — compiled to WASM and
+executed on demand as Worker Loader dynamic workers. Cluster state
 lives in Durable Objects. When nobody talks to the cluster, nothing runs:
 no processes, no polling alarms, no resident WebSockets — idle cost
 approaches storage cost alone. A write wakes the control plane in
@@ -19,7 +20,7 @@ kubectl / kubelet (BYO VM: unmodified k3s embed, cmd/agent)
 workers/k8flare  — the ONE deployed Worker (routing, auth, watch streaming,
    │               kubelet proxy)
    ├─► apiserver   (Go WASM, dynamic worker; real generic registry over DO storage)
-   ├─► kcm         (real kube-controller-manager: 6 workload controllers)
+   ├─► kcm         (real kube-controller-manager: 7 workload controllers)
    ├─► gc          (real garbagecollector)
    ├─► sched       (real kube-scheduler)
    ├─  Cluster DO (kine-style revision log + per-namespace facets)
@@ -46,7 +47,7 @@ Key design points:
 
 ## What works today
 
-- Full CRUD + watch for the ~38 core/apps/batch/networking/etc. resource
+- Full CRUD + watch for the 41 core/apps/batch/networking/etc. resource
   types in `pkg/apiserver/apidef/table.go`, served by the upstream generic
   registry; real kubectl works end to end (tables, OpenAPI validation,
   apply, delete cascades via the real GC).
@@ -74,7 +75,7 @@ you want containers locally.
 ```sh
 pnpm install
 make wasm        # build apiserver/kcm/gc/sched WASM chunks (~2 min first time)
-make dev         # wrangler dev on :8787
+make dev         # wrangler dev (default port 8787)
 ```
 
 Talk to it with a bearer token (dev fallback: `k8flare-dev-token`):
@@ -96,8 +97,8 @@ make test-kcm    # control-plane smoke with the real KCM/GC/sched dynamic worker
 Build and run the agent on a Linux VM:
 
 ```sh
-make nodes-agent   # or: GOOS=linux go build ./cmd/agent
-k8flare-agent --server https://<your-worker>.workers.dev --token <cluster token>
+make nodes-agent   # builds workers/k8flare/images/node/k8flare-agent (linux/amd64)
+./workers/k8flare/images/node/k8flare-agent --server https://<your-worker>.workers.dev --token <cluster token>
 ```
 
 See `cmd/agent/main.go` for Mesh networking, labels/taints, and the other
@@ -105,9 +106,10 @@ flags.
 
 ## Deploying
 
-`wrangler deploy -c workers/k8flare/wrangler.jsonc` — set `K3S_TOKEN` (and
-`ADMIN_TOKENS` for the management API) as Worker secrets; a deployment with
-no secrets is a dev posture. The `containers` section provisions NodeVM
+`wrangler deploy -c workers/k8flare/wrangler.jsonc` — set `ADMIN_TOKENS`
+(the management-API secret, the only Worker secret) and then mint cluster
+tokens through the admin API (`POST /clusters/default/tokens`); a cluster
+with no minted tokens is a dev posture. The `containers` section provisions NodeVM
 container apps, which bill by wall clock — omit it unless you are using
 Pod-on-Containers.
 

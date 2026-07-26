@@ -8,8 +8,8 @@ k8flare を自分の Cloudflare アカウントにデプロイし、クラスタ
 
 デプロイするのは Worker 1 つ (`workers/k8flare`) だけです。その中に:
 
-- **apiserver / controller-manager / scheduler / GC** — 実物の Kubernetes
-  バイナリ (WASM)。リクエストが来たときだけ動きます
+- **apiserver / controller-manager / scheduler / GC** — 実物の upstream
+  Kubernetes コード (WASM)。リクエストが来たときだけ動きます
 - **Cluster DO / WatchHub DO** — クラスタの状態と watch 配信。データは
   ここに永続化されます
 - **Static Assets** — WASM チャンクと OpenAPI 文書
@@ -26,15 +26,26 @@ make wasm                                     # WASM チャンク生成 (~2分)
 npx wrangler deploy -c workers/k8flare/wrangler.jsonc
 ```
 
-デプロイ直後は**開発ポスチャ**です(トークンが既定値)。公開運用する前に
-必ずシークレットを設定してください:
+シークレットは **`ADMIN_TOKENS` の 1 つだけ**です(クラスタ管理 API の認証。
+カンマ区切りで複数可 = ローテーション)。公開運用する前に必ず設定してください:
 
 ```sh
-# デフォルトクラスタ (kubectl/kubelet) 用トークン
-openssl rand -hex 24 | npx wrangler secret put K3S_TOKEN --name k8flare
-# クラスタ管理 API (/clusters) 用トークン。カンマ区切りで複数可 = ローテーション
 openssl rand -hex 24 | npx wrangler secret put ADMIN_TOKENS --name k8flare
 ```
+
+クラスタ自体のトークン(kubectl/kubelet 用)はシークレットではなく、
+**管理 API で発行**します(default クラスタも同じ):
+
+```sh
+B=https://<your-worker>.workers.dev
+curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" $B/clusters/default/tokens
+# -> {"tokenId":"...","token":"..."}  この token を kubeconfig に使う
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" $B/clusters/default/kubeconfig > default.yaml
+```
+
+トークンを 1 つも発行していないクラスタは**開発ポスチャ**
+(既定トークン `k8flare-dev-token` を受理)です。最初のトークンを発行した
+時点で既定トークンは無効になります。
 
 管理 API は Cloudflare Access でも保護できます
 (`ACCESS_TEAM_DOMAIN` + `ACCESS_AUD` を設定。実装:
@@ -44,27 +55,27 @@ openssl rand -hex 24 | npx wrangler secret put ADMIN_TOKENS --name k8flare
 
 - `wrangler.jsonc` の **`containers` セクションは Pod-on-Containers
   (NodeVM) 用**で、コンテナアプリを作成すると**壁時計課金**が発生し得ます。
-  使わないならこのセクションを除いた構成でデプロイしてください。過去に
-  放置インスタンス 21 個が数日課金され続けた事故があります
-  (`wrangler containers list` で確認、`wrangler containers delete <ID>`
-  で削除できます)。
+  使わないならこのセクションを除いた構成でデプロイしてください。
+  稼働状況は `wrangler containers list` で確認、不要なアプリは
+  `wrangler containers delete <ID>` で削除できます。
 - deploy / secret 操作は実アカウントに影響します。検証は基本
   `make dev`(ローカル) で行い、本番デプロイは意図したときだけ。
 
 ## 3. クラスタの発行と管理 (管理 API)
 
 `/clusters` 配下。認証は `Authorization: Bearer <ADMIN_TOKENS のどれか>`。
-「default」クラスタは予約済みで、発行不要(デプロイした瞬間から存在)です。
+「default」クラスタは発行不要(デプロイした瞬間から存在)で、作成/削除は
+できませんが、トークン発行・kubeconfig 取得は他のクラスタと同じに使えます。
 
 | 操作 | エンドポイント | 返り値 |
 |---|---|---|
-| クラスタ作成 | `POST /clusters` body `{"id":"team-a"}` | `{id, token, kubeconfig}` |
+| クラスタ作成 | `POST /clusters` body `{"id":"team-a"}` | `{id, token, tokenId, kubeconfig}` |
 | 一覧 | `GET /clusters` | `{items:[...]}` |
 | 詳細 | `GET /clusters/<id>` | レコード |
 | kubeconfig 取得 | `GET /clusters/<id>/kubeconfig` | YAML(利用者に渡すのはこれ) |
 | トークン追加(ローテーション) | `POST /clusters/<id>/tokens` | `{tokenId, token}` |
 | トークン削除 | `DELETE /clusters/<id>/tokens/<tokenId>` | 204(最後の 1 本は拒否) |
-| クラスタ削除 | `DELETE /clusters/<id>` | 202(冪等。VM 破棄→状態削除) |
+| クラスタ削除 | `DELETE /clusters/<id>` | 202(途中失敗時の再実行は継続。完了後の再実行は 404) |
 
 例:
 
@@ -75,8 +86,9 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" $B/clusters/team-a/kubeconfig > 
 ```
 
 トークンのローテーション手順: 新トークンを POST → 利用者に配布 → 旧
-トークンを DELETE。検証はアイソレートごとに約 60 秒キャッシュされるため、
-失効の伝播に最大 1 分かかります。緊急失効はクラスタ削除です。
+トークンを DELETE。ゲートウェイでの検証はアイソレートごとに約 60 秒キャッシュされるため、
+失効の伝播に最大 1 分かかります(Go 層の防御的キャッシュは isolate 再生成
+まで残ることがありますが、門はゲートウェイ側です)。緊急失効はクラスタ削除です。
 
 ## 4. ノードの提供 (BYO VM)
 
@@ -117,7 +129,7 @@ npx wrangler deploy -c workers/k8flare/wrangler.jsonc
 
 | 症状 | まず見るもの |
 |---|---|
-| kubectl が 401 | トークンが正しいか。シークレット変更直後は伝播に 1-2 分 |
+| kubectl が 401 | トークンが正しいか。トークンのローテーション直後は伝播に最大 1 分 |
 | Deployment を作っても Pod が生えない | `wrangler tail` で controllers のロードログ。書き込みが 1 件でもあれば KCM が起きます |
 | Pod が Pending のまま | ノードが居るか (`kubectl get nodes`)。ノードなしなら正常な Pending です |
 | 削除したはずのオブジェクトが残る | GC は非同期(実 k8s と同じ eventually-consistent)。数十秒待つ |

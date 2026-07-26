@@ -67,7 +67,6 @@ export function clusterEnv(env: Env, cluster: ResolvedCluster, presentedToken?: 
     NODE_VM_LARGE: prefixNs(env.NODE_VM_LARGE, cluster.doName),
     CLUSTER_DO_NAME: cluster.doName,
     CLUSTER_BASE_PATH: cluster.basePath,
-    ENV_K3S_TOKEN: env.K3S_TOKEN,
   };
   if (presentedToken) derived.K3S_TOKEN = presentedToken;
   return derived;

@@ -67,21 +67,32 @@ func storageDo(req *http.Request) (*http.Response, error) {
 // provisioned-cluster token rotation needs storageDo to receive a live
 // request context before it can be relied on. Left as a follow-up.
 var getTokens = sync.OnceValue(func() []string {
-	if clusterDOName() == "default" {
-		return []string{cloudflare.GetenvDefault("K3S_TOKEN", "k8flare-dev-token")}
-	}
-	req, err := http.NewRequest(http.MethodGet, "http://do.internal/key/ca/cluster-tokens", nil)
-	if err != nil {
-		return nil // fail closed: no readable vault means nothing authenticates
-	}
-	resp, err := storageDo(req)
-	if err != nil {
-		return nil
-	}
-	defer resp.Body.Close()
-	tokens, err := apiserver.DecodeVaultTokens(resp.Body)
-	if err != nil {
-		return nil
+	// Every cluster -- "default" included -- reads its own vault: the
+	// K3S_TOKEN Worker secret is abolished (2026-07-27); tokens are
+	// minted via the admin API (POST /clusters/<id>/tokens). An empty or
+	// unreadable DEFAULT vault falls back to the dev token (the
+	// secretless dev/CI posture -- and, on a transient vault-read
+	// failure, the TS gateway has already door-verified the caller, so
+	// this layer degrading to dev-only is defense-in-depth, not the
+	// gate). Provisioned clusters keep failing closed.
+	tokens := func() []string {
+		req, err := http.NewRequest(http.MethodGet, "http://do.internal/key/ca/cluster-tokens", nil)
+		if err != nil {
+			return nil
+		}
+		resp, err := storageDo(req)
+		if err != nil {
+			return nil
+		}
+		defer resp.Body.Close()
+		decoded, err := apiserver.DecodeVaultTokens(resp.Body)
+		if err != nil {
+			return nil
+		}
+		return decoded
+	}()
+	if len(tokens) == 0 && clusterDOName() == "default" {
+		return []string{"k8flare-dev-token"}
 	}
 	return tokens
 })

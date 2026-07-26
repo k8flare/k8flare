@@ -52,7 +52,7 @@ workers/k8flare(シェル: 認証一元化・watch ストリーミング・kubel
    ├──► apiserver DW(per-request。apidef テーブル駆動、
    │      pkg/apiserver/cmd/apiserver-wasm。kine への経路は STORAGE 自己バインディング
    │      (ClusterLoopback entrypoint)経由 — Loader env に DO namespace は渡せない、S2)
-   ├──► kcm DW(resident。実 kube-controller-manager の 6 ワークロードコントローラー、
+   ├──► kcm DW(resident。実 kube-controller-manager の 7 ワークロードコントローラー、
    │      pkg/controllers/cmd/kcm-wasm。poke = Cluster DO の pingControllers 直呼び /
    │      event-armed 安全網 alarm)
    ├──► gc DW(resident。実 garbagecollector、pkg/controllers/cmd/gc-wasm。
@@ -140,7 +140,7 @@ CI ゲート(`.github/workflows/`): `ci.yml`(vp check / build:wasm / go vet+test
 - `.dev.vars` は wrangler の設定ファイルと同じディレクトリでしか読まれない。repo ルートに置いても無視される。
 - トークン未設定時は開発用トークン `k8flare-dev-token` にフォールバックする(Go/CI はこれに依存しているので「直す」対象ではない)。
 - `wrangler dev` の alarm エミュレーションは、読み取り専用のポーリングだけでは発火しないことがある。「動いていない」と結論する前に書き込みを1件試すこと。
-- `kubectl apply` に `--validate=false` はもう不要(OpenAPI v2/v3 を Static Assets で配信、実 kubectl で確認済み)。ただし plain HTTP(`wrangler dev` そのまま)だと client-go の `clientcmd` が TLS 以外への認証情報送信を拒否するため、kubeconfig 経由の実 kubectl 検証にはローカル TLS 終端(自己署名証明書 + リバースプロキシ)が要る — Go の `rest.Config{BearerToken: ...}` を直接使う `go test` はこの制約を受けない。サーバー側の strict field validation(`fieldValidation=Strict`)は未実装なので、未知フィールドはクライアント側 OpenAPI 検証をすり抜けても現状はサーバーで黙って受理される。
+- `kubectl apply` に `--validate=false` はもう不要(OpenAPI v2/v3 を Static Assets で配信、実 kubectl で確認済み)。ただし plain HTTP(`wrangler dev` そのまま)だと client-go の `clientcmd` が TLS 以外への認証情報送信を拒否するため、kubeconfig 経由の実 kubectl 検証にはローカル TLS 終端(自己署名証明書 + リバースプロキシ)が要る — Go の `rest.Config{BearerToken: ...}` を直接使う `go test` はこの制約を受けない。サーバー側の strict field validation は実装済みで既定 Strict(pkg/apiserver/fieldvalidation.go。この行の旧記述「未実装」は 2026-07-27 の docs 監査で誤りと判明し訂正)。
 - `wrangler deploy` / `wrangler secret put` は実アカウントに影響するので、指示なく実行しない(`.claude/settings.json` の deny 設定でもブロックされる)。
 - 単一 Worker 統合後(2026-07-06)、`npm run dev` は常に全コンポーネント(実 KCM 含む)を含む。**`go test ./pkg/apiserver/...` は同じ単一 config を `--var KCM_DISABLED:1` 付きで起動する** — テスト内の Pod は KCM に触られない前提で書かれており、このキルスイッチ(storage の pingControllers と Controllers DO の early-return)がその前提を守る。「dev では Pod が動くのに test では KCM が反応しない」はこの差が原因。KCM を動かすには先に `npm run build:wasm`(KCM の wasm-opt 込みで約2分)で `workers/k8flare/assets/wasm/` を生成しておくこと(apiserver チャンクがないと dev は API 応答自体ができない)。
 - **Docker が動いていない環境では `wrangler dev` は containers 定義で hard fail する。** `--enable-containers=false` を付けること(go test / e2e / cost-gate の各ハーネスは付与済み)。コンテナイメージには EXPOSE が必須(ないと dev が起動拒否、S19 実測)。

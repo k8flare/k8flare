@@ -25,11 +25,15 @@ export abstract class NodeVMBase extends Container<Env> {
   sleepAfter = "10m";
 
   override async onActivityExpired(): Promise<void> {
-    // This DO's name is the owning Pod's UID (scheduler.ts vmStub()).
-    const uid = this.ctx.id?.name;
-    if (!uid) return;
+    // This DO's name is "<schedulerDoName>/<podUID>" (scheduler.ts
+    // vmStub() -- uniform with clusterenv.ts's prefixNs).
+    const full = this.ctx.id?.name ?? "";
+    const slash = full.indexOf("/");
+    if (slash <= 0) return;
+    const doName = full.slice(0, slash);
+    const uid = full.slice(slash + 1);
     try {
-      const sched = this.env.SCHEDULER.get(this.env.SCHEDULER.idFromName("default"));
+      const sched = this.env.SCHEDULER.get(this.env.SCHEDULER.idFromName(doName));
       const resp = await sched.fetch(
         `http://scheduler.internal/internal/vm-tracked?uid=${encodeURIComponent(uid)}`,
       );
@@ -60,7 +64,7 @@ export abstract class NodeVMBase extends Container<Env> {
    * entrypoint.sh change was needed to wire it through, only to start
    * warp-svc and pass --mesh-ip-as-node-ip.
    */
-  async up(nodeName: string, meshConnectorToken?: string): Promise<void> {
+  async up(nodeName: string, meshConnectorToken?: string, joinToken?: string): Promise<void> {
     const state = await this.getState();
     if (state.status === "running" || state.status === "healthy") return;
     const serverURL = this.env.GATEWAY_URL;
@@ -68,7 +72,7 @@ export abstract class NodeVMBase extends Container<Env> {
     const envVars: Record<string, string> = {
       SERVER_URL: serverURL,
       NODE_NAME: nodeName,
-      K3S_TOKEN: this.env.K3S_TOKEN ?? "k8flare-dev-token",
+      K3S_TOKEN: joinToken ?? "k8flare-dev-token",
     };
     if (meshConnectorToken) envVars.MESH_CONNECTOR_TOKEN = meshConnectorToken;
     // CI/local-dev only (smoke-nodes.yml): base64 PEM of the harness's
