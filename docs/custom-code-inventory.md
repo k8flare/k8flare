@@ -66,7 +66,7 @@ doc comment を確認した結果、多くは「upstream の実物を配線す�
 | [supervisor.go](../pkg/apiserver/supervisor.go) | 347 | A: k3s supervisor プロトコル互換面 |
 | [storage.go](../pkg/apiserver/storage.go) | 344 | **A**: Cluster DO への kine 風 k/v トランスポート (プラットフォーム固有) |
 | [table.go](../pkg/apiserver/table.go) | 376 | A: kubectl 用 Table 変換。upstream printers/tableconvertor 相当 |
-| [gracefuldelete.go](../pkg/apiserver/gracefuldelete.go) | 340 | B: deletionTimestamp+finalizer スタンプのみ。カスケードは**実 GC に委任** |
+| [gracefuldelete.go](../pkg/apiserver/gracefuldelete.go) | 289 | B: スタンプ自体も upstream Store.Delete に委任 (2026-07-26)。カスケードは**実 GC に委任**。残りは orphan straggler sweep 等の k8flare 固有分 |
 | [clusterip.go](../pkg/apiserver/clusterip.go) | 328 | B: IP↔offset 計算は **upstream ServiceIPAllocator**、DO 永続化のみ独自 |
 | [nodelifecycle.go](../pkg/apiserver/nodelifecycle.go) | 312 | A: node-lifecycle-controller のサブセット |
 | [serviceaccounttoken.go](../pkg/apiserver/serviceaccounttoken.go) | 261 | B: **実 upstream JWT authenticator/token generator** |

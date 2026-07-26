@@ -47,7 +47,8 @@ import (
 // the real GC cascades dependents afterwards, which matches upstream's
 // observable behavior (the owner disappears immediately).
 
-// markDeletionRetries bounds markForDeletion's conflict-retry loop.
+// markDeletionRetries bounds the per-object conflict-retry loops in
+// this file (stripOwnerRef).
 const markDeletionRetries = 5
 
 // patchConflictRetries bounds the PATCH handler's re-read-and-reapply
@@ -55,76 +56,13 @@ const markDeletionRetries = 5
 // same way (its maxRetryWhenPatchConflicts).
 const patchConflictRetries = 5
 
-// finalizerForPolicy maps a propagation policy to the finalizer the real
-// garbagecollector acts on. Returns "" for policies that need no
-// finalizer (Background).
-func finalizerForPolicy(policy metav1.DeletionPropagation) string {
-	switch policy {
-	case metav1.DeletePropagationOrphan:
-		return metav1.FinalizerOrphanDependents
-	case metav1.DeletePropagationForeground:
-		return metav1.FinalizerDeleteDependents
-	default:
-		return ""
-	}
-}
-
-// markForDeletion stamps deletionTimestamp and finalizer on the named
-// object and returns the updated (terminating) object. Idempotent: an
-// object already carrying both is returned as-is, so repeating a DELETE
-// keeps returning 200 with the terminating object, same as upstream.
-// Conflicts (a controller writing the object between the read and the
-// update) are retried against a fresh read.
+// markForDeletion hands the propagation policy to the upstream store's
+// own graceful-deletion path: it stamps deletionTimestamp and the policy's
+// finalizer and returns the still-visible terminating object. Idempotent
+// -- repeating the DELETE finds the object already deleting and returns it
+// unchanged, same as upstream, which is exactly what it is.
 func markForDeletion(ctx context.Context, rs *ResourceStore, namespace, name string, policy metav1.DeletionPropagation) (runtime.Object, error) {
-	if rs.upstream != nil {
-		return rs.upstreamMarkForDeletion(ctx, namespace, name, policy)
-	}
-	finalizer := finalizerForPolicy(policy)
-	var lastErr error
-	for attempt := 0; attempt < markDeletionRetries; attempt++ {
-		obj, err := rs.Get(ctx, namespace, name)
-		if err != nil {
-			return nil, err
-		}
-		m := getObjectMeta(obj)
-		if m == nil {
-			return nil, fmt.Errorf("mark %s %s/%s deleting: object has no metadata", rs.resource, namespace, name)
-		}
-		changed := false
-		if m.DeletionTimestamp == nil {
-			now := metav1.Now()
-			m.DeletionTimestamp = &now
-			changed = true
-		}
-		if !containsString(m.Finalizers, finalizer) {
-			m.Finalizers = append(m.Finalizers, finalizer)
-			changed = true
-		}
-		if !changed {
-			return obj, nil
-		}
-		// Unconditional write (empty resourceVersion), not CAS: against
-		// a 50-replica owner whose controller is hammering status, the
-		// CAS version of this loop lost the race for NINE SECONDS in
-		// run 29141585744 ("delete the rc" 06:02:41 -> stamped ~:50),
-		// and every back-fill created in that unstamped window sailed
-		// past the terminating-owner create guard because the owner
-		// wasn't terminating yet. The stamp must win in one round trip;
-		// clobbering a concurrent status write on an object that is
-		// being deleted is harmless (its controller re-writes status on
-		// its next sync, and the object is on its way out).
-		m.ResourceVersion = ""
-		updated, err := rs.Update(ctx, namespace, name, obj)
-		if err == nil {
-			return updated, nil
-		}
-		if isStatusReason(err, metav1.StatusReasonConflict) {
-			lastErr = err
-			continue
-		}
-		return nil, err
-	}
-	return nil, fmt.Errorf("mark %s %s/%s deleting: conflicted %d times: %w", rs.resource, namespace, name, markDeletionRetries, lastErr)
+	return rs.upstreamMarkForDeletion(ctx, namespace, name, policy)
 }
 
 // shouldFinalizeDelete reports whether writing obj would leave a

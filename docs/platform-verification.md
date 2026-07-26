@@ -3800,3 +3800,28 @@ conformance の該当テストで挙動同値を確認 → apidef.Table 全体�
     upsert の NotFound を見逃して EndpointSlice が生えない回帰を検出・修正)。
 - 検証: フルスイート + make test-kcm green。apiserver チャンク 65.15MB
   (cap 67.11MB、残 1.9MB)。
+
+#### S25 phase 2-3 の追記・訂正 (2026-07-26)
+
+- 訂正: 上の「全 38 リソース」は数え違いで、apidef.Table の実数は **41
+  リソース** (バッチ 3 回 + pods 単独)。移行スイッチ自体はもう存在しない
+  (ResourceStore が常に upstream Store を構築する) ので、リソースを
+  取りこぼす余地はない。
+- 追加で見つかった KineStorage 側の 2 件 (どちらもスイートには現れず、
+  実 wrangler dev への手動リクエストで発見):
+  - `metadata.name` を固定する list は Store が **非 recursive** な
+    GetList (単一キー) に変換する。kine アダプタがそれをプレフィックス
+    扱いしていたため `?fieldSelector=metadata.name=...` が常に空だった。
+    etcd3 の store と同じく Recursive で分岐する実装に修正し、
+    TestPodListFieldSelectors で固定。
+  - 未書き込みの facet は revision 0 を返し、upstream の versioner は
+    それを "illegal resource version from storage: 0" として拒否する
+    (fresh namespace の events を list する orphan sweep で露出)。
+    グローバルリビジョンにフォールバックする。
+- 手書き graceful-delete スタンプ (markForDeletion のループ) と
+  finalizerForPolicy も dead になったため削除。
+- 最終サイズ: apiserver チャンク **65,143,608 bytes** (cap 67,108,864 に
+  対し残 1,919KiB)。移行前 (phase 1 完了時) の 65.18MB からわずかに減。
+- 既知の別問題 (この作業とは無関係、main でも再現): `make vet` の
+  GOOS=js レグが `-modfile=go.wasm.mod` を付けていないため etcd/journal
+  で失敗する。CI は npm script 経由なので影響なし。
