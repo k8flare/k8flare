@@ -84,6 +84,15 @@ func (k *KineStorage) Get(ctx context.Context, key string, opts storage.GetOptio
 }
 
 func (k *KineStorage) GetList(ctx context.Context, key string, opts storage.ListOptions, listObj runtime.Object) error {
+	if !opts.Recursive {
+		// A list whose predicate pins metadata.name (MatchesSingle) is
+		// turned by genericregistry.Store into a NON-recursive GetList on
+		// that one object's key -- treating it as a prefix instead
+		// silently returns nothing, which is what a
+		// "?fieldSelector=metadata.name=..." list did when this migration
+		// first ran. etcd3's store makes the same distinction.
+		return k.getListSingle(ctx, key, opts, listObj)
+	}
 	prefix := key
 	if !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
@@ -109,13 +118,17 @@ func (k *KineStorage) GetList(ctx context.Context, key string, opts storage.List
 	if err := meta.SetList(listObj, items); err != nil {
 		return err
 	}
+	return k.updateListRevision(ctx, listObj, rev)
+}
+
+// updateListRevision stamps the list's resourceVersion. A facet that has
+// never been written to reports revision 0, and the upstream versioner
+// rejects that as an illegal list resourceVersion ("illegal resource
+// version from storage: 0", hit by the orphan sweep listing events in a
+// fresh namespace); the cluster's global revision is the right answer,
+// since an empty listing is still current as of now.
+func (k *KineStorage) updateListRevision(ctx context.Context, listObj runtime.Object, rev int64) error {
 	if rev == 0 {
-		// A facet that has never been written to reports revision 0, and
-		// the upstream versioner rejects that as an illegal list
-		// resourceVersion ("illegal resource version from storage: 0",
-		// hit by the orphan sweep listing events in a fresh namespace).
-		// The cluster's global revision is the right answer -- an empty
-		// listing is still current as of now.
 		cur, err := k.s.CurrentRevision(ctx)
 		if err != nil {
 			return err
@@ -123,6 +136,37 @@ func (k *KineStorage) GetList(ctx context.Context, key string, opts storage.List
 		rev = cur
 	}
 	return k.versioner.UpdateList(listObj, uint64(rev), "", nil)
+}
+
+// getListSingle serves the non-recursive GetList: at most one item, the
+// object stored under key itself. A missing key is an empty list, not an
+// error.
+func (k *KineStorage) getListSingle(ctx context.Context, key string, opts storage.ListOptions, listObj runtime.Object) error {
+	var items []runtime.Object
+	rev := int64(0)
+	stored, err := k.s.Get(ctx, key)
+	switch {
+	case err == nil:
+		obj := k.newFunc()
+		if err := k.decodeInto(stored.Value, stored.ModRevision, obj); err != nil {
+			return err
+		}
+		ok, err := opts.Predicate.Matches(obj)
+		if err != nil {
+			return err
+		}
+		if ok {
+			items = append(items, obj)
+		}
+		rev = stored.ModRevision
+	case errors.Is(err, ErrNotFound):
+	default:
+		return err
+	}
+	if err := meta.SetList(listObj, items); err != nil {
+		return err
+	}
+	return k.updateListRevision(ctx, listObj, rev)
 }
 
 func (k *KineStorage) Delete(ctx context.Context, key string, out runtime.Object, preconditions *storage.Preconditions,

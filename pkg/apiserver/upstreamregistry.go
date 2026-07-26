@@ -110,9 +110,19 @@ func NewUpstreamStore(
 	}
 	prefix := "/" + resource
 	gr := gv.WithResource(resource).GroupResource()
-	attrFunc := storage.DefaultNamespaceScopedAttr
-	if !namespaced {
-		attrFunc = storage.DefaultClusterScopedAttr
+	// Upstream's DefaultNamespaceScopedAttr only exposes metadata.name and
+	// metadata.namespace to field selectors; every real upstream store
+	// supplies its own attr func for the rest. This project's equivalent is
+	// selectableFieldsFor (store.go) -- without it a
+	// "spec.nodeName=<node>" list (kube-scheduler, kubelet) silently
+	// matches nothing, which is what happened when the migration first
+	// ran: create a Pod on n1, list with that selector, get zero items.
+	attrFunc := func(obj runtime.Object) (labels.Set, fields.Set, error) {
+		var lbls labels.Set
+		if m := getObjectMeta(obj); m != nil {
+			lbls = labels.Set(m.Labels)
+		}
+		return lbls, selectableFieldsFor(obj), nil
 	}
 	return &genericregistry.Store{
 		NewFunc:                   newFunc,
@@ -210,6 +220,14 @@ func (rs *ResourceStore) upstreamList(namespace, fieldSelector, labelSelector st
 		sel, err := fields.ParseSelector(fieldSelector)
 		if err != nil {
 			return nil, &StatusError{Status: badRequestStatus("invalid fieldSelector: " + err.Error())}
+		}
+		// Same rejection the hand-written path applied (applyFieldSelector):
+		// a selector naming a field nothing populates is a client error,
+		// not an always-empty match.
+		for _, req := range sel.Requirements() {
+			if !knownSelectableFields[req.Field] {
+				return nil, &StatusError{Status: badRequestStatus("field label not supported: " + req.Field)}
+			}
 		}
 		opts.FieldSelector = sel
 	}
