@@ -109,6 +109,19 @@ func (k *KineStorage) GetList(ctx context.Context, key string, opts storage.List
 	if err := meta.SetList(listObj, items); err != nil {
 		return err
 	}
+	if rev == 0 {
+		// A facet that has never been written to reports revision 0, and
+		// the upstream versioner rejects that as an illegal list
+		// resourceVersion ("illegal resource version from storage: 0",
+		// hit by the orphan sweep listing events in a fresh namespace).
+		// The cluster's global revision is the right answer -- an empty
+		// listing is still current as of now.
+		cur, err := k.s.CurrentRevision(ctx)
+		if err != nil {
+			return err
+		}
+		rev = cur
+	}
 	return k.versioner.UpdateList(listObj, uint64(rev), "", nil)
 }
 
