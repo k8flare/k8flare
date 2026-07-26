@@ -70,7 +70,7 @@ var getTokens = sync.OnceValue(func() []string {
 	// Every cluster -- "default" included -- reads its own vault: the
 	// K3S_TOKEN Worker secret is abolished (2026-07-27); tokens are
 	// minted via the admin API (POST /clusters/<id>/tokens). An empty or
-	// unreadable DEFAULT vault falls back to the dev token (the
+	// unreadable DEFAULT vault falls back to the K3S_TOKEN secret, then the dev token (the
 	// secretless dev/CI posture -- and, on a transient vault-read
 	// failure, the TS gateway has already door-verified the caller, so
 	// this layer degrading to dev-only is defense-in-depth, not the
@@ -91,8 +91,17 @@ var getTokens = sync.OnceValue(func() []string {
 		}
 		return decoded
 	}()
-	if len(tokens) == 0 && clusterDOName() == "default" {
-		return []string{"k8flare-dev-token"}
+	if clusterDOName() == "default" {
+		// The default cluster ALSO accepts the K3S_TOKEN Worker secret
+		// (baked pristine by loader/apiserver.ts) -- the one intuitive
+		// always-valid root token (2026-07-27 decision). Dev fallback
+		// only when neither a vault token nor the secret exists.
+		if envTok := cloudflare.Getenv("K3S_TOKEN"); envTok != "" {
+			tokens = append(tokens, envTok)
+		}
+		if len(tokens) == 0 {
+			tokens = []string{"k8flare-dev-token"}
+		}
 	}
 	return tokens
 })

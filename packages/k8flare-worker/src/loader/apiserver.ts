@@ -53,12 +53,15 @@ async function apiserverEntrypoint(env: Env): Promise<Fetcher> {
       CLUSTER_DO_NAME: doName,
       CLUSTER_BASE_PATH: env.CLUSTER_BASE_PATH ?? "",
     };
-    // No token is baked into the resident env: the K3S_TOKEN Worker
-    // secret is abolished (vault-only auth, 2026-07-27), and baking the
-    // caller-presented token a derived env carries would freeze the
-    // FIRST caller's token into an isolate-lifetime fallback. The Go
-    // side reads the per-cluster vault (TokensFunc) and keeps its own
-    // dev fallback for secretless dev/CI.
+    // Bake ONLY the pristine K3S_TOKEN secret: ENV_K3S_TOKEN on derived
+    // envs (clusterenv.ts preserves it -- K3S_TOKEN there is the
+    // caller-presented token, and baking that would freeze the FIRST
+    // caller's token into an isolate-lifetime fallback), or K3S_TOKEN
+    // itself on raw DO envs (no CLUSTER_DO_NAME = never derived). The Go
+    // side unions this with the per-cluster vault and keeps its dev
+    // fallback for secretless dev/CI.
+    const pristine = env.ENV_K3S_TOKEN ?? (env.CLUSTER_DO_NAME ? undefined : env.K3S_TOKEN);
+    if (pristine) dynamicEnv.K3S_TOKEN = pristine;
     return {
       compatibilityDate: "2026-07-01",
       mainModule: "index.js",

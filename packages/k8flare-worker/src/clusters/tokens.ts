@@ -83,15 +83,17 @@ const tokenCache = new Map<string, { secrets: string[]; expires: number }>();
 export async function clusterSecrets(env: Env, doName: string): Promise<string[]> {
   const hit = tokenCache.get(doName);
   if (hit && hit.expires > Date.now()) return hit.secrets;
-  // Every cluster -- "default" included -- authenticates against its own
-  // vault (K3S_TOKEN as a Worker secret is abolished, 2026-07-27; tokens
-  // are minted via POST /clusters/<id>/tokens, admin-authenticated). A
-  // cluster whose vault is empty is a dev posture: the dev fallback token
-  // applies, same rule the Go side has always had.
+  // Every cluster authenticates against its own vault. The DEFAULT
+  // cluster additionally accepts the K3S_TOKEN Worker secret (2026-07-27
+  // user decision: one intuitive always-valid root token; ADMIN_TOKENS is
+  // gone -- administering clusters is a default-cluster privilege). With
+  // neither a vault token nor the secret, default is the dev posture
+  // (dev fallback token), same rule the Go side has always had.
   const vault = await readClusterTokens(env, doName);
-  let secrets = vault?.tokens.map((t) => t.secret) ?? [];
-  if (secrets.length === 0 && doName === "default") {
-    secrets = ["k8flare-dev-token"];
+  const secrets = vault?.tokens.map((t) => t.secret) ?? [];
+  if (doName === "default") {
+    if (env.K3S_TOKEN) secrets.push(env.K3S_TOKEN);
+    if (secrets.length === 0) secrets.push("k8flare-dev-token");
   }
   tokenCache.set(doName, { secrets, expires: Date.now() + TOKEN_CACHE_TTL_MS });
   return secrets;

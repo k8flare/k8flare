@@ -50,18 +50,21 @@ export interface Env {
   CLOUDFLARE_API_TOKEN?: string;
   CLOUDFLARE_ACCOUNT_ID?: string;
 
-  // NEVER a Worker secret (abolished 2026-07-27; every cluster --
-  // "default" included -- authenticates against its per-cluster token
-  // vault, minted via the admin API). Present only on DERIVED envs:
-  // clusters/clusterenv.ts sets it to the door-verified presented token
-  // so downstream dwAuth-style re-checks pass, and nodes/scheduler.ts
-  // sets it to the cluster's vault token for its own API calls.
+  // The ONE Worker secret: the default cluster's always-valid root
+  // token (2026-07-27 decision -- ADMIN_TOKENS is gone; the management
+  // API authenticates with default-cluster tokens too). On DERIVED envs
+  // (clusters/clusterenv.ts) this field is overwritten with the
+  // door-verified presented token so downstream dwAuth-style re-checks
+  // pass; the pristine secret travels as ENV_K3S_TOKEN.
   K3S_TOKEN?: string;
-  // Management-API auth (clusters/adminauth.ts): comma-separated
-  // rotatable admin secrets, and/or Cloudflare Access JWT verification
-  // (team domain + application AUD). Neither set = dev fallback token,
-  // same posture as the cluster-token dev fallback.
-  ADMIN_TOKENS?: string;
+  // Pristine copy of the K3S_TOKEN secret on derived envs (see above):
+  // what loader/apiserver.ts bakes into the resident dynamic worker --
+  // never the caller-presented token, which would freeze the first
+  // caller's token into an isolate-lifetime fallback.
+  ENV_K3S_TOKEN?: string;
+  // Management-API extra gate (clusters/adminauth.ts): optional
+  // Cloudflare Access JWT verification (team domain + application AUD).
+  // Cluster-token auth is the baseline either way.
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD?: string;
   // Public URL in-VM k3s agents join through (microVMs dial out over

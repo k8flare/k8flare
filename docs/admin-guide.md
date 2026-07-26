@@ -26,26 +26,26 @@ make wasm                                     # WASM チャンク生成 (~2分)
 npx wrangler deploy -c packages/k8flare-worker/wrangler.jsonc
 ```
 
-シークレットは **`ADMIN_TOKENS` の 1 つだけ**です(クラスタ管理 API の認証。
-カンマ区切りで複数可 = ローテーション)。公開運用する前に必ず設定してください:
+シークレットは **`K3S_TOKEN` の 1 つだけ**です — default クラスタの
+ルートトークンで、**管理 API の認証もこのトークン**(または後述の発行済み
+クラスタトークン)で行います。公開運用する前に必ず設定してください:
 
 ```sh
-openssl rand -hex 24 | npx wrangler secret put ADMIN_TOKENS --name k8flare
+npx wrangler secret put K3S_TOKEN --name k8flare < .secrets/k8flare-admin-token
 ```
 
-クラスタ自体のトークン(kubectl/kubelet 用)はシークレットではなく、
-**管理 API で発行**します(default クラスタも同じ):
+追加のトークンが必要なら管理 API で発行できます(ローテーションや
+利用者への配布用。default も他クラスタと同じに扱えます):
 
 ```sh
 B=https://<your-worker>.workers.dev
-curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" $B/clusters/default/tokens
-# -> {"tokenId":"...","token":"..."}  この token を kubeconfig に使う
-curl -s -H "Authorization: Bearer $ADMIN_TOKEN" $B/clusters/default/kubeconfig > default.yaml
+AT=$(cat .secrets/k8flare-admin-token)
+curl -s -X POST -H "Authorization: Bearer $AT" $B/clusters/default/tokens
+curl -s -H "Authorization: Bearer $AT" $B/clusters/default/kubeconfig > default.yaml
 ```
 
-トークンを 1 つも発行していないクラスタは**開発ポスチャ**
-(既定トークン `k8flare-dev-token` を受理)です。最初のトークンを発行した
-時点で既定トークンは無効になります。
+`K3S_TOKEN` 未設定かつトークン未発行のクラスタは**開発ポスチャ**
+(既定トークン `k8flare-dev-token` を受理)です。
 
 管理 API は Cloudflare Access でも保護できます
 (`ACCESS_TEAM_DOMAIN` + `ACCESS_AUD` を設定。実装:
@@ -63,7 +63,7 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" $B/clusters/default/kubeconfig >
 
 ## 3. クラスタの発行と管理 (管理 API)
 
-`/clusters` 配下。認証は `Authorization: Bearer <ADMIN_TOKENS のどれか>`。
+`/clusters` 配下。認証は `Authorization: Bearer <default クラスタの有効トークン>`(= K3S_TOKEN または発行済みトークン)。
 「default」クラスタは発行不要(デプロイした瞬間から存在)で、作成/削除は
 できませんが、トークン発行・kubeconfig 取得は他のクラスタと同じに使えます。
 
@@ -81,8 +81,8 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" $B/clusters/default/kubeconfig >
 
 ```sh
 B=https://<your-worker>.workers.dev
-curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" $B/clusters -d '{"id":"team-a"}'
-curl -s -H "Authorization: Bearer $ADMIN_TOKEN" $B/clusters/team-a/kubeconfig > team-a.yaml
+curl -s -X POST -H "Authorization: Bearer $AT" $B/clusters -d '{"id":"team-a"}'
+curl -s -H "Authorization: Bearer $AT" $B/clusters/team-a/kubeconfig > team-a.yaml
 ```
 
 トークンのローテーション手順: 新トークンを POST → 利用者に配布 → 旧

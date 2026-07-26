@@ -106,10 +106,11 @@ flags.
 
 ## Deploying
 
-`wrangler deploy -c packages/k8flare-worker/wrangler.jsonc` — set `ADMIN_TOKENS`
-(the management-API secret, the only Worker secret) and then mint cluster
-tokens through the admin API (`POST /clusters/default/tokens`); a cluster
-with no minted tokens is a dev posture. The `containers` section provisions NodeVM
+`wrangler deploy -c packages/k8flare-worker/wrangler.jsonc` — set
+`K3S_TOKEN` (the default cluster's root token, the only Worker secret;
+it also authenticates the management API). Additional per-cluster tokens
+are minted through the admin API; with no secret and no minted tokens a
+cluster is a dev posture. The `containers` section provisions NodeVM
 container apps, which bill by wall clock — omit it unless you are using
 Pod-on-Containers.
 

@@ -67,6 +67,10 @@ export function clusterEnv(env: Env, cluster: ResolvedCluster, presentedToken?: 
     NODE_VM_LARGE: prefixNs(env.NODE_VM_LARGE, cluster.doName),
     CLUSTER_DO_NAME: cluster.doName,
     CLUSTER_BASE_PATH: cluster.basePath,
+    // Pristine Worker-secret token (see Env.ENV_K3S_TOKEN): kept separate
+    // because K3S_TOKEN below is overwritten with the caller-presented
+    // token, and the loader must only ever bake the stable secret.
+    ENV_K3S_TOKEN: env.ENV_K3S_TOKEN ?? env.K3S_TOKEN,
   };
   if (presentedToken) derived.K3S_TOKEN = presentedToken;
   return derived;

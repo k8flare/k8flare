@@ -1,4 +1,5 @@
 import type { Env } from "../env.ts";
+import { verifyClusterToken } from "./tokens.ts";
 
 // Management-API authentication (POST /clusters etc.), pluggable per the
 // user's 2026-07-06 decision: rotatable shared secrets AND room for
@@ -17,17 +18,7 @@ import type { Env } from "../env.ts";
 //     that sets no secrets is a dev deployment; production MUST set
 //     ADMIN_TOKENS or Access vars, documented in README).
 
-const DEV_ADMIN_TOKEN = "k8flare-dev-admin-token";
 const JWKS_TTL_MS = 10 * 60_000;
-
-function timingSafeEqualStr(a: string, b: string): boolean {
-  const enc = new TextEncoder();
-  const ab = enc.encode(a);
-  const bb = enc.encode(b);
-  if (ab.byteLength !== bb.byteLength) return false;
-  // @ts-expect-error timingSafeEqual is a Workers runtime API on crypto.subtle
-  return crypto.subtle.timingSafeEqual(ab, bb) as boolean;
-}
 
 let jwksCache: { keys: Map<string, CryptoKey>; expires: number } | null = null;
 
@@ -80,26 +71,18 @@ async function verifyAccessJWT(env: Env, jwt: string): Promise<boolean> {
 }
 
 export async function authorizeAdmin(req: Request, env: Env): Promise<boolean> {
-  const configured = [];
-  if (env.ADMIN_TOKENS) {
-    configured.push("tokens");
-    const auth = req.headers.get("Authorization") || "";
-    if (auth.startsWith("Bearer ")) {
-      const presented = auth.slice("Bearer ".length);
-      for (const t of env.ADMIN_TOKENS.split(",")) {
-        const trimmed = t.trim();
-        if (trimmed && timingSafeEqualStr(trimmed, presented)) return true;
-      }
-    }
-  }
+  // ADMIN_TOKENS is abolished (2026-07-27): administering clusters IS a
+  // default-cluster privilege, so the management API accepts any
+  // currently-valid DEFAULT-cluster token (the K3S_TOKEN secret or a
+  // vault token; the dev fallback token while neither exists -- the
+  // same dev posture as the cluster APIs). Cloudflare Access remains an
+  // optional additional gate. Finer-grained admin identities are
+  // deliberately deferred to the RBAC + Access integration planned in
+  // docs/cluster-api-design.md.
   if (env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD) {
-    configured.push("access");
     const jwt = req.headers.get("Cf-Access-Jwt-Assertion");
     if (jwt && (await verifyAccessJWT(env, jwt))) return true;
   }
-  if (configured.length === 0) {
-    const auth = req.headers.get("Authorization") || "";
-    return auth === `Bearer ${DEV_ADMIN_TOKEN}`;
-  }
-  return false;
+  return (await verifyClusterToken(req, env, "default")) !== null;
 }
+
