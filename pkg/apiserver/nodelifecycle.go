@@ -96,11 +96,11 @@ var nodeUnknownConditionTypes = []corev1.NodeConditionType{
 // that explicitly tolerate the unreachable taint forever, e.g. DaemonSet
 // pods -- see podToleratesUnreachableForever below).
 func ReconcileNodeLifecycle(ctx context.Context, storage *Storage) error {
-	nodeStore := NewResourceStore(storage, "nodes", false,
+	nodeStore := NewResourceStore(storage, corev1.SchemeGroupVersion, "nodes", "node", false,
 		func() runtime.Object { return &corev1.Node{} },
 		func() runtime.Object { return &corev1.NodeList{} },
 	)
-	leaseStore := NewResourceStore(storage, "leases", true,
+	leaseStore := NewResourceStore(storage, coordinationv1.SchemeGroupVersion, "leases", "lease", true,
 		func() runtime.Object { return &coordinationv1.Lease{} },
 		func() runtime.Object { return &coordinationv1.LeaseList{} },
 	)

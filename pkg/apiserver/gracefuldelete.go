@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -76,7 +77,7 @@ func finalizerForPolicy(policy metav1.DeletionPropagation) string {
 // update) are retried against a fresh read.
 func markForDeletion(ctx context.Context, rs *ResourceStore, namespace, name string, policy metav1.DeletionPropagation) (runtime.Object, error) {
 	if rs.upstream != nil {
-		return rs.upstreamMarkForDeletion(namespace, name, policy)
+		return rs.upstreamMarkForDeletion(ctx, namespace, name, policy)
 	}
 	finalizer := finalizerForPolicy(policy)
 	var lastErr error
@@ -136,9 +137,15 @@ func shouldFinalizeDelete(obj runtime.Object) bool {
 }
 
 // isStatusReason reports whether err is a StatusError carrying reason.
+// isStatusReason matches both error shapes in play during/after the S25
+// migration: this project's *StatusError and upstream's
+// apierrors.StatusError (what genericregistry.Store returns).
 func isStatusReason(err error, reason metav1.StatusReason) bool {
 	var se *StatusError
-	return errors.As(err, &se) && se.Status.Reason == reason
+	if errors.As(err, &se) && se.Status.Reason == reason {
+		return true
+	}
+	return apierrors.ReasonForError(err) == reason
 }
 
 func containsString(list []string, s string) bool {

@@ -194,20 +194,22 @@ func NewUpstreamStore(
 // (DeleteCollection / DeleteAllInNamespace) stay on the raw-bytes path --
 // byte-compatible storage makes that safe.
 
-func (rs *ResourceStore) upstreamCtx(namespace string) context.Context {
-	// Always stamp the namespace, empty included: rest.BeforeCreate /
-	// BeforeUpdate treat a context with no namespace VALUE AT ALL as an
-	// internal error, so a cluster-scoped resource (which legitimately has
-	// "") must still carry the key. Leaving it off made every
-	// PriorityClass create fail with a 500 (found by the suite).
-	return genericapirequest.WithNamespace(genericapirequest.NewContext(), namespace)
+func (rs *ResourceStore) upstreamCtx(ctx context.Context, namespace string) context.Context {
+	// Derives from the REQUEST context so cancellation propagates into
+	// storage round-trips. Always stamp the namespace, empty included:
+	// rest.BeforeCreate / BeforeUpdate treat a context with no namespace
+	// VALUE AT ALL as an internal error, so a cluster-scoped resource
+	// (which legitimately has "") must still carry the key. Leaving it
+	// off made every PriorityClass create fail with a 500 (found by the
+	// suite).
+	return genericapirequest.WithNamespace(ctx, namespace)
 }
 
-func (rs *ResourceStore) upstreamGet(namespace, name string) (runtime.Object, error) {
-	return rs.upstream.Get(rs.upstreamCtx(namespace), name, &metav1.GetOptions{})
+func (rs *ResourceStore) upstreamGet(ctx context.Context, namespace, name string) (runtime.Object, error) {
+	return rs.upstream.Get(rs.upstreamCtx(ctx, namespace), name, &metav1.GetOptions{})
 }
 
-func (rs *ResourceStore) upstreamList(namespace, fieldSelector, labelSelector string) (runtime.Object, error) {
+func (rs *ResourceStore) upstreamList(ctx context.Context, namespace, fieldSelector, labelSelector string) (runtime.Object, error) {
 	opts := &metainternalversion.ListOptions{}
 	if labelSelector != "" {
 		sel, err := labels.Parse(labelSelector)
@@ -231,15 +233,15 @@ func (rs *ResourceStore) upstreamList(namespace, fieldSelector, labelSelector st
 		}
 		opts.FieldSelector = sel
 	}
-	return rs.upstream.List(rs.upstreamCtx(namespace), opts)
+	return rs.upstream.List(rs.upstreamCtx(ctx, namespace), opts)
 }
 
-func (rs *ResourceStore) upstreamCreate(namespace string, obj runtime.Object) (runtime.Object, error) {
-	return rs.upstream.Create(rs.upstreamCtx(namespace), obj, rest.ValidateAllObjectFunc, &metav1.CreateOptions{})
+func (rs *ResourceStore) upstreamCreate(ctx context.Context, namespace string, obj runtime.Object) (runtime.Object, error) {
+	return rs.upstream.Create(rs.upstreamCtx(ctx, namespace), obj, rest.ValidateAllObjectFunc, &metav1.CreateOptions{})
 }
 
-func (rs *ResourceStore) upstreamUpdate(namespace, name string, obj runtime.Object) (runtime.Object, error) {
-	out, _, err := rs.upstream.Update(rs.upstreamCtx(namespace), name,
+func (rs *ResourceStore) upstreamUpdate(ctx context.Context, namespace, name string, obj runtime.Object) (runtime.Object, error) {
+	out, _, err := rs.upstream.Update(rs.upstreamCtx(ctx, namespace), name,
 		rest.DefaultUpdatedObjectInfo(obj),
 		rest.ValidateAllObjectFunc,
 		rest.ValidateAllObjectUpdateFunc,
@@ -247,8 +249,8 @@ func (rs *ResourceStore) upstreamUpdate(namespace, name string, obj runtime.Obje
 	return out, err
 }
 
-func (rs *ResourceStore) upstreamDelete(namespace, name string) (runtime.Object, error) {
-	out, _, err := rs.upstream.Delete(rs.upstreamCtx(namespace), name, rest.ValidateAllObjectFunc, &metav1.DeleteOptions{})
+func (rs *ResourceStore) upstreamDelete(ctx context.Context, namespace, name string) (runtime.Object, error) {
+	out, _, err := rs.upstream.Delete(rs.upstreamCtx(ctx, namespace), name, rest.ValidateAllObjectFunc, &metav1.DeleteOptions{})
 	return out, err
 }
 
@@ -259,8 +261,8 @@ func (rs *ResourceStore) upstreamDelete(namespace, name string) (runtime.Object,
 // markForDeletion (gracefuldelete.go) does by hand for the resources still
 // on the old path. Idempotent for the same reason: a second DELETE finds
 // the object already deleting and returns it unchanged.
-func (rs *ResourceStore) upstreamMarkForDeletion(namespace, name string, policy metav1.DeletionPropagation) (runtime.Object, error) {
-	out, _, err := rs.upstream.Delete(rs.upstreamCtx(namespace), name, rest.ValidateAllObjectFunc,
+func (rs *ResourceStore) upstreamMarkForDeletion(ctx context.Context, namespace, name string, policy metav1.DeletionPropagation) (runtime.Object, error) {
+	out, _, err := rs.upstream.Delete(rs.upstreamCtx(ctx, namespace), name, rest.ValidateAllObjectFunc,
 		&metav1.DeleteOptions{PropagationPolicy: &policy})
 	return out, err
 }

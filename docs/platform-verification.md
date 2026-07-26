@@ -3773,3 +3773,30 @@ conformance の該当テストで挙動同値を確認 → apidef.Table 全体�
   戻る見込みだが、fieldmanager/admission の削減余地を次に検討する。
 - 検証: フルスイート + make test-kcm green (実 KCM が configmaps を
   読む informer 経路含む)。
+
+### S25 phase 2-3 完了 (2026-07-26): 全リソースが genericregistry.Store、手書き CRUD 層を削除
+
+- apidef.Table の全 38 リソースが upstream genericregistry.Store 経由に
+  移行完了 (バッチ 4 回 + pods)。ResourceStore は常に upstream Store を
+  構築し、手書きの Get/List/Create/Update/Delete 本体と dead helper 群
+  (setResourceVersion / matchesFieldSelector / 各 status ヘルパー) を削除
+  (store.go 670→405 行。残りは storageKey/prefix、DeleteCollection、
+  DeleteAllInNamespace などバイト互換の生パスとステータスヘルパー)。
+- 移行で吸収した挙動差分・落とし穴 (詳細は各コミット):
+  - namespace 無しコンテキストは BeforeCreate が internal error 扱い —
+    cluster-scoped でも空 namespace を必ずスタンプ。
+  - field selector: upstream の既定 attr は metadata.name/namespace のみ。
+    selectableFieldsFor (旧 store.go の独自セレクタ表) を attr func として
+    供給しないと kube-scheduler/kubelet の spec.nodeName list が空になる。
+  - DELETE 応答: upstream 既定は metav1.Status。ReturnDeletedObject: true
+    で従来どおり削除オブジェクトを返す (settleDeletedObject が型 switch)。
+  - Orphan/Foreground: EnableGarbageCollection: true で upstream 自身が
+    deletionTimestamp+finalizer をスタンプ (markForDeletion の手書き
+    スタンプは upstream では immutable エラーになる)。
+  - metadata.generation バンプと Job の selector 生成は
+    genericStrategy.PrepareForCreate/Update へ移設。
+  - エラー形状: apierrors.StatusError が全経路に流れるため、
+    isStatusReason/isNotFoundErr を両対応にした (endpoints reconcile が
+    upsert の NotFound を見逃して EndpointSlice が生えない回帰を検出・修正)。
+- 検証: フルスイート + make test-kcm green。apiserver チャンク 65.15MB
+  (cap 67.11MB、残 1.9MB)。

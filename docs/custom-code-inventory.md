@@ -54,12 +54,12 @@
 ## 2. pkg/apiserver ファイル別 (手書きの本丸)
 
 doc comment を確認した結果、多くは「upstream の実物を配線する B」で、ゼロから再実装した A は
-リクエストディスパッチ/ストア/Table/サブリソース機構 (≈2,330 行) と DO 固有トランスポートに集中している。
+リクエストディスパッチ/Table/サブリソース機構と DO 固有トランスポートに集中している。(2026-07-26: ストア層は upstream genericregistry.Store + KineStorage への移行が完了し、A から B に転じた — S25 参照。)
 
 | file | 行数 | upstream との関係 |
 |---|---|---|
 | [handler.go](../pkg/apiserver/handler.go) | 729 | **A**: 汎用 REST verb ディスパッチ。upstream generic registry+endpoints 相当の再実装 |
-| [store.go](../pkg/apiserver/store.go) | 670 | **A**: ResourceStore CRUD。upstream registry/generic store 相当 |
+| [store.go](../pkg/apiserver/store.go) | 405 | **B** (2026-07-26〜): CRUD は upstream genericregistry.Store に委譲。残りはキー構築とコレクション生パス |
 | [subresource.go](../pkg/apiserver/subresource.go) | 555 | **A**: status/binding/scale サブリソースルーティング |
 | [certmanager.go](../pkg/apiserver/certmanager.go) | 467 | **A**: CA 2 系統 + kubelet 証明書署名 (crypto/x509、DO 永続化) |
 | [endpoints.go](../pkg/apiserver/endpoints.go) | 456 | A: Endpoints/EndpointSlice reconcile。upstream の定数を手コピー(import 不可の internal) |
