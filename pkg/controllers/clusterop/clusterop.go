@@ -324,8 +324,19 @@ func (c *controller) reconcileActive(ctx context.Context, cl *k8flarev1alpha1.Cl
 		return fmt.Errorf("vault: %w", err)
 	}
 
-	if err := c.ensureSecret(ctx, cl, vault); err != nil {
-		return err
+	// An empty token means this cluster's credential is not vault-managed:
+	// the management cluster authenticates with the K3S_TOKEN root secret,
+	// which the operator neither mints nor mirrors (see internalapi.ts's
+	// handleVault -- minting one would invalidate that root token).
+	var secretRef *k8flarev1alpha1.SecretReference
+	if vault.Token != "" {
+		if err := c.ensureSecret(ctx, cl, vault); err != nil {
+			return err
+		}
+		secretRef = &k8flarev1alpha1.SecretReference{
+			Namespace: SecretNamespace,
+			Name:      secretName(cl.Name),
+		}
 	}
 
 	// Only now, with the replacement distributed, is it safe to revoke
@@ -349,10 +360,7 @@ func (c *controller) reconcileActive(ctx context.Context, cl *k8flarev1alpha1.Cl
 		DoName:             doName,
 		Endpoint:           vault.Endpoint,
 		ObservedGeneration: cl.Generation,
-		TokenSecretRef: &k8flarev1alpha1.SecretReference{
-			Namespace: SecretNamespace,
-			Name:      secretName(cl.Name),
-		},
+		TokenSecretRef:     secretRef,
 	})
 }
 

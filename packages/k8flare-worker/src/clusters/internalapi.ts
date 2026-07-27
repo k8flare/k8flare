@@ -78,6 +78,32 @@ async function handleVault(req: Request, env: Env, rest: string[]): Promise<Resp
   // token. Idempotent on purpose -- an operator that crashed after minting
   // but before publishing the Secret must resume with the SAME token, not
   // strand it and mint another.
+  // The MANAGEMENT cluster's credential is the K3S_TOKEN root secret, not
+  // a vault entry (docs/cluster-api-design.md's bootstrap decision), and
+  // minting one is actively harmful: clusters/tokens.ts only falls back to
+  // K3S_TOKEN/the dev token while default's vault is EMPTY, so a single
+  // minted token silently invalidates the root credential every existing
+  // deployment, test, and dev loop authenticates with (found live
+  // 2026-07-27 -- the operator 401'd itself out of its own cluster on its
+  // first reconcile). So default answers with its endpoint and no
+  // credentials, and the operator publishes no Secret for it.
+  if (doName === "default") {
+    if (req.method !== "POST") return new Response("not found", { status: 404 });
+    if (rest.length === 2 && rest[1] === "tokens") {
+      return Response.json(
+        { error: "the default cluster's token is the K3S_TOKEN secret and is not rotatable here" },
+        { status: 409 },
+      );
+    }
+    return Response.json({
+      tokenId: "",
+      token: "",
+      kubeconfig: "",
+      endpoint: publicOrigin(env, req),
+      superseded: [],
+    });
+  }
+
   if (rest.length === 1 && req.method === "POST") {
     const vault = await readClusterTokens(env, doName);
     if (vault && vault.tokens.length > 0) {
