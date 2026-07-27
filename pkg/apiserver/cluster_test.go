@@ -2,6 +2,7 @@ package apiserver_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -275,6 +276,53 @@ func TestClusterProtectedCollectionDelete(t *testing.T) {
 	}
 	if _, err := cl.Get(ctx, victim, metav1.GetOptions{}); !errors.IsNotFound(err) {
 		t.Errorf("get %s after collection delete: err = %v, want NotFound", victim, err)
+	}
+}
+
+// TestClusterTableColumns pins the columns `kubectl get clusters` prints.
+// k8flare.com has no upstream printer to inherit, and docs/admin-guide.md
+// tells administrators to read PHASE from this output, so the column set is
+// a documented contract rather than an incidental default.
+func TestClusterTableColumns(t *testing.T) {
+	ctx := context.Background()
+	cl := clusterClient(t)
+
+	name := fmt.Sprintf("table-%d", time.Now().UnixNano())
+	if _, err := cl.Create(ctx, newCluster(name, "table columns"), metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create %s: %v", name, err)
+	}
+	t.Cleanup(func() { _ = cl.Delete(context.Background(), name, metav1.DeleteOptions{}) })
+
+	req, err := http.NewRequest(http.MethodGet,
+		fmt.Sprintf("http://127.0.0.1:%d/apis/k8flare.com/v1alpha1/clusters", testPort), nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer k8flare-dev-token")
+	req.Header.Set("Accept", "application/json;as=Table;v=v1;g=meta.k8s.io")
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("get clusters as Table: %v", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	var table metav1.Table
+	if err := json.Unmarshal(raw, &table); err != nil {
+		t.Fatalf("unmarshal Table: %v: %s", err, raw)
+	}
+	var got []string
+	for _, c := range table.ColumnDefinitions {
+		got = append(got, c.Name)
+	}
+	want := []string{"Name", "Phase", "Endpoint", "Age"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("columns: got %v, want %v", got, want)
+	}
+	for _, row := range table.Rows {
+		if len(row.Cells) > 0 && row.Cells[0] == name && len(row.Cells) != len(want) {
+			t.Errorf("row for %s has %d cells, want %d: %v", name, len(row.Cells), len(want), row.Cells)
+		}
 	}
 }
 

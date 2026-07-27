@@ -26,28 +26,33 @@ make wasm                                     # WASM チャンク生成 (~2分)
 npx wrangler deploy -c packages/k8flare-worker/wrangler.jsonc
 ```
 
-シークレットは **`K3S_TOKEN` の 1 つだけ**です — default クラスタの
-ルートトークンで、**管理 API の認証もこのトークン**(または後述の発行済み
-クラスタトークン)で行います。公開運用する前に必ず設定してください:
+シークレットは **`K3S_TOKEN` の 1 つだけ**です — default(管理)クラスタの
+常時有効なルートトークンで、これを持っていることが「管理者である」ことと
+同義です。公開運用する前に必ず設定してください:
 
 ```sh
 npx wrangler secret put K3S_TOKEN --name k8flare < .secrets/k8flare-admin-token
 ```
 
-追加のトークンが必要なら管理 API で発行できます(ローテーションや
-利用者への配布用。default も他クラスタと同じに扱えます):
+次に、そのトークンで **ブートストラップ用の kubeconfig** を 1 回だけ取得
+します。以降のクラスタ運用はすべてこの kubeconfig 経由の kubectl で行います
+(HTTP API はこの 1 本だけが残っています):
 
 ```sh
 B=https://<your-worker>.workers.dev
 AT=$(cat .secrets/k8flare-admin-token)
-curl -s -X POST -H "Authorization: Bearer $AT" $B/clusters/default/tokens
 curl -s -H "Authorization: Bearer $AT" $B/clusters/default/kubeconfig > default.yaml
+export KUBECONFIG=$PWD/default.yaml
+kubectl get nodes
 ```
 
-`K3S_TOKEN` 未設定かつトークン未発行のクラスタは**開発ポスチャ**
-(既定トークン `k8flare-dev-token` を受理)です。
+`K3S_TOKEN` 未設定のデプロイは**開発ポスチャ**(既定トークン
+`k8flare-dev-token` を受理)です。default クラスタのトークンは
+`K3S_TOKEN` そのものなので、ローテーションは
+`wrangler secret put K3S_TOKEN` で行います(後述の annotate による
+ローテーションは発行済みクラスタ専用で、default では 409 になります)。
 
-管理 API は Cloudflare Access でも保護できます
+このブートストラップ経路は Cloudflare Access でも追加保護できます
 (`ACCESS_TEAM_DOMAIN` + `ACCESS_AUD` を設定。実装:
 `packages/k8flare-worker/src/clusters/adminauth.ts`)。
 

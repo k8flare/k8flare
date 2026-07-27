@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	k8flarev1alpha1 "github.com/k8flare/k8flare/pkg/apis/k8flare/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -166,6 +167,17 @@ func columnDefinitionsFor(kind string) []metav1.TableColumnDefinition {
 			{Name: "Status", Type: "string"},
 			age,
 		}
+	case "Cluster":
+		// k8flare's own kind, so there is no upstream printer to match:
+		// PHASE and ENDPOINT are what an administrator running
+		// `kubectl get clusters` needs (is it provisioned, and where do I
+		// point kubectl), the same two fields the operator publishes.
+		return []metav1.TableColumnDefinition{
+			name,
+			{Name: "Phase", Type: "string"},
+			{Name: "Endpoint", Type: "string"},
+			age,
+		}
 	default:
 		return []metav1.TableColumnDefinition{name, age}
 	}
@@ -271,6 +283,12 @@ func tableCellsFor(item runtime.Object, age string) []interface{} {
 	case *corev1.Namespace:
 		return []interface{}{
 			string(o.Status.Phase),
+			age,
+		}
+	case *k8flarev1alpha1.Cluster:
+		return []interface{}{
+			nonEmptyOr(o.Status.Phase, "<none>"),
+			nonEmptyOr(o.Status.Endpoint, "<none>"),
 			age,
 		}
 	default:
