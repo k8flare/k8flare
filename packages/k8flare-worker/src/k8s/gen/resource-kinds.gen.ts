@@ -7,6 +7,7 @@
 export const RESOURCE_KINDS: Record<string, string> = {
   clusterrolebindings: "ClusterRoleBinding",
   clusterroles: "ClusterRole",
+  clusters: "Cluster",
   configmaps: "ConfigMap",
   controllerrevisions: "ControllerRevision",
   cronjobs: "CronJob",
