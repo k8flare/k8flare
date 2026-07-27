@@ -98,6 +98,11 @@ func itemKind(obj runtime.Object) string {
 		return "Deployment"
 	case *appsv1.ReplicaSet:
 		return "ReplicaSet"
+	case *k8flarev1alpha1.Cluster:
+		// Without this, `kubectl get cluster <name>` (single-object
+		// Table) fell back to the default Name/Age columns while
+		// tableCellsFor emitted 4 cells -- caught by the Codex P3 review.
+		return "Cluster"
 	default:
 		return ""
 	}

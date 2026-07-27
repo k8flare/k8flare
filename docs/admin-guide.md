@@ -50,7 +50,9 @@ kubectl get nodes
 `k8flare-dev-token` を受理)です。default クラスタのトークンは
 `K3S_TOKEN` そのものなので、ローテーションは
 `wrangler secret put K3S_TOKEN` で行います(後述の annotate による
-ローテーションは発行済みクラスタ専用で、default では 409 になります)。
+ローテーションは発行済みクラスタ専用です。default に annotate した場合、
+operator が annotation を取り除き RotateUnsupported condition を記録します
+(default のルートトークンは K3S_TOKEN シークレットの差し替えで更新))。
 
 このブートストラップ経路は Cloudflare Access でも追加保護できます
 (`ACCESS_TEAM_DOMAIN` + `ACCESS_AUD` を設定。実装:
