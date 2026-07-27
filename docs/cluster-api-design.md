@@ -416,3 +416,9 @@ cap に対して十分な余裕がある。apiserver は下記の getTokens 修�
 - collection delete (`DELETE .../clusters`) の default 保護は P1 の
   「既知の隙間」のまま未実装。operator が入った今は実際に infra を壊せる
   ので、P3 の入口条件にする。
+
+補足 (2026-07-27): `make test` → `make test-kcm` → `make test-clusterop` を
+1 シェルで連鎖実行した際に test-clusterop が 15 分タイムアウトした事例が
+1 回ある (単体・kcm→clusterop の 2 連鎖では 2/2 PASS、再現せず)。前段
+スイートの wrangler 残留プロセスとの競合を疑っている。再発したら
+flaky ルール (不可侵 5) に従いここを起点に掘ること。
