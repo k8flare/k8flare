@@ -59,6 +59,10 @@ interface LoadedComponent {
   // Resolves null when the component's manifest is absent from ASSETS
   // (component not shipped -- e.g. "sched" today).
   loading: Promise<Fetcher | null> | null;
+  // Fingerprint of the token this component was LOADED with. The token is
+  // baked into the dynamic worker's env at factory time, so a rotation
+  // must invalidate the in-memory entrypoint too -- see ensure().
+  tokenTag: string | null;
 }
 
 // The control-plane binaries this DO hosts as dynamic workers. Separate
@@ -94,10 +98,10 @@ export class Controllers {
   // and loads run detached (DO lifetime is not tied to any one request);
   // each load's own completion handler delivers the first poke.
   components: Record<ComponentName, LoadedComponent> = {
-    kcm: { entrypoint: null, loading: null },
-    sched: { entrypoint: null, loading: null },
-    gc: { entrypoint: null, loading: null },
-    clusterop: { entrypoint: null, loading: null },
+    kcm: { entrypoint: null, loading: null, tokenTag: null },
+    sched: { entrypoint: null, loading: null, tokenTag: null },
+    gc: { entrypoint: null, loading: null, tokenTag: null },
+    clusterop: { entrypoint: null, loading: null, tokenTag: null },
   };
 
   constructor(state: DurableObjectState, env: Env) {
@@ -105,10 +109,15 @@ export class Controllers {
     this.env = env;
   }
 
-  private ensure(name: ComponentName, opts?: { armWarmup?: boolean }): Promise<Fetcher | null> {
+  private async ensure(
+    name: ComponentName,
+    opts?: { armWarmup?: boolean },
+  ): Promise<Fetcher | null> {
     const armWarmup = opts?.armWarmup !== false;
+    const tag = await this.dropRotatedComponents();
     const c = this.components[name];
     if (!c.loading) {
+      c.tokenTag = tag;
       // kcm/sched/gc load independently and concurrently -- NOT chained
       // behind one another. An earlier version serialized every load
       // behind a single shared promise, diagnosed at the time as
@@ -190,6 +199,36 @@ export class Controllers {
     return secret;
   }
 
+  // Fingerprint of the current cluster token, used both as the loader id's
+  // rotation discriminator and as the staleness check below.
+  private async tokenTag(): Promise<string> {
+    const token = await this.clusterToken();
+    return token ? token.slice(0, 8) : "none";
+  }
+
+  // Rotation staleness: each component's token is baked into its dynamic
+  // worker's env at Loader-factory time, so an ALREADY-LOADED component
+  // keeps calling with the token it was loaded with until its isolate is
+  // evicted -- and once a rotation revokes that token, every call it makes
+  // 401s. The loader id already carries #tokenTag (a rotation is a
+  // different id, hence a fresh isolate), but nothing re-derived the id for
+  // a component held in memory. So recompute the tag on every ensure() and
+  // on the fetch() poke path, and drop any component loaded under a
+  // different one; the next load addresses the new id. Cheap: clusterSecrets
+  // caches per isolate for 60s, so the steady state is a memory read.
+  // Returns the current tag.
+  private async dropRotatedComponents(): Promise<string> {
+    const tag = await this.tokenTag();
+    for (const name of COMPONENTS) {
+      const c = this.components[name];
+      if (c.tokenTag !== null && c.tokenTag !== tag) {
+        console.log(`controllers: ${name} token rotated, reloading`);
+        this.components[name] = { entrypoint: null, loading: null, tokenTag: null };
+      }
+    }
+    return tag;
+  }
+
   private async loadComponent(name: ComponentName): Promise<Fetcher | null> {
     // Harness kill switch (see Env.SCHED_DISABLED): e2e-conformance runs
     // a HOST kube-scheduler process against the same cluster, and two
@@ -228,7 +267,7 @@ export class Controllers {
     // (unlike the apiserver's vault-backed TokensFunc) -- so the loader
     // id carries a token fingerprint: rotation = new id = fresh isolate,
     // and the stale one is simply never addressed again.
-    const tokenTag = token ? token.slice(0, 8) : "none";
+    const tokenTag = await this.tokenTag();
     const worker = this.env.LOADER.get(
       `${name}:${doName}@${manifest.sha256}#${tokenTag}`,
       async () => {
@@ -290,7 +329,8 @@ export class Controllers {
     if (new URL(request.url).pathname === "/admin/destroy" && request.method === "POST") {
       await this.state.storage.deleteAlarm();
       await this.state.storage.deleteAll();
-      for (const name of COMPONENTS) this.components[name] = { entrypoint: null, loading: null };
+      for (const name of COMPONENTS)
+        this.components[name] = { entrypoint: null, loading: null, tokenTag: null };
       return Response.json({ destroyed: true });
     }
     // Test kill switch (see Env.KCM_DISABLED): pkg/apiserver's go test
@@ -312,6 +352,10 @@ export class Controllers {
       this.state.storage.setAlarm(Date.now() + SAFETY_NET_INTERVAL_MS);
     }
 
+    // Before dispatching: poke()'s fast path goes straight to a loaded
+    // entrypoint without consulting ensure(), so the rotation check has to
+    // happen here too.
+    await this.dropRotatedComponents();
     const kcmResp = this.poke("kcm", request);
     const schedResp = this.poke("sched");
     const gcResp = this.poke("gc");
@@ -460,15 +504,25 @@ export class Controllers {
     // alarm mid-provision the moment the warmup window closed. One extra
     // list, and only on the management cluster (nothing else has Cluster
     // objects). Same "a failed list means stay awake" rule as above.
-    if (this.clusterName() === "default") {
+    // Skipped when the operator is not running at all (a suite driving
+    // Cluster objects by hand), and on tenant clusters, which hold none.
+    if (this.clusterName() === "default" && this.env.CLUSTEROP_DISABLED !== "1") {
       const clusters = await this.apiGet("/apis/k8flare.com/v1alpha1/clusters");
       if (clusters === null) return true;
       interface ClusterItem {
-        metadata?: { generation?: number; deletionTimestamp?: string };
+        metadata?: {
+          generation?: number;
+          deletionTimestamp?: string;
+          annotations?: Record<string, string>;
+        };
         status?: { observedGeneration?: number; phase?: string };
       }
       for (const c of (clusters.items as ClusterItem[] | undefined) ?? []) {
         if (c.metadata?.deletionTimestamp) return true;
+        // A pending rotation is unconverged work even on an otherwise Ready
+        // cluster: the operator has a token to mint, a Secret to rewrite,
+        // superseded tokens to revoke, and the annotation to clear.
+        if (c.metadata?.annotations?.["k8flare.com/rotate-token"]) return true;
         if ((c.status?.observedGeneration ?? 0) < (c.metadata?.generation ?? 0)) return true;
         if (c.status?.phase !== "Ready") return true;
       }
