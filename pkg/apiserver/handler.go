@@ -445,7 +445,8 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 				writeRuntimeObject(w, http.StatusOK, resultList)
 				return
 			}
-			obj, err := store.DeleteCollection(ctx, namespace, labelSelector)
+			obj, err := store.DeleteCollection(ctx, namespace, labelSelector,
+				ProtectedClusterCollectionKeep(prefix, resource))
 			if err != nil {
 				writeInternalError(w, err)
 				return

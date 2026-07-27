@@ -34,13 +34,28 @@ var clusterAPIPrefix = apidef.APIPrefix(k8flarev1alpha1.SchemeGroupVersion)
 // is routed per-GroupVersion by URL prefix and never receives the
 // GroupVersion itself.
 //
-// Known gap (P1): this covers a named DELETE only. A collection delete
-// (DELETE .../clusters with no name) still removes "default" along with
-// everything else. Closing it means teaching the generic DeleteCollection
-// path to skip protected names, which is worth doing with the
-// cluster-operator in P2, when tearing a Cluster down actually destroys
-// infrastructure -- at P1 a Cluster object is inert.
+// A collection delete (DELETE .../clusters with no name) takes the other
+// path: it cannot 403 the whole request without making "delete every tenant
+// cluster" impossible, so ProtectedClusterCollectionKeep holds "default"
+// back and lets the rest through.
 func IsProtectedClusterDelete(prefix, resource, name string) bool {
+	return isClusterResource(prefix, resource) && name == protectedClusterName
+}
+
+// ProtectedClusterCollectionKeep returns the object name a collection
+// delete of resource under prefix must NOT delete ("" when nothing is
+// protected). Closing P1's known gap: with the cluster-operator in place a
+// Cluster delete tears down real infrastructure, so DELETE .../clusters
+// reaching "default" would destroy the control plane that owns every other
+// cluster's teardown.
+func ProtectedClusterCollectionKeep(prefix, resource string) string {
+	if isClusterResource(prefix, resource) {
+		return protectedClusterName
+	}
+	return ""
+}
+
+func isClusterResource(prefix, resource string) bool {
 	return strings.TrimSuffix(prefix, "/") == strings.TrimSuffix(clusterAPIPrefix, "/") &&
-		resource == "clusters" && name == protectedClusterName
+		resource == "clusters"
 }
