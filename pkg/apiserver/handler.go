@@ -358,6 +358,12 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		writeRuntimeObject(w, http.StatusOK, obj)
 
 	case http.MethodDelete:
+		if IsProtectedClusterDelete(prefix, resource, name) {
+			writeStatusError(w, http.StatusForbidden, "Forbidden",
+				"clusters \""+name+"\" is the management cluster and cannot be deleted")
+			return
+		}
+
 		policy, err := parseDeletePropagationPolicy(r)
 		if err != nil {
 			writeStatusError(w, http.StatusBadRequest, "BadRequest", err.Error())
