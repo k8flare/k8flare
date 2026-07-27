@@ -35,7 +35,15 @@ import (
 // of truth (plus the same hand-written authorization.k8s.io exception
 // documented there).
 func genDiscoveryAssets(root string) error {
-	assetsDir := filepath.Join(root, "workers", "k8flare", "assets")
+	// assetsDir (openapi.go) is the real, current asset root. Until
+	// 2026-07-27 this line instead joined a stale "workers/k8flare/assets"
+	// path left over from the pre-2026-07-08 layout: every `make gen` run
+	// silently created a fresh untracked workers/ tree and left the real,
+	// committed assets/apis documents untouched, so a resource added to
+	// apidef.Table never reached the served discovery documents (and
+	// ci.yml's regen-and-diff check couldn't see it, since git diff
+	// ignores untracked files). Found while adding k8flare.com/v1alpha1.
+	assetsRoot := filepath.Join(root, assetsDir)
 
 	docs := map[string]metav1.APIResourceList{
 		filepath.Join("api", "v1"): {
@@ -68,12 +76,12 @@ func genDiscoveryAssets(root string) error {
 	// These two directories are generator-owned: wipe and rewrite, same
 	// contract as openapi.go's treatment of assets/openapi.
 	for _, d := range []string{"api", "apis"} {
-		if err := os.RemoveAll(filepath.Join(assetsDir, d)); err != nil {
+		if err := os.RemoveAll(filepath.Join(assetsRoot, d)); err != nil {
 			return err
 		}
 	}
 	for rel, doc := range docs {
-		path := filepath.Join(assetsDir, rel)
+		path := filepath.Join(assetsRoot, rel)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return err
 		}
