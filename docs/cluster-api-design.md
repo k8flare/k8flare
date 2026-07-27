@@ -125,3 +125,84 @@ Admin API から controller に変わるだけで、gateway 側は無変更。
 - P2: cluster-operator (作成/削除/ローテーション reconcile) + 解決
   キャッシュ書き込み。suite に Cluster ライフサイクルの統合テスト追加。
 - P3: RBAC ロール同梱 + bootstrap 縮退、Admin API 削除、docs 更新。
+
+## 将来拡張: WasmController — 動的ワーカーの k8s ネイティブ宣言 + OCI pull
+
+(2026-07-27 追記。設計のみ。cluster-operator P2 の後継フェーズ)
+
+現在ホストするコントローラーは Controllers DO の
+`COMPONENTS = ["kcm","sched","gc"]` にハードコードされている。これを
+リソース宣言 + **OCI レジストリからの pull** に置き換える。
+
+### フォーマット: CNCF Wasm OCI Artifact (独自形式は作らない)
+
+CNCF TAG Runtime Wasm WG の標準 layout を採用する:
+- config: `application/vnd.wasm.config.v0+json`
+- layer: `application/wasm` (1 レイヤー = 1 モジュール)
+- カスタム media type を扱えないレジストリ向けに compat 変種
+  (標準 media type) も受理する
+- push 側は ORAS / 各社レジストリの既存ツールがそのまま使える
+
+参照: https://tag-runtime.cncf.io/wgs/wasm/deliverables/wasm-oci-artifact/
+
+### API 型
+
+```yaml
+apiVersion: k8flare.com/v1alpha1
+kind: WasmController
+metadata:
+  name: cluster-operator
+spec:
+  image: ghcr.io/k2wanko/k8flare-clusterop:v1@sha256:...  # digest ピン推奨
+  imagePullSecrets: [{ name: ghcr-cred }]   # kubernetes.io/dockerconfigjson
+  imagePullPolicy: IfNotPresent             # digest 前提なら実質キャッシュ制御
+  triggers:                                  # poke プレフィックス (event-armed 宣言)
+    - /registry/clusters/
+  serviceAccountName: cluster-operator       # 将来: 焼き込みトークンを SA 化し RBAC で権限を絞る
+status:
+  phase: Pulling | Ready | Failed
+  resolvedDigest: sha256:...
+  moduleBytes: 41234567                      # 64MiB cap 検査の記録
+```
+
+### pull パイプライン (コンテナの pull と同じ流れ)
+
+1. **puller (TS グルー)**: OCI distribution API を素の fetch で実装
+   (token 認証 → manifest GET → media type 検証 → layer blob GET)。
+   S2 制約により Go 動的ワーカーからは不可なので、Controllers DO /
+   シェル Worker 側の仕事。
+2. **検証**: blob の sha256 を manifest と照合。64MiB (Loader cap) 超は
+   その場で Failed。
+3. **保存**: R2 に content-addressed で置く (`wasm/sha256:<digest>`)。
+   R2 は 25MiB/ファイルの Assets 制約がないため、現行のチャンク分割
+   +manifest 機構が丸ごと不要になる。digest アドレスなので不変・
+   再 pull は digest 一致確認のみ。
+4. **ロード**: Loader factory が R2 から読み
+   `wasmctl:<name>@<digest>#<tokenTag>` で LOADER.get。ポンプ/パーク等
+   の実行形態は既存 COMPONENTS と完全に同一。
+
+### コスト (不変条件 5: 実装前見積もり)
+
+- pull はイベント時のみ (spec 変更時)。R2: 保存 $0.015/GB-月 +
+  Class A 書き込み数回。読み出しは Worker からで egress 無料。
+- 実行コストは既存 dynamic worker と同じ (Loader $0.002/unique/day +
+  CPU 時間)。アイドル増分ゼロ (poke 駆動のまま)。
+- 新規に R2 バケット binding が 1 つ増える (wrangler.jsonc +
+  cost-model.md に追記してから実装)。
+
+### 段階
+
+- WC-P1: 型 + puller + R2 キャッシュ。まず cluster-operator 自身を
+  OCI 配布で動かす (dogfooding)。
+- WC-P2: kcm/gc/sched も WasmController 表現に移行。Static Assets の
+  wasm チャンク機構を退役し、**Worker のデプロイとコントロールプレーン
+  の版数を分離**する (k8s バージョンアップが wrangler deploy 不要に)。
+- WC-P3: SA トークン焼き込み + RBAC で各コントローラーの権限を最小化。
+  任意 WASM の持ち込み (マルチテナント) はこの信頼境界が済んでから。
+
+### Pod + RuntimeClass 案を採らない理由 (記録)
+
+Pod として表現すると kubelet 意味論 (probe/exec/restartPolicy) を
+約束することになるが、DW は isolate の生死がプラットフォーム任せの
+イベント駆動であり嘘になる。専用 CRD の方が誠実 (Knative が
+Deployment を使わず Service/Revision を切ったのと同じ判断)。
