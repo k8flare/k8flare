@@ -1,8 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "../env.ts";
 
-// ClusterRegistry: the single metadata DO behind the management API
-// (idFromName("registry")). Holds ONLY {id -> {uid, createdAt, state}}
+// ClusterRegistry: the single metadata DO backing /c/<id> resolution
+// (idFromName("registry")). Since P3 it is a PURE CACHE of the Cluster
+// objects the operator reconciles -- it allocates nothing itself (the
+// uid-allocating POST went away with the management API). Holds ONLY {id -> {uid, createdAt, state}}
 // and the list -- tokens/CA/data live in each cluster's own DO tree
 // (auth deliberately does NOT funnel through this DO's single thread).
 // No alarms, no WebSockets: idle cost is storage alone (cost invariant
@@ -40,18 +42,6 @@ export class ClusterRegistry extends DurableObject<Env> {
       const rec = (await this.ctx.storage.get(key)) as ClusterRecord | undefined;
       if (!rec) return new Response("not found", { status: 404 });
       return Response.json(rec);
-    }
-    if (request.method === "POST") {
-      const existing = await this.ctx.storage.get(key);
-      if (existing) return Response.json({ error: "already exists" }, { status: 409 });
-      const rec: ClusterRecord = {
-        id,
-        uid: crypto.randomUUID(),
-        createdAt: new Date().toISOString(),
-        state: "active",
-      };
-      await this.ctx.storage.put(key, rec);
-      return Response.json(rec, { status: 201 });
     }
     // PUT is the cluster operator's upsert (clusters/internalapi.ts): the
     // Cluster object is the truth and this registry is a pure resolution

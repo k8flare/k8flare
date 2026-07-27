@@ -122,10 +122,11 @@ export async function handleGateway(
 ): Promise<Response> {
   let url = new URL(req.url);
 
-  // Cluster management API (admin-authenticated, clusters/adminauth.ts).
-  // Never cluster-prefixed; doesn't collide with any k8s API path.
+  // Bootstrap kubeconfig, plus 410 Gone for the retired management API
+  // (clusters/api.ts). Never cluster-prefixed; doesn't collide with any
+  // k8s API path.
   if (url.pathname === "/clusters" || url.pathname.startsWith("/clusters/")) {
-    return handleClustersAPI(req, outerEnv, ctx);
+    return handleClustersAPI(req, outerEnv);
   }
 
   // Multi-cluster resolution: parse+strip /c/<id> (unknown id 404s

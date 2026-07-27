@@ -100,7 +100,7 @@ export class CFContainersScheduler extends DurableObject<Env> {
   }
 
   async fetch(request: Request): Promise<Response> {
-    // Cluster teardown (clusters/api.ts): destroy every live VM FIRST
+    // Cluster teardown (clusters/teardown.ts): destroy every live VM FIRST
     // (Containers are wall-clock billed), then drop all state. Idempotent.
     if (new URL(request.url).pathname === "/admin/destroy" && request.method === "POST") {
       const tracked = await this.trackedVMs();
