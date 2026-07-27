@@ -17,29 +17,50 @@ import { invalidateTokenCache } from "./tokens.ts";
 // waitUntil while the object vanishes. The admin API keeps its old
 // fire-and-forget shape by not awaiting the returned promise.
 export async function teardownCluster(env: Env, id: string, doName: string): Promise<void> {
-  await registryStub(env).fetch(`http://registry.internal/clusters/${id}`, {
+  // Every step's RESULT is checked, not just its delivery: a destroy that
+  // answers 5xx (e.g. the scheduler could not stop some Containers) left
+  // orphaned state behind, and reporting success here would let the
+  // operator drop the finalizer and lose the object that would have
+  // driven the retry.
+  const mark = await registryStub(env).fetch(`http://registry.internal/clusters/${id}`, {
     method: "PATCH",
     body: JSON.stringify({ state: "deleting" }),
   });
+  // 404 is the resumed-teardown case (the record is already gone), not a
+  // failure -- this whole function must stay idempotent.
+  if (!mark.ok && mark.status !== 404) {
+    throw new Error(`teardown ${id}: mark deleting failed: HTTP ${mark.status}`);
+  }
   invalidateResolveCache(id);
   invalidateTokenCache(doName);
 
   const kill = async (ns: DurableObjectNamespace, label: string) => {
+    let resp: Response;
     try {
-      await ns.get(ns.idFromName(doName)).fetch("http://do.internal/admin/destroy", {
+      resp = await ns.get(ns.idFromName(doName)).fetch("http://do.internal/admin/destroy", {
         method: "POST",
       });
     } catch (err) {
       console.log(`teardown ${id}: ${label} destroy failed (retry to resume): ${err}`);
       throw err;
     }
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => "");
+      console.log(
+        `teardown ${id}: ${label} destroy failed (retry to resume): HTTP ${resp.status} ${detail}`,
+      );
+      throw new Error(`teardown ${id}: ${label} destroy: HTTP ${resp.status}`);
+    }
   };
   await kill(env.SCHEDULER as unknown as DurableObjectNamespace, "scheduler");
   await kill(env.CONTROLLERS, "controllers");
   await kill(env.WATCHHUB, "watchhub");
   await kill(env.CLUSTER, "cluster");
-  await registryStub(env).fetch(`http://registry.internal/clusters/${id}`, {
+  const dropped = await registryStub(env).fetch(`http://registry.internal/clusters/${id}`, {
     method: "DELETE",
   });
+  if (!dropped.ok) {
+    throw new Error(`teardown ${id}: registry delete failed: HTTP ${dropped.status}`);
+  }
   console.log(`teardown ${id}: complete`);
 }

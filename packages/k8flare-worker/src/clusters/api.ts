@@ -149,7 +149,14 @@ export async function handleClustersAPI(
   if (parts.length === 2 && req.method === "DELETE" && rec !== null) {
     // Run past the response; failures leave state=deleting and a re-DELETE
     // resumes from the top (every step is idempotent).
-    ctx.waitUntil(teardownCluster(env, rec.id, doName));
+    // teardownCluster rejects on a failed step (the operator path needs
+    // that to surface); this legacy path has already answered 202, so all
+    // it can do is log -- the re-DELETE is the retry.
+    ctx.waitUntil(
+      teardownCluster(env, rec.id, doName).catch((err) =>
+        console.log(`teardown ${rec.id}: ${err}`),
+      ),
+    );
     return Response.json({ id: rec.id, state: "deleting" }, { status: 202 });
   }
 

@@ -101,11 +101,14 @@ export async function createMeshConnector(
  * create, or cluster torn down). Best-effort: logs, never throws --
  * mirrors CFContainersScheduler.teardown's posture for the other
  * per-Pod resources it reaps, so one failed cleanup call doesn't stop
- * the rest of a Pod's teardown from proceeding.
+ * the rest of a Pod's teardown from proceeding. Returns whether the
+ * connector is actually gone, so callers that DO need to know -- cluster
+ * teardown, which must not report success while a connector leaks -- can
+ * check; the per-Pod callers ignore it.
  */
-export async function deleteMeshConnector(env: Env, id: string): Promise<void> {
+export async function deleteMeshConnector(env: Env, id: string): Promise<boolean> {
   const cfg = configured(env);
-  if (!cfg) return;
+  if (!cfg) return true; // Mesh not configured: nothing to leak
   try {
     const resp = await fetch(`${API_BASE}/accounts/${cfg.accountId}/warp_connector/${id}`, {
       method: "DELETE",
@@ -113,8 +116,11 @@ export async function deleteMeshConnector(env: Env, id: string): Promise<void> {
     });
     if (!resp.ok && resp.status !== 404) {
       console.log(`deleteMeshConnector ${id}: ${resp.status} ${await resp.text()}`);
+      return false;
     }
+    return true;
   } catch (err) {
     console.log(`deleteMeshConnector ${id}: ${err}`);
+    return false;
   }
 }

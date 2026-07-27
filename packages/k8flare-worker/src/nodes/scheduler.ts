@@ -104,15 +104,30 @@ export class CFContainersScheduler extends DurableObject<Env> {
     // (Containers are wall-clock billed), then drop all state. Idempotent.
     if (new URL(request.url).pathname === "/admin/destroy" && request.method === "POST") {
       const tracked = await this.trackedVMs();
+      const failed: string[] = [];
       for (const vm of Object.values(tracked)) {
         try {
           await this.vmStub(vm.tier, vm.podUID).destroyVM();
         } catch (err) {
           console.log(`cf-containers-scheduler destroy: ${vm.nodeName}: ${err}`);
+          failed.push(vm.nodeName);
+          continue;
         }
         // Cluster teardown must not leak per-Pod Mesh connectors either
         // (same 50-node cap concern as the normal per-Pod teardown()).
-        if (vm.meshConnectorId) await deleteMeshConnector(this.env, vm.meshConnectorId);
+        if (vm.meshConnectorId && !(await deleteMeshConnector(this.env, vm.meshConnectorId))) {
+          failed.push(`${vm.nodeName} (mesh connector)`);
+        }
+      }
+      // A partial destroy must NOT answer 200: teardown.ts propagates the
+      // failure so the operator keeps the Cluster's finalizer and retries.
+      // Re-running is safe -- the surviving tracked VMs are still in
+      // storage, which is why state is only dropped on full success.
+      if (failed.length > 0) {
+        return Response.json(
+          { destroyed: Object.keys(tracked).length - failed.length, failed },
+          { status: 500 },
+        );
       }
       await this.ctx.storage.deleteAlarm();
       await this.ctx.storage.deleteAll();
