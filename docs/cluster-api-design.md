@@ -57,6 +57,19 @@ kcm/gc/sched と同型: Go + leanclient の小さな controller を
 乗せる。storage の pingControllers トリガーに `/registry/clusters/` を
 追加するだけで event-armed になる (アイドルでパーク、不変条件維持)。
 
+**プラットフォーム操作ブリッジ (S2/S14 対応の必須要素)**: Loader で
+動く Go からは DO namespace に触れない (S2) ため、vault 書き込み・
+teardown・解決キャッシュ更新はシェル Worker に生やす最小の内部 API
+(`/internal/clusters/*`、実装は現 clusters/api.ts のロジックの
+呼び出し口替え) を GATEWAY Fetcher 経由で叩く。Go 側は k8s オブジェクト
+操作のみを直接行う。
+
+**poke フィードバック防止**: operator 自身の status/Secret 書き込みが
+ポンプを再駆動して無限 reconcile にならないよう、(a) status 更新は
+差分がある時のみ、(b) `status.observedGeneration` で世代管理、
+(c) Secret は CONTROLLER_RELEVANT_PREFIXES に入れない (現状入って
+いないことを維持)。
+
 reconcile:
 
 1. **作成** (phase 空 → Ready):
@@ -66,11 +79,15 @@ reconcile:
    status.phase=Ready, tokenSecretRef, endpoint を更新 →
    解決キャッシュ (下記) を更新。
 2. **削除** (deletionTimestamp あり):
-   phase=Terminating → 既存 teardownCluster 相当
-   (Scheduler destroy → Controllers → WatchHub → Cluster DO) →
-   Secret 削除 → finalizer 除去 (ここで実際に消える)。
-   途中失敗は次の reconcile が再開 (冪等) — 既存の graceful deletion
-   と実 GC の設計にそのまま乗る。
+   phase=Terminating → プラットフォーム操作ブリッジ (下記) 経由で
+   既存 teardownCluster の手順化された TS カスケード
+   (Scheduler destroy → Controllers → WatchHub → Cluster DO → registry)
+   を実行 → Secret 削除 → finalizer 除去 (ここで実際に消える)。
+   途中失敗は次の reconcile が再開 (冪等)。finalizer 機構は S25 の
+   upstream graceful deletion に乗るが、**teardown 本体は ownerRef
+   ベースの実 GC ではなく手順化されたカスケード**である (Codex
+   レビュー指摘 #7 の訂正: DO やコンテナは k8s オブジェクトではない
+   ので GC の管轄外)。
 3. **ローテーション annotation**: 上記。
 
 ## ゲートウェイの /c/<id> 解決
@@ -83,9 +100,12 @@ Admin API から controller に変わるだけで、gateway 側は無変更。
 ## 認証・RBAC・ブートストラップ
 
 - 管理操作の認可は **default クラスタの RBAC** に移る。クラスタ管理
-  だけ許す ClusterRole (`clusters.k8flare.com` の CRUD +
-  `k8flare-system` namespace の Secret read) を同梱し、管理者ごとの
-  権限分離を可能にする (現 ADMIN_TOKENS の全権共有より改善)。
+  だけ許す ClusterRole を同梱する
+  (`apiGroups: ["k8flare.com"], resources: ["clusters"]` +
+  `k8flare-system` の Secret read)。**注意**: クラスタトークンは
+  system:masters バイパスのままなので、RBAC が意味を持つのは SA
+  ベースの管理者アカウントに移行してから — それまで「RBAC で権限
+  分離」は謳わない (Codex 指摘 #10)。
   ※前提: 現状クラスタトークンは system:masters バイパスなので、
   RBAC を意味のあるものにするには SA ベースの管理者アカウント
   (ServiceAccount + TokenRequest は実装済み) を使う。
@@ -153,7 +173,7 @@ kind: WasmController
 metadata:
   name: cluster-operator
 spec:
-  image: ghcr.io/k2wanko/k8flare-clusterop:v1@sha256:...  # digest ピン推奨
+  image: ghcr.io/k2wanko/k8flare-clusterop:v1@sha256:...  # digest ピン必須 (tag のみは admission で拒否)
   imagePullSecrets: [{ name: ghcr-cred }]   # kubernetes.io/dockerconfigjson
   imagePullPolicy: IfNotPresent             # digest 前提なら実質キャッシュ制御
   triggers:                                  # poke プレフィックス (event-armed 宣言)
@@ -171,8 +191,10 @@ status:
    (token 認証 → manifest GET → media type 検証 → layer blob GET)。
    S2 制約により Go 動的ワーカーからは不可なので、Controllers DO /
    シェル Worker 側の仕事。
-2. **検証**: blob の sha256 を manifest と照合。64MiB (Loader cap) 超は
-   その場で Failed。
+2. **検証**: manifest の layer size を**ダウンロード前に** 64MiB cap と
+   照合して超過は即 Failed (悪意あるレジストリにメモリ/転送を浪費
+   させない)。blob はストリームで sha256 検証しつつ R2 へ書き、
+   不一致なら破棄。
 3. **保存**: R2 に content-addressed で置く (`wasm/sha256:<digest>`)。
    R2 は 25MiB/ファイルの Assets 制約がないため、現行のチャンク分割
    +manifest 機構が丸ごと不要になる。digest アドレスなので不変・
@@ -193,7 +215,10 @@ status:
 ### 段階
 
 - WC-P1: 型 + puller + R2 キャッシュ。まず cluster-operator 自身を
-  OCI 配布で動かす (dogfooding)。
+  OCI 配布で動かす (dogfooding)。**このフェーズでは受理する image を
+  同梱 allowlist (既知の名前 + digest) にハード制限する** — SA/RBAC の
+  信頼境界 (WC-P3) より前に任意 WASM が root 相当の動的ワーカーに
+  なる窓を作らない (Codex 指摘 #12)。
 - WC-P2: kcm/gc/sched も WasmController 表現に移行。Static Assets の
   wasm チャンク機構を退役し、**Worker のデプロイとコントロールプレーン
   の版数を分離**する (k8s バージョンアップが wrangler deploy 不要に)。
@@ -206,3 +231,33 @@ Pod として表現すると kubelet 意味論 (probe/exec/restartPolicy) を
 約束することになるが、DW は isolate の生死がプラットフォーム任せの
 イベント駆動であり嘘になる。専用 CRD の方が誠実 (Knative が
 Deployment を使わず Service/Revision を切ったのと同じ判断)。
+
+
+## 2026-07-27 Codex 設計レビューの反映 (No-Go → 条件付き Go)
+
+上記本文は指摘 #1 (プラットフォーム操作ブリッジ)・#7 (teardown の実像)・
+#8 (poke ガード)・#10 (RBAC 表記と時期)・#11 (digest 必須 + cap 先行
+検査)・#12 (WC-P1 allowlist) を反映済み。残りは実装フェーズの入口条件
+として記録する:
+
+- **#2/#3 生成系の実作業 (P1 の実体)**: 「apidef に 1 行」では済まない。
+  必要なのは (a) pkg/apis/k8flare/v1alpha1 の型 + deepcopy + Scheme 登録、
+  (b) k8flare-gen の OpenAPI/discovery 生成が upstream スペックのコピー
+  前提なので k8flare.com グループを自前生成できるよう拡張、
+  (c) leanclient に k8flare.com クライアント生成 + Secrets() の実装
+  (現状 panic) + Cluster の status サブリソース対応。P1 はこの 3 点を
+  含む見積もりに改める。
+- **#4 識別子の一本化**: 移行中に registry 由来の doName と Cluster
+  オブジェクト由来の doName が分岐しないよう、「doName の採番者は
+  常に 1 人」ルールを決める (P2 では operator が唯一の採番者になり、
+  admin API は既存 registry のレコードを読むだけに落とす)。
+- **#5 解決キャッシュの整合プロトコル**: Cluster オブジェクトを真実と
+  し、registry は「operator が全量再構築できる純キャッシュ」と明文化。
+  operator 起動時に全 Cluster を list して registry を突き合わせ、
+  差分は Cluster 側に合わせて修復する。
+- **#6 default 削除保護の実装**: 現 genericStrategy は Validate が
+  no-op。P1 で Cluster 用に「default の delete/update 制限」を持つ
+  strategy を追加する (設計上の主張を実装で裏取りしてから謳う)。
+- **#9 サイズゲート**: P1 完了時と operator チャンク追加時に
+  `make wasm` の cap ゲートで実測し、超過なら先に削減 (fieldmanager 等)
+  を行う。これを各フェーズの完了条件に含める。
