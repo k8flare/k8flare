@@ -305,3 +305,19 @@ Deployment を使わず Service/Revision を切ったのと同じ判断)。
 - **#9 サイズゲート**: P1 完了時と operator チャンク追加時に
   `make wasm` の cap ゲートで実測し、超過なら先に削減 (fieldmanager 等)
   を行う。これを各フェーズの完了条件に含める。
+
+### P1 実装結果 (2026-07-27)
+
+- `clusters.k8flare.com/v1alpha1` は計画どおり apidef.Table 1 エントリ +
+  手書き型 (pkg/apis/k8flare/v1alpha1) で全経路 (scheme/store/route/
+  discovery/TS RESOURCE_KINDS/status subresource) が開通。dynamic client
+  での CRUD/watch/status/default 削除保護のテストを suite に追加、
+  フルスイート + test-kcm green。
+- genOpenAPI は noUpstreamOpenAPI スキップ方式: **この group には
+  kubectl クライアント側検証が効かない** (typo フィールドは黙って通る)。
+  自前 OpenAPI 生成は必要になったときの拡張ポイント。
+- サイズ実測: apiserver チャンク 65.19MB (P1 増分 +42KB)。cap 67.11MB
+  に対し残 1.83MB。
+- 副産物の修正: Makefile の js 側 `make vet` が go.wasm.mod を使って
+  おらず S25 以降壊れていたのを発見、ビルドマトリクスどおり
+  leanwidth/schedwidth の 2 行に分割して修復。

@@ -225,7 +225,8 @@ check:
 ## the paths that are actually this module's own compilable packages.
 vet: | gen-mirrors
 	go vet ./pkg/apiserver/... ./pkg/agent/... ./cmd/k8flare-gen/...
-	GOOS=js GOARCH=wasm go vet ./pkg/apiserver/cmd/... ./pkg/cfruntime/... ./pkg/controllers/...
+	GOFLAGS=-modfile=go.wasm.mod GOOS=js GOARCH=wasm go vet -tags leanwidth ./pkg/apiserver/cmd/... ./pkg/cfruntime/... ./pkg/controllers ./pkg/controllers/gc/... ./pkg/controllers/restconfig/... ./pkg/controllers/cmd/kcm-wasm ./pkg/controllers/cmd/gc-wasm
+	GOFLAGS=-modfile=go.wasm.mod GOOS=js GOARCH=wasm go vet -tags schedwidth ./pkg/controllers/sched/... ./pkg/controllers/cmd/kcm-wasm/scheduler
 
 ## test: apiserver integration tests (spins up its own wrangler dev; needs wasm built first)
 test: wasm
