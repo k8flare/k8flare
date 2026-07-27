@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -177,5 +179,85 @@ func TestRBACEnforcement(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Fatalf("node identity list nodes: got %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestClusterAdminBootstrapRoles covers the k8flare:* roles rbac.go ships
+// (bundled the same read-time way as upstream's system:* ones, so they are
+// bindable without being visible to `kubectl get clusterroles`). Binding
+// them to a derived identity must grant exactly cluster administration:
+// Cluster objects, plus the credential Secrets in k8flare-system and
+// nothing outside it.
+//
+// This proves the roles GRANT what they claim. It does not make them a
+// confinement boundary: the cluster token is still system:masters and
+// bypasses RBAC entirely (docs/cluster-api-design.md's caveat).
+func TestClusterAdminBootstrapRoles(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+	const user = "rbac-test-cluster-admin"
+	const ns = "k8flare-system"
+
+	// Unbound: no access to either half.
+	if resp, body := rbacDo(t, "GET", "/apis/k8flare.com/v1alpha1/clusters", user, "", ""); resp.StatusCode != 403 {
+		t.Fatalf("unbound user list clusters: got %d, want 403: %s", resp.StatusCode, body)
+	}
+
+	if _, err := client.CoreV1().Namespaces().Create(ctx,
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}, metav1.CreateOptions{},
+	); err != nil && !errors.IsAlreadyExists(err) {
+		t.Fatalf("create %s namespace: %v", ns, err)
+	}
+
+	crb := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbac-test-cluster-admin"},
+		Subjects:   []rbacv1.Subject{{Kind: rbacv1.UserKind, APIGroup: rbacv1.GroupName, Name: user}},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "k8flare:cluster-admin"},
+	}
+	if _, err := client.RbacV1().ClusterRoleBindings().Create(ctx, crb, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create clusterrolebinding: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = client.RbacV1().ClusterRoleBindings().Delete(context.Background(), crb.Name, metav1.DeleteOptions{})
+	})
+	rb := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbac-test-cluster-secrets", Namespace: ns},
+		Subjects:   []rbacv1.Subject{{Kind: rbacv1.UserKind, APIGroup: rbacv1.GroupName, Name: user}},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: "k8flare:cluster-secret-reader"},
+	}
+	if _, err := client.RbacV1().RoleBindings(ns).Create(ctx, rb, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create rolebinding: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = client.RbacV1().RoleBindings(ns).Delete(context.Background(), rb.Name, metav1.DeleteOptions{})
+	})
+
+	// The bundled ClusterRole is resolvable even though no such object
+	// exists in storage, and grants the whole Cluster lifecycle.
+	if resp, body := rbacDo(t, "GET", "/apis/k8flare.com/v1alpha1/clusters", user, "", ""); resp.StatusCode != 200 {
+		t.Fatalf("bound user list clusters: got %d, want 200: %s", resp.StatusCode, body)
+	}
+	cluster := `{"apiVersion":"k8flare.com/v1alpha1","kind":"Cluster","metadata":{"name":"rbac-test-issued"},"spec":{"displayName":"issued by a bound admin"}}`
+	if resp, body := rbacDo(t, "POST", "/apis/k8flare.com/v1alpha1/clusters", user, "", cluster); resp.StatusCode != 201 {
+		t.Fatalf("bound user create cluster: got %d, want 201: %s", resp.StatusCode, body)
+	}
+	t.Cleanup(func() {
+		_, _ = rbacDo(t, "DELETE", "/apis/k8flare.com/v1alpha1/clusters/rbac-test-issued", user, "", "")
+	})
+
+	// Credential Secrets in k8flare-system only -- the namespaced Role is
+	// the whole point of not granting secrets cluster-wide.
+	if resp, body := rbacDo(t, "GET", "/api/v1/namespaces/"+ns+"/secrets", user, "", ""); resp.StatusCode != 200 {
+		t.Fatalf("bound user list %s secrets: got %d, want 200: %s", ns, resp.StatusCode, body)
+	}
+	if resp, body := rbacDo(t, "GET", "/api/v1/namespaces/default/secrets", user, "", ""); resp.StatusCode != 403 {
+		t.Fatalf("bound user list default secrets: got %d, want 403: %s", resp.StatusCode, body)
+	}
+	if resp, body := rbacDo(t, "DELETE", "/api/v1/namespaces/"+ns+"/secrets/nonexistent", user, "", ""); resp.StatusCode != 403 {
+		t.Fatalf("bound user delete a %s secret: got %d, want 403: %s", ns, resp.StatusCode, body)
+	}
+	// Cluster administration is not general administration.
+	if resp, body := rbacDo(t, "GET", "/api/v1/namespaces/default/pods", user, "", ""); resp.StatusCode != 403 {
+		t.Fatalf("bound user list pods: got %d, want 403: %s", resp.StatusCode, body)
 	}
 }

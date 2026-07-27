@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sync"
 
+	k8flarev1alpha1 "github.com/k8flare/k8flare/pkg/apis/k8flare/v1alpha1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -79,6 +80,48 @@ func nodeGroupBindings() []*rbacv1.ClusterRoleBinding {
 	return []*rbacv1.ClusterRoleBinding{mk("system:node"), mk("system:node-proxier")}
 }
 
+// k8flare.com's own bootstrap roles, shipped the same way upstream ships
+// system:* ones (read-time union, deviation #1): no subjects are bound to
+// them here -- an operator binds them to a ServiceAccount when they want a
+// cluster administrator who is not the root token.
+//
+// IMPORTANT (docs/cluster-api-design.md, Codex review point #10): these
+// roles do NOT confine anyone today. The cluster token authenticates as
+// system:masters, which short-circuits authorizeRequest before any rule is
+// consulted, so "administer clusters" and "hold the root token" remain the
+// same privilege. They become meaningful only for derived identities
+// (ServiceAccount tokens, X-Remote-User), which is what they exist for.
+const (
+	clusterAdminRole    = "k8flare:cluster-admin"
+	clusterSecretRole   = "k8flare:cluster-secret-reader"
+	clusterSecretNSName = "k8flare-system"
+)
+
+func k8flareClusterRole() *rbacv1.ClusterRole {
+	return &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{Name: clusterAdminRole},
+		Rules: []rbacv1.PolicyRule{{
+			APIGroups: []string{k8flarev1alpha1.GroupName},
+			Resources: []string{"clusters", "clusters/status"},
+			Verbs:     []string{rbacv1.VerbAll},
+		}},
+	}
+}
+
+// k8flareSecretRole is namespaced rather than a cluster-wide secrets grant:
+// the operator publishes every Cluster's credentials as Secrets in
+// k8flare-system, and reading THOSE is all a cluster administrator needs.
+func k8flareSecretRole() *rbacv1.Role {
+	return &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{Name: clusterSecretRole, Namespace: clusterSecretNSName},
+		Rules: []rbacv1.PolicyRule{{
+			APIGroups: []string{""},
+			Resources: []string{"secrets"},
+			Verbs:     []string{"get", "list", "watch"},
+		}},
+	}
+}
+
 func loadBootstrapPolicy() {
 	rbacBootstrapOnce.Do(func() {
 		bootstrapClusterRoles = map[string]*rbacv1.ClusterRole{}
@@ -103,6 +146,7 @@ func loadBootstrapPolicy() {
 			bootstrapClusterRoleBindings = append(bootstrapClusterRoleBindings, &ctrlB[i])
 		}
 		bootstrapClusterRoleBindings = append(bootstrapClusterRoleBindings, nodeGroupBindings()...)
+		bootstrapClusterRoles[clusterAdminRole] = k8flareClusterRole()
 
 		bootstrapNamespaceRoles = map[string]map[string]*rbacv1.Role{}
 		for ns, roles := range bootstrappolicy.NamespaceRoles() {
@@ -112,6 +156,10 @@ func loadBootstrapPolicy() {
 			}
 			bootstrapNamespaceRoles[ns] = m
 		}
+		if bootstrapNamespaceRoles[clusterSecretNSName] == nil {
+			bootstrapNamespaceRoles[clusterSecretNSName] = map[string]*rbacv1.Role{}
+		}
+		bootstrapNamespaceRoles[clusterSecretNSName][clusterSecretRole] = k8flareSecretRole()
 		bootstrapNamespaceBindings = map[string][]*rbacv1.RoleBinding{}
 		for ns, rbs := range bootstrappolicy.NamespaceRoleBindings() {
 			for i := range rbs {
