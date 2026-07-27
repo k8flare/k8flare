@@ -1167,3 +1167,27 @@ nodes), two ~25-minute windows.
   the control plane is fully parked while idle. Dollar figures still TBD
   (billing-grade numbers need a longer window via the dashboard/GraphQL),
   but the *activity* half of scale-to-zero is now measured, not assumed.
+
+## cluster-operator (estimate, 2026-07-27 — pre-implementation per invariant #5)
+
+The fourth resident dynamic worker (`pkg/controllers/clusterop`), hosted by
+the Controllers DO of the **management ("default") cluster only** — tenant
+clusters hold no Cluster objects, so `loadComponent` returns null for them
+and they pay nothing for it at all.
+
+| Axis                        | Cost                                                                                                                                                                                                                                                                                                    |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Idle                        | **0.** Same event-armed poke pump as kcm/gc/sched: it runs only inside a pump window opened by a write under `/registry/clusters/` (storage's `pingControllers`) or by the safety-net alarm, which parks when no Cluster is unconverged. Its watch is the apiserver's, not a wall-clock connection.       |
+| Loader                      | +$0.002/unique/day, and only on days the management cluster actually loads it (a day with no Cluster write loads nothing). One id, not per-tenant — `clusterop:default@<sha>#<tokenTag>`.                                                                                                                |
+| Per reconcile               | DO reads/writes only: 1 Cluster read + at most 1 status write + 1 Secret read/write (`k8flare-system/cluster-<name>`) + 1 registry DO write + 1 token-vault facet write. Single-digit DO ops per Cluster create; a converged Cluster costs **zero** (the observedGeneration/phase guard skips it).        |
+| Per teardown                | The existing cascade's cost, unchanged (4 DO `/admin/destroy` calls + 1 registry delete) — it moves from the admin API to the operator, it is not new work.                                                                                                                                              |
+| Alarm                       | No new alarm. It reuses the Controllers DO's existing safety net, whose convergence probe gains **one list call** (`/apis/k8flare.com/v1alpha1/clusters`) per tick, on the management cluster only, and only while a tick is already happening.                                                          |
+
+Risk to watch (the reason the guard exists): the operator writes Cluster
+status and Secrets, and Cluster writes poke the pump. Status is written
+only on a real diff and skipped entirely once `observedGeneration ==
+generation && phase == Ready`, and Secrets are deliberately **not** in
+`CONTROLLER_RELEVANT_PREFIXES` — without both, a single provisioned
+cluster would reconcile forever and the alarm would never park.
+
+Actual: not yet measured (no `wrangler deploy` performed for this change).
