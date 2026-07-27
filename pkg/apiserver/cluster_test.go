@@ -2,7 +2,11 @@ package apiserver_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -244,6 +248,132 @@ func TestClusterProtectedDelete(t *testing.T) {
 	}
 	if err := cl.Delete(ctx, other, metav1.DeleteOptions{}); err != nil {
 		t.Fatalf("delete %s: %v -- only \"default\" is protected", other, err)
+	}
+}
+
+// TestClusterProtectedCollectionDelete closes P1's recorded gap: a named
+// DELETE of "default" was already refused, but DELETE .../clusters used to
+// sweep it away with everything else. With the operator in place that is a
+// real teardown of the management cluster, so the collection delete must
+// remove the tenants and leave "default" standing.
+func TestClusterProtectedCollectionDelete(t *testing.T) {
+	ctx := context.Background()
+	cl := clusterClient(t)
+
+	if _, err := cl.Create(ctx, newCluster("default", "management"), metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
+		t.Fatalf("create default cluster: %v", err)
+	}
+	victim := fmt.Sprintf("sweepable-%d", time.Now().UnixNano())
+	if _, err := cl.Create(ctx, newCluster(victim, "throwaway"), metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create %s: %v", victim, err)
+	}
+
+	if err := cl.DeleteCollection(ctx, metav1.DeleteOptions{}, metav1.ListOptions{}); err != nil {
+		t.Fatalf("delete clusters collection: %v", err)
+	}
+	if _, err := cl.Get(ctx, "default", metav1.GetOptions{}); err != nil {
+		t.Fatalf("default cluster was swept by a collection delete: %v", err)
+	}
+	if _, err := cl.Get(ctx, victim, metav1.GetOptions{}); !errors.IsNotFound(err) {
+		t.Errorf("get %s after collection delete: err = %v, want NotFound", victim, err)
+	}
+}
+
+// TestClusterTableColumns pins the columns `kubectl get clusters` prints.
+// k8flare.com has no upstream printer to inherit, and docs/admin-guide.md
+// tells administrators to read PHASE from this output, so the column set is
+// a documented contract rather than an incidental default.
+func TestClusterTableColumns(t *testing.T) {
+	ctx := context.Background()
+	cl := clusterClient(t)
+
+	name := fmt.Sprintf("table-%d", time.Now().UnixNano())
+	if _, err := cl.Create(ctx, newCluster(name, "table columns"), metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create %s: %v", name, err)
+	}
+	t.Cleanup(func() { _ = cl.Delete(context.Background(), name, metav1.DeleteOptions{}) })
+
+	req, err := http.NewRequest(http.MethodGet,
+		fmt.Sprintf("http://127.0.0.1:%d/apis/k8flare.com/v1alpha1/clusters", testPort), nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer k8flare-dev-token")
+	req.Header.Set("Accept", "application/json;as=Table;v=v1;g=meta.k8s.io")
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("get clusters as Table: %v", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	var table metav1.Table
+	if err := json.Unmarshal(raw, &table); err != nil {
+		t.Fatalf("unmarshal Table: %v: %s", err, raw)
+	}
+	var got []string
+	for _, c := range table.ColumnDefinitions {
+		got = append(got, c.Name)
+	}
+	want := []string{"Name", "Phase", "Endpoint", "Age"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("columns: got %v, want %v", got, want)
+	}
+	for _, row := range table.Rows {
+		if len(row.Cells) > 0 && row.Cells[0] == name && len(row.Cells) != len(want) {
+			t.Errorf("row for %s has %d cells, want %d: %v", name, len(row.Cells), len(want), row.Cells)
+		}
+	}
+}
+
+// TestRetiredClusterManagementAPI covers what is left of clusters/api.ts
+// after P3: the bootstrap kubeconfig still serves an operator who has no
+// kubectl yet, and every route that moved to `kubectl` answers 410 Gone.
+func TestRetiredClusterManagementAPI(t *testing.T) {
+	setupWranglerDev(t)
+	base := fmt.Sprintf("http://127.0.0.1:%d", testPort)
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	do := func(method, path string) (*http.Response, string) {
+		t.Helper()
+		req, err := http.NewRequest(method, base+path, nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer k8flare-dev-token")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp, string(body)
+	}
+
+	resp, body := do(http.MethodGet, "/clusters/default/kubeconfig")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET bootstrap kubeconfig: got %d, want 200: %s", resp.StatusCode, body)
+	}
+	// The dev posture's fallback token, since a secretless deployment mints
+	// nothing into the management vault (clusters/tokens.ts).
+	if !strings.Contains(body, "k8flare-dev-token") {
+		t.Errorf("bootstrap kubeconfig carries no usable token:\n%s", body)
+	}
+
+	for _, r := range []struct{ method, path string }{
+		{http.MethodPost, "/clusters"},
+		{http.MethodGet, "/clusters"},
+		{http.MethodGet, "/clusters/team-a"},
+		{http.MethodPost, "/clusters/team-a/tokens"},
+		{http.MethodDelete, "/clusters/team-a"},
+	} {
+		resp, body := do(r.method, r.path)
+		if resp.StatusCode != http.StatusGone {
+			t.Errorf("%s %s: got %d, want 410: %s", r.method, r.path, resp.StatusCode, body)
+		}
+		if !strings.Contains(body, "kubectl") {
+			t.Errorf("%s %s 410 body does not point at kubectl: %s", r.method, r.path, body)
+		}
 	}
 }
 

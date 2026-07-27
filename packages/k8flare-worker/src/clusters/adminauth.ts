@@ -1,7 +1,8 @@
 import type { Env } from "../env.ts";
 import { verifyClusterToken } from "./tokens.ts";
 
-// Management-API authentication (POST /clusters etc.), pluggable per the
+// Bootstrap-endpoint authentication (GET /clusters/default/kubeconfig --
+// the last surviving management route), pluggable per the
 // user's 2026-07-06 decision: rotatable shared secrets AND room for
 // Cloudflare Access.
 //

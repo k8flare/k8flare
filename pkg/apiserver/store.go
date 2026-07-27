@@ -268,8 +268,11 @@ func (rs *ResourceStore) Delete(ctx context.Context, namespace, name string) (ru
 
 // DeleteCollection deletes every object of this resource type in namespace
 // that matches labelSelector (all objects if labelSelector is empty), and
-// returns a typed list of the objects that were deleted.
-func (rs *ResourceStore) DeleteCollection(ctx context.Context, namespace, labelSelector string) (runtime.Object, error) {
+// returns a typed list of the objects that were deleted. An object named
+// keepName is left alone and omitted from the result (empty = delete
+// everything); the caller uses it to hold back an undeletable object --
+// today only the management Cluster, see clusterprotect.go.
+func (rs *ResourceStore) DeleteCollection(ctx context.Context, namespace, labelSelector, keepName string) (runtime.Object, error) {
 	listObj, err := rs.List(ctx, namespace, "", labelSelector)
 	if err != nil {
 		return nil, fmt.Errorf("store delete collection: list: %w", err)
@@ -284,6 +287,9 @@ func (rs *ResourceStore) DeleteCollection(ctx context.Context, namespace, labelS
 	for _, item := range items {
 		itemMeta := getObjectMeta(item)
 		if itemMeta == nil {
+			continue
+		}
+		if keepName != "" && itemMeta.Name == keepName {
 			continue
 		}
 		obj, err := rs.Delete(ctx, namespace, itemMeta.Name)

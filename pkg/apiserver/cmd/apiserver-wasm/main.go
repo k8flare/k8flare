@@ -95,7 +95,7 @@ func getTokens() []string {
 func readTokens() []string {
 	// Every cluster -- "default" included -- reads its own vault: the
 	// K3S_TOKEN Worker secret is abolished (2026-07-27); tokens are
-	// minted via the admin API (POST /clusters/<id>/tokens). An empty or
+	// minted by the cluster operator (pkg/controllers/clusterop). An empty or
 	// unreadable DEFAULT vault falls back to the K3S_TOKEN secret, then the dev token (the
 	// secretless dev/CI posture -- and, on a transient vault-read
 	// failure, the TS gateway has already door-verified the caller, so

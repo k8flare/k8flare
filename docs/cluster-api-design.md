@@ -146,6 +146,7 @@ Admin API から controller に変わるだけで、gateway 側は無変更。
 - P2: cluster-operator (作成/削除/ローテーション reconcile) + 解決
   キャッシュ書き込み。suite に Cluster ライフサイクルの統合テスト追加。
 - P3: RBAC ロール同梱 + bootstrap 縮退、Admin API 削除、docs 更新。
+  **完了 (2026-07-27)** — 末尾「P3 実装結果」参照。
 
 ### P1 の実測結果 (2026-07-27)
 
@@ -422,3 +423,78 @@ cap に対して十分な余裕がある。apiserver は下記の getTokens 修�
 1 回ある (単体・kcm→clusterop の 2 連鎖では 2/2 PASS、再現せず)。前段
 スイートの wrangler 残留プロセスとの競合を疑っている。再発したら
 flaky ルール (不可侵 5) に従いここを起点に掘ること。
+
+## P3 実装結果 (2026-07-27)
+
+Admin API を bootstrap 1 本に縮退し、クラスタ運用を完全に kubectl に寄せた。
+
+- **`clusters/api.ts`**: 164 行 → 54 行。残したのは
+  `GET /clusters/default/kubeconfig` だけ(kubeconfig を持たない管理者の
+  最初の 1 回のための経路。認証は従来どおり default クラスタトークン)。
+  他の `/clusters` ルートは **410 Gone + kubectl 相当の手順**を JSON で返す。
+  - **実装中に判明**: この経路を旧実装のまま `readClusterTokens` にすると
+    **常に 409 になる**。P2 の決定で default の vault は空のままだからで、
+    `clusterSecrets`(vault → `K3S_TOKEN` → dev トークンの順)に切り替えた。
+    P2 の「default に mint してはならない」の当然の帰結だが、bootstrap 経路が
+    それに依存していることは実装するまで気付かなかった。
+- **識別子の一本化 (レビュー指摘 #4) が完了**: admin API の POST が
+  ClusterRegistry DO の uid 採番 POST の最後の呼び出し元だったので、
+  両方まとめて削除。registry は operator が全量再構築できる純キャッシュに
+  なり、doName の採番者は operator ただ 1 人になった。
+- **collection delete の default 保護 (P1 の「既知の隙間」/ P3 入口条件)**:
+  `ResourceStore.DeleteCollection` に `keepName` を追加し、handler が
+  `ProtectedClusterCollectionKeep` から埋める。コレクション DELETE 自体を
+  403 にすると「全テナントクラスタを消す」が不可能になるため、default だけ
+  残して他は消す方式にした。
+- **RBAC ロール同梱**: `k8flare:cluster-admin` (ClusterRole: clusters +
+  clusters/status に全 verb) と `k8flare:cluster-secret-reader`
+  (`k8flare-system` の Role: secrets get/list/watch)。upstream の
+  `system:*` と同じ read-time union 方式(rbac.go の deviation #1)なので
+  storage には書かれず、`kubectl get clusterroles` には出ないが roleRef で
+  参照できる。secrets を cluster-wide にせず namespaced Role にしたのは、
+  operator が資格情報を `k8flare-system` にしか置かないため。
+  **バインドは同梱しない**(誰に与えるかは運用者の判断)。
+  指摘 #10 のとおり、クラスタトークンは system:masters バイパスのままなので
+  **これは今日の時点で権限分離ではない**。テストも「何を許可するか」を
+  検証するもので、境界の検証ではない。docs にもその旨だけを書いた。
+- **追加 (計画外)**: `kubectl get clusters` が NAME+AGE しか出さなかった
+  (k8flare.com には継承できる upstream printer が無く fallback だった)。
+  admin-guide が PHASE を読ませる手順になったので、PHASE/ENDPOINT の
+  2 列を table.go に足し、列セットを固定するテストを付けた。
+
+### サイズ実測
+
+apiserver チャンク 65,202,156 バイト(P2 の 65,188,375 から +13,781 =
+RBAC ロール +5,349、Cluster printer +8,432)。64MiB cap まで残り
+1,906,708 バイト(1,862KiB)。ゲート通過。
+
+### テスト
+
+`pkg/apiserver` の常設スイート(= `make test`、opt-in ではない)に 4 本追加:
+
+- `TestRetiredClusterManagementAPI` — bootstrap kubeconfig が 200 で
+  使えるトークンを含むこと、廃止した 5 ルートが 410 + kubectl 案内を返すこと
+- `TestClusterProtectedCollectionDelete` — コレクション DELETE でテナントが
+  消えて default が残ること
+- `TestClusterAdminBootstrapRoles` — 未バインドの derived identity が 403、
+  2 ロールをバインドすると clusters の CRUD と `k8flare-system` の secrets
+  読みだけが通り、default namespace の secrets・pods・secrets の delete は
+  403 のままであること
+- `TestClusterTableColumns` — `kubectl get clusters` の列が
+  NAME/PHASE/ENDPOINT/AGE であること(admin-guide の記述と同期)
+
+`make test` フル(クリーン state から、52s)・`make test-kcm` (35s)・
+`make test-clusterop` (70s)・`make check` / `npx tsc --noEmit` /
+`make gen` 差分なし、いずれも green。**`make vet` も js/wasm 側を含めて
+green** — P1 で記録した「js 側 vet が失敗する」既存問題は、P1 の
+Makefile 修正 (go.wasm.mod を使う 2 行への分割) で解消済みだった。
+
+### 残件
+
+- Admin API 廃止で `docs/multi-tenancy-and-hosting.md` の
+  「Provisioning は `POST /clusters`」という記述が古くなったが、当時の記録
+  なので書き換えていない(不可侵ルール 4: 訂正は消さずに足す)。参照する
+  ときはこの節を優先すること。
+- `adminauth.ts` の Cloudflare Access 経路は bootstrap 1 本のためだけに
+  残っている。SA + RBAC 移行時に「Access で管理者を認証し SA トークンを
+  発行する」形に作り替えるのが自然な次の一手。
