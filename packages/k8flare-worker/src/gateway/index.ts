@@ -8,6 +8,7 @@ import type { Env } from "../env.ts";
 import { apiserverFetch } from "../loader/apiserver.ts";
 import { handleNodes } from "../nodes/index.ts";
 import { handleClustersAPI } from "../clusters/api.ts";
+import { handleClustersInternalAPI } from "../clusters/internalapi.ts";
 import { clusterEnv } from "../clusters/clusterenv.ts";
 import { resolveCluster } from "../clusters/resolve.ts";
 import { verifyClusterToken } from "../clusters/tokens.ts";
@@ -183,6 +184,19 @@ export async function handleGateway(
   if (url.pathname.startsWith("/internal/")) {
     if (!dwAuth(req, env)) {
       return new Response("not found", { status: 404 });
+    }
+    // The cluster operator's platform-operations bridge
+    // (clusters/internalapi.ts). Restricted to the MANAGEMENT cluster:
+    // these routes mint into arbitrary clusters' token vaults and tear
+    // their DO trees down, so a tenant's own token -- which is a perfectly
+    // valid cluster token, just not this cluster's -- must never reach
+    // them. outerEnv, not env: the derived env's DO namespaces are
+    // retargeted at one cluster's tree, and this handler addresses many.
+    if (url.pathname.startsWith("/internal/clusters/")) {
+      if (cluster.id !== "default") {
+        return new Response("not found", { status: 404 });
+      }
+      return handleClustersInternalAPI(req, outerEnv);
     }
     return apiserverFetch(env, req);
   }

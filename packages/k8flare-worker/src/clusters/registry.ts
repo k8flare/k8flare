@@ -53,6 +53,32 @@ export class ClusterRegistry extends DurableObject<Env> {
       await this.ctx.storage.put(key, rec);
       return Response.json(rec, { status: 201 });
     }
+    // PUT is the cluster operator's upsert (clusters/internalapi.ts): the
+    // Cluster object is the truth and this registry is a pure resolution
+    // cache, so the uid is supplied by the operator rather than allocated
+    // here -- the operator is the only doName allocator
+    // (docs/cluster-api-design.md review point #4). A record whose uid
+    // DIFFERS is never overwritten: that would repoint a live cluster's
+    // public id at a different DO tree.
+    if (request.method === "PUT") {
+      const body = (await request.json()) as { uid?: string };
+      if (!body.uid) return Response.json({ error: "uid required" }, { status: 400 });
+      const existing = (await this.ctx.storage.get(key)) as ClusterRecord | undefined;
+      if (existing && existing.uid !== body.uid) {
+        return Response.json(
+          { error: `cluster ${id} already exists with uid ${existing.uid}` },
+          { status: 409 },
+        );
+      }
+      const rec: ClusterRecord = {
+        id,
+        uid: body.uid,
+        createdAt: existing?.createdAt ?? new Date().toISOString(),
+        state: "active",
+      };
+      await this.ctx.storage.put(key, rec);
+      return Response.json(rec);
+    }
     if (request.method === "PATCH") {
       const rec = (await this.ctx.storage.get(key)) as ClusterRecord | undefined;
       if (!rec) return new Response("not found", { status: 404 });

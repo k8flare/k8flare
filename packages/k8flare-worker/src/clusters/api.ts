@@ -3,6 +3,7 @@ import { authorizeAdmin } from "./adminauth.ts";
 import { buildKubeconfig } from "./kubeconfig.ts";
 import { CLUSTER_ID_RE, invalidateResolveCache } from "./resolve.ts";
 import { type ClusterRecord, clusterDOName, registryStub } from "./registry.ts";
+import { teardownCluster } from "./teardown.ts";
 import {
   invalidateTokenCache,
   mintToken,
@@ -146,52 +147,18 @@ export async function handleClustersAPI(
   }
 
   if (parts.length === 2 && req.method === "DELETE" && rec !== null) {
-    return teardownCluster(env, ctx, rec);
+    // Run past the response; failures leave state=deleting and a re-DELETE
+    // resumes from the top (every step is idempotent).
+    // teardownCluster rejects on a failed step (the operator path needs
+    // that to surface); this legacy path has already answered 202, so all
+    // it can do is log -- the re-DELETE is the retry.
+    ctx.waitUntil(
+      teardownCluster(env, rec.id, doName).catch((err) =>
+        console.log(`teardown ${rec.id}: ${err}`),
+      ),
+    );
+    return Response.json({ id: rec.id, state: "deleting" }, { status: 202 });
   }
 
   return new Response("not found", { status: 404 });
-}
-
-// Teardown, idempotent (a re-DELETE resumes): mark deleting (new traffic
-// 404s at resolution) -> Scheduler destroy FIRST (live Containers are
-// wall-clock-billed) -> Controllers -> WatchHub -> Cluster (facets +
-// deleteAll) -> registry record. Each DO exposes /admin/destroy and
-// deletes its own storage -- DO storage cannot be enumerated externally.
-async function teardownCluster(
-  env: Env,
-  ctx: ExecutionContext,
-  rec: ClusterRecord,
-): Promise<Response> {
-  const doName = clusterDOName(rec);
-  await registryStub(env).fetch(`http://registry.internal/clusters/${rec.id}`, {
-    method: "PATCH",
-    body: JSON.stringify({ state: "deleting" }),
-  });
-  invalidateResolveCache(rec.id);
-  invalidateTokenCache(doName);
-
-  const destroy = async () => {
-    const kill = async (ns: DurableObjectNamespace, label: string) => {
-      try {
-        await ns.get(ns.idFromName(doName)).fetch("http://do.internal/admin/destroy", {
-          method: "POST",
-        });
-      } catch (err) {
-        console.log(`teardown ${rec.id}: ${label} destroy failed (re-DELETE to retry): ${err}`);
-        throw err;
-      }
-    };
-    await kill(env.SCHEDULER as unknown as DurableObjectNamespace, "scheduler");
-    await kill(env.CONTROLLERS, "controllers");
-    await kill(env.WATCHHUB, "watchhub");
-    await kill(env.CLUSTER, "cluster");
-    await registryStub(env).fetch(`http://registry.internal/clusters/${rec.id}`, {
-      method: "DELETE",
-    });
-    console.log(`teardown ${rec.id}: complete`);
-  };
-  // Run past the response; failures leave state=deleting and a re-DELETE
-  // resumes from the top (every step is idempotent).
-  ctx.waitUntil(destroy());
-  return Response.json({ id: rec.id, state: "deleting" }, { status: 202 });
 }

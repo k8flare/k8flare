@@ -67,11 +67,17 @@ export async function writeClusterTokens(
   }
 }
 
-export function mintToken(): ClusterToken {
+/**
+ * Mints a token. tokenId may be supplied by the caller to make a rotation
+ * REPLAYABLE: the cluster operator derives it deterministically from the
+ * rotate annotation's value, so a retried rotation recognizes the token it
+ * already minted instead of minting a second one every attempt.
+ */
+export function mintToken(tokenId?: string): ClusterToken {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   return {
-    tokenId: crypto.randomUUID().slice(0, 8),
+    tokenId: tokenId || crypto.randomUUID().slice(0, 8),
     secret: [...bytes].map((b) => b.toString(16).padStart(2, "0")).join(""),
     createdAt: new Date().toISOString(),
   };

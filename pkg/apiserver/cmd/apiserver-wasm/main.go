@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"runtime/debug"
 	"sync"
+	"time"
 
 	"github.com/k8flare/k8flare/pkg/apiserver"
 	"github.com/k8flare/k8flare/pkg/cfruntime"
@@ -54,19 +55,44 @@ func storageDo(req *http.Request) (*http.Response, error) {
 // env token for the default cluster (rotation is `wrangler secret put`),
 // or the per-cluster token vault (a kine value at /ca/cluster-tokens,
 // read through storageDo and parsed by apiserver.DecodeVaultTokens) for
-// provisioned ones. Memoized via sync.OnceValue. The default-cluster
-// branch reads only a plain env-var STRING, which -- unlike a Fetcher --
-// is not request-scoped I/O and stays valid across this resident
-// instance's requests, so the memo is fine there.
+// provisioned ones.
 //
-// KNOWN GAP (resident shape): the provisioned branch calls storageDo with
-// a context-less http.NewRequest, so BindingFromContext falls back to the
-// Go.run-time global STORAGE binding instead of the caller's request-
-// scoped one -- the same cross-request-I/O hazard storageDo itself was
-// just fixed for. No default-cluster path (all of conformance) hits it;
-// provisioned-cluster token rotation needs storageDo to receive a live
-// request context before it can be relied on. Left as a follow-up.
-var getTokens = sync.OnceValue(func() []string {
+// Cached for tokenCacheTTL, NOT memoized for the isolate's lifetime. It
+// was a sync.OnceValue until 2026-07-27, which froze a provisioned
+// cluster's token list at the first read: the loader id for this binary
+// is apiserver:<doName>@<sha> with no token fingerprint (unlike the
+// controllers', which re-key on rotation), so nothing ever replaced the
+// isolate and a rotated token was rejected here forever -- found live
+// bringing up the cluster operator's rotation path (the gateway door
+// accepted the new token, this layer 401'd it). The TTL matches the TS
+// door's own token cache (clusters/tokens.ts), so revocation propagates
+// on the same documented timescale at both layers.
+//
+// KNOWN GAP (unchanged, resident shape): the vault read calls storageDo
+// with a context-less http.NewRequest, so BindingFromContext falls back
+// to the Go.run-time global STORAGE binding instead of the caller's
+// request-scoped one. The refresh cadence does not change that hazard,
+// it just exercises it more than once.
+const tokenCacheTTL = 60 * time.Second
+
+var (
+	tokenCacheMu      sync.Mutex
+	tokenCacheValue   []string
+	tokenCacheExpires time.Time
+)
+
+func getTokens() []string {
+	tokenCacheMu.Lock()
+	defer tokenCacheMu.Unlock()
+	if time.Now().Before(tokenCacheExpires) {
+		return tokenCacheValue
+	}
+	tokenCacheValue = readTokens()
+	tokenCacheExpires = time.Now().Add(tokenCacheTTL)
+	return tokenCacheValue
+}
+
+func readTokens() []string {
 	// Every cluster -- "default" included -- reads its own vault: the
 	// K3S_TOKEN Worker secret is abolished (2026-07-27); tokens are
 	// minted via the admin API (POST /clusters/<id>/tokens). An empty or
@@ -104,7 +130,7 @@ var getTokens = sync.OnceValue(func() []string {
 		}
 	}
 	return tokens
-})
+}
 
 // recoverMiddleware turns a panic in any request handler into a 500
 // Status response instead of letting it crash the whole Go program.

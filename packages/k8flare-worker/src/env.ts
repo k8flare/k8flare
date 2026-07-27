@@ -91,6 +91,11 @@ export interface Env {
   // double-controller reasoning as SCHED_DISABLED. gc stays loadable
   // (the host has no garbage collector).
   CM_DISABLED?: string;
+  // Harness kill switch: "1" keeps the cluster operator (clusterop)
+  // dynamic worker unloaded, so a suite can drive Cluster objects by hand
+  // without a live reconciler seeding "default" or provisioning DO trees
+  // underneath it. Same shape as CM_DISABLED.
+  CLUSTEROP_DISABLED?: string;
   // Multi-cluster: set ONLY on derived envs (clusters/clusterenv.ts, DO
   // apiEnv helpers), never in wrangler.jsonc -- names the Cluster DO
   // instance downstream storage traffic targets. loader/apiserver.ts

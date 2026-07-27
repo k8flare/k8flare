@@ -33,7 +33,7 @@ APISERVER_SRC := $(shell find pkg/apiserver -name '*.go') $(CFRUNTIME_SRC) go.wa
 # controllermanager.go (see pkg/controllers/gc's doc comment), so kcm.
 # manifest.json has no reason to rebuild when only GC-specific source
 # changes.
-KCM_SRC := $(shell find pkg/controllers pkg/leanclient -name '*.go' -not -path 'pkg/controllers/gc/*' -not -path 'pkg/controllers/cmd/gc-wasm/*') \
+KCM_SRC := $(shell find pkg/controllers pkg/leanclient -name '*.go' -not -path 'pkg/controllers/gc/*' -not -path 'pkg/controllers/cmd/gc-wasm/*' -not -path 'pkg/controllers/clusterop/*' -not -path 'pkg/controllers/cmd/clusterop-wasm/*') \
 	$(CFRUNTIME_SRC) go.wasm.mod \
 	$(shell find pkg/clientgo-lean-overlays pkg/k8s-js-overlays -type f)
 GC_SRC := $(shell find pkg/controllers/gc pkg/controllers/restconfig pkg/controllers/cmd/gc-wasm pkg/leanclient pkg/apiserver/apidef -name '*.go') \
@@ -42,14 +42,17 @@ GC_SRC := $(shell find pkg/controllers/gc pkg/controllers/restconfig pkg/control
 SCHED_SRC := $(shell find pkg/controllers/sched pkg/controllers/restconfig pkg/controllers/cmd/kcm-wasm/scheduler pkg/leanclient -name '*.go') \
 	$(CFRUNTIME_SRC) go.wasm.mod \
 	$(shell find pkg/clientgo-lean-overlays pkg/k8s-js-overlays -type f)
+CLUSTEROP_SRC := $(shell find pkg/controllers/clusterop pkg/controllers/restconfig pkg/controllers/cmd/clusterop-wasm pkg/leanclient pkg/apis/k8flare -name '*.go') \
+	$(CFRUNTIME_SRC) go.wasm.mod \
+	$(shell find pkg/clientgo-lean-overlays pkg/k8s-js-overlays -type f)
 NODES_AGENT_SRC := $(shell find pkg/agent cmd/agent -name '*.go') go.mod go.sum
 
-.PHONY: all wasm wasm-apiserver wasm-kcm wasm-gc wasm-sched gen-mirrors gen check vet test dev deploy clean-wasm nodes-agent setup-tunnel help
+.PHONY: all wasm wasm-apiserver wasm-kcm wasm-gc wasm-sched wasm-clusterop gen-mirrors gen check vet test test-kcm test-clusterop dev deploy clean-wasm nodes-agent setup-tunnel help
 
 all: wasm
 
 help:
-	@echo "targets: wasm wasm-apiserver wasm-kcm wasm-gc wasm-sched gen check vet test dev deploy clean-wasm nodes-agent setup-tunnel"
+	@echo "targets: wasm wasm-apiserver wasm-kcm wasm-gc wasm-sched wasm-clusterop gen check vet test test-kcm test-clusterop dev deploy clean-wasm nodes-agent setup-tunnel"
 
 ## gen-mirrors: regenerate .build/{k8s-js,clientgo-lean}-mirror, the local
 ## copies go.mod's k8s.io/kubernetes and k8s.io/client-go replace directives
@@ -67,7 +70,7 @@ $(ASSETS)/wasm_exec.js: $(WASM_TOOLS)/patch-wasm-exec.ts $(WASM_TOOLS)/gomod.ts
 	node $(WASM_TOOLS)/patch-wasm-exec.ts "$$(go env GOROOT)/lib/wasm/wasm_exec.js" $@
 
 ## wasm: build all WASM chunks (apiserver + kcm + gc + sched); skipped per-binary if its inputs are unchanged
-wasm: $(ASSETS)/apiserver.manifest.json $(ASSETS)/kcm.manifest.json $(ASSETS)/gc.manifest.json $(ASSETS)/sched.manifest.json $(ASSETS)/selector.wasm
+wasm: $(ASSETS)/apiserver.manifest.json $(ASSETS)/kcm.manifest.json $(ASSETS)/gc.manifest.json $(ASSETS)/sched.manifest.json $(ASSETS)/clusterop.manifest.json $(ASSETS)/selector.wasm
 
 ## wasm-apiserver / wasm-kcm / wasm-gc: build just one chunk -- e.g. CI
 ## jobs that never touch KCM/GC skip their ~2min wasm-opt pass this way.
@@ -75,6 +78,7 @@ wasm-apiserver: $(ASSETS)/apiserver.manifest.json
 wasm-kcm: $(ASSETS)/kcm.manifest.json
 wasm-gc: $(ASSETS)/gc.manifest.json
 wasm-sched: $(ASSETS)/sched.manifest.json
+wasm-clusterop: $(ASSETS)/clusterop.manifest.json
 
 wasm-selector: $(ASSETS)/selector.wasm
 
@@ -183,6 +187,31 @@ $(ASSETS)/sched.manifest.json: $(SCHED_SRC) $(ASSETS)/wasm_exec.js | gen-mirrors
 	echo "sched: $$raw bytes ($$(( ($(CAP) - $$raw) / 1024 ))KiB headroom under the 64MiB Loader cap)"; \
 	node $(WASM_TOOLS)/chunk-wasm.ts $(BUILD)/sched.opt.wasm $(ASSETS) sched
 
+# CLUSTEROP: the cluster operator (pkg/controllers/clusterop) as the FIFTH
+# dynamic worker. Its own chunk, NOT folded into gc's: the two share only
+# pkg/leanclient, and gc's binary already carries the whole
+# garbagecollector dependency-graph tree, so cohabiting would link that
+# tree into a binary that never calls it (the same ~4MB-class measurement
+# behind pkg/controllers/restconfig's separate package). Same
+# go.wasm.mod + -tags leanwidth + wasm-opt -Oz shape as gc above.
+$(ASSETS)/clusterop.manifest.json: $(CLUSTEROP_SRC) $(ASSETS)/wasm_exec.js | gen-mirrors
+	@command -v wasm-opt >/dev/null 2>&1 || { echo "wasm-opt not found -- install binaryen (mise: aqua:web-assembly/binaryen, apt/brew: binaryen)" >&2; exit 1; }
+	@mkdir -p $(ASSETS) $(BUILD)
+	echo "== clusterop (./pkg/controllers/cmd/clusterop-wasm)"; \
+	GOFLAGS=-modfile=go.wasm.mod GOOS=js GOARCH=wasm go build -tags leanwidth -ldflags="-s -w" -trimpath -o $(BUILD)/clusterop.wasm ./pkg/controllers/cmd/clusterop-wasm; \
+	wasm-opt -Oz \
+		--strip-debug --strip-producers \
+		--enable-bulk-memory --enable-nontrapping-float-to-int \
+		--enable-sign-ext --enable-mutable-globals \
+		$(BUILD)/clusterop.wasm -o $(BUILD)/clusterop.opt.wasm; \
+	raw=$$(wc -c < $(BUILD)/clusterop.opt.wasm | tr -d ' '); \
+	if [ "$$raw" -ge $(CAP) ]; then \
+		echo "::error::clusterop ($$raw bytes) exceeds the Worker Loader's 64MiB cap ($(CAP) bytes) -- the dynamic worker cannot load. Trim dependencies (see docs/platform-verification.md S14)." >&2; \
+		exit 1; \
+	fi; \
+	echo "clusterop: $$raw bytes ($$(( ($(CAP) - $$raw) / 1024 ))KiB headroom under the 64MiB Loader cap)"; \
+	node $(WASM_TOOLS)/chunk-wasm.ts $(BUILD)/clusterop.opt.wasm $(ASSETS) clusterop
+
 SELECTOR_SRC := $(shell find pkg/selectormatch -name '*.go')
 
 # SELECTOR: the watch fan-out's label/field selector matcher (real
@@ -225,7 +254,7 @@ check:
 ## the paths that are actually this module's own compilable packages.
 vet: | gen-mirrors
 	go vet ./pkg/apiserver/... ./pkg/agent/... ./cmd/k8flare-gen/...
-	GOFLAGS=-modfile=go.wasm.mod GOOS=js GOARCH=wasm go vet -tags leanwidth ./pkg/apiserver/cmd/... ./pkg/cfruntime/... ./pkg/controllers ./pkg/controllers/gc/... ./pkg/controllers/restconfig/... ./pkg/controllers/cmd/kcm-wasm ./pkg/controllers/cmd/gc-wasm ./pkg/selectormatch/...
+	GOFLAGS=-modfile=go.wasm.mod GOOS=js GOARCH=wasm go vet -tags leanwidth ./pkg/apiserver/cmd/... ./pkg/cfruntime/... ./pkg/controllers ./pkg/controllers/gc/... ./pkg/controllers/restconfig/... ./pkg/controllers/cmd/kcm-wasm ./pkg/controllers/cmd/gc-wasm ./pkg/controllers/clusterop/... ./pkg/controllers/cmd/clusterop-wasm ./pkg/selectormatch/...
 	GOFLAGS=-modfile=go.wasm.mod GOOS=js GOARCH=wasm go vet -tags schedwidth ./pkg/controllers/sched/... ./pkg/controllers/cmd/kcm-wasm/scheduler
 
 ## test: apiserver integration tests (spins up its own wrangler dev; needs wasm built first)
@@ -239,6 +268,15 @@ test: wasm
 ## that can't run a Linux kubelet.
 test-kcm: wasm
 	K8FLARE_KCM_TEST=1 go test -count=1 -run TestKCMDynamicWorkerControlPlane -timeout 15m -v ./pkg/apiserver/
+
+## test-clusterop: cluster-operator lifecycle against a real clusterop
+## dynamic worker. Own wrangler dev + throwaway state like test-kcm, but
+## with the workload controllers and scheduler off (CM_DISABLED/
+## SCHED_DISABLED): this test provisions and tears down whole clusters and
+## has no use for pod-level controllers competing for the same isolate
+## budget.
+test-clusterop: wasm
+	K8FLARE_CLUSTEROP_TEST=1 go test -count=1 -run TestClusterOperatorLifecycle -timeout 15m -v ./pkg/apiserver/
 
 ## dev: local wrangler dev server
 dev:
@@ -266,6 +304,7 @@ clean-wasm:
 	rm -f $(ASSETS)/kcm.wasm.part* $(ASSETS)/kcm.manifest.json
 	rm -f $(ASSETS)/gc.wasm.part* $(ASSETS)/gc.manifest.json
 	rm -f $(ASSETS)/sched.wasm.part* $(ASSETS)/sched.manifest.json
+	rm -f $(ASSETS)/clusterop.wasm.part* $(ASSETS)/clusterop.manifest.json
 	rm -f $(ASSETS)/selector.wasm
 	rm -f $(ASSETS)/wasm_exec.js
 

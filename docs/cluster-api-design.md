@@ -321,3 +321,104 @@ Deployment を使わず Service/Revision を切ったのと同じ判断)。
 - 副産物の修正: Makefile の js 側 `make vet` が go.wasm.mod を使って
   おらず S25 以降壊れていたのを発見、ビルドマトリクスどおり
   leanwidth/schedwidth の 2 行に分割して修復。
+
+## P2 実装結果 (2026-07-27)
+
+cluster-operator (作成/削除/ローテーション reconcile + 解決キャッシュ書き込み)
+と、その統合テストを実装。5 番目の resident 動的ワーカーとして
+Controllers DO に載る (**default クラスタのみ** — テナントには Cluster
+オブジェクトが無いので `loadComponent` が null を返す)。
+
+実装:
+
+- `pkg/controllers/clusterop` — client.go (leanclient verb generics 上の
+  手書き Clusters クライアント。**意図的にジェネレーターを迂回**: k8flare.com は
+  自前グループで、満たすべき upstream インターフェースが無いため
+  Apply/ApplyStatus と applyconfigurations 依存を生成する意味がない)、
+  clusterop.go (SharedIndexInformer + ListWatch + typed workqueue。
+  finalizer `k8flare.com/cluster-teardown`、doName = `<name>@<uid>`、
+  Secret `k8flare-system/cluster-<name>`)、bridge.go (GATEWAY Fetcher 経由の
+  `/internal/clusters/*` タイプ付きラッパー)。
+- `pkg/controllers/cmd/clusterop-wasm` — ResidentService "clusterOperator"。
+- `packages/k8flare-worker/src/clusters/internalapi.ts` + `teardown.ts`
+  (api.ts から抽出、operator 側は await する)。registry DO に PUT
+  (uid を operator が採番、uid 不一致は 409) を追加。
+- Controllers DO に "clusterop" コンポーネント + `CLUSTEROP_DISABLED`、
+  storage の `CONTROLLER_RELEVANT_PREFIXES` に `/registry/clusters/`
+  (Secret は**入れない**)、`hasUnconvergedWork` に Cluster の 1 list を追加。
+
+### サイズ実測 (全 5 チャンク、64MiB cap = 67,108,864 バイト)
+
+| チャンク  | バイト     | 残 headroom |
+| --------- | ---------- | ----------- |
+| apiserver | 65,188,375 | 1,875KiB    |
+| kcm       | 42,212,290 | 24,313KiB   |
+| gc        | 41,277,283 | 25,226KiB   |
+| sched     | 45,194,291 | 21,400KiB   |
+| clusterop | 32,235,159 | 34,056KiB   |
+
+clusterop は gc への同居ではなく**独立チャンク**にした (設計時の比較項目):
+gc のバイナリは garbagecollector の依存グラフツリー全体を既に抱えており、
+同居させると呼ばれないそのツリーが clusterop 側にもリンクされる
+(pkg/controllers/restconfig の ~4MB 実測と同じ理屈)。32MB 単独なら
+cap に対して十分な余裕がある。apiserver は下記の getTokens 修正で
+65,193,745 → 65,188,375 バイト (-5,370)。
+
+### 実機で見つかった 2 件 (どちらも実装前の想定に無かった)
+
+1. **default クラスタに vault トークンを mint してはならない。** 最初の実装は
+   全 Cluster に一律 `EnsureVault` を掛けたが、`clusters/tokens.ts` の
+   `clusterSecrets` は **default の vault が空のときだけ** K3S_TOKEN /
+   dev トークンを候補に加える。つまり default に 1 本 mint した瞬間、
+   ルート資格情報が黙って無効になる — operator が自分自身の最初の
+   reconcile で 401 になって発覚した (`create k8flare-system namespace:
+   the server has asked for the client to provide credentials`)。
+   default の資格情報は K3S_TOKEN ルートシークレットである、という
+   ブートストラップ決定 (本ドキュメント上部) の当然の帰結で、
+   `internalapi.ts` の `handleVault` が default には endpoint だけを返し、
+   operator は Secret も tokenSecretRef も作らないようにした。
+   rotate も default では 409 (明示的な非機能)。
+2. **apiserver の `getTokens` が `sync.OnceValue` でトークン一覧を
+   isolate 寿命の間ずっと凍結していた。** apiserver の loader id は
+   `apiserver:<doName>@<sha>` でトークン指紋を含まない (controllers 側は
+   `#tokenTag` を含むので回転で isolate が変わる)ため、プロビジョン済み
+   クラスタのローテーション後の新トークンが**永久に 401** になる。
+   ゲートウェイのドアは新トークンを通すのに内側で落ちる、という切り分けの
+   しにくい形で出た。これは multi-cluster 作業時点から
+   `main.go` に「KNOWN GAP … provisioned-cluster token rotation needs …
+   follow-up」と自己申告されていた既知の穴で、**P2 のローテーションが
+   それに最初に依存した機能**だった。60 秒 TTL キャッシュに置き換え
+   (TS 側ドアの `TOKEN_CACHE_TTL_MS` と同じ時間軸)。文脈なし
+   `storageDo` が global STORAGE binding にフォールバックする件は未解決の
+   まま (頻度が上がるだけで性質は変わらない)。
+
+### 検証
+
+- `make test` (フルスイート、`rm -rf .wrangler/state` から) green
+- `make test-kcm` green (36s)
+- `make test-clusterop` green (70s) — 新規 `TestClusterOperatorLifecycle`:
+  Cluster 作成 → phase Ready + doName `<name>@<uid>` + Secret (token/
+  kubeconfig) → 発行トークンで `/c/<id>/api/v1/namespaces` 200・偽トークン
+  401・`/c/<id>/version` 200 → **差分ガード検証** (Ready 到達後 45 秒の
+  resourceVersion 不変を要求。無限 reconcile の回帰ゲート) → annotation で
+  ローテーション → 新トークン 200 / 旧トークン 401 / annotation 消える →
+  削除 → finalizer 完了・オブジェクト消滅・`/c/<id>` 404・Secret 消滅。
+  併せて default Cluster が seed され doName が `default` のままであることも
+  確認する。
+- `make vet` / `make check` / `npx tsc --noEmit` green、`make gen` 差分なし。
+
+### P3 への申し送り
+
+- Admin API (`clusters/api.ts`) は温存され、legacy として並走している。
+  ただし **doName の採番者は operator ただ 1 人**という規則 (#4) は、
+  admin API の POST が今も registry に uid を採番させる経路を残している
+  ため、まだ完全には守られていない。P3 の Admin API 削除で解消する。
+- collection delete (`DELETE .../clusters`) の default 保護は P1 の
+  「既知の隙間」のまま未実装。operator が入った今は実際に infra を壊せる
+  ので、P3 の入口条件にする。
+
+補足 (2026-07-27): `make test` → `make test-kcm` → `make test-clusterop` を
+1 シェルで連鎖実行した際に test-clusterop が 15 分タイムアウトした事例が
+1 回ある (単体・kcm→clusterop の 2 連鎖では 2/2 PASS、再現せず)。前段
+スイートの wrangler 残留プロセスとの競合を疑っている。再発したら
+flaky ルール (不可侵 5) に従いここを起点に掘ること。

@@ -67,6 +67,11 @@ const CONTROLLER_RELEVANT_PREFIXES = [
   "/registry/daemonsets/",
   "/registry/jobs/",
   "/registry/cronjobs/",
+  // The cluster operator's input. Deliberately NOT "/registry/secrets/":
+  // the operator's own Secret writes would then poke the pump that
+  // re-drives its reconcile (docs/cluster-api-design.md's "poke feedback
+  // prevention"), and no other controller here reads Secrets.
+  "/registry/clusters/",
 ];
 
 function needsControllersPing(key: string): boolean {
