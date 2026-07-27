@@ -18,7 +18,7 @@ const BOOTSTRAP_PATH = "/clusters/default/kubeconfig";
 
 const RETIRED = {
   error: "the cluster management API is retired; manage clusters with kubectl",
-  create: 'kubectl apply -f cluster.yaml  (apiVersion: k8flare.com/v1alpha1, kind: Cluster)',
+  create: "kubectl apply -f cluster.yaml  (apiVersion: k8flare.com/v1alpha1, kind: Cluster)",
   list: "kubectl get clusters",
   credentials: "kubectl get secret cluster-<name> -n k8flare-system",
   rotate: 'kubectl annotate cluster <name> k8flare.com/rotate-token="$(date +%s)"',

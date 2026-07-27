@@ -66,34 +66,104 @@ kubectl get nodes
 - deploy / secret 操作は実アカウントに影響します。検証は基本
   `make dev`(ローカル) で行い、本番デプロイは意図したときだけ。
 
-## 3. クラスタの発行と管理 (管理 API)
+## 3. クラスタの発行と管理 (kubectl)
 
-`/clusters` 配下。認証は `Authorization: Bearer <default クラスタの有効トークン>`(= K3S_TOKEN または発行済みトークン)。
-「default」クラスタは発行不要(デプロイした瞬間から存在)で、作成/削除は
-できませんが、トークン発行・kubeconfig 取得は他のクラスタと同じに使えます。
+クラスタは **`k8flare.com/v1alpha1` の `Cluster` オブジェクト**です。発行も
+削除もローテーションも kubectl で行い、default クラスタ上の
+cluster-operator が reconcile します(旧 `/clusters` 管理 API は廃止済み
+— 叩くと 410 Gone と kubectl 相当の手順が返ります)。
 
-| 操作 | エンドポイント | 返り値 |
-|---|---|---|
-| クラスタ作成 | `POST /clusters` body `{"id":"team-a"}` | `{id, token, tokenId, kubeconfig}` |
-| 一覧 | `GET /clusters` | `{items:[...]}` |
-| 詳細 | `GET /clusters/<id>` | レコード |
-| kubeconfig 取得 | `GET /clusters/<id>/kubeconfig` | YAML(利用者に渡すのはこれ) |
-| トークン追加(ローテーション) | `POST /clusters/<id>/tokens` | `{tokenId, token}` |
-| トークン削除 | `DELETE /clusters/<id>/tokens/<tokenId>` | 204(最後の 1 本は拒否) |
-| クラスタ削除 | `DELETE /clusters/<id>` | 202(途中失敗時の再実行は継続。完了後の再実行は 404) |
+「default」クラスタは発行不要(デプロイした瞬間から存在)で、`Cluster`
+オブジェクトとしても自動で seed されますが、削除はできません
+(単体 DELETE は 403、コレクション DELETE でも 1 つだけ残ります)。
 
-例:
+### 発行
 
-```sh
-B=https://<your-worker>.workers.dev
-curl -s -X POST -H "Authorization: Bearer $AT" $B/clusters -d '{"id":"team-a"}'
-curl -s -H "Authorization: Bearer $AT" $B/clusters/team-a/kubeconfig > team-a.yaml
+```yaml
+# cluster.yaml
+apiVersion: k8flare.com/v1alpha1
+kind: Cluster
+metadata:
+  name: team-a          # = 公開 URL の /c/team-a
+spec:
+  displayName: "Team A"
 ```
 
-トークンのローテーション手順: 新トークンを POST → 利用者に配布 → 旧
-トークンを DELETE。ゲートウェイでの検証はアイソレートごとに約 60 秒キャッシュされるため、
-失効の伝播に最大 1 分かかります(Go 層の防御的キャッシュは isolate 再生成
-まで残ることがありますが、門はゲートウェイ側です)。緊急失効はクラスタ削除です。
+```sh
+kubectl apply -f cluster.yaml
+kubectl get clusters
+# NAME      PHASE   ENDPOINT                                       AGE
+# default   Ready   https://<your-worker>.workers.dev              3d
+# team-a    Ready   https://<your-worker>.workers.dev/c/team-a     5s
+```
+
+`PHASE` が `Ready` になると、operator が資格情報を **Secret** として
+`k8flare-system` に発行します。利用者に渡すのは `kubeconfig` キーです:
+
+```sh
+kubectl get secret cluster-team-a -n k8flare-system \
+  -o jsonpath='{.data.kubeconfig}' | base64 -d > team-a.yaml
+```
+
+Secret には `token`(生のトークン)と `kubeconfig`(そのトークン入りの
+kubeconfig)が入っています。
+
+### トークンのローテーション
+
+annotation を書き換えるだけです。operator が新トークンを発行し、Secret を
+書き換え、旧トークンを失効させ、annotation を消します:
+
+```sh
+kubectl annotate cluster team-a k8flare.com/rotate-token="$(date +%s)" --overwrite
+```
+
+同じ値を再度書いても再ローテーションはしません(値からトークン ID を
+決定的に導くため、途中で失敗した際の再実行が安全)。ゲートウェイでの検証は
+アイソレートごとに約 60 秒キャッシュされるため、旧トークンの失効伝播には
+最大 1 分かかります。緊急失効はクラスタ削除です。
+
+default クラスタのローテーションはこの経路では**できません**
+(annotation は消えて `RotateUnsupported` condition が付きます)。default の
+資格情報は `K3S_TOKEN` シークレットそのものなので、
+`wrangler secret put K3S_TOKEN` で入れ替えます。
+
+### 削除
+
+```sh
+kubectl delete cluster team-a
+```
+
+finalizer (`k8flare.com/cluster-teardown`) が付いているので、オブジェクトは
+すぐには消えず `Terminating` のまま残ります。operator が NodeVM の破棄 →
+Controllers/WatchHub/Cluster DO の破棄 → 解決キャッシュと Secret の削除まで
+完了して初めて finalizer が外れ、オブジェクトが消えます。途中で失敗した
+場合は次の reconcile が同じ手順を再開します(各ステップは冪等)。消えるまで
+待つには:
+
+```sh
+kubectl wait --for=delete cluster/team-a --timeout=5m
+```
+
+### 権限
+
+現状、**default クラスタのトークン(= `K3S_TOKEN`)を持っていることが
+管理者であること**と同義です。このトークンは `system:masters` として認証
+されるため RBAC を素通りします。
+
+より細かく絞りたい場合のために、バンドル済みのロールが 2 つあります
+(ServiceAccount + TokenRequest は実装済みなので、SA アカウントを作れば
+RBAC で絞れます):
+
+| ロール | 種別 | 権限 |
+|---|---|---|
+| `k8flare:cluster-admin` | ClusterRole | `k8flare.com` の `clusters` / `clusters/status` に全 verb |
+| `k8flare:cluster-secret-reader` | Role (`k8flare-system`) | `secrets` の get/list/watch |
+
+これらは upstream の `system:*` ロールと同じくブートストラップ扱いなので
+`kubectl get clusterroles` には出てきませんが、`roleRef` で参照できます。
+**注意**: クラスタトークンを配ったままでは RBAC は意味を持ちません
+(上記のバイパスが効くため)。RBAC で分離するなら SA ベースの管理者
+アカウントに移行してください。
 
 ## 4. ノードの提供 (BYO VM)
 
