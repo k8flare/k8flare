@@ -73,7 +73,12 @@ interface LoadedComponent {
 // dependency-graph builder needs an informer/watch per resource type
 // across apidef.Table, which would compete for kcm's own 128MiB isolate
 // budget (see pkg/controllers/controllermanager.go's doc comment).
-const COMPONENTS = ["kcm", "sched", "gc"] as const;
+// clusterop (the cluster operator, pkg/controllers/clusterop) is the
+// fourth: it reconciles k8flare.com Cluster objects into tenant control
+// planes. Unlike the other three it loads ONLY in the management
+// ("default") cluster -- a tenant cluster has no Cluster objects, and
+// loading an operator per cluster would charge Loader for nothing.
+const COMPONENTS = ["kcm", "sched", "gc", "clusterop"] as const;
 type ComponentName = (typeof COMPONENTS)[number];
 
 export class Controllers {
@@ -92,6 +97,7 @@ export class Controllers {
     kcm: { entrypoint: null, loading: null },
     sched: { entrypoint: null, loading: null },
     gc: { entrypoint: null, loading: null },
+    clusterop: { entrypoint: null, loading: null },
   };
 
   constructor(state: DurableObjectState, env: Env) {
@@ -199,6 +205,17 @@ export class Controllers {
     // host has no garbage collector, the gc dynamic worker is the only
     // one.
     if (name === "kcm" && this.env.CM_DISABLED === "1") return null;
+    // The cluster operator is a MANAGEMENT-cluster singleton: only the
+    // default cluster holds Cluster objects. Treated as absent elsewhere,
+    // the same shape as a missing manifest.
+    if (name === "clusterop") {
+      if (this.clusterName() !== "default") return null;
+      // Test/harness kill switch, mirroring CM_DISABLED: keeps the
+      // operator unloaded so a suite can drive Cluster objects by hand
+      // without a live reconciler seeding "default" or provisioning DO
+      // trees underneath it.
+      if (this.env.CLUSTEROP_DISABLED === "1") return null;
+    }
     // Manifest absent = component not shipped in this deployment.
     // Treated as absent, not an error, so pokes/alarms stay quiet
     // about it.
@@ -298,10 +315,12 @@ export class Controllers {
     const kcmResp = this.poke("kcm", request);
     const schedResp = this.poke("sched");
     const gcResp = this.poke("gc");
+    const clusteropResp = this.poke("clusterop");
     const statuses: Record<string, unknown> = {};
     for (const [field, resp] of [
       ["scheduler", schedResp],
       ["garbageCollector", gcResp],
+      ["clusterOperator", clusteropResp],
     ] as const) {
       statuses[field] = resp
         ? await resp
@@ -434,6 +453,25 @@ export class Controllers {
     for (const r of rss) {
       const spec = r.spec?.replicas ?? 1;
       if (((r.status ?? {}).replicas ?? 0) !== spec) return true;
+    }
+    // Cluster provisioning/teardown is real unconverged work too, and it
+    // is the ONLY work the operator does -- without this, a Cluster
+    // created on an otherwise idle management cluster would park the
+    // alarm mid-provision the moment the warmup window closed. One extra
+    // list, and only on the management cluster (nothing else has Cluster
+    // objects). Same "a failed list means stay awake" rule as above.
+    if (this.clusterName() === "default") {
+      const clusters = await this.apiGet("/apis/k8flare.com/v1alpha1/clusters");
+      if (clusters === null) return true;
+      interface ClusterItem {
+        metadata?: { generation?: number; deletionTimestamp?: string };
+        status?: { observedGeneration?: number; phase?: string };
+      }
+      for (const c of (clusters.items as ClusterItem[] | undefined) ?? []) {
+        if (c.metadata?.deletionTimestamp) return true;
+        if ((c.status?.observedGeneration ?? 0) < (c.metadata?.generation ?? 0)) return true;
+        if (c.status?.phase !== "Ready") return true;
+      }
     }
     for (const j of jobs) {
       const st = j.status ?? {};
