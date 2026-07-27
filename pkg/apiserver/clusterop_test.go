@@ -173,7 +173,8 @@ func TestClusterOperatorLifecycle(t *testing.T) {
 	if annotations == nil {
 		annotations = map[string]string{}
 	}
-	annotations[clusteropRotateAnnotation] = fmt.Sprintf("%d", time.Now().UnixNano())
+	rotateValue := fmt.Sprintf("%d", time.Now().UnixNano())
+	annotations[clusteropRotateAnnotation] = rotateValue
 	rotating.SetAnnotations(annotations)
 	if _, err := clusters.Update(ctx, rotating, metav1.UpdateOptions{}); err != nil {
 		t.Fatalf("annotate for rotation: %v", err)
@@ -200,6 +201,45 @@ func TestClusterOperatorLifecycle(t *testing.T) {
 	waitFor(t, 3*time.Minute, "superseded token stops working", func() bool {
 		return apiStatus(t, host+"/c/"+name+"/api/v1/namespaces", token) == http.StatusUnauthorized
 	})
+
+	// Replay: the SAME annotation value must be a no-op, not a second
+	// rotation. The operator derives the vault token id deterministically
+	// from the value (clusterop.rotationTokenID), so replaying it returns
+	// the token already minted instead of stranding another permanently
+	// valid one -- which is exactly what a rotation that failed partway
+	// and got retried looks like.
+	replaying, err := clusters.Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get cluster for rotation replay: %v", err)
+	}
+	replayAnnotations := replaying.GetAnnotations()
+	if replayAnnotations == nil {
+		replayAnnotations = map[string]string{}
+	}
+	replayAnnotations[clusteropRotateAnnotation] = rotateValue
+	replaying.SetAnnotations(replayAnnotations)
+	if _, err := clusters.Update(ctx, replaying, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("re-annotate with the same rotation value: %v", err)
+	}
+	waitFor(t, 2*time.Minute, "replayed rotate annotation cleared", func() bool {
+		got, err := clusters.Get(ctx, name, metav1.GetOptions{})
+		return err == nil && got.GetAnnotations()[clusteropRotateAnnotation] == ""
+	})
+	s, err := core.CoreV1().Secrets(clusteropSecretNamespace).Get(ctx, secretName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get secret after rotation replay: %v", err)
+	}
+	if got := string(s.Data["token"]); got != rotated {
+		t.Errorf("rotation replay minted a NEW token (secret token changed) -- rotation is not idempotent")
+	}
+	// And only that one token is valid: the replay must not have
+	// resurrected the superseded one.
+	if code := apiStatus(t, host+"/c/"+name+"/api/v1/namespaces", rotated); code != http.StatusOK {
+		t.Errorf("rotated token after replay = %d, want 200", code)
+	}
+	if code := apiStatus(t, host+"/c/"+name+"/api/v1/namespaces", token); code != http.StatusUnauthorized {
+		t.Errorf("superseded token after replay = %d, want 401", code)
+	}
 
 	// Teardown: the finalizer holds the object until the DO cascade and
 	// the Secret are actually gone.
@@ -228,6 +268,39 @@ func TestClusterOperatorLifecycle(t *testing.T) {
 	if got, _, _ := unstructured.NestedString(def.Object, "status", "doName"); got != "" && got != "default" {
 		t.Errorf("default cluster doName = %q, want \"default\"", got)
 	}
+
+	// Rotating the MANAGEMENT cluster is a terminal no-op, not a retry
+	// loop: its credential is the K3S_TOKEN root secret, which the vault
+	// endpoint refuses to rotate (409). The operator must clear the
+	// annotation and say why in a condition rather than requeue forever.
+	rotatingDefault := def.DeepCopy()
+	defAnnotations := rotatingDefault.GetAnnotations()
+	if defAnnotations == nil {
+		defAnnotations = map[string]string{}
+	}
+	defAnnotations[clusteropRotateAnnotation] = fmt.Sprintf("%d", time.Now().UnixNano())
+	rotatingDefault.SetAnnotations(defAnnotations)
+	if _, err := clusters.Update(ctx, rotatingDefault, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("annotate default cluster for rotation: %v", err)
+	}
+	waitFor(t, 2*time.Minute, "default cluster rotate annotation cleared", func() bool {
+		got, err := clusters.Get(ctx, clusteropDefaultCluster, metav1.GetOptions{})
+		return err == nil && got.GetAnnotations()[clusteropRotateAnnotation] == ""
+	})
+	waitFor(t, 2*time.Minute, "default cluster reports RotateUnsupported", func() bool {
+		got, err := clusters.Get(ctx, clusteropDefaultCluster, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		conds, _, _ := unstructured.NestedSlice(got.Object, "status", "conditions")
+		for _, raw := range conds {
+			c, ok := raw.(map[string]interface{})
+			if ok && c["type"] == "RotateUnsupported" && c["status"] == "True" {
+				return true
+			}
+		}
+		return false
+	})
 }
 
 // apiStatus issues a GET and returns the status code, treating a

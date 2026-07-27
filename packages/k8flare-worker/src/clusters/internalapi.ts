@@ -119,9 +119,30 @@ async function handleVault(req: Request, env: Env, rest: string[]): Promise<Resp
   // the old ones (they stay valid until the caller has distributed the
   // replacement) and reports what it supersedes so the caller can revoke
   // them afterwards.
+  // The optional {tokenId} in the body makes it REPLAYABLE, which is what
+  // keeps a rotation idempotent end to end: the operator derives the id
+  // deterministically from the rotate annotation's value, so a reconcile
+  // that crashed anywhere after minting (before the Secret was rewritten,
+  // before the old tokens were revoked, before the annotation was cleared)
+  // replays into the SAME token rather than minting another one -- and
+  // every stranded extra would otherwise stay valid forever. A replay
+  // answers 200 with the stored secret, so the operator can still rewrite
+  // the Secret, and reports every OTHER token as superseded.
   if (rest.length === 2 && rest[1] === "tokens" && req.method === "POST") {
+    const body = (await req.json().catch(() => ({}))) as { tokenId?: string };
     const vault = await readClusterTokens(env, doName);
-    const token = mintToken();
+    const existing = body.tokenId
+      ? vault?.tokens.find((t) => t.tokenId === body.tokenId)
+      : undefined;
+    if (existing) {
+      return Response.json({
+        ...credentials(env, req, doName, existing),
+        superseded: (vault?.tokens ?? [])
+          .filter((t) => t.tokenId !== existing.tokenId)
+          .map((t) => t.tokenId),
+      });
+    }
+    const token = mintToken(body.tokenId);
     const previous = vault?.tokens ?? [];
     await writeClusterTokens(env, doName, [...previous, token], vault?.revision ?? 0);
     invalidateTokenCache(doName);
@@ -201,7 +222,13 @@ async function handleTeardown(req: Request, env: Env, rest: string[]): Promise<R
     return Response.json({ error: "no doName for this cluster" }, { status: 400 });
   }
   // Awaited, not waitUntil: the operator drops the Cluster's finalizer on
-  // this response, so a failure must be visible as a failure.
-  await teardownCluster(env, id, doName);
+  // this response, so a failure must be visible as a failure -- answered
+  // as a 5xx here rather than an uncaught throw, so the operator's bridge
+  // sees a definite "requeue and retry" instead of a transport error.
+  try {
+    await teardownCluster(env, id, doName);
+  } catch (err) {
+    return Response.json({ id, torndown: false, error: String(err) }, { status: 500 });
+  }
   return Response.json({ id, torndown: true });
 }

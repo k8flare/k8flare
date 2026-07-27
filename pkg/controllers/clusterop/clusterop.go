@@ -22,12 +22,15 @@ package clusterop
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"runtime/debug"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -66,6 +69,10 @@ const (
 	// "default" (no uid suffix), and it has no registry record -- the
 	// gateway resolves un-prefixed paths to it without consulting one.
 	DefaultClusterName = "default"
+
+	// ConditionRotateUnsupported records a rotation request that was
+	// refused permanently rather than retried (see rejectRotation).
+	ConditionRotateUnsupported = "RotateUnsupported"
 
 	phaseProvisioning = "Provisioning"
 	phaseReady        = "Ready"
@@ -305,6 +312,16 @@ func (c *controller) reconcileActive(ctx context.Context, cl *k8flarev1alpha1.Cl
 	doName := doNameFor(cl)
 	rotate := cl.Annotations[RotateAnnotation]
 
+	// The management cluster's credential is the K3S_TOKEN root secret
+	// rather than a vault entry (see internalapi.ts's handleVault), so
+	// there is nothing here to rotate and the bridge answers 409. That is
+	// a permanent answer, not a transient one: retrying it would just
+	// rate-limit-loop forever. Treat it as terminal -- say so in a
+	// condition and drop the annotation.
+	if rotate != "" && cl.Name == DefaultClusterName {
+		return c.rejectRotation(ctx, cl)
+	}
+
 	// Resolution cache first: an entry without credentials 401s, which the
 	// next few lines fix; credentials without an entry 404 forever.
 	if cl.Name != DefaultClusterName {
@@ -316,7 +333,7 @@ func (c *controller) reconcileActive(ctx context.Context, cl *k8flarev1alpha1.Cl
 	var vault *vaultResult
 	var err error
 	if rotate != "" {
-		vault, err = c.bridge.MintToken(ctx, doName)
+		vault, err = c.bridge.MintToken(ctx, doName, rotationTokenID(rotate))
 	} else {
 		vault, err = c.bridge.EnsureVault(ctx, doName)
 	}
@@ -361,6 +378,10 @@ func (c *controller) reconcileActive(ctx context.Context, cl *k8flarev1alpha1.Cl
 		Endpoint:           vault.Endpoint,
 		ObservedGeneration: cl.Generation,
 		TokenSecretRef:     secretRef,
+		// Carried over, not rebuilt: conditions are set by the paths that
+		// own them (rejectRotation), and dropping them here would erase
+		// that record on the very next pass.
+		Conditions: cl.Status.Conditions,
 	})
 }
 
@@ -410,6 +431,40 @@ func (c *controller) reconcileDelete(ctx context.Context, cl *k8flarev1alpha1.Cl
 }
 
 func secretName(cluster string) string { return "cluster-" + cluster }
+
+// rotationTokenID derives the vault token id a rotation mints under, from
+// the rotate annotation's value alone. Deterministic on purpose: it is
+// what makes the whole rotation replayable. A reconcile can fail after
+// minting but before rewriting the Secret, revoking the superseded
+// tokens, or clearing the annotation -- and the retry then re-requests
+// this same id, gets the token it already minted back, and finishes the
+// remaining steps. With a random id per attempt, every failed attempt
+// would instead strand another permanently-valid token in the vault.
+func rotationTokenID(annotation string) string {
+	sum := sha256.Sum256([]byte(annotation))
+	return hex.EncodeToString(sum[:])[:8]
+}
+
+// rejectRotation answers a rotation request that can never succeed (the
+// management cluster's, see reconcileActive) by clearing the annotation
+// and recording why. Terminal: nothing re-drives it.
+func (c *controller) rejectRotation(ctx context.Context, cl *k8flarev1alpha1.Cluster) error {
+	updated := cl.DeepCopy()
+	delete(updated.Annotations, RotateAnnotation)
+	fresh, err := c.clusters.Update(ctx, updated)
+	if err != nil {
+		return fmt.Errorf("clear unsupported rotate annotation: %w", err)
+	}
+	status := *fresh.Status.DeepCopy()
+	apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
+		Type:               ConditionRotateUnsupported,
+		Status:             metav1.ConditionTrue,
+		Reason:             "ManagementClusterToken",
+		Message:            "the default cluster's credential is the K3S_TOKEN secret and is not rotatable through the Cluster API",
+		ObservedGeneration: fresh.Generation,
+	})
+	return c.updateStatus(ctx, fresh, status)
+}
 
 // ensureSecret publishes the cluster's credentials into
 // k8flare-system/cluster-<name>. The namespace is created first and its
@@ -498,6 +553,21 @@ func statusEqual(a, b k8flarev1alpha1.ClusterStatus) bool {
 	}
 	if a.TokenSecretRef != nil && *a.TokenSecretRef != *b.TokenSecretRef {
 		return false
+	}
+	// Conditions count too, or a status whose ONLY change is a condition
+	// (rejectRotation's) would be silently dropped. LastTransitionTime is
+	// deliberately excluded: apimeta.SetStatusCondition only moves it when
+	// the status field itself changes, so comparing the meaningful fields
+	// keeps this from churning resourceVersions on every pass.
+	if len(a.Conditions) != len(b.Conditions) {
+		return false
+	}
+	for i := range a.Conditions {
+		x, y := a.Conditions[i], b.Conditions[i]
+		if x.Type != y.Type || x.Status != y.Status || x.Reason != y.Reason ||
+			x.Message != y.Message || x.ObservedGeneration != y.ObservedGeneration {
+			return false
+		}
 	}
 	return true
 }

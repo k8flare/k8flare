@@ -101,12 +101,19 @@ func (b *bridge) EnsureVault(ctx context.Context, doName string) (*vaultResult, 
 	return &out, nil
 }
 
-// MintToken adds a NEW token to doName's vault, leaving the existing ones
-// valid, and reports which ids it supersedes so the caller can revoke
-// them once the replacement is distributed.
-func (b *bridge) MintToken(ctx context.Context, doName string) (*vaultResult, error) {
+// MintToken adds a NEW token to doName's vault under the caller-chosen
+// tokenID, leaving the existing ones valid, and reports which ids it
+// supersedes so the caller can revoke them once the replacement is
+// distributed.
+//
+// tokenID is deterministic (see rotationTokenID), which is what makes a
+// rotation replayable: a reconcile that crashed after minting but before
+// finishing re-requests the SAME id and gets the SAME token back instead
+// of stranding one extra valid token per attempt.
+func (b *bridge) MintToken(ctx context.Context, doName, tokenID string) (*vaultResult, error) {
 	var out vaultResult
-	if err := b.do(ctx, http.MethodPost, "/internal/clusters/vault/"+doName+"/tokens", nil, &out); err != nil {
+	body := map[string]string{"tokenId": tokenID}
+	if err := b.do(ctx, http.MethodPost, "/internal/clusters/vault/"+doName+"/tokens", body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
