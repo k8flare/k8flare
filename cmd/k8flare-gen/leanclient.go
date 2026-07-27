@@ -175,6 +175,15 @@ var leanClientGroups = []leanClientGroup{
 				},
 				Extras: replicationControllerExtras,
 			},
+			// Secret: the cluster operator (pkg/controllers/clusterop)
+			// mirrors each provisioned cluster's token/kubeconfig into
+			// k8flare-system/cluster-<name>, so it reads and writes real
+			// core Secrets -- moved out of coreV1OtherGetterStubs above
+			// for the same reason Events/PVC/PV were. SecretExpansion is
+			// empty upstream (no extras).
+			{Kind: "Secret", Receiver: "secrets", Resource: "secrets", Namespaced: true, HasUpdateStatus: false,
+				APIPackageAlias: "corev1", APIPackagePath: "k8s.io/api/core/v1",
+				ApplyConfigPackageAlias: "applyconfigurationscorev1", ApplyConfigPackagePath: "k8s.io/client-go/applyconfigurations/core/v1"},
 			{Kind: "Event", Receiver: "events", Resource: "events", Namespaced: true, HasUpdateStatus: false,
 				APIPackageAlias: "corev1", APIPackagePath: "k8s.io/api/core/v1",
 				ApplyConfigPackageAlias: "applyconfigurationscorev1", ApplyConfigPackagePath: "k8s.io/client-go/applyconfigurations/core/v1",
@@ -397,7 +406,7 @@ func (c *Client) ResourceClaimTemplates(namespace string) resourcev1client.Resou
 // beyond Pods/Nodes/Services/Endpoints/Events/PersistentVolumeClaims/
 // PersistentVolumes/Namespaces/ReplicationControllers
 // (ComponentStatuses, ConfigMaps, LimitRanges, PodTemplates,
-// ResourceQuotas, Secrets, ServiceAccounts) -- confirmed unused by every
+// ResourceQuotas, ServiceAccounts) -- confirmed unused by every
 // controller/scheduler this repo enables. Events was moved out of this
 // list and into Types below: unlike these, it *is* called -- every
 // controller/scheduler's record.EventBroadcaster (wired up right after
@@ -429,9 +438,6 @@ func (c *Client) PodTemplates(namespace string) corev1client.PodTemplateInterfac
 }
 func (c *Client) ResourceQuotas(namespace string) corev1client.ResourceQuotaInterface {
 	panic("leanclient: ResourceQuotas not implemented (unused by this repo's controllers/scheduler)")
-}
-func (c *Client) Secrets(namespace string) corev1client.SecretInterface {
-	panic("leanclient: Secrets not implemented (unused by this repo's controllers/scheduler)")
 }
 func (c *Client) ServiceAccounts(namespace string) corev1client.ServiceAccountInterface {
 	panic("leanclient: ServiceAccounts not implemented (unused by this repo's controllers/scheduler)")

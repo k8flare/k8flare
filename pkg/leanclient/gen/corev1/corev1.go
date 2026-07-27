@@ -79,6 +79,10 @@ func (c *Client) ReplicationControllers(namespace string) corev1client.Replicati
 	return NewReplicationControllers(c.rc, namespace)
 }
 
+func (c *Client) Secrets(namespace string) corev1client.SecretInterface {
+	return NewSecrets(c.rc, namespace)
+}
+
 func (c *Client) Events(namespace string) corev1client.EventInterface {
 	return NewEvents(c.rc, namespace)
 }
@@ -97,9 +101,6 @@ func (c *Client) PodTemplates(namespace string) corev1client.PodTemplateInterfac
 }
 func (c *Client) ResourceQuotas(namespace string) corev1client.ResourceQuotaInterface {
 	panic("leanclient: ResourceQuotas not implemented (unused by this repo's controllers/scheduler)")
-}
-func (c *Client) Secrets(namespace string) corev1client.SecretInterface {
-	panic("leanclient: Secrets not implemented (unused by this repo's controllers/scheduler)")
 }
 func (c *Client) ServiceAccounts(namespace string) corev1client.ServiceAccountInterface {
 	panic("leanclient: ServiceAccounts not implemented (unused by this repo's controllers/scheduler)")
@@ -605,6 +606,53 @@ func (c *replicationControllers) GetScale(ctx context.Context, replicationContro
 }
 func (c *replicationControllers) UpdateScale(ctx context.Context, replicationControllerName string, scale *autoscalingv1.Scale, opts metav1.UpdateOptions) (*autoscalingv1.Scale, error) {
 	panic("leanclient: ReplicationControllers.UpdateScale not implemented (unused by this repo's controllers/scheduler)")
+}
+
+type secrets struct {
+	client restclient.Interface
+	ns     string
+}
+
+var _ corev1client.SecretInterface = (*secrets)(nil)
+
+func NewSecrets(c restclient.Interface, ns string) *secrets {
+	return &secrets{client: c, ns: ns}
+}
+
+func (c *secrets) Create(ctx context.Context, obj *corev1.Secret, opts metav1.CreateOptions) (*corev1.Secret, error) {
+	return leanclient.Create(ctx, c.client, "secrets", c.ns, obj, schema.GroupVersion{Group: "", Version: "v1"}.WithKind("Secret"), opts)
+}
+
+func (c *secrets) Update(ctx context.Context, obj *corev1.Secret, opts metav1.UpdateOptions) (*corev1.Secret, error) {
+	return leanclient.Update(ctx, c.client, "secrets", c.ns, obj.Name, obj, schema.GroupVersion{Group: "", Version: "v1"}.WithKind("Secret"), opts)
+}
+
+func (c *secrets) Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error {
+	return leanclient.Delete(ctx, c.client, "secrets", c.ns, name, opts)
+}
+
+func (c *secrets) DeleteCollection(ctx context.Context, opts metav1.DeleteOptions, listOpts metav1.ListOptions) error {
+	return leanclient.DeleteCollection(ctx, c.client, "secrets", c.ns, opts, listOpts)
+}
+
+func (c *secrets) Get(ctx context.Context, name string, opts metav1.GetOptions) (*corev1.Secret, error) {
+	return leanclient.Get[corev1.Secret](ctx, c.client, "secrets", c.ns, name, opts)
+}
+
+func (c *secrets) List(ctx context.Context, opts metav1.ListOptions) (*corev1.SecretList, error) {
+	return leanclient.List[corev1.SecretList](ctx, c.client, "secrets", c.ns, opts)
+}
+
+func (c *secrets) Watch(ctx context.Context, opts metav1.ListOptions) (apimachinerywatch.Interface, error) {
+	return leanclient.Watch(ctx, c.client, "secrets", c.ns, opts, func() *corev1.Secret { return &corev1.Secret{} })
+}
+
+func (c *secrets) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (*corev1.Secret, error) {
+	return leanclient.Patch[corev1.Secret](ctx, c.client, "secrets", c.ns, name, pt, data, opts, subresources...)
+}
+
+func (c *secrets) Apply(ctx context.Context, obj *applyconfigurationscorev1.SecretApplyConfiguration, opts metav1.ApplyOptions) (*corev1.Secret, error) {
+	panic("leanclient: Server-Side Apply not implemented (unused by this repo's controllers/scheduler)")
 }
 
 type events struct {
