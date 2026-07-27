@@ -19,6 +19,19 @@ const CLUSTER_SCOPED_RESOURCES = new Set([
   "deviceclasses",
   "servicecidrs",
   "_internal",
+  // k8flare.com/v1alpha1 Clusters (pkg/apis/k8flare/v1alpha1) -- k8flare's
+  // own built-in group, cluster-scoped like every other kind here. Omitting
+  // it was not benign: a key like "/registry/clusters/team-a" fell through
+  // to the namespaced branch below, which read "team-a" as the namespace
+  // and wrote the object into an ns/team-a facet, while a LIST of
+  // "/registry/clusters/" fanned out across the REAL namespaces and so
+  // returned only clusters whose name happened to match one (measured
+  // 2026-07-27: GET returned the object, LIST did not). This is exactly the
+  // drift this file's doc comment warns about; a table-driven generator
+  // (cmd/k8flare-gen, from apidef.Table's Namespaced field) would remove
+  // the failure mode entirely and is worth doing if more cluster-scoped
+  // kinds are added.
+  "clusters",
   // Standard Kubernetes cluster-scoped kinds not yet registered by this
   // apiserver (see url-mapping.ts's RESOURCE_KINDS) but included defensively
   // per CLAUDE.md rule 3 (upstream's real scoping, not a repo-specific guess)

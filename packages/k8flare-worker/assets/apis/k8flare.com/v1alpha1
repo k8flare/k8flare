@@ -1,0 +1,1 @@
+{"kind":"APIResourceList","groupVersion":"k8flare.com/v1alpha1","resources":[{"name":"clusters","singularName":"cluster","namespaced":false,"kind":"Cluster","verbs":["create","delete","deletecollection","get","list","patch","update","watch"]},{"name":"clusters/status","singularName":"","namespaced":false,"kind":"Cluster","verbs":["get","patch","update"]}]}

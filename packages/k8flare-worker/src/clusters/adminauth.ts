@@ -85,4 +85,3 @@ export async function authorizeAdmin(req: Request, env: Env): Promise<boolean> {
   }
   return (await verifyClusterToken(req, env, "default")) !== null;
 }
-

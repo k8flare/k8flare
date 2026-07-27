@@ -23,6 +23,7 @@
 package apidef
 
 import (
+	k8flarev1alpha1 "github.com/k8flare/k8flare/pkg/apis/k8flare/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
@@ -594,6 +595,31 @@ var Table = []ResourceDef{
 		New:          func() runtime.Object { return &autoscalingv2.HorizontalPodAutoscaler{} },
 		NewList: func() runtime.Object {
 			return &autoscalingv2.HorizontalPodAutoscalerList{TypeMeta: metav1.TypeMeta{Kind: "HorizontalPodAutoscalerList", APIVersion: "autoscaling/v2"}}
+		},
+	},
+
+	// ---- k8flare.com/v1alpha1 ----
+	// k8flare's own management API (pkg/apis/k8flare/v1alpha1), not an
+	// upstream group: a Cluster object is one tenant cluster, and creating
+	// or deleting one is how a cluster is provisioned or torn down. It is a
+	// compile-time built-in group, not a CRD -- one table entry buys the
+	// same generic registry, discovery, watch, kubectl Table printing and
+	// graceful deletion every upstream type here gets. See
+	// docs/cluster-api-design.md. The only place this group is NOT treated
+	// like the others is OpenAPI: upstream ships no schema document for it,
+	// so cmd/k8flare-gen/openapi.go skips it (kubectl therefore does no
+	// client-side validation of Cluster objects; the server accepts them
+	// either way, since strict field validation is opt-in).
+	//
+	// The reconciling cluster-operator is P2; at P1 a Cluster is stored and
+	// served but nothing acts on it.
+	{
+		GroupVersion: k8flarev1alpha1.SchemeGroupVersion, Kind: "Cluster", Resource: "clusters",
+		Singular: "cluster", Namespaced: false,
+		Subresources: []Subresource{statusSubresource()},
+		New:          func() runtime.Object { return &k8flarev1alpha1.Cluster{} },
+		NewList: func() runtime.Object {
+			return &k8flarev1alpha1.ClusterList{TypeMeta: metav1.TypeMeta{Kind: "ClusterList", APIVersion: "k8flare.com/v1alpha1"}}
 		},
 	},
 }

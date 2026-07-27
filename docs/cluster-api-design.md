@@ -138,13 +138,57 @@ Admin API から controller に変わるだけで、gateway 側は無変更。
   になるか、gc チャンクへの同居が可能かを比較する (gc は informer が
   全型に張られる特殊事情があるため、まず同居のリンク幅を実測)。
 
-## 実装フェーズ (未着手)
+## 実装フェーズ
 
 - P1: apidef に k8flare.com/v1alpha1 Cluster を追加 (types/gen/table、
   make gen)。kubectl で CRUD できるだけの状態。サイズ実測。
+  **完了 (2026-07-27)** — 下記「P1 の実測結果」参照。
 - P2: cluster-operator (作成/削除/ローテーション reconcile) + 解決
   キャッシュ書き込み。suite に Cluster ライフサイクルの統合テスト追加。
 - P3: RBAC ロール同梱 + bootstrap 縮退、Admin API 削除、docs 更新。
+
+### P1 の実測結果 (2026-07-27)
+
+実装: `pkg/apis/k8flare/v1alpha1`(Cluster/ClusterList、DeepCopy は手書き —
+このリポジトリに deepcopy-gen が無いため。型が増えたらジェネレーター化する)、
+apidef.Table への 1 エントリ(cluster-scoped + status subresource)、
+`pkg/apiserver/clusterprotect.go`(default の削除を 403)、
+`pkg/apiserver/cluster_test.go`(dynamic client で CRUD/watch/status/削除保護、
+および DeepCopy の独立性)。
+
+- **サイズ**: apiserver チャンク 65,193,745 バイト(追加前 65,142,479 から
+  +51,266 バイト = 約 50KiB)。64MiB cap まで残り 1,915,119 バイト
+  (1,870KiB)。ゲート通過。
+- **OpenAPI は生成しない**: upstream に k8flare.com のスキーマ文書は存在
+  しないので、`cmd/k8flare-gen/openapi.go` の `noUpstreamOpenAPI` でこの
+  GroupVersion を v3 文書・v3 discovery index の両方から除外した。結果と
+  して **kubectl はこのグループをクライアント側 OpenAPI 検証しない**
+  (サーバーは strict field validation が opt-in なので受理する)。実スキーマ
+  が欲しくなったら upstream の openapi-gen を k8flare-gen に組み込む。
+- **訂正 1 (発見: この作業中)**: `cmd/k8flare-gen/discovery.go` が
+  2026-07-08 のレイアウト変更で取り残された `workers/k8flare/assets` に
+  書いていた。`make gen` のたびに未追跡の `workers/` を作り、実際に配信
+  される `packages/k8flare-worker/assets/apis/` は一切更新されていなかった
+  (git diff は未追跡ファイルを見ないので ci.yml の regen-diff も検出でき
+  なかった)。openapi.go と同じ `assetsDir` を使うよう修正。この修正が無い
+  と clusters は discovery に出ない。
+- **訂正 2 (発見: この作業中、実機で)**: `packages/k8flare-worker/src/storage/
+  keyspace.ts` の `CLUSTER_SCOPED_RESOURCES` に `clusters` が無く、
+  `/registry/clusters/team-a` が「namespace team-a」と解釈されて ns/team-a
+  facet に書かれていた。GET は同じ誤分類で一貫するので成功する一方、
+  LIST は実在 namespace への fan-out になるため、名前がたまたま既存
+  namespace と一致するオブジェクトしか返らなかった(実測: GET 成功・LIST に
+  出ない)。`clusters` を追加して解消。この denylist は手書きなので、
+  cluster-scoped な型を足すたびに同じ罠がある — apidef.Table の
+  `Namespaced` から生成するのが本来の直し方(P2 以降で検討)。
+- **既知の隙間**: 削除保護は名前指定 DELETE のみ。collection delete
+  (`DELETE .../clusters`)は default も消せる。実際に infra を壊すのは
+  operator が入る P2 からなので、そこで generic な DeleteCollection に
+  保護名スキップを入れる。
+- 検証: `make test`(全 suite、クリーン state から)/ `make test-kcm` /
+  `make check` / `npx tsc --noEmit` すべて green。`make vet` は js/wasm 側で
+  失敗するが、これは変更前の main でも同一に失敗する(手元の Go 1.26.4 と
+  systemd/etcd 依存の組み合わせ)ローカル環境の既存問題。
 
 ## 将来拡張: WasmController — 動的ワーカーの k8s ネイティブ宣言 + OCI pull
 
@@ -261,3 +305,19 @@ Deployment を使わず Service/Revision を切ったのと同じ判断)。
 - **#9 サイズゲート**: P1 完了時と operator チャンク追加時に
   `make wasm` の cap ゲートで実測し、超過なら先に削減 (fieldmanager 等)
   を行う。これを各フェーズの完了条件に含める。
+
+### P1 実装結果 (2026-07-27)
+
+- `clusters.k8flare.com/v1alpha1` は計画どおり apidef.Table 1 エントリ +
+  手書き型 (pkg/apis/k8flare/v1alpha1) で全経路 (scheme/store/route/
+  discovery/TS RESOURCE_KINDS/status subresource) が開通。dynamic client
+  での CRUD/watch/status/default 削除保護のテストを suite に追加、
+  フルスイート + test-kcm green。
+- genOpenAPI は noUpstreamOpenAPI スキップ方式: **この group には
+  kubectl クライアント側検証が効かない** (typo フィールドは黙って通る)。
+  自前 OpenAPI 生成は必要になったときの拡張ポイント。
+- サイズ実測: apiserver チャンク 65.19MB (P1 増分 +42KB)。cap 67.11MB
+  に対し残 1.83MB。
+- 副産物の修正: Makefile の js 側 `make vet` が go.wasm.mod を使って
+  おらず S25 以降壊れていたのを発見、ビルドマトリクスどおり
+  leanwidth/schedwidth の 2 行に分割して修復。

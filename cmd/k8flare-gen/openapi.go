@@ -11,6 +11,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
+	k8flarev1alpha1 "github.com/k8flare/k8flare/pkg/apis/k8flare/v1alpha1"
 	"github.com/k8flare/k8flare/pkg/apiserver/apidef"
 )
 
@@ -22,6 +23,25 @@ import (
 // (The wasm/ subtree next to these is Loader chunk supply, owned by
 // `make wasm` and excluded via run_worker_first.)
 const assetsDir = "packages/k8flare-worker/assets"
+
+// noUpstreamOpenAPI lists the apidef.Table GroupVersions that are k8flare's
+// own, not upstream Kubernetes', and therefore have no document in
+// k8s.io/kubernetes/api/openapi-spec to copy. genOpenAPI skips them
+// entirely: no v3 file is staged and no entry appears in the v3 discovery
+// index (the v2 document is upstream's full-surface file and is not
+// filtered per group either way, so it simply never mentions them).
+//
+// The tradeoff, accepted for P1 of docs/cluster-api-design.md: kubectl does
+// no client-side OpenAPI validation for these groups, so a typo'd field in
+// a Cluster manifest is not caught before it is sent. The server accepts it
+// regardless -- strict field validation is opt-in
+// (?fieldValidation=Strict, pkg/apiserver/fieldvalidation.go) -- so this
+// costs an early error message, not correctness. Generating a real schema
+// for a hand-written Go type needs upstream's openapi-gen wired into
+// cmd/k8flare-gen; revisit if this group grows.
+var noUpstreamOpenAPI = map[schema.GroupVersion]bool{
+	k8flarev1alpha1.SchemeGroupVersion: true,
+}
 
 // genOpenAPI copies the real upstream OpenAPI v2 (Swagger 2.0) and v3
 // documents for every apidef.Table GroupVersion out of the k8s.io/kubernetes
@@ -84,6 +104,9 @@ func genOpenAPI(root string) error {
 	}{}}
 
 	for _, gv := range apidef.GroupVersions() {
+		if noUpstreamOpenAPI[gv] {
+			continue
+		}
 		srcName := v3UpstreamFileName(gv)
 		src := filepath.Join(specDir, "v3", srcName)
 		data, err := os.ReadFile(src)
