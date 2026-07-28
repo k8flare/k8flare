@@ -24,22 +24,22 @@ import (
 // `make wasm` and excluded via run_worker_first.)
 const assetsDir = "packages/k8flare-worker/assets"
 
-// noUpstreamOpenAPI lists the apidef.Table GroupVersions that are k8flare's
+// ownOpenAPIGroups lists the apidef.Table GroupVersions that are k8flare's
 // own, not upstream Kubernetes', and therefore have no document in
-// k8s.io/kubernetes/api/openapi-spec to copy. genOpenAPI skips them
-// entirely: no v3 file is staged and no entry appears in the v3 discovery
-// index (the v2 document is upstream's full-surface file and is not
-// filtered per group either way, so it simply never mentions them).
+// k8s.io/kubernetes/api/openapi-spec to copy. Their v3 documents are
+// generated instead (ownGroupOpenAPIV3, openapi_own.go); they are staged
+// and indexed exactly like the copied upstream ones.
 //
-// The tradeoff, accepted for P1 of docs/cluster-api-design.md: kubectl does
-// no client-side OpenAPI validation for these groups, so a typo'd field in
-// a Cluster manifest is not caught before it is sent. The server accepts it
-// regardless -- strict field validation is opt-in
-// (?fieldValidation=Strict, pkg/apiserver/fieldvalidation.go) -- so this
-// costs an early error message, not correctness. Generating a real schema
-// for a hand-written Go type needs upstream's openapi-gen wired into
-// cmd/k8flare-gen; revisit if this group grows.
-var noUpstreamOpenAPI = map[schema.GroupVersion]bool{
+// Correction (2026-07-28): this used to be called noUpstreamOpenAPI and
+// genOpenAPI skipped these groups entirely -- no v3 file, no v3 index
+// entry. P1 of docs/cluster-api-design.md recorded the accepted tradeoff as
+// "kubectl just does no client-side validation for this group". That was
+// wrong, and it broke plain `kubectl apply` for k8flare.com/v1alpha1
+// outright: a GroupVersion missing from the v3 index makes kubectl fall
+// back to the OpenAPI *v2* verifier, which fetches /openapi/v2 as protobuf,
+// which our Static Assets copy is not. See ownGroupOpenAPIV3's doc comment
+// for the full mechanism.
+var ownOpenAPIGroups = map[schema.GroupVersion]bool{
 	k8flarev1alpha1.SchemeGroupVersion: true,
 }
 
@@ -104,14 +104,19 @@ func genOpenAPI(root string) error {
 	}{}}
 
 	for _, gv := range apidef.GroupVersions() {
-		if noUpstreamOpenAPI[gv] {
-			continue
-		}
-		srcName := v3UpstreamFileName(gv)
-		src := filepath.Join(specDir, "v3", srcName)
-		data, err := os.ReadFile(src)
-		if err != nil {
-			return fmt.Errorf("read %s (upstream OpenAPI v3 doc for %s not found -- has the group/version name changed upstream?): %w", src, gv, err)
+		var data []byte
+		if ownOpenAPIGroups[gv] {
+			data, err = ownGroupOpenAPIV3(gv)
+			if err != nil {
+				return fmt.Errorf("generate OpenAPI v3 doc for %s: %w", gv, err)
+			}
+		} else {
+			srcName := v3UpstreamFileName(gv)
+			src := filepath.Join(specDir, "v3", srcName)
+			data, err = os.ReadFile(src)
+			if err != nil {
+				return fmt.Errorf("read %s (upstream OpenAPI v3 doc for %s not found -- has the group/version name changed upstream?): %w", src, gv, err)
+			}
 		}
 
 		servedPath := v3ServedPath(gv)

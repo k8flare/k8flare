@@ -166,6 +166,10 @@ apidef.Table への 1 エントリ(cluster-scoped + status subresource)、
   して **kubectl はこのグループをクライアント側 OpenAPI 検証しない**
   (サーバーは strict field validation が opt-in なので受理する)。実スキーマ
   が欲しくなったら upstream の openapi-gen を k8flare-gen に組み込む。
+
+  **↑ 訂正 (2026-07-28) — この判断は誤りだった。下記「OpenAPI v3 文書の
+  訂正」参照。** スキップの代償は「検証が甘くなる」ではなく「**素の
+  `kubectl apply` が全部落ちる**」だった。
 - **訂正 1 (発見: この作業中)**: `cmd/k8flare-gen/discovery.go` が
   2026-07-08 のレイアウト変更で取り残された `workers/k8flare/assets` に
   書いていた。`make gen` のたびに未追跡の `workers/` を作り、実際に配信
@@ -317,6 +321,66 @@ Deployment を使わず Service/Revision を切ったのと同じ判断)。
 - genOpenAPI は noUpstreamOpenAPI スキップ方式: **この group には
   kubectl クライアント側検証が効かない** (typo フィールドは黙って通る)。
   自前 OpenAPI 生成は必要になったときの拡張ポイント。
+  **↑ 訂正 (2026-07-28): 下記「OpenAPI v3 文書の訂正」参照。**
+
+### OpenAPI v3 文書の訂正 (2026-07-28)
+
+P1 の `noUpstreamOpenAPI` スキップ方式は**実際の kubectl を壊していた**。
+`kubectl apply -f cluster.yaml` が client 側で必ず失敗する:
+
+```
+error validating data: proto: cannot parse invalid wire-format data
+```
+
+`--validate=false` を付ければ通る (サーバー側の経路は正常) ため P1 では
+気付かなかった。
+
+**機構 (実機で確認、v1.33.9 kubectl + ローカル TLS 終端 + wrangler dev)**:
+
+1. kubectl の client 側検証は**フォールバック**である。
+   `paramVerifyingSchema` (k8s.io/kubectl `pkg/validation/schema.go`) は
+   まず「サーバーがこの GVK で `?fieldValidation=` を解するか」を確認し、
+   **解するなら client 側検証を丸ごとスキップ**してサーバーに委ねる。
+2. その判定は `queryParamVerifierV3` (k8s.io/cli-runtime
+   `pkg/resource/query_param_verifier_v3.go`) が行い、当該 GroupVersion の
+   **OpenAPI v3 文書**を引いて「`x-kubernetes-group-version-kind` が一致する
+   PATCH operation に `fieldValidation` クエリパラメータがあるか」を見る。
+3. v3 index に GroupVersion が無いと `GroupVersionNotFoundError` →
+   CRD でもないので v2 verifier にフォールバック →
+   `GET /openapi/v2` を `Accept: application/com.github.proto-openapi.spec.v2@v1.0+protobuf`
+   で取得する。
+4. k8flare の `/openapi/v2` は Static Assets に置いた upstream の
+   `swagger.json` (JSON 4.1MB) をそのまま返す。Static Assets は Accept
+   ヘッダによる content negotiation をしないので、protobuf を要求されても
+   JSON が返る → `proto.Unmarshal` が落ちて上記エラー。
+
+ConfigMap 等の upstream 型が無事だったのは、それらが v3 index にあって
+手順 1 でスキップされ、v2 を**一度も取りに行かない**ため。
+
+**修正**: `cmd/k8flare-gen/openapi_own.go` を追加し、k8flare 自身の group の
+v3 文書を `apidef.Table` から生成する (upstream の `spec3`/`spec` 型で組み立て
+るので構造的に妥当)。`noUpstreamOpenAPI` は `ownOpenAPIGroups` に改名し、
+「スキップする集合」から「生成する集合」に意味を変えた。文書サイズ 7.6KB、
+apiserver チャンクへの影響は +87 バイト (index 埋め込み分のみ)。
+
+**スキーマは意図的に permissive** (`x-kubernetes-preserve-unknown-fields`)。
+kubectl が読むのは operation の GVK 拡張と `fieldValidation` パラメータだけ
+で、スキーマ本体は検証に使われない (手順 1 でスキップされるため)。忠実な
+スキーマを出すには upstream の openapi-gen を k8flare-gen に組み込む必要が
+あり、それが要るのは `kubectl explain` の詳細表示だけ。
+
+**検証は緩くなっていない** — むしろ P1 の記述より強い。サーバー側の
+`?fieldValidation=` は実装済みで **既定が Strict** である
+(`pkg/apiserver/fieldvalidation.go`。P1 と CLAUDE.md の「opt-in」「未実装」
+という記述はいずれも古い)。実機で `kubectl create` に typo フィールドを
+与えると
+`strict decoding error: unknown field "spec.displayNam"` で拒否される。
+
+**既知の隙間 (この修正とは無関係・group 非依存)**: 既存オブジェクトへの
+`kubectl apply` は PATCH を送るが、`pkg/apiserver/handler.go` の
+fieldValidation 適用は POST/PUT の 2 経路だけで、PATCH 経路には無い。
+そのため既存オブジェクトへの apply では未知フィールドが黙って通る。
+ConfigMap でも同じ挙動を実測しており k8flare.com 固有ではない。別課題。
 - サイズ実測: apiserver チャンク 65.19MB (P1 増分 +42KB)。cap 67.11MB
   に対し残 1.83MB。
 - 副産物の修正: Makefile の js 側 `make vet` が go.wasm.mod を使って
@@ -498,3 +562,20 @@ Makefile 修正 (go.wasm.mod を使う 2 行への分割) で解消済みだっ�
 - `adminauth.ts` の Cloudflare Access 経路は bootstrap 1 本のためだけに
   残っている。SA + RBAC 移行時に「Access で管理者を認証し SA トークンを
   発行する」形に作り替えるのが自然な次の一手。
+
+### P3 実機検証で発見した未解決問題 (2026-07-28, 調査中)
+
+本番で Cluster の create/delete reconcile が**間欠的に停止**する
+(4 サイクル中 2 回: delete が 8 分停止→追いポークで回復、create が
+15 分以上未完)。tail 実測で除外済みの仮説:
+- token-tag フラップによるリロードループ (そのパスのログ未出現)
+- hasUnconvergedWork の失敗時パーク (失敗は「起きたまま」扱いで実装済み。
+  実際 alarm はバックオフしながら鳴り続けていた)
+- alarm チェーン断 (15s→10min バックオフで正しく発火)
+確定した観測: 本番の Controllers DO はアイドル時 alarm tick 毎に
+インスタンス再作成され全コンポーネントを再 ensure する (Loader キャッシュ
+で安価、kcm 等は同機構で正常動作)。**Go operator 側のログが tail に
+一切出ないため、reconcile がどこで止まるか観測不能** — 次の一手は
+operator の可観測化 (reconcile 開始/完了/エラーを status condition と
+console 出力に記録、ResidentService の run 終了理由をログ) を入れて
+再現すること。
