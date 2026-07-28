@@ -579,3 +579,88 @@ Makefile 修正 (go.wasm.mod を使う 2 行への分割) で解消済みだっ�
 operator の可観測化 (reconcile 開始/完了/エラーを status condition と
 console 出力に記録、ResidentService の run 終了理由をログ) を入れて
 再現すること。
+
+## cluster operator の可観測化 (2026-07-28)
+
+本番で Cluster の create/delete reconcile が間欠的に停止する問題
+(別ブランチの「P3 実機検証で発見した未解決問題」節)の調査で、まず
+「operator のログが tail に一切出ない」という前提そのものを実機で検証した。
+
+### 確定: ログ配管は壊れていない。単に何も出力していなかった
+
+Go の stdout/stderr への書き込みは、`wasm_exec.js` の `globalThis.fs`
+shim (`writeSync` が改行ごとに `console.log` する)を通って dynamic worker
+の console に出る。**実機確認 (wrangler dev, 2026-07-28)**: 計装後の
+`cluster-operator: ...` 行と、同居する GC の klog 行 (`I0728 ...
+garbagecollector.go:141] "Starting controller"`) が、いずれも同じ
+wrangler 出力に出た。つまり従来 operator が無言だったのは配管の問題では
+なく、**成功パスにログが 1 行も無かった**ためである。
+
+(検証したのは `wrangler dev` の出力までで、本番 `wrangler tail` に同じ行が
+出ることはまだ実機で確認していない。同居する GC の klog は本番 tail でも
+観測済みなので同経路のはずだが、次の本番再現時に確認すること。)
+
+```
+controllers: clusterop load queued/starting
+2026/07/28 07:31:30 clusterOperator: run starting
+cluster-operator: starting (build go1.26.4/d5360aa...)
+cluster-operator: waiting for informer cache sync
+cluster-operator: informer WATCH established from rv=
+cluster-operator: informer cache synced
+cluster-operator: startup complete, entering work loop
+cluster-operator: reconcile obs-test: begin (attempt 1, queue depth 1)
+cluster-operator: reconcile obs-test: vault ok (doName=obs-test@1b1b1e42-... tokenId=5fc57520 superseded=0)
+cluster-operator: reconcile obs-test: status written (phase=Ready observed=1)
+cluster-operator: reconcile obs-test: ok in 76ms
+```
+
+### 落とし穴: `wrangler --log-level` が console 出力を落とす
+
+wrangler のログレベルは **debug > log > info > warn > error** の順で、
+Worker の `console.log` は **`log` レベル**に出る。したがって:
+
+- `--log-level error` (`make test-clusterop` のハーネスが従来使っていた値)
+  では console 出力が**一切出ない**。
+- `--log-level info` でも駄目 — リクエストログ (`[wrangler:info] GET ...`)
+  だけが出て console 行はゼロになる。これは「配管が壊れている」ように
+  見えるので特に紛らわしい(実測 2026-07-28: 34 行すべてリクエストログ、
+  `cluster-operator:` は 0 行)。
+- 必要なのは `--log-level log` (= 既定値)。
+
+`pkg/apiserver/clusterop_test.go` は `K8FLARE_DEV_LOG=<path>` を渡すと
+wrangler の出力をそのファイルに保存し、同時にレベルを `log` に上げる。
+既定は従来どおり無音。実測: 有効化すると `cluster-operator:` 行が 57 行
+出た。
+
+### 付随して分かったこと: 初回 LIST は起きない (watch-list)
+
+`informer LIST ok:` の行は成功パスで一度も出ず、代わりに
+`informer WATCH established from rv=` (rv 空)が出る。client-go の
+WatchList (streaming list) が有効なため、reflector は初期同期を LIST
+ではなく `sendInitialEvents` 付き WATCH で行っている。**「pump window が
+informer の初回 LIST を殺している」という仮説を立てるなら、見るべきは
+LIST ではなくこの WATCH である。** 上記の実測では WATCH 確立から
+cache synced まで 250ms 弱で、その間の大量のログは同居する GC の klog
+であって停止ではなかった。
+
+### 入れた計装
+
+- `pkg/controllers/clusterop/clusterop.go`: `logf` (prefix
+  `cluster-operator: `) と `buildTag()`。起動 / informer LIST・WATCH の
+  成否 / cache sync / reconcile の begin・end (経過時間・attempt・queue
+  depth) / 各エラーパス (bridge は HTTP ステータス込み) / workqueue の
+  再キュー回数 / status update の conflict / `Run` の return。
+- `pkg/cfruntime/residentservice.go`: run の開始と、**return したこと**
+  (`RUN RETURNED (controller is no longer running)`)。resident が return
+  するのは外から見ると reconcile 停止と区別が付かないため。
+- status condition `ReconcileError` (message は 256 文字で切る)。
+  kubectl だけで停止が診断できる。実機確認: registry に uid 違いの
+  エントリを先置きして 409 を強制すると、条件が載り backoff 再試行が
+  ログに出た。同一エラーの再試行では status を書き直さない
+  (`statusEqual` が効くので resourceVersion は増えない)。
+
+### バグは見つかっていない
+
+計装は入れたが、ローカルでは create/delete とも正常に収束し
+(`make test-clusterop` green)、停止は再現しなかった。本番で再現した
+ときに上記のログと condition で切り分ける。

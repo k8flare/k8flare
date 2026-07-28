@@ -47,8 +47,14 @@ func ResidentService(label string, run func(ctx context.Context) error) {
 				// what "runs for the instance's lifetime" actually means.
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
+				log.Printf("%s: run starting", label)
 				err := run(ctx)
-				log.Printf("%s: exited: %v", label, err)
+				// A resident controller returning at all is a fault: it is
+				// supposed to block for the instance's lifetime. Logged
+				// loudly because a silent exit looks exactly like a stalled
+				// reconcile from the outside (docs/cluster-api-design.md's
+				// intermittent production stall).
+				log.Printf("%s: RUN RETURNED (controller is no longer running): %v", label, err)
 				setStatus("exited: " + errString(err))
 			})
 		})

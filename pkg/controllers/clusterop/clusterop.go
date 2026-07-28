@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"runtime/debug"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -74,10 +75,47 @@ const (
 	// refused permanently rather than retried (see rejectRotation).
 	ConditionRotateUnsupported = "RotateUnsupported"
 
+	// ConditionReconcileError carries the last reconcile failure onto the
+	// object itself, so a stalled cluster is diagnosable with kubectl alone
+	// (`kubectl get cluster <name> -o yaml`) instead of requiring a live
+	// tail of the dynamic worker.
+	ConditionReconcileError = "ReconcileError"
+
+	// maxConditionMessage bounds what a bridge error (which embeds the
+	// shell Worker's whole response body) can write into etcd/kine.
+	maxConditionMessage = 256
+
 	phaseProvisioning = "Provisioning"
 	phaseReady        = "Ready"
 	phaseTerminating  = "Terminating"
 )
+
+// logf writes one console-visible line. Go's stdout/stderr writes reach
+// the dynamic worker's console.log through wasm_exec.js's globalThis.fs
+// shim (it line-buffers and console.logs on each "\n"), which is what
+// makes these show up in `wrangler tail` -- verified 2026-07-28, when the
+// operator's total silence during the intermittent production reconcile
+// stall turned out to be "it never logged", not "its logs are dropped"
+// (docs/cluster-api-design.md).
+func logf(format string, args ...interface{}) {
+	fmt.Printf("cluster-operator: "+format+"\n", args...)
+}
+
+// buildTag identifies which build is running, so a tail line can be
+// attributed to a deployment rather than guessed at.
+func buildTag() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown"
+	}
+	rev := "norev"
+	for _, s := range info.Settings {
+		if s.Key == "vcs.revision" {
+			rev = s.Value
+		}
+	}
+	return info.GoVersion + "/" + rev
+}
 
 type controller struct {
 	clusters *clustersClient
@@ -85,6 +123,11 @@ type controller struct {
 	bridge   *bridge
 	queue    workqueue.TypedRateLimitingInterface[string]
 	informer cache.SharedIndexInformer
+
+	// failing tracks which keys currently carry a ConditionReconcileError,
+	// so the recovery path can clear it without a Get on every successful
+	// reconcile. Only ever touched from the single processNext loop.
+	failing map[string]bool
 }
 
 // Run starts the cluster operator against restCfg (the management
@@ -92,10 +135,14 @@ type controller struct {
 // service binding the platform-operations bridge speaks over, and token
 // authenticates both.
 func Run(ctx context.Context, restCfg *restclient.Config, bindingName, token string) (err error) {
+	logf("starting (build %s)", buildTag())
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("cluster-operator: panic: %v", r)
+			logf("panic: %v", r)
+			logf("%s", debug.Stack())
 		}
+		logf("Run returning: %v", err)
 	}()
 
 	clusters, err := newClustersClient(restclient.AddUserAgent(restCfg, "cluster-operator"))
@@ -114,6 +161,7 @@ func Run(ctx context.Context, restCfg *restclient.Config, bindingName, token str
 		queue: workqueue.NewTypedRateLimitingQueue[string](
 			workqueue.DefaultTypedControllerRateLimiter[string](),
 		),
+		failing: map[string]bool{},
 	}
 
 	// Same survival posture as pkg/controllers/gc: a panic inside the
@@ -121,17 +169,29 @@ func Run(ctx context.Context, restCfg *restclient.Config, bindingName, token str
 	// instance down (which would just reload-loop with no visible cause).
 	utilruntime.ReallyCrash = false
 	utilruntime.PanicHandlers = append(utilruntime.PanicHandlers, func(_ context.Context, r interface{}) {
-		println("cluster-operator: captured panic:", fmt.Sprint(r))
-		println(string(debug.Stack()))
+		logf("captured panic: %v", r)
+		logf("%s", debug.Stack())
 	})
 
 	c.informer = cache.NewSharedIndexInformer(
 		&cache.ListWatch{
 			ListFunc: func(opts metav1.ListOptions) (runtime.Object, error) {
-				return c.clusters.List(context.Background(), opts)
+				list, err := c.clusters.List(context.Background(), opts)
+				if err != nil {
+					logf("informer LIST failed: %v", err)
+					return nil, err
+				}
+				logf("informer LIST ok: %d clusters at rv=%s", len(list.Items), list.ResourceVersion)
+				return list, nil
 			},
 			WatchFunc: func(opts metav1.ListOptions) (apimachinerywatch.Interface, error) {
-				return c.clusters.Watch(context.Background(), opts)
+				w, err := c.clusters.Watch(context.Background(), opts)
+				if err != nil {
+					logf("informer WATCH from rv=%s failed: %v", opts.ResourceVersion, err)
+					return nil, err
+				}
+				logf("informer WATCH established from rv=%s", opts.ResourceVersion)
+				return w, nil
 			},
 		},
 		&k8flarev1alpha1.Cluster{},
@@ -147,9 +207,12 @@ func Run(ctx context.Context, restCfg *restclient.Config, bindingName, token str
 	}
 
 	go c.informer.Run(ctx.Done())
+	logf("waiting for informer cache sync")
 	if !cache.WaitForCacheSync(ctx.Done(), c.informer.HasSynced) {
+		logf("cache sync failed (ctx err: %v)", ctx.Err())
 		return fmt.Errorf("cluster-operator: cache sync failed")
 	}
+	logf("informer cache synced")
 
 	// Startup work, in this order: seed the management cluster's own
 	// Cluster object so `kubectl get clusters` shows the whole truth, then
@@ -164,8 +227,10 @@ func Run(ctx context.Context, restCfg *restclient.Config, bindingName, token str
 		<-ctx.Done()
 		c.queue.ShutDown()
 	}()
+	logf("startup complete, entering work loop")
 	for c.processNext(ctx) {
 	}
+	logf("work loop ended (queue shut down); ctx err: %v", ctx.Err())
 	return ctx.Err()
 }
 
@@ -181,13 +246,78 @@ func (c *controller) processNext(ctx context.Context) bool {
 		return false
 	}
 	defer c.queue.Done(key)
-	if err := c.reconcile(ctx, key); err != nil {
-		println("cluster-operator: reconcile", key, "failed:", err.Error())
+
+	attempt := c.queue.NumRequeues(key) + 1
+	start := time.Now()
+	logf("reconcile %s: begin (attempt %d, queue depth %d)", key, attempt, c.queue.Len())
+	err := c.reconcile(ctx, key)
+	elapsed := time.Since(start).Round(time.Millisecond)
+	if err != nil {
+		logf("reconcile %s: FAILED after %s (attempt %d): %v", key, elapsed, attempt, err)
+		c.recordReconcileError(ctx, key, err)
 		c.queue.AddRateLimited(key)
+		logf("reconcile %s: requeued rate-limited (requeues now %d)", key, c.queue.NumRequeues(key))
 		return true
 	}
+	logf("reconcile %s: ok in %s", key, elapsed)
+	c.clearReconcileError(ctx, key)
 	c.queue.Forget(key)
 	return true
+}
+
+// recordReconcileError stamps the failure onto the object's status so a
+// stall is diagnosable with `kubectl get cluster -o yaml` and not only
+// from a live tail. Best-effort: this runs on a path that is ALREADY
+// failing, and its own failure must not replace the real error.
+func (c *controller) recordReconcileError(ctx context.Context, name string, cause error) {
+	msg := cause.Error()
+	if len(msg) > maxConditionMessage {
+		msg = msg[:maxConditionMessage] + "..."
+	}
+	cl, err := c.clusters.Get(ctx, name)
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			logf("reconcile %s: could not read object to record error condition: %v", name, err)
+		}
+		return
+	}
+	status := *cl.Status.DeepCopy()
+	apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
+		Type:               ConditionReconcileError,
+		Status:             metav1.ConditionTrue,
+		Reason:             "ReconcileFailed",
+		Message:            msg,
+		ObservedGeneration: cl.Generation,
+	})
+	if err := c.updateStatus(ctx, cl, status); err != nil {
+		logf("reconcile %s: could not write error condition: %v", name, err)
+		return
+	}
+	c.failing[name] = true
+}
+
+// clearReconcileError removes the condition a previous failure left
+// behind. Gated on c.failing so a steady-state reconcile costs no extra
+// API call -- and so it never writes to an object it did not mark.
+func (c *controller) clearReconcileError(ctx context.Context, name string) {
+	if !c.failing[name] {
+		return
+	}
+	delete(c.failing, name)
+	cl, err := c.clusters.Get(ctx, name)
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			logf("reconcile %s: could not read object to clear error condition: %v", name, err)
+		}
+		return
+	}
+	status := *cl.Status.DeepCopy()
+	if !apimeta.RemoveStatusCondition(&status.Conditions, ConditionReconcileError) {
+		return
+	}
+	if err := c.updateStatus(ctx, cl, status); err != nil {
+		logf("reconcile %s: could not clear error condition: %v", name, err)
+	}
 }
 
 // seedDefaultCluster makes the management cluster visible as a Cluster
@@ -199,7 +329,11 @@ func (c *controller) seedDefaultCluster(ctx context.Context) {
 		Spec:       k8flarev1alpha1.ClusterSpec{DisplayName: "default"},
 	})
 	if err != nil && !apierrors.IsAlreadyExists(err) {
-		println("cluster-operator: seed default cluster:", err.Error())
+		logf("seed default cluster failed: %v", err)
+		return
+	}
+	if err == nil {
+		logf("seeded the default Cluster object")
 	}
 }
 
@@ -210,9 +344,10 @@ func (c *controller) seedDefaultCluster(ctx context.Context) {
 func (c *controller) rebuildRegistry(ctx context.Context) {
 	list, err := c.clusters.List(ctx, metav1.ListOptions{})
 	if err != nil {
-		println("cluster-operator: registry rebuild list failed:", err.Error())
+		logf("registry rebuild LIST failed: %v", err)
 		return
 	}
+	replayed := 0
 	for i := range list.Items {
 		cl := &list.Items[i]
 		if cl.Name == DefaultClusterName || cl.DeletionTimestamp != nil {
@@ -223,9 +358,12 @@ func (c *controller) rebuildRegistry(ctx context.Context) {
 			continue
 		}
 		if err := c.bridge.UpsertRegistry(ctx, cl.Name, uid); err != nil {
-			println("cluster-operator: registry rebuild", cl.Name, "failed:", err.Error())
+			logf("registry rebuild %s failed: %v", cl.Name, err)
+			continue
 		}
+		replayed++
 	}
+	logf("registry rebuild: replayed %d of %d clusters", replayed, len(list.Items))
 }
 
 func uidFromDoName(doName string) string {
@@ -303,11 +441,16 @@ func (c *controller) reconcileActive(ctx context.Context, cl *k8flarev1alpha1.Cl
 		if _, err := c.clusters.Update(ctx, updated); err != nil {
 			return fmt.Errorf("add finalizer: %w", err)
 		}
+		logf("reconcile %s: added teardown finalizer", cl.Name)
 		return nil // the update re-enqueues this object
 	}
 	if converged(cl) {
+		logf("reconcile %s: converged (phase=%s generation=%d), nothing to do", cl.Name, cl.Status.Phase, cl.Generation)
 		return nil
 	}
+	logf("reconcile %s: active pass (phase=%q generation=%d observed=%d rotate=%t)",
+		cl.Name, cl.Status.Phase, cl.Generation, cl.Status.ObservedGeneration,
+		cl.Annotations[RotateAnnotation] != "")
 
 	doName := doNameFor(cl)
 	rotate := cl.Annotations[RotateAnnotation]
@@ -340,6 +483,7 @@ func (c *controller) reconcileActive(ctx context.Context, cl *k8flarev1alpha1.Cl
 	if err != nil {
 		return fmt.Errorf("vault: %w", err)
 	}
+	logf("reconcile %s: vault ok (doName=%s tokenId=%s superseded=%d)", cl.Name, doName, vault.TokenID, len(vault.Superseded))
 
 	// An empty token means this cluster's credential is not vault-managed:
 	// the management cluster authenticates with the K3S_TOKEN root secret,
@@ -389,6 +533,7 @@ func (c *controller) reconcileDelete(ctx context.Context, cl *k8flarev1alpha1.Cl
 	if !hasFinalizer(cl) {
 		return nil
 	}
+	logf("reconcile %s: delete pass (phase=%q)", cl.Name, cl.Status.Phase)
 	if cl.Status.Phase != phaseTerminating {
 		status := *cl.Status.DeepCopy()
 		status.Phase = phaseTerminating
@@ -427,6 +572,7 @@ func (c *controller) reconcileDelete(ctx context.Context, cl *k8flarev1alpha1.Cl
 	if _, err := c.clusters.Update(ctx, updated); err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("remove finalizer: %w", err)
 	}
+	logf("reconcile %s: teardown complete, finalizer removed", cl.Name)
 	return nil
 }
 
@@ -538,8 +684,15 @@ func (c *controller) updateStatus(ctx context.Context, cl *k8flarev1alpha1.Clust
 	updated := cl.DeepCopy()
 	updated.Status = want
 	if _, err := c.clusters.UpdateStatus(ctx, updated); err != nil {
+		if apierrors.IsConflict(err) {
+			// Worth naming separately: a conflict means someone else wrote
+			// the object underneath this pass, and the retry is expected to
+			// succeed -- unlike the other failures here.
+			logf("reconcile %s: status update conflict (rv=%s), will retry", cl.Name, cl.ResourceVersion)
+		}
 		return fmt.Errorf("update status: %w", err)
 	}
+	logf("reconcile %s: status written (phase=%s observed=%d)", cl.Name, want.Phase, want.ObservedGeneration)
 	return nil
 }
 
