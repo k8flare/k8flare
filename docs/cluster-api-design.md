@@ -562,3 +562,20 @@ Makefile 修正 (go.wasm.mod を使う 2 行への分割) で解消済みだっ�
 - `adminauth.ts` の Cloudflare Access 経路は bootstrap 1 本のためだけに
   残っている。SA + RBAC 移行時に「Access で管理者を認証し SA トークンを
   発行する」形に作り替えるのが自然な次の一手。
+
+### P3 実機検証で発見した未解決問題 (2026-07-28, 調査中)
+
+本番で Cluster の create/delete reconcile が**間欠的に停止**する
+(4 サイクル中 2 回: delete が 8 分停止→追いポークで回復、create が
+15 分以上未完)。tail 実測で除外済みの仮説:
+- token-tag フラップによるリロードループ (そのパスのログ未出現)
+- hasUnconvergedWork の失敗時パーク (失敗は「起きたまま」扱いで実装済み。
+  実際 alarm はバックオフしながら鳴り続けていた)
+- alarm チェーン断 (15s→10min バックオフで正しく発火)
+確定した観測: 本番の Controllers DO はアイドル時 alarm tick 毎に
+インスタンス再作成され全コンポーネントを再 ensure する (Loader キャッシュ
+で安価、kcm 等は同機構で正常動作)。**Go operator 側のログが tail に
+一切出ないため、reconcile がどこで止まるか観測不能** — 次の一手は
+operator の可観測化 (reconcile 開始/完了/エラーを status condition と
+console 出力に記録、ResidentService の run 終了理由をログ) を入れて
+再現すること。
