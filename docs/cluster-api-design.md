@@ -664,3 +664,24 @@ cache synced まで 250ms 弱で、その間の大量のログは同居する GC
 計装は入れたが、ローカルでは create/delete とも正常に収束し
 (`make test-clusterop` green)、停止は再現しなかった。本番で再現した
 ときに上記のログと condition で切り分ける。
+
+### コールド初回 reconcile 停止 — 未解決 (2026-07-28 時点の確定事実)
+
+計器に依存しない確定事実 (kubectl 観測のみ):
+- 完全アイドル (6 分以上) からの Cluster create は reconcile されない
+  (10 分放置でも phase 空・condition 無し)。**2 回目の書き込み**
+  (annotate 等) を入れると毎回 1-3 分で Ready に到達する。delete も同型。
+- alarm 裏付けの ping 再送 (a7c08d9) を入れても初回書き込みでは回復
+  しない。つまり喪失点は Cluster DO→Controllers DO の ping ではなく、
+  **Controllers DO 内の初回ロード完走** (poke は届くが detached load が
+  poke リクエストの IoContext 終了と共に死に、その後の Controllers
+  alarm も何らかの理由で park する) が容疑。
+- wrangler tail は同時間帯に invocation を 1 件も出さないことがあり
+  (直後の再現では Ready 到達時もログ 0 行)、**tail の無音は証拠として
+  使えない** (サンプリング/接続先の限界)。可観測化は tail ではなく
+  status condition 経由で読むこと。
+
+次の一手 (未実施): Controllers DO の fetch() での detached load を
+ctx.waitUntil 相当か「pendingLoad フラグ + 自 alarm での await ロード」
+に置き換え、初回ロードをリクエスト寿命から切り離す (Cluster DO の
+pendingPing と同じパターンを一段深く適用する)。
