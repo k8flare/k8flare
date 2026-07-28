@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 
+	openapi_v2 "github.com/google/gnostic-models/openapiv2"
+	"google.golang.org/protobuf/proto"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	k8flarev1alpha1 "github.com/k8flare/k8flare/pkg/apis/k8flare/v1alpha1"
@@ -20,6 +22,12 @@ import (
 // URL path, without invoking the Worker at all (confirmed via wrangler
 // dev; see cmd/k8flare-gen's git history / final report for the
 // verification note), so no Go route handling is needed for /openapi/*.
+//
+// Correction (2026-07-28): "no route handling" holds for /openapi/v3/*
+// but not for /openapi/v2, which has to answer JSON or protobuf by Accept
+// and so runs through the Worker (run_worker_first, serveOpenAPIV2 in
+// gateway/index.ts). The generated files are still plain assets; only the
+// choice between them is code.
 // (The wasm/ subtree next to these is Loader chunk supply, owned by
 // `make wasm` and excluded via run_worker_first.)
 const assetsDir = "packages/k8flare-worker/assets"
@@ -89,6 +97,28 @@ func genOpenAPI(root string) error {
 		return fmt.Errorf("read %s (is the k8s.io/kubernetes module downloaded? try 'go mod download'): %w", v2Src, err)
 	}
 	if err := writeFile(filepath.Join(outDir, "v2"), v2Data); err != nil {
+		return err
+	}
+
+	// ...and the same document as protobuf, because that is the only
+	// encoding client-go ever asks /openapi/v2 for: DiscoveryClient.
+	// OpenAPISchema sends Accept: application/com.github.proto-openapi.
+	// spec.v2@v1.0+protobuf and proto.Unmarshals the body unconditionally
+	// -- there is no JSON fallback and no status-code escape hatch, so
+	// answering with JSON (or with 406) fails the caller outright.
+	// kubectl reaches that call whenever a GroupVersion is absent from the
+	// v3 index (see ownOpenAPIGroups): client-side validation then falls
+	// back to the v2 schema. Encoding is upstream's own: gnostic-models is
+	// the same library kube-apiserver builds its v2 protobuf with.
+	v2Doc, err := openapi_v2.ParseDocument(v2Data)
+	if err != nil {
+		return fmt.Errorf("parse %s as openapi v2: %w", v2Src, err)
+	}
+	v2PB, err := proto.Marshal(v2Doc)
+	if err != nil {
+		return fmt.Errorf("marshal openapi v2 protobuf: %w", err)
+	}
+	if err := writeFile(filepath.Join(outDir, "v2.pb"), v2PB); err != nil {
 		return err
 	}
 

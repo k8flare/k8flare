@@ -31,6 +31,16 @@ import (
 // asks for), so kubectl fails the apply outright with "proto: cannot parse
 // invalid wire-format data".
 //
+// Correction (2026-07-28): that last clause no longer holds -- /openapi/v2
+// is now served as real protobuf when asked for it (genOpenAPI writes a
+// v2.pb alongside the JSON; the Worker picks by Accept). Generating this v3
+// document is still right, because it is what makes kubectl defer to
+// server-side validation rather than fall back at all, but a missing v3
+// document is now a degradation (v2's permissive schema) instead of a hard
+// failure. The v2 fallback was found to be reachable regardless of this
+// group -- any GroupVersion in discovery but absent from the v3 index hits
+// it, e.g. authentication.k8s.io/v1.
+//
 // So the load-bearing content here is the operations' GVK extensions and
 // their fieldValidation parameters, not the schemas: with those present
 // kubectl defers to server-side field validation, which this apiserver
