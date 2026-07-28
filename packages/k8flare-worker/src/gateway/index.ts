@@ -115,6 +115,61 @@ async function authorizeWatchRBAC(req: Request, env: Env, url: URL): Promise<Res
 // fetch handler, with the cross-Worker service bindings replaced:
 // APISERVER -> apiserverFetch (Loader dynamic worker), RUNTIME/NODES ->
 // direct function calls, WATCHHUB -> the now-local DO binding.
+// The /openapi/v2 media types, mirroring upstream's own table
+// (k8s.io/kube-openapi pkg/handler/handler.go RegisterOpenAPIVersionedService).
+// Two subtleties there are load-bearing and were both found the hard way:
+//
+//   - The subtype client-go asks for (DiscoveryClient.OpenAPISchema sends
+//     the "@" one) is NOT the subtype the reply is labelled with. "@" is
+//     not a legal mime token, so echoing it back makes client-go's
+//     transformResponse fail at mime.ParseMediaType with "unexpected
+//     content after media subtype" -- a different failure, not a fix.
+//   - Vary: Accept, because one URL now has two bodies and this response
+//     is edge-cacheable.
+const OPENAPI_V2_ACCEPTED = [
+  { subtype: "json", asset: "/openapi/v2", contentType: "application/json" },
+  {
+    subtype: "com.github.proto-openapi.spec.v2@v1.0+protobuf",
+    asset: "/openapi/v2.pb",
+    contentType: "application/com.github.proto-openapi.spec.v2.v1.0+protobuf",
+  },
+  {
+    subtype: "com.github.proto-openapi.spec.v2.v1.0+protobuf",
+    asset: "/openapi/v2.pb",
+    contentType: "application/com.github.proto-openapi.spec.v2.v1.0+protobuf",
+  },
+];
+
+// Serves the two encodings of the same generated document (cmd/k8flare-gen/
+// openapi.go): assets "v2" (JSON) and "v2.pb" (protobuf). Both are fetched
+// through the ASSETS binding, which does not re-enter this Worker, so the
+// .pb file is never reachable at its own URL.
+//
+// Clauses are matched in the order the client listed them rather than by
+// q-value like upstream's goautoneg. Every real client here (kubectl,
+// client-go, browsers) sends its clauses in preference order already, so
+// the extra sort would not change any outcome.
+async function serveOpenAPIV2(req: Request, env: Env, url: URL): Promise<Response> {
+  if (url.pathname !== "/openapi/v2") {
+    return new Response("not found", { status: 404 });
+  }
+  const accept = req.headers.get("Accept") || "*/*";
+  for (const clause of accept.split(",")) {
+    const [type, subtype] = clause.split(";")[0].trim().split("/");
+    const match = OPENAPI_V2_ACCEPTED.find(
+      (a) => (type === "application" || type === "*") && (subtype === a.subtype || subtype === "*"),
+    );
+    if (!match) continue;
+    const resp = await env.ASSETS.fetch(new Request(new URL(match.asset, url.origin)));
+    if (!resp.ok) return resp;
+    const headers = new Headers(resp.headers);
+    headers.set("Content-Type", match.contentType);
+    headers.set("Vary", "Accept");
+    return new Response(resp.body, { status: resp.status, headers });
+  }
+  return new Response(null, { status: 406 });
+}
+
 export async function handleGateway(
   req: Request,
   outerEnv: Env,
@@ -204,6 +259,12 @@ export async function handleGateway(
   // The wasm chunk supply channel (run_worker_first) is Loader-only.
   if (url.pathname.startsWith("/wasm/")) {
     return new Response("not found", { status: 404 });
+  }
+
+  // /openapi/v2 is the one asset needing content negotiation, which the
+  // asset store cannot do on its own -- hence its run_worker_first entry.
+  if (url.pathname.startsWith("/openapi/v2")) {
+    return serveOpenAPIV2(req, env, url);
   }
 
   // Kubelet proxy requests (pods/log, pods/exec, etc.)

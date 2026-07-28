@@ -9,16 +9,18 @@
   "main": "./src/index.ts",
   "compatibility_date": "2026-07-01",
   // /wasm/* (the KCM + apiserver chunk supply channel) must go through
-  // the Worker (which 404s it publicly); every other asset -- the
-  // OpenAPI/discovery documents under api/, apis/, openapi/ -- keeps
-  // being served straight from the asset store for the default cluster,
-  // exactly like the pre-consolidation apiserver Worker did. /c/<id>/
-  // prefixed requests never match an asset path and reach the Worker,
-  // which strips the prefix and forwards to ASSETS itself.
+  // the Worker (which 404s it publicly); so must /openapi/v2*, which is
+  // the one asset needing content negotiation (JSON vs the protobuf
+  // encoding client-go demands -- gateway/index.ts serveOpenAPIV2). Every
+  // other asset -- the OpenAPI/discovery documents under api/, apis/,
+  // openapi/v3/ -- keeps being served straight from the asset store for
+  // the default cluster, exactly like the pre-consolidation apiserver
+  // Worker did. /c/<id>/ prefixed requests never match an asset path and
+  // reach the Worker, which strips the prefix and forwards to ASSETS itself.
   "assets": {
     "directory": "./assets",
     "binding": "ASSETS",
-    "run_worker_first": ["/wasm/*"],
+    "run_worker_first": ["/wasm/*", "/openapi/v2*"],
   },
   "worker_loaders": [{ "binding": "LOADER" }],
   "durable_objects": {
