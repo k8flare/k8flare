@@ -607,9 +607,10 @@ var Table = []ResourceDef{
 	// graceful deletion every upstream type here gets. See
 	// docs/cluster-api-design.md. The only place this group is NOT treated
 	// like the others is OpenAPI: upstream ships no schema document for it,
-	// so cmd/k8flare-gen/openapi.go skips it (kubectl therefore does no
-	// client-side validation of Cluster objects; the server accepts them
-	// either way, since strict field validation is opt-in).
+	// so cmd/k8flare-gen generates its v3 document instead of copying one
+	// (openapi_own.go). That document must exist -- a GroupVersion missing
+	// from the v3 index makes kubectl fall back to the OpenAPI v2 protobuf
+	// path and fail every `kubectl apply` for this group.
 	//
 	// The reconciling cluster-operator is P2; at P1 a Cluster is stored and
 	// served but nothing acts on it.
