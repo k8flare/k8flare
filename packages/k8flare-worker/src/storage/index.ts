@@ -140,6 +140,9 @@ interface ClusterContext {
     getAlarm(): Promise<number | null>;
     deleteAlarm(): Promise<void>;
     deleteAll(): Promise<void>;
+    get(key: string): Promise<unknown>;
+    put(key: string, value: unknown): Promise<void>;
+    delete(key: string): Promise<boolean>;
   };
 }
 
@@ -210,22 +213,63 @@ export class Cluster {
    */
   /** Post-write side effects shared by the create/update/delete paths:
    * arm the safety-net alarm and poke the controller/node reconcilers
-   * when the written key warrants it. */
+   * when the written key warrants it.
+   *
+   * Pings are DOUBLY delivered: a detached fast-path promise (usually
+   * lands within milliseconds) plus a persisted pending-ping flag backed
+   * by this DO's alarm. The detached promise alone was NOT reliable in
+   * production: it is torn down with the request's IoContext often
+   * enough that an idle cluster's Cluster create sat unreconciled for
+   * 15+ minutes with ZERO Controllers-DO invocations in wrangler tail
+   * (2026-07-28, stall2 capture) -- warm clusters never showed it only
+   * because a previous cycle's alarm was still armed to sweep the loss.
+   * The alarm redelivery closes that hole while staying event-armed:
+   * the flag exists only after a relevant write, and the alarm parks
+   * again once delivery succeeds. */
   private async afterWrite(key: string): Promise<void> {
     if (needsNodeLifecycleAttention(key)) await this.armSafetyNetSoon();
-    if (needsControllersPing(key)) void this.pingControllers();
-    if (needsNodesPing(key)) void this.pingNodes();
+    if (needsControllersPing(key)) {
+      await this.ctx.storage.put("pendingPing:controllers", true);
+      await this.armSafetyNetSoon();
+      void this.pingControllers();
+    }
+    if (needsNodesPing(key)) {
+      await this.ctx.storage.put("pendingPing:nodes", true);
+      await this.armSafetyNetSoon();
+      void this.pingNodes();
+    }
+  }
+
+  /** Alarm-context redelivery of pings whose fast-path promise died with
+   * its request. Awaited (an alarm has no caller to cancel it); a ping
+   * clears its own pending flag only on success, so a failed delivery
+   * stays armed for the next tick. */
+  private async deliverPendingPings(): Promise<boolean> {
+    let pending = false;
+    if (await this.ctx.storage.get("pendingPing:controllers")) {
+      await this.pingControllers();
+      if (await this.ctx.storage.get("pendingPing:controllers")) pending = true;
+    }
+    if (await this.ctx.storage.get("pendingPing:nodes")) {
+      await this.pingNodes();
+      if (await this.ctx.storage.get("pendingPing:nodes")) pending = true;
+    }
+    return pending;
   }
 
   private async pingControllers(): Promise<void> {
     const controllers = this.env.CONTROLLERS; // local DO binding post-consolidation
     if (!controllers) return; // not bound in some dev/test configs
-    if (this.env.KCM_DISABLED === "1") return; // test kill switch (see Env.KCM_DISABLED)
+    if (this.env.KCM_DISABLED === "1") {
+      await this.ctx.storage.delete("pendingPing:controllers"); // test kill switch
+      return;
+    }
     try {
       const stub = controllers.get(controllers.idFromName(this.selfName()));
       await stub.fetch("http://controllers.internal/");
+      await this.ctx.storage.delete("pendingPing:controllers");
     } catch {
-      // best-effort; see doc comment above
+      // best-effort here; the pending flag keeps the alarm redelivering
     }
   }
 
@@ -235,12 +279,16 @@ export class Cluster {
    * surface keeps its own token gate in nodes/index.ts). */
   private async pingNodes(): Promise<void> {
     const scheduler = this.env.SCHEDULER;
-    if (!scheduler) return; // not bound in some dev/test configs
+    if (!scheduler) {
+      await this.ctx.storage.delete("pendingPing:nodes"); // not bound in some dev/test configs
+      return;
+    }
     try {
       const stub = scheduler.get(scheduler.idFromName(this.selfName()));
       await stub.fetch("http://nodes.internal/");
+      await this.ctx.storage.delete("pendingPing:nodes");
     } catch {
-      // best-effort
+      // best-effort here; the pending flag keeps the alarm redelivering
     }
   }
 
@@ -439,13 +487,14 @@ export class Cluster {
 
   async alarm(): Promise<void> {
     this.initialize();
+    const undelivered = await this.deliverPendingPings();
     await this.reconcileNodeLifecycle();
-    // Re-arm the safety net only if there's still a live Node that needs
-    // ongoing Lease-staleness monitoring; otherwise park (no alarm chain
-    // on an idle cluster -- cost invariants #1/#3). A write needing sooner
-    // attention than the next safety-net tick pulls this in via
-    // armSafetyNetSoon.
-    if (hasPendingSafetyNetWork(this.sql)) {
+    // Re-arm the safety net if there's still a live Node that needs
+    // ongoing Lease-staleness monitoring, or an undelivered ping to
+    // retry; otherwise park (no alarm chain on an idle cluster -- cost
+    // invariants #1/#3). A write needing sooner attention than the next
+    // safety-net tick pulls this in via armSafetyNetSoon.
+    if (undelivered || hasPendingSafetyNetWork(this.sql)) {
       this.ctx.storage.setAlarm(Date.now() + SAFETY_NET_INTERVAL_MS);
     }
   }
