@@ -3,6 +3,7 @@ package apiserver_test
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -51,6 +52,32 @@ func TestClusterOperatorLifecycle(t *testing.T) {
 	port := findFreePort(t)
 	projectRoot := findProjectRoot(t)
 
+	// The operator's own console output (pkg/controllers/clusterop's logf,
+	// which reaches here through wasm_exec.js's globalThis.fs shim) is the
+	// only view into why a reconcile stalled, and this harness discarded it
+	// twice over: to os.DevNull, and via "--log-level error", which
+	// suppresses wrangler's console forwarding. Opt in with
+	// K8FLARE_DEV_LOG=<path> to get both back; the default stays quiet so a
+	// passing run is not noisy.
+	//
+	// The level must be "log", not "info": wrangler orders its levels
+	// debug > log > info > warn > error, and a Worker's console.log lands
+	// at "log" -- so "info" still drops every console line while keeping
+	// the request log, which is exactly what it looked like at first
+	// (measured 2026-07-28: request lines present, zero console lines).
+	logLevel := "error"
+	sink := io.Discard
+	if path := os.Getenv("K8FLARE_DEV_LOG"); path != "" {
+		f, err := os.Create(path)
+		if err != nil {
+			t.Fatalf("create K8FLARE_DEV_LOG %s: %v", path, err)
+		}
+		t.Cleanup(func() { f.Close() })
+		t.Logf("wrangler dev output -> %s", path)
+		sink = f
+		logLevel = "log"
+	}
+
 	cmd := exec.Command("npx", "wrangler", "dev",
 		"-c", "packages/k8flare-worker/wrangler.jsonc",
 		"--enable-containers=false",
@@ -59,12 +86,11 @@ func TestClusterOperatorLifecycle(t *testing.T) {
 		"--persist-to", t.TempDir(),
 		"--var", "CM_DISABLED:1",
 		"--var", "SCHED_DISABLED:1",
-		"--log-level", "error",
+		"--log-level", logLevel,
 	)
 	cmd.Dir = projectRoot
-	devNull, _ := os.Open(os.DevNull)
-	cmd.Stdout = devNull
-	cmd.Stderr = devNull
+	cmd.Stdout = sink
+	cmd.Stderr = sink
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start wrangler dev: %v", err)

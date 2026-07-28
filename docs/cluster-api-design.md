@@ -533,6 +533,24 @@ cluster-operator: reconcile obs-test: status written (phase=Ready observed=1)
 cluster-operator: reconcile obs-test: ok in 76ms
 ```
 
+### 落とし穴: `wrangler --log-level` が console 出力を落とす
+
+wrangler のログレベルは **debug > log > info > warn > error** の順で、
+Worker の `console.log` は **`log` レベル**に出る。したがって:
+
+- `--log-level error` (`make test-clusterop` のハーネスが従来使っていた値)
+  では console 出力が**一切出ない**。
+- `--log-level info` でも駄目 — リクエストログ (`[wrangler:info] GET ...`)
+  だけが出て console 行はゼロになる。これは「配管が壊れている」ように
+  見えるので特に紛らわしい(実測 2026-07-28: 34 行すべてリクエストログ、
+  `cluster-operator:` は 0 行)。
+- 必要なのは `--log-level log` (= 既定値)。
+
+`pkg/apiserver/clusterop_test.go` は `K8FLARE_DEV_LOG=<path>` を渡すと
+wrangler の出力をそのファイルに保存し、同時にレベルを `log` に上げる。
+既定は従来どおり無音。実測: 有効化すると `cluster-operator:` 行が 57 行
+出た。
+
 ### 付随して分かったこと: 初回 LIST は起きない (watch-list)
 
 `informer LIST ok:` の行は成功パスで一度も出ず、代わりに
