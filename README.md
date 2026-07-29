@@ -23,6 +23,8 @@ packages/k8flare-worker  — the ONE deployed Worker (routing, auth, watch strea
    ├─► kcm         (real kube-controller-manager: 7 workload controllers)
    ├─► gc          (real garbagecollector)
    ├─► sched       (real kube-scheduler)
+   ├─► clusterop   (cluster operator: reconciles k8flare.com/v1alpha1 Clusters;
+   │                runs only on the management "default" cluster)
    ├─  Cluster DO (kine-style revision log + per-namespace facets)
    ├─  WatchHub DO (watch fan-out over hibernating WebSockets)
    └─  Static Assets (WASM chunks, OpenAPI/discovery documents)
@@ -143,10 +145,22 @@ tokens the cluster accepts the publicly documented dev token
 The `containers` section provisions NodeVM container apps, which bill by
 wall clock — omit it unless you are using Pod-on-Containers.
 
+## Contributing
+
+Topic branches, English commits, and the local gates (`make check`,
+`make vet`, `make test`) are described in
+[CONTRIBUTING.md](CONTRIBUTING.md); day-to-day local-dev traps are in
+[docs/development.md](docs/development.md). Security issues go through
+[SECURITY.md](SECURITY.md), not the issue tracker — and read its "current
+posture" section before exposing a deployment.
+
 ## Documentation
 
 | Doc | What's in it |
 |---|---|
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Branches, commit rules, the local gates, how CI is triggered |
+| [SECURITY.md](SECURITY.md) | Reporting a vulnerability, and the honest current auth posture |
+| [docs/development.md](docs/development.md) | Local dev: required `wrangler dev` flags, DO state, test lanes, the 64MiB cap |
 | [docs/admin-guide.md](docs/admin-guide.md) | Operator guide: deploy, secrets, cluster issuance, cost ops (Japanese) |
 | [docs/user-guide.md](docs/user-guide.md) | Cluster user guide: kubeconfig, what works, quirks (Japanese) |
 | [docs/custom-code-inventory.md](docs/custom-code-inventory.md) | Hand-written vs upstream code, generation pipeline |
@@ -155,3 +169,4 @@ wall clock — omit it unless you are using Pod-on-Containers.
 | [docs/control-plane-architecture.md](docs/control-plane-architecture.md) | Controllers ↔ Cloudflare primitives mapping |
 | [docs/general-purpose-k8s-plan.md](docs/general-purpose-k8s-plan.md) | Conformance expansion plan |
 | [docs/k8s-version-bump.md](docs/k8s-version-bump.md) | How to bump the pinned Kubernetes version |
+| [docs/cluster-api-design.md](docs/cluster-api-design.md) | Cluster resource (`k8flare.com/v1alpha1`) + cluster-operator: design and implementation record (Japanese) |

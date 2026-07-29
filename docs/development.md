@@ -54,7 +54,7 @@ Local DO state lives in `.wrangler/state` at the **repo root**
 
 - `.dev.vars` is only read from the directory holding the wrangler config —
   `packages/k8flare-worker/.dev.vars`. A copy at the repo root is silently
-  ignored.
+  ignored. Start from `packages/k8flare-worker/.dev.vars.example`.
 - `go test ./pkg/apiserver/...` reuses that state without clearing it. If a
   previous run was interrupted, the next one fails deterministically with
   "already exists". That is not a flake:
@@ -121,26 +121,20 @@ preserve timestamps — so it always forces the rebuild.
 
 ## Module mirrors (`.build/`)
 
-`go.mod`'s `k8s.io/kubernetes` and `k8s.io/client-go` replace directives
-point into generated mirrors under `.build/` (`k8s-js-mirror`,
-`clientgo-lean-mirror`, and friends). They are gitignored but they are
-**build inputs**: every Go command in this repo, including a plain `go mod
-download`, fails on a fresh checkout until they exist. `make gen-mirrors`
-creates them, and it's an order-only prerequisite of every Go target, so
-normal `make` usage handles it.
+`go.mod`'s `k8s.io/kubernetes`, `k8s.io/client-go` and `k8s.io/apiserver`
+replace directives point into generated mirrors under `.build/`
+(`k8s-js-mirror`, `clientgo-lean-mirror`, `apiserver-js-mirror`). They are
+gitignored but they are **build inputs**: every Go command in this repo,
+including a plain `go mod download`, fails on a fresh checkout until they
+exist.
 
-Caveat worth knowing before you regenerate by hand: on 2026-07-05 an
-`rm -rf`-and-regenerate cycle lost the on-disk mirror state that was
-producing a working 62.5MB KCM binary, and the committed tree only
-reproduced a 98.6MB one — over the cap. Back the directories up first:
-
-```sh
-cp -Rc .build/k8s-js-mirror .build/k8s-js-mirror.bak-$(date +%s)
-```
-
-(The generators do claim their own idempotency, and the Makefile runs
-`gen-mirrors` unconditionally, which sits in tension with that caveat. Until
-that's reconciled, the backup costs nothing.)
+`make gen-mirrors` creates them, and it's an order-only prerequisite of
+every Go target, so normal `make` usage handles it. It runs every time and
+that's fine — the generators sha256-pin each patched upstream file, and the
+copy is clonefile-backed, so regenerating ~12k files costs about 3s. The
+output is reproducible from the committed tree; if you find a
+`.build/*.bak-*` directory lying around, it's debris from a 2026-07-05
+investigation (resolved the same day) and can be deleted.
 
 ## Code generation
 
