@@ -26,6 +26,15 @@ make wasm                                     # WASM チャンク生成 (~2分)
 npx wrangler deploy -c packages/k8flare-worker/wrangler.jsonc
 ```
 
+**初回デプロイ前に `packages/k8flare-worker/wrangler.jsonc` の
+デプロイ固有値を必ず変更してください**:
+
+| 値 | 理由 |
+|---|---|
+| `vars.GATEWAY_URL` | ノードが接続する公開 URL であり、operator が発行する kubeconfig に焼き込まれる origin。他人のデプロイを指したままだと**自分のノードが他人のコントロールプレーンに参加します** |
+| `name` | アカウント内で確保される Worker 名 |
+| `containers[].authorized_keys` | 既定は空。NodeVM に SSH デバッグしたい場合のみ自分の鍵を追加 |
+
 シークレットは **`K3S_TOKEN` の 1 つだけ**です — default(管理)クラスタの
 常時有効なルートトークンで、これを持っていることが「管理者である」ことと
 同義です。公開運用する前に必ず設定してください:

@@ -41,36 +41,24 @@
       "image": "./images/node/Dockerfile",
       "instance_type": "lite",
       "max_instances": 20,
-      "authorized_keys": [
-        {
-          "name": "k2wanko",
-          "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICeopuW/7TMRINQhFfBiOtwTOLExpogre8JW7uQT/DeT k2wanko@kiew8lei.local",
-        },
-      ],
+      // To SSH into a NodeVM for debugging, add your own key here:
+      //   "authorized_keys": [{ "name": "you", "public_key": "ssh-ed25519 AAAA..." }],
     },
     {
       "class_name": "NodeVMMedium",
       "image": "./images/node/Dockerfile",
       "instance_type": "basic",
       "max_instances": 20,
-      "authorized_keys": [
-        {
-          "name": "k2wanko",
-          "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICeopuW/7TMRINQhFfBiOtwTOLExpogre8JW7uQT/DeT k2wanko@kiew8lei.local",
-        },
-      ],
+      // To SSH into a NodeVM for debugging, add your own key here:
+      //   "authorized_keys": [{ "name": "you", "public_key": "ssh-ed25519 AAAA..." }],
     },
     {
       "class_name": "NodeVMLarge",
       "image": "./images/node/Dockerfile",
       "instance_type": "standard-1",
       "max_instances": 10,
-      "authorized_keys": [
-        {
-          "name": "k2wanko",
-          "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICeopuW/7TMRINQhFfBiOtwTOLExpogre8JW7uQT/DeT k2wanko@kiew8lei.local",
-        },
-      ],
+      // To SSH into a NodeVM for debugging, add your own key here:
+      //   "authorized_keys": [{ "name": "you", "public_key": "ssh-ed25519 AAAA..." }],
     },
   ],
   "services": [
@@ -83,9 +71,17 @@
     { "binding": "STORAGE", "service": "k8flare", "entrypoint": "ClusterLoopback" },
   ],
   "vars": {
-    // Public URL the in-VM k3s agents dial from outside (service
-    // bindings don't reach into microVMs) -- packages/k8flare-worker/src/nodes.
-    "GATEWAY_URL": "https://k8flare.kooffice.workers.dev",
+    // DEPLOYMENT-SPECIFIC -- change this before you deploy. It is the public
+    // URL in-VM k3s agents dial from outside (service bindings don't reach
+    // into microVMs, see src/nodes) and the origin baked into every
+    // kubeconfig the cluster operator mints: a request arriving over the
+    // GATEWAY service binding carries a synthetic host, so this cannot be
+    // derived from the request. Pointing it at someone else's deployment
+    // makes your nodes join THEIR control plane.
+    // Either edit it here or override at deploy time:
+    //   wrangler deploy -c packages/k8flare-worker/wrangler.jsonc \
+    //     --var GATEWAY_URL:https://<your-worker>.<your-subdomain>.workers.dev
+    "GATEWAY_URL": "https://k8flare.example.workers.dev",
   },
   // Cloudflare Mesh (spikes/s17-mesh-nodevm/FINDINGS.md): reaches any
   // BYO VM node joined to the account-wide Mesh directly at its Mesh IP

@@ -119,13 +119,29 @@ flags.
 
 ## Deploying
 
-`wrangler deploy -c packages/k8flare-worker/wrangler.jsonc` — set
-`K3S_TOKEN` (the default cluster's root token, the only Worker secret;
-it also authenticates the management API). Additional per-cluster tokens
-are minted through the admin API; with no secret and no minted tokens a
-cluster is a dev posture. The `containers` section provisions NodeVM
-container apps, which bill by wall clock — omit it unless you are using
-Pod-on-Containers.
+Before your first deploy, change the values in
+`packages/k8flare-worker/wrangler.jsonc` that are specific to a
+deployment:
+
+| Value | Why |
+|---|---|
+| `vars.GATEWAY_URL` | The public URL nodes dial and the origin baked into minted kubeconfigs. Leave it pointing elsewhere and your nodes join someone else's control plane. |
+| `name` | The Worker name claimed in your account. |
+| `containers[].authorized_keys` | Empty by default. Add your own SSH key only if you want to debug NodeVMs. |
+
+Then:
+
+```sh
+wrangler deploy -c packages/k8flare-worker/wrangler.jsonc
+```
+
+Set `K3S_TOKEN` (the default cluster's root token, the only Worker
+secret; it also authenticates the management API). Additional per-cluster
+tokens are minted through the admin API; **with no secret and no minted
+tokens the cluster accepts the publicly documented dev token
+`k8flare-dev-token`** — never leave a public deployment in that state.
+The `containers` section provisions NodeVM container apps, which bill by
+wall clock — omit it unless you are using Pod-on-Containers.
 
 ## Documentation
 
