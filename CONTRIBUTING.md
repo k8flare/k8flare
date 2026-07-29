@@ -23,7 +23,8 @@ mostly in Japanese); the cost rules are expanded in
 ## Branches and commits
 
 - Never commit to `main`. Work on a topic branch: `feat/*`, `fix/*`,
-  `docs/*`, or `chore/*`.
+  `docs/*`, or `chore/*`. (CLAUDE.md lists only the first three; `chore/*`
+  is in active use and this list is the current one.)
 - Commit messages, code, and comments are in **English**.
 - **No tool-attribution trailers.** `Co-Authored-By: Claude ...` and
   equivalents are not accepted; strip them before pushing.
