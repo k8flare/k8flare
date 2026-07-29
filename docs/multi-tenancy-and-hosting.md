@@ -29,6 +29,16 @@ dimension yet. That makes the migration tractable: the blast radius of
 "which cluster am I?" is small and enumerable — but "one prefix, one
 identity" is a simplification to correct before design work leans on it.
 
+> **Note (2026-07-30)**: the paragraph above is the July-2026 starting
+> baseline and is kept verbatim per rule #4 — do not read it as the
+> current tree. Three of its four call-site paths no longer resolve:
+> `packages/k8s/src/watch.ts` moved to
+> `packages/k8flare-worker/src/k8s/watch.ts` (line number no longer
+> accurate), and `packages/dynamic-worker/` and `packages/crd/` were
+> deleted in the single-Worker consolidation (S19). Clusters now do have
+> a name dimension — see `docs/cluster-api-design.md` for the `Cluster`
+> resource and the cluster-operator that reconciles it.
+
 ## Verified Cloudflare platform facts (July 2026)
 
 The design below leans on these verified numbers. Sources:

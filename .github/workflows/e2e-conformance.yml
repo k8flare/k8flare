@@ -135,7 +135,7 @@ jobs:
       # loaded by the `wrangler dev` invocation below, since it's
       # not next to the wrangler.jsonc). With no K3S_TOKEN
       # set, main.go's getToken() (Go apiserver) and the TS Workers' dwAuth
-      # (packages/k8s/src/auth.ts) all fall back to the same hardcoded
+      # (packages/k8flare-worker/src/k8s/auth.ts) all fall back to the same hardcoded
       # "k8flare-dev-token" dev value — the exact fallback
       # pkg/apiserver/apiserver_test.go's setupWranglerDev already relies on.
       # Reusing that proven fallback everywhere (the Worker, agent,

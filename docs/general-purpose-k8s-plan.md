@@ -34,7 +34,7 @@ storage is heading around them.
    mirrored to the legacy `Endpoints` type for app compatibility (kube-proxy
    in v1.36 itself consumes EndpointSlices, not Endpoints). Registering the
    type required a matching `discovery.k8s.io/v1` group in the Go apiserver
-   _and_ a `RESOURCE_KINDS` entry in `packages/k8s/src/url-mapping.ts` — the
+   _and_ a `RESOURCE_KINDS` entry in `packages/k8flare-worker/src/k8s/url-mapping.ts` — the
    watch layer's bookmark synthesis needs the resolved Kind to fire the
    `initial-events-end` bookmark client-go's reflector waits for; missing
    either one leaves the type served but its watches permanently unsynced.
@@ -468,7 +468,7 @@ The single biggest "feels like normal Kubernetes" gap. Order matters:
      as the DRA/ReplicaSet stub types were for the scheduler migration —
      without it, the DaemonSet informer's `WaitForCacheSync` blocks forever
      at startup and no controller in the process ever starts working.
-   - **A `RESOURCE_KINDS` entry** (`packages/k8s/src/url-mapping.ts`) for
+   - **A `RESOURCE_KINDS` entry** (`packages/k8flare-worker/src/k8s/url-mapping.ts`) for
      `deployments`, `daemonsets`, `jobs`, `cronjobs`, and
      `controllerrevisions` — missing exactly like the EndpointSlice gap
      found during the kube-proxy migration: without the resolved Kind, watch
