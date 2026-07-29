@@ -137,7 +137,7 @@ CI ゲート(`.github/workflows/`): `ci.yml`(vp check / build:wasm / go vet+test
 ## ローカル開発の落とし穴
 
 - DO の state は `--persist-to .wrangler/state`(repo ルート)で明示する(Worker 分割後の現行規約。旧 `packages/worker/.wrangler/state` は使われない)。
-- `.dev.vars` は wrangler の設定ファイルと同じディレクトリでしか読まれない。repo ルートに置いても無視される。
+- `.dev.vars` は wrangler の設定ファイルと同じディレクトリでしか読まれない。repo ルートに置いても無視される(雛形は `packages/k8flare-worker/.dev.vars.example`。2026-07-30 以前はルートに置かれていて、コピーしても効かない罠になっていた)。
 - トークン未設定時は開発用トークン `k8flare-dev-token` にフォールバックする(Go/CI はこれに依存しているので「直す」対象ではない)。
 - `wrangler dev` の alarm エミュレーションは、読み取り専用のポーリングだけでは発火しないことがある。「動いていない」と結論する前に書き込みを1件試すこと。
 - `kubectl apply` に `--validate=false` はもう不要(OpenAPI v2/v3 を Static Assets で配信、実 kubectl で確認済み)。ただし plain HTTP(`wrangler dev` そのまま)だと client-go の `clientcmd` が TLS 以外への認証情報送信を拒否するため、kubeconfig 経由の実 kubectl 検証にはローカル TLS 終端(自己署名証明書 + リバースプロキシ)が要る — Go の `rest.Config{BearerToken: ...}` を直接使う `go test` はこの制約を受けない。サーバー側の strict field validation は実装済みで既定 Strict(pkg/apiserver/fieldvalidation.go。この行の旧記述「未実装」は 2026-07-27 の docs 監査で誤りと判明し訂正)。
