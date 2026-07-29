@@ -21,6 +21,25 @@ documentation or guesswork alone has a proven cost.
   the `spikes/` tree was deleted from the working tree. Any `spikes/...`
   path referenced in this repo's docs is retrievable from git history
   (`git log --oneline -- spikes/`).
+- **Paths in dated entries are the paths of that date.** The tree has been
+  reorganized several times since; the entries below are left verbatim per
+  rule #4 rather than retro-edited. The moves a reader is most likely to
+  trip over, all of which kept the file (only its location changed):
+  - `scripts/*.sh` (`gen-k8s-js-mirror.sh`, `gen-clientgo-lean-mirror.sh`,
+    `build-wasm-chunks.sh`, `build-controllers-wasm.sh`) → rewritten as
+    TypeScript under `packages/wasm-build/src/` and driven by the
+    `Makefile`'s `wasm-*` targets (`npm run build:wasm` = `make -B wasm`).
+  - `third_party/clientgo-lean-overlays/`, `third_party/k8s-js-overlays/`
+    → `pkg/clientgo-lean-overlays/`, `pkg/k8s-js-overlays/` (commit
+    `52b73cd`).
+  - `packages/k8s/src/*` → `packages/k8flare-worker/src/k8s/*` (2026-07-08
+    single-Worker consolidation, S19).
+  - `workers/controllers`, `packages/etcd`, `packages/crd`,
+    `packages/dynamic-worker` are **gone**, not moved — the multi-Worker
+    split they belonged to was consolidated away (S19) and the
+    hand-written TS controllers were replaced by the real
+    kube-controller-manager. Where those names appear below they are the
+    historical record of a component that no longer exists.
 - **Status** is one of: `not started` / `partially confirmed` / `verified`.
 - **Confirmed facts** must always carry a source (commit hash, official doc
   name, changelog date). If the source URL isn't recorded in this document,
@@ -1830,10 +1849,16 @@ mirrors the full-width scheduler binary measures **102.8MB opt**, and
 leanwidth cannot apply (scheduler.NewInformerFactory is the full-width
 aggregate SharedInformerFactory — the Phase 10 correction recorded in
 `scripts/gen-clientgo-lean-mirror.sh`'s comments). kube-scheduler
-therefore remains host-process/BYO-VM **[superseded 2026-07-10 — see S20:
-`-tags schedwidth` plus the DRA/CEL and cri-client severing took the
-scheduler to ~45MB opt, and `sched` now ships as a dynamic worker
-(`make wasm` builds the chunk; pkg/controllers/cmd/kcm-wasm/scheduler)]**;
+therefore remains host-process/BYO-VM **[superseded 2026-07-10 — see
+"S21: 実 kube-scheduler の Dynamic Worker 化(2026-07-10、実機検証済み)"
+(cite it by title, not number: this file has three sections numbered S20
+and two numbered S21): `-tags schedwidth` plus the DRA/CEL and cri-client
+severing took the scheduler to 45.2MB opt (21.4MiB under the cap), and
+`sched` now ships as a dynamic worker chunk — `make wasm-sched` →
+`packages/k8flare-worker/assets/wasm/sched.manifest.json`, source
+`pkg/controllers/cmd/kcm-wasm/scheduler`. Real Pod bind was verified in
+`wrangler dev`, so the "absent `sched` manifest" branch below is no
+longer the normal path]**;
 `workers/controllers/scheduler/`
 and the DRA registry overlay are kept as the ready entrypoint for a
 future scheduler-width answer, and the Controllers DO treats the absent
