@@ -1756,7 +1756,15 @@ correctly — a cold-start burst effect, not a registration bug. Also
 Table path while `-o json` is correct — server-side printing gap for
 Namespace, tracked as a small follow-up.
 
-### OPEN REGRESSION (2026-07-05 evening): the ≤64MiB KCM build is not reproducible from the committed tree
+### RESOLVED REGRESSION (2026-07-05 evening; heading corrected 2026-07-30): the ≤64MiB KCM build was not reproducible from the committed tree
+
+> **Correction (2026-07-30):** this section was headed "OPEN REGRESSION"
+> for three weeks after it was fixed. It is not open — see "RESOLVED for
+> KCM (same day)" below; the mirrors are reproducible from the committed
+> tree and a clean clone builds every chunk under the Loader cap. The
+> stale heading led an outside reviewer to record the project as having
+> an unresolved build-reproducibility defect. The body is kept verbatim
+> as the record of how it was found and fixed.
 
 Found while wiring the kube-scheduler as a second dynamic worker (Pod-on-
 Containers work). Recorded per rules 4/5 instead of being papered over:
@@ -1822,7 +1830,11 @@ mirrors the full-width scheduler binary measures **102.8MB opt**, and
 leanwidth cannot apply (scheduler.NewInformerFactory is the full-width
 aggregate SharedInformerFactory — the Phase 10 correction recorded in
 `scripts/gen-clientgo-lean-mirror.sh`'s comments). kube-scheduler
-therefore remains host-process/BYO-VM; `workers/controllers/scheduler/`
+therefore remains host-process/BYO-VM **[superseded 2026-07-10 — see S20:
+`-tags schedwidth` plus the DRA/CEL and cri-client severing took the
+scheduler to ~45MB opt, and `sched` now ships as a dynamic worker
+(`make wasm` builds the chunk; pkg/controllers/cmd/kcm-wasm/scheduler)]**;
+`workers/controllers/scheduler/`
 and the DRA registry overlay are kept as the ready entrypoint for a
 future scheduler-width answer, and the Controllers DO treats the absent
 `sched` manifest as "not shipped" rather than an error.

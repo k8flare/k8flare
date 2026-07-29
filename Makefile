@@ -54,12 +54,17 @@ all: wasm
 help:
 	@echo "targets: wasm wasm-apiserver wasm-kcm wasm-gc wasm-sched wasm-clusterop gen check vet test test-kcm test-clusterop dev deploy clean-wasm nodes-agent setup-tunnel"
 
-## gen-mirrors: regenerate .build/{k8s-js,clientgo-lean}-mirror, the local
-## copies go.mod's k8s.io/kubernetes and k8s.io/client-go replace directives
-## point at. Required before ANY Go build in this repo (not just wasm) --
-## always runs (gen-*.ts own their own drift-check/idempotency discipline,
-## same convention as everything they replaced); see CLAUDE.md's mirror-
-## regeneration caveat before changing that.
+## gen-mirrors: regenerate .build/{k8s-js,clientgo-lean,apiserver-js}-mirror,
+## the local copies go.mod's k8s.io/kubernetes, k8s.io/client-go and
+## k8s.io/apiserver replace directives point at. Required before ANY Go build
+## in this repo (not just wasm).
+##
+## Always runs, deliberately: the generators own their own drift-check
+## (sha256 pins on every patched upstream file) and the copy is APFS
+## clonefile-backed, so a full regeneration of ~12k files costs ~3s. The
+## output is fully reproducible from the committed tree -- the 2026-07-05
+## non-reproducibility regression that once made this dangerous was resolved
+## the same day (docs/platform-verification.md, "RESOLVED for KCM").
 gen-mirrors:
 	node $(WASM_TOOLS)/gen-k8s-js-mirror.ts
 	node $(WASM_TOOLS)/gen-clientgo-lean-mirror.ts
