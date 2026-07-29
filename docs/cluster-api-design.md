@@ -3,6 +3,16 @@
 Status: **設計のみ・未実装** (2026-07-27 ユーザー決定: mgmt は default
 クラスタに相乗り、トークンは Secret に集約)。実装フェーズは末尾。
 
+> **訂正 (2026-07-30、rule 4)**: 上記の「設計のみ・未実装」は執筆時点の
+> 状態で、**現在は実装済み**。cluster-operator は 5 つ目の resident 動的
+> ワーカーとして稼働している (`pkg/controllers/clusterop`、
+> `pkg/controllers/cmd/clusterop-wasm`、`make wasm-clusterop` が
+> `assets/wasm/clusterop.manifest.json` を生成、`make test-clusterop` が
+> ライフサイクルを検証)。ブリッジは
+> `packages/k8flare-worker/src/clusters/internalapi.ts`。旧 Admin API
+> (`clusters/api.ts`) は retired。未解決事項は本文末尾「コールド初回
+> reconcile 停止」を参照。行頭の Status 行は経緯を残すため消していない。
+
 ## ゴール / 非ゴール
 
 - ゴール: 独自の Admin API (`/clusters`, clusters/api.ts) を廃止し、

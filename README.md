@@ -11,6 +11,11 @@ no processes, no polling alarms, no resident WebSockets — idle cost
 approaches storage cost alone. A write wakes the control plane in
 milliseconds.
 
+**Status: pre-production.** Single maintainer, no tagged releases yet,
+APIs and storage layout may change. See
+[docs/adopter-quickstart.md](docs/adopter-quickstart.md) for what running
+it actually requires and what is not there yet.
+
 ## Architecture
 
 ```
@@ -160,6 +165,7 @@ posture" section before exposing a deployment.
 |---|---|
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Branches, commit rules, the local gates, how CI is triggered |
 | [SECURITY.md](SECURITY.md) | Reporting a vulnerability, and the honest current auth posture |
+| [docs/adopter-quickstart.md](docs/adopter-quickstart.md) | **Start here if you are evaluating it**: required Cloudflare entitlements, what to change before deploying, security posture, cost, backup/exit |
 | [docs/development.md](docs/development.md) | Local dev: required `wrangler dev` flags, DO state, test lanes, the 64MiB cap |
 | [docs/admin-guide.md](docs/admin-guide.md) | Operator guide: deploy, secrets, cluster issuance, cost ops (Japanese) |
 | [docs/user-guide.md](docs/user-guide.md) | Cluster user guide: kubeconfig, what works, quirks (Japanese) |
