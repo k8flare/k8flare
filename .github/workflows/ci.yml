@@ -1,8 +1,22 @@
 name: CI
 
-# NOTE (2026-07-26): automatic triggers disabled -- GitHub Actions quota
-# is limited; run manually via workflow_dispatch until re-enabled.
+# Runs on every pull request so an outside contributor gets a visible
+# signal, and on pushes to main. Docs-only changes are skipped to keep
+# the Actions quota for changes that can actually break the build; the
+# expensive gates (e2e-conformance, cost-gate, smoke-nodes) stay
+# workflow_dispatch-only for the same reason -- see CONTRIBUTING.md.
 on:
+  pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE"
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE"
   workflow_dispatch:
 
 jobs:

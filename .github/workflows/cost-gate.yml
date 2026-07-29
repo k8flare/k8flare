@@ -1,3 +1,13 @@
+name: Cost Gate
+
+on:
+  workflow_dispatch:
+# Manual-dispatch only, deliberately: this gate is expensive (a real k3s
+# agent, containerd and the upstream e2e suite) and the Actions quota is
+# limited. The cheap gate (ci.yml) runs automatically on every pull
+# request instead. A fork contributor cannot dispatch this one -- a
+# maintainer runs it before merge; see CONTRIBUTING.md.
+
 # Asserts k8flare's core cost invariant (CLAUDE.md: "idle cluster cost
 # approaches storage cost alone") against a real, local `wrangler dev`
 # instance -- not by reading source and asserting it "should" be true
@@ -34,12 +44,6 @@
 #       plan's Phase 6 section anticipated for exactly this case; treat
 #       S8(b)'s method as the manual/production procedure to re-run if
 #       workers/controllers ever becomes deployable.
-name: Cost Gate
-
-# NOTE (2026-07-26): automatic triggers disabled -- GitHub Actions quota
-# is limited; run manually via workflow_dispatch until re-enabled.
-on:
-  workflow_dispatch:
 
 jobs:
   cost-gate:

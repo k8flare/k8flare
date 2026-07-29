@@ -37,7 +37,7 @@ auto-provisioning, namespace cascading deletion).
   `kube-scheduler` would use — but nothing calls it; the scheduler above
   writes `nodeName` directly to storage instead.
 - **A full watch/reflector pipeline**: the Etcd DO broadcasts change events
-  over WebSocket; the Worker (`packages/k8s/src/watch.ts`) translates them
+  over WebSocket; the Worker (`packages/k8flare-worker/src/k8s/watch.ts`) translates them
   into Kubernetes `WatchEvent`s with correct ADDED/MODIFIED/DELETED
   synthesis on label/field-selector transitions, and watch-bookmark support
   for client-go reflectors. This pipeline only serves _external_ watchers
@@ -245,7 +245,7 @@ but zero pods were ever being scheduled:
   kube-scheduler's Pod informer filters with
   `status.phase!=Succeeded,status.phase!=Failed`
   (`pkg/scheduler/scheduler.go`'s `newPodInformer`). Both
-  `pkg/apiserver/store.go`'s and `packages/k8s/src/watch.ts`'s field
+  `pkg/apiserver/store.go`'s and `packages/k8flare-worker/src/k8s/watch.ts`'s field
   selector parsing split on the first `=` they found — for `!=` terms that
   `=` is the one inside `!=`, so `status.phase!=Succeeded` parsed as field
   `status.phase!` (with the `!` stuck to the field name) and value

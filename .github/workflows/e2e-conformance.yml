@@ -1,15 +1,19 @@
+name: E2E Conformance
+
+on:
+  workflow_dispatch:
+
 # Runs the official Kubernetes e2e conformance suite against a fully real,
 # ephemeral instance of this stack: a real `wrangler dev` Worker (Go/WASM
 # apiserver + Durable Object), a real k3s agent (kubelet + containerd + CNI),
 # and the real embedded kube-scheduler and kube-controller-manager
 # (cmd/scheduler, cmd/controller-manager). Everything runs local-only on the
 # runner (127.0.0.1) — this never touches the deployed Cloudflare Worker.
-name: E2E Conformance
-
-# NOTE (2026-07-26): automatic triggers disabled -- GitHub Actions quota
-# is limited; run manually via workflow_dispatch until re-enabled.
-on:
-  workflow_dispatch:
+# Manual-dispatch only, deliberately: this gate is expensive (a real k3s
+# agent, containerd and the upstream e2e suite) and the Actions quota is
+# limited. The cheap gate (ci.yml) runs automatically on every pull
+# request instead. A fork contributor cannot dispatch this one -- a
+# maintainer runs it before merge; see CONTRIBUTING.md.
 
 jobs:
   e2e-conformance:
@@ -131,7 +135,7 @@ jobs:
       # loaded by the `wrangler dev` invocation below, since it's
       # not next to the wrangler.jsonc). With no K3S_TOKEN
       # set, main.go's getToken() (Go apiserver) and the TS Workers' dwAuth
-      # (packages/k8s/src/auth.ts) all fall back to the same hardcoded
+      # (packages/k8flare-worker/src/k8s/auth.ts) all fall back to the same hardcoded
       # "k8flare-dev-token" dev value — the exact fallback
       # pkg/apiserver/apiserver_test.go's setupWranglerDev already relies on.
       # Reusing that proven fallback everywhere (the Worker, agent,

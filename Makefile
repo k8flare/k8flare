@@ -54,12 +54,17 @@ all: wasm
 help:
 	@echo "targets: wasm wasm-apiserver wasm-kcm wasm-gc wasm-sched wasm-clusterop gen check vet test test-kcm test-clusterop dev deploy clean-wasm nodes-agent setup-tunnel"
 
-## gen-mirrors: regenerate .build/{k8s-js,clientgo-lean}-mirror, the local
-## copies go.mod's k8s.io/kubernetes and k8s.io/client-go replace directives
-## point at. Required before ANY Go build in this repo (not just wasm) --
-## always runs (gen-*.ts own their own drift-check/idempotency discipline,
-## same convention as everything they replaced); see CLAUDE.md's mirror-
-## regeneration caveat before changing that.
+## gen-mirrors: regenerate .build/{k8s-js,clientgo-lean,apiserver-js}-mirror,
+## the local copies go.mod's k8s.io/kubernetes, k8s.io/client-go and
+## k8s.io/apiserver replace directives point at. Required before ANY Go build
+## in this repo (not just wasm).
+##
+## Always runs, deliberately: the generators own their own drift-check
+## (sha256 pins on every patched upstream file) and the copy is APFS
+## clonefile-backed, so a full regeneration of ~12k files costs ~3s. The
+## output is fully reproducible from the committed tree -- the 2026-07-05
+## non-reproducibility regression that once made this dangerous was resolved
+## the same day (docs/platform-verification.md, "RESOLVED for KCM").
 gen-mirrors:
 	node $(WASM_TOOLS)/gen-k8s-js-mirror.ts
 	node $(WASM_TOOLS)/gen-clientgo-lean-mirror.ts
@@ -278,9 +283,21 @@ test-kcm: wasm
 test-clusterop: wasm
 	K8FLARE_CLUSTEROP_TEST=1 go test -count=1 -run TestClusterOperatorLifecycle -timeout 15m -v ./pkg/apiserver/
 
-## dev: local wrangler dev server
+## dev: local wrangler dev server. --local and --enable-containers=false are
+## NOT optional conveniences:
+##   --local: wrangler.jsonc's MESH binding is a VPC network with remote:true,
+##     which has no local emulation -- plain `wrangler dev` opens a REAL
+##     Cloudflare proxy session at startup and hard-fails without credentials
+##     (and, worse, silently succeeds through your real account when you
+##     happen to be logged in). Nothing here touches MESH.
+##   --enable-containers=false: the containers section is declared
+##     unconditionally, so dev refuses to start without a running Docker.
+## Both are what the Go test harnesses already pass (pkg/apiserver/
+## apiserver_test.go). Run with Docker and containers on your own:
+##   npx wrangler dev -c packages/k8flare-worker/wrangler.jsonc --local --persist-to .wrangler/state
 dev:
-	wrangler dev -c packages/k8flare-worker/wrangler.jsonc --persist-to .wrangler/state
+	npx wrangler dev -c packages/k8flare-worker/wrangler.jsonc --local \
+		--enable-containers=false --persist-to .wrangler/state
 
 ## nodes-agent: cross-compile the unmodified k3s agent embed (cmd/agent)
 ## for linux/amd64 into packages/k8flare-worker/images/node/, where the node-image

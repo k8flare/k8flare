@@ -11,6 +11,11 @@ no processes, no polling alarms, no resident WebSockets — idle cost
 approaches storage cost alone. A write wakes the control plane in
 milliseconds.
 
+**Status: pre-production.** Single maintainer, no tagged releases yet,
+APIs and storage layout may change. See
+[docs/adopter-quickstart.md](docs/adopter-quickstart.md) for what running
+it actually requires and what is not there yet.
+
 ## Architecture
 
 ```
@@ -23,6 +28,8 @@ packages/k8flare-worker  — the ONE deployed Worker (routing, auth, watch strea
    ├─► kcm         (real kube-controller-manager: 7 workload controllers)
    ├─► gc          (real garbagecollector)
    ├─► sched       (real kube-scheduler)
+   ├─► clusterop   (cluster operator: reconciles k8flare.com/v1alpha1 Clusters;
+   │                runs only on the management "default" cluster)
    ├─  Cluster DO (kine-style revision log + per-namespace facets)
    ├─  WatchHub DO (watch fan-out over hibernating WebSockets)
    └─  Static Assets (WASM chunks, OpenAPI/discovery documents)
@@ -69,14 +76,27 @@ and Pod-on-Containers NodeVMs are implemented but not currently deployed
 
 ## Getting started (development)
 
-Prereqs: Go 1.26+, Node 24+/pnpm, binaryen (`wasm-opt`), and Docker only if
-you want containers locally.
+Prereqs: Go 1.26+, Node 24+/pnpm, binaryen (`wasm-opt`). Docker is only
+needed if you want to run Pod-on-Containers NodeVMs locally — `make dev`
+passes `--enable-containers=false` so the rest works without it.
 
 ```sh
 pnpm install
-make wasm        # build apiserver/kcm/gc/sched WASM chunks (~2 min first time)
-make dev         # wrangler dev (default port 8787)
+go mod download  # the k3s-flavored Kubernetes tree the mirrors copy from;
+                 # several GB on a cold machine, and `make wasm` needs it
+make wasm        # build the five WASM chunks (~2.5 min warm; longer cold)
+make dev         # wrangler dev --local (default port 8787)
 ```
+
+`make dev` runs wrangler with `--local`: the `MESH` VPC binding in
+`wrangler.jsonc` has no local emulation, so a plain `wrangler dev` would
+open a real Cloudflare proxy session at startup — failing without
+credentials, and quietly using your real account with them.
+
+Chunk sizes are gated at build time against the Worker Loader's 64MiB cap.
+The apiserver chunk currently has roughly 1.8MB of headroom, so adding a
+dependency to it can fail the build outright; `make wasm` prints the
+remaining headroom for every chunk.
 
 Talk to it with a bearer token (dev fallback: `k8flare-dev-token`):
 
@@ -106,18 +126,47 @@ flags.
 
 ## Deploying
 
-`wrangler deploy -c packages/k8flare-worker/wrangler.jsonc` — set
-`K3S_TOKEN` (the default cluster's root token, the only Worker secret;
-it also authenticates the management API). Additional per-cluster tokens
-are minted through the admin API; with no secret and no minted tokens a
-cluster is a dev posture. The `containers` section provisions NodeVM
-container apps, which bill by wall clock — omit it unless you are using
-Pod-on-Containers.
+Before your first deploy, change the values in
+`packages/k8flare-worker/wrangler.jsonc` that are specific to a
+deployment:
+
+| Value | Why |
+|---|---|
+| `vars.GATEWAY_URL` | The public URL nodes dial and the origin baked into minted kubeconfigs. Leave it pointing elsewhere and your nodes join someone else's control plane. |
+| `name` | The Worker name claimed in your account. |
+| `containers[].authorized_keys` | Empty by default. Add your own SSH key only if you want to debug NodeVMs. |
+
+Then:
+
+```sh
+wrangler deploy -c packages/k8flare-worker/wrangler.jsonc
+```
+
+Set `K3S_TOKEN` (the default cluster's root token, the only Worker
+secret; it also authenticates the management API). Additional per-cluster
+tokens are minted through the admin API; **with no secret and no minted
+tokens the cluster accepts the publicly documented dev token
+`k8flare-dev-token`** — never leave a public deployment in that state.
+The `containers` section provisions NodeVM container apps, which bill by
+wall clock — omit it unless you are using Pod-on-Containers.
+
+## Contributing
+
+Topic branches, English commits, and the local gates (`make check`,
+`make vet`, `make test`) are described in
+[CONTRIBUTING.md](CONTRIBUTING.md); day-to-day local-dev traps are in
+[docs/development.md](docs/development.md). Security issues go through
+[SECURITY.md](SECURITY.md), not the issue tracker — and read its "current
+posture" section before exposing a deployment.
 
 ## Documentation
 
 | Doc | What's in it |
 |---|---|
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Branches, commit rules, the local gates, how CI is triggered |
+| [SECURITY.md](SECURITY.md) | Reporting a vulnerability, and the honest current auth posture |
+| [docs/adopter-quickstart.md](docs/adopter-quickstart.md) | **Start here if you are evaluating it**: required Cloudflare entitlements, what to change before deploying, security posture, cost, backup/exit |
+| [docs/development.md](docs/development.md) | Local dev: required `wrangler dev` flags, DO state, test lanes, the 64MiB cap |
 | [docs/admin-guide.md](docs/admin-guide.md) | Operator guide: deploy, secrets, cluster issuance, cost ops (Japanese) |
 | [docs/user-guide.md](docs/user-guide.md) | Cluster user guide: kubeconfig, what works, quirks (Japanese) |
 | [docs/custom-code-inventory.md](docs/custom-code-inventory.md) | Hand-written vs upstream code, generation pipeline |
@@ -126,3 +175,4 @@ Pod-on-Containers.
 | [docs/control-plane-architecture.md](docs/control-plane-architecture.md) | Controllers ↔ Cloudflare primitives mapping |
 | [docs/general-purpose-k8s-plan.md](docs/general-purpose-k8s-plan.md) | Conformance expansion plan |
 | [docs/k8s-version-bump.md](docs/k8s-version-bump.md) | How to bump the pinned Kubernetes version |
+| [docs/cluster-api-design.md](docs/cluster-api-design.md) | Cluster resource (`k8flare.com/v1alpha1`) + cluster-operator: design and implementation record (Japanese) |

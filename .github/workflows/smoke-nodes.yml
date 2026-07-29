@@ -1,7 +1,18 @@
+name: Smoke Test workers/nodes
+
+on:
+  workflow_dispatch:
+# Manual-dispatch only, deliberately: this gate is expensive (a real k3s
+# agent, containerd and the upstream e2e suite) and the Actions quota is
+# limited. The cheap gate (ci.yml) runs automatically on every pull
+# request instead. A fork contributor cannot dispatch this one -- a
+# maintainer runs it before merge; see CONTRIBUTING.md.
+
 # Smoke e2e for workers/nodes (Phase 7's Pod-on-Containers backend) against
 # real wrangler dev + real Docker containers -- not conformance (this
 # backend's known limits, e.g. no routable Pod IP, no logs/exec, rule that
-# out -- see README.md's "Node backends" section), but the concrete gate
+# out -- README.md's "What works today" notes this backend is implemented
+# but not currently deployed), but the concrete gate
 # this task asked for: kubectl-equivalent create -> Running, delete ->
 # container actually stops, and restartPolicy's three modes.
 #
@@ -48,12 +59,6 @@
 # (both 10256) inside the NodeVM; the agent's proxy binds first and
 # kube-proxy's healthz loses. Harmless to every assertion here, but the
 # plain-proxy port should eventually move.
-name: Smoke Test workers/nodes
-
-# NOTE (2026-07-26): automatic triggers disabled -- GitHub Actions quota
-# is limited; run manually via workflow_dispatch until re-enabled.
-on:
-  workflow_dispatch:
 
 jobs:
   smoke-nodes:

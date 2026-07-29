@@ -120,7 +120,10 @@ export class WatchHub {
             if (matches) {
               try {
                 client.send(msg);
-              } catch (_) {}
+              } catch {
+                // A dead socket here is normal (hibernated peer went away);
+                // the close handler reaps it.
+              }
             }
           }
         }

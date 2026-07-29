@@ -21,6 +21,25 @@ documentation or guesswork alone has a proven cost.
   the `spikes/` tree was deleted from the working tree. Any `spikes/...`
   path referenced in this repo's docs is retrievable from git history
   (`git log --oneline -- spikes/`).
+- **Paths in dated entries are the paths of that date.** The tree has been
+  reorganized several times since; the entries below are left verbatim per
+  rule #4 rather than retro-edited. The moves a reader is most likely to
+  trip over, all of which kept the file (only its location changed):
+  - `scripts/*.sh` (`gen-k8s-js-mirror.sh`, `gen-clientgo-lean-mirror.sh`,
+    `build-wasm-chunks.sh`, `build-controllers-wasm.sh`) → rewritten as
+    TypeScript under `packages/wasm-build/src/` and driven by the
+    `Makefile`'s `wasm-*` targets (`npm run build:wasm` = `make -B wasm`).
+  - `third_party/clientgo-lean-overlays/`, `third_party/k8s-js-overlays/`
+    → `pkg/clientgo-lean-overlays/`, `pkg/k8s-js-overlays/` (commit
+    `52b73cd`).
+  - `packages/k8s/src/*` → `packages/k8flare-worker/src/k8s/*` (2026-07-08
+    single-Worker consolidation, S19).
+  - `workers/controllers`, `packages/etcd`, `packages/crd`,
+    `packages/dynamic-worker` are **gone**, not moved — the multi-Worker
+    split they belonged to was consolidated away (S19) and the
+    hand-written TS controllers were replaced by the real
+    kube-controller-manager. Where those names appear below they are the
+    historical record of a component that no longer exists.
 - **Status** is one of: `not started` / `partially confirmed` / `verified`.
 - **Confirmed facts** must always carry a source (commit hash, official doc
   name, changelog date). If the source URL isn't recorded in this document,
@@ -1756,7 +1775,15 @@ correctly — a cold-start burst effect, not a registration bug. Also
 Table path while `-o json` is correct — server-side printing gap for
 Namespace, tracked as a small follow-up.
 
-### OPEN REGRESSION (2026-07-05 evening): the ≤64MiB KCM build is not reproducible from the committed tree
+### RESOLVED REGRESSION (2026-07-05 evening; heading corrected 2026-07-30): the ≤64MiB KCM build was not reproducible from the committed tree
+
+> **Correction (2026-07-30):** this section was headed "OPEN REGRESSION"
+> for three weeks after it was fixed. It is not open — see "RESOLVED for
+> KCM (same day)" below; the mirrors are reproducible from the committed
+> tree and a clean clone builds every chunk under the Loader cap. The
+> stale heading led an outside reviewer to record the project as having
+> an unresolved build-reproducibility defect. The body is kept verbatim
+> as the record of how it was found and fixed.
 
 Found while wiring the kube-scheduler as a second dynamic worker (Pod-on-
 Containers work). Recorded per rules 4/5 instead of being papered over:
@@ -1822,7 +1849,17 @@ mirrors the full-width scheduler binary measures **102.8MB opt**, and
 leanwidth cannot apply (scheduler.NewInformerFactory is the full-width
 aggregate SharedInformerFactory — the Phase 10 correction recorded in
 `scripts/gen-clientgo-lean-mirror.sh`'s comments). kube-scheduler
-therefore remains host-process/BYO-VM; `workers/controllers/scheduler/`
+therefore remains host-process/BYO-VM **[superseded 2026-07-10 — see
+"S21: 実 kube-scheduler の Dynamic Worker 化(2026-07-10、実機検証済み)"
+(cite it by title, not number: this file has three sections numbered S20
+and two numbered S21): `-tags schedwidth` plus the DRA/CEL and cri-client
+severing took the scheduler to 45.2MB opt (21.4MiB under the cap), and
+`sched` now ships as a dynamic worker chunk — `make wasm-sched` →
+`packages/k8flare-worker/assets/wasm/sched.manifest.json`, source
+`pkg/controllers/cmd/kcm-wasm/scheduler`. Real Pod bind was verified in
+`wrangler dev`, so the "absent `sched` manifest" branch below is no
+longer the normal path]**;
+`workers/controllers/scheduler/`
 and the DRA registry overlay are kept as the ready entrypoint for a
 future scheduler-width answer, and the Controllers DO treats the absent
 `sched` manifest as "not shipped" rather than an error.
