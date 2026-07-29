@@ -69,14 +69,27 @@ and Pod-on-Containers NodeVMs are implemented but not currently deployed
 
 ## Getting started (development)
 
-Prereqs: Go 1.26+, Node 24+/pnpm, binaryen (`wasm-opt`), and Docker only if
-you want containers locally.
+Prereqs: Go 1.26+, Node 24+/pnpm, binaryen (`wasm-opt`). Docker is only
+needed if you want to run Pod-on-Containers NodeVMs locally — `make dev`
+passes `--enable-containers=false` so the rest works without it.
 
 ```sh
 pnpm install
-make wasm        # build apiserver/kcm/gc/sched WASM chunks (~2 min first time)
-make dev         # wrangler dev (default port 8787)
+go mod download  # the k3s-flavored Kubernetes tree the mirrors copy from;
+                 # several GB on a cold machine, and `make wasm` needs it
+make wasm        # build the five WASM chunks (~2.5 min warm; longer cold)
+make dev         # wrangler dev --local (default port 8787)
 ```
+
+`make dev` runs wrangler with `--local`: the `MESH` VPC binding in
+`wrangler.jsonc` has no local emulation, so a plain `wrangler dev` would
+open a real Cloudflare proxy session at startup — failing without
+credentials, and quietly using your real account with them.
+
+Chunk sizes are gated at build time against the Worker Loader's 64MiB cap.
+The apiserver chunk currently has roughly 1.8MB of headroom, so adding a
+dependency to it can fail the build outright; `make wasm` prints the
+remaining headroom for every chunk.
 
 Talk to it with a bearer token (dev fallback: `k8flare-dev-token`):
 

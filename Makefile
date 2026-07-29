@@ -278,9 +278,21 @@ test-kcm: wasm
 test-clusterop: wasm
 	K8FLARE_CLUSTEROP_TEST=1 go test -count=1 -run TestClusterOperatorLifecycle -timeout 15m -v ./pkg/apiserver/
 
-## dev: local wrangler dev server
+## dev: local wrangler dev server. --local and --enable-containers=false are
+## NOT optional conveniences:
+##   --local: wrangler.jsonc's MESH binding is a VPC network with remote:true,
+##     which has no local emulation -- plain `wrangler dev` opens a REAL
+##     Cloudflare proxy session at startup and hard-fails without credentials
+##     (and, worse, silently succeeds through your real account when you
+##     happen to be logged in). Nothing here touches MESH.
+##   --enable-containers=false: the containers section is declared
+##     unconditionally, so dev refuses to start without a running Docker.
+## Both are what the Go test harnesses already pass (pkg/apiserver/
+## apiserver_test.go). Run with Docker and containers on your own:
+##   npx wrangler dev -c packages/k8flare-worker/wrangler.jsonc --local --persist-to .wrangler/state
 dev:
-	wrangler dev -c packages/k8flare-worker/wrangler.jsonc --persist-to .wrangler/state
+	npx wrangler dev -c packages/k8flare-worker/wrangler.jsonc --local \
+		--enable-containers=false --persist-to .wrangler/state
 
 ## nodes-agent: cross-compile the unmodified k3s agent embed (cmd/agent)
 ## for linux/amd64 into packages/k8flare-worker/images/node/, where the node-image

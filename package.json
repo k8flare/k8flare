@@ -6,7 +6,7 @@
   ],
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev -c packages/k8flare-worker/wrangler.jsonc --persist-to .wrangler/state",
+    "dev": "wrangler dev -c packages/k8flare-worker/wrangler.jsonc --local --enable-containers=false --persist-to .wrangler/state",
     "deploy": "make -B nodes-agent && wrangler deploy --config packages/k8flare-worker/wrangler.jsonc",
     "check": "vp check",
     "test": "vitest",
