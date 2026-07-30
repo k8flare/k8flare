@@ -45,6 +45,29 @@ openssl rand -hex 24 | wrangler secret put K3S_TOKEN --name <your-worker>
 `k8flare-dev-token`** — on a public `*.workers.dev` URL that is a
 world-writable Kubernetes API. Set the secret before you expose it.
 
+## Upgrading: check the migrations block first
+
+`packages/k8flare-worker/wrangler.jsonc` carries a Durable Object
+`migrations` array. `wrangler deploy` silently applies every tag you have
+not applied yet, and a tag containing `deleted_classes` **destroys that
+Durable Object's storage** — which is where all your cluster state lives.
+
+This is not hypothetical: two of the four tags in that block are
+destructive (`v2` drops the pre-consolidation `Etcd` class, `v3` deletes
+every current class). Both were deliberate pre-production wipes, and a
+fresh deployment replays them harmlessly because there is nothing to
+lose. An existing deployment pulling a *future* destructive tag would
+lose everything, and there is no backup mechanism.
+
+So before every upgrade:
+
+```sh
+git diff HEAD..origin/main -- packages/k8flare-worker/wrangler.jsonc
+```
+
+If a new tag appeared, read it before deploying. If you want the decision
+to be yours rather than the upstream branch's, pin a commit or fork.
+
 ## Security posture (read this before trusting it with anything)
 
 - **Cluster tokens are `system:masters` and bypass RBAC entirely**
