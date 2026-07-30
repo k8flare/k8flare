@@ -76,6 +76,22 @@ git diff HEAD..origin/main -- packages/k8flare-worker/wrangler.jsonc
 If a new tag appeared, read it before deploying. If you want the decision
 to be yours rather than the upstream branch's, pin a commit or fork.
 
+## Monitoring
+
+`/healthz`, `/livez` and `/readyz` answer `200 ok` **without a token**, so
+an external uptime monitor can reach them.
+
+Be clear on what that asserts: the Worker is routable and its script
+loaded. It is answered in the Worker shell and deliberately does *not*
+touch storage or load any control-plane component — an unauthenticated
+path that spun up a 65MB WASM module per request would be a cost
+amplifier on a public URL. For "is the API actually serving", probe a
+real endpoint with a token:
+
+```sh
+curl -sf -H "Authorization: Bearer $TOKEN" https://<your-worker>/api/v1/namespaces
+```
+
 ## Security posture (read this before trusting it with anything)
 
 - **Cluster tokens are `system:masters` and bypass RBAC entirely**
