@@ -192,9 +192,15 @@ wireguard を使います([cloudflare-mesh-networking.md](cloudflare-mesh-networ
 
 - **観測**: `npx wrangler tail k8flare` でライブログ。observability は
   有効化済み(サンプリング 100%)なのでダッシュボードでも追えます。
-- **アイドル確認**: 誰も使っていないクラスタは tail に何も流れないのが
-  正常です。alarm が定期的に出続けていたらバグなので報告してください
-  (判定基準は cost-model.md の実測記録)。
+- **アイドル確認**: **オブジェクトが何も無い**クラスタは tail に何も
+  流れないのが正常です。alarm が定期的に出続けていたらバグなので報告して
+  ください(判定基準は cost-model.md の実測記録)。
+  ただし「未収束の仕事があるクラスタ」は別です。例えばノードが無いのに
+  Deployment があると、コントローラーは収束を試み続けるためアラームは
+  鳴り続けます。設計上はここで指数バックオフ(15秒→10分上限)が効く
+  はずですが、**2026-07-30 の実測ではバックオフが効かず 15 秒間隔のまま
+  でした(docs/platform-verification.md の S26、未解決)**。ワークロードを
+  削除すれば 20 秒でパークします。
 - **データの全消去**(クラスタは残す): migration の
   delete+recreate サイクルで行います(手順と前例: `wrangler.jsonc` の
   migrations コメントと git 履歴の v3/v4)。
