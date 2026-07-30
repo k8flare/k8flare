@@ -1219,8 +1219,8 @@ rows-written(1,130 行/60 秒 × 2,592,000 秒 = 48,816,000)。**行数レート
 まだ存在せず、`wrangler dev --local` の sqlite から本番 DO の課金軸へ
 外挿している(docs/adopter-quickstart.md の「What it costs」と同じ但し書き)。上の表の「rows read-written」が DO の課金軸である以上、
 これはストレージ代だけのアイドルとは程遠い。同じ形の回帰は 2 段で捕まえる: `make test` レーンの
-`TestGuaranteedUpdateSuppressesNoOpWrites`(KineStorage を直接叩く単体
-テスト、全 PR で走る)と、`cost-gate.yml` の
+`pkg/apiserver/upstreamstorage_test.go` の 3 本(KineStorage を直接叩く
+単体テスト、全 PR で走る)と、`cost-gate.yml` の
 "Verify an unconvergeable workload does not write forever" ステップ
 (ノードなしクラスタに Deployment を作り、全シャード合計の kine 行数の
 定常増加を 60 秒あたり 50 行未満に縛る)。
