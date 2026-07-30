@@ -285,6 +285,10 @@ jobs:
           echo "kine rows across all Cluster shards: $BEFORE -> $AFTER (delta $DELTA in 60s)"
           # Measured 0 after the fix, ~1,130 before it. The margin is for
           # a slow runner still settling, not for a steady write rate.
+          # If this ever flakes, raise the settle sleep above -- not this
+          # threshold. A threshold loose enough to absorb slow settling is
+          # also loose enough to absorb a partial regression, and it is the
+          # 50-against-1,130 gap that makes the assertion worth running.
           if [ "$DELTA" -gt 50 ]; then
             echo "::error::a settled unconvergeable workload wrote $DELTA kine rows in 60s -- rows-written billing and kine growth are unbounded (the S26 write storm is back; check KineStorage.GuaranteedUpdate's no-op suppression)" >&2
             exit 1
