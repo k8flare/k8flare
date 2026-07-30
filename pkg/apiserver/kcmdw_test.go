@@ -129,15 +129,33 @@ func TestKCMDynamicWorkerControlPlane(t *testing.T) {
 		_, err := client.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
 		return err != nil
 	})
-	// Give the controllers a post-delete window to attempt any straggler
-	// writes, then require zero leftovers.
+	// Two different waits, and conflating them is what made this flaky.
+	//
+	// Reaching zero Pods is CONVERGENCE: it takes as long as the garbage
+	// collector takes, so it has to be polled. It used to be a flat 30s
+	// sleep followed by a hard assertion, which fails whenever GC is
+	// merely slow -- observed once in 8 runs, at full test duration
+	// rather than at startup. Suppressing no-op writes plausibly made
+	// that more likely: fewer writes mean fewer pokes, so the controllers
+	// get fewer pump windows and the backoff stretches sooner (the
+	// tradeoff recorded as S26b in docs/platform-verification.md).
+	waitFor(t, 2*time.Minute, "all pods gone cluster-wide", func() bool {
+		pods, err := client.CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
+		return err == nil && len(pods.Items) == 0
+	})
+
+	// Proving ABSENCE is the other kind, and that one does need a fixed
+	// window: a straggler write lands after the state first looks clean,
+	// so polling until it looks clean would just race it. Hold still and
+	// then re-check -- including the Pods, since a straggler could have
+	// recreated one after the wait above passed.
 	time.Sleep(30 * time.Second)
 	pods, err := client.CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		t.Fatalf("list pods: %v", err)
 	}
 	if len(pods.Items) != 0 {
-		t.Errorf("expected 0 pods cluster-wide after namespace delete, got %d", len(pods.Items))
+		t.Errorf("a straggler write recreated %d pod(s) after the namespace was deleted", len(pods.Items))
 	}
 	events, err := client.CoreV1().Events(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
 	if err != nil {
