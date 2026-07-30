@@ -309,4 +309,8 @@ func RegisterInternalHandlers(mux *http.ServeMux, storage *Storage) {
 	// UID, container port) resolution half of nodes/podproxy.ts's
 	// handleVKubeProxy (vkubeproxy.go).
 	mux.HandleFunc("GET /internal/vkubeproxy-resolve", handleVKubeProxyResolve(storage))
+
+	// GET /internal/next-cron-schedule: when the Controllers DO must wake
+	// next for a CronJob, instead of parking (cronschedule.go).
+	mux.HandleFunc("GET /internal/next-cron-schedule", handleNextCronSchedule(storage))
 }

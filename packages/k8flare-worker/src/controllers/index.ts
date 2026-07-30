@@ -402,6 +402,18 @@ export class Controllers {
     const unconverged = await this.hasUnconvergedWork();
     if (!warmupActive && !unconverged) {
       await this.state.storage.put("unconvergedTicks", 0);
+      // Nothing outstanding -- but a CronJob's next fire is a wall-clock
+      // deadline, not a write, so parking here silently drops it (measured:
+      // docs/platform-verification.md S27). Arm for that instant instead.
+      // Still event-armed: the alarm exists only because a CronJob exists,
+      // it is one alarm per occurrence, and deleting the last CronJob parks
+      // it again. Not the backoff path below -- that would push the alarm
+      // past the schedule.
+      const cron = await this.cronProbe();
+      if (cron?.wakeMs != null) {
+        this.state.storage.setAlarm(cron.wakeMs);
+        return;
+      }
       return; // park: no work, no fresh load to nurse -- no reload, no re-arm
     }
 
@@ -464,6 +476,31 @@ export class Controllers {
     }
   }
 
+  /**
+   * Absolute ms at which to wake for the earliest CronJob fire, or null if
+   * no CronJob needs one. The schedule maths lives in Go
+   * (pkg/apiserver/cronschedule.go) because the real cron parser and the
+   * CronJob semantics are upstream's; this only turns its answer into an
+   * alarm time.
+   *
+   * A schedule already in the past (the cluster was down across it) comes
+   * back as a past instant and is clamped to "now-ish" so the fire is not
+   * lost. A probe failure returns null rather than holding the alarm open:
+   * whatever write eventually arrives will re-arm, and an apiserver hiccup
+   * must not turn into a permanent alarm chain.
+   */
+  private async cronProbe(): Promise<{ wakeMs: number | null; overdue: boolean } | null> {
+    const resp = await this.apiGet("/internal/next-cron-schedule");
+    if (resp === null) return null;
+    const iso = resp.nextScheduleTime;
+    let wakeMs: number | null = null;
+    if (typeof iso === "string" && iso !== "") {
+      const at = Date.parse(iso);
+      if (!Number.isNaN(at)) wakeMs = Math.max(at, Date.now() + 1_000);
+    }
+    return { wakeMs, overdue: resp.overdue === true };
+  }
+
   private async hasUnconvergedWork(): Promise<boolean> {
     interface WorkloadItem {
       metadata?: { generation?: number };
@@ -485,6 +522,7 @@ export class Controllers {
       this.apiGet("/apis/batch/v1/jobs"),
     ]);
     const [deploys, rss, jobs] = lists.map((l) => (l?.items as WorkloadItem[] | undefined) ?? []);
+    const cron = await this.cronProbe();
     // A list call failing (null) counts as "work exists": staying awake
     // through an apiserver hiccup is cheap; parking on one is not.
     if (lists.some((l) => l === null)) return true;
@@ -527,6 +565,17 @@ export class Controllers {
         if (c.status?.phase !== "Ready") return true;
       }
     }
+    // A CronJob past its slot without having run it is outstanding work,
+    // and treating it that way rather than as a wake time is the point:
+    // waking exactly at the schedule was measured NOT to be enough (S27) --
+    // the alarm fired, re-armed for the next occurrence, and the fire was
+    // dropped, because a cold KCM needs longer than one pass to load, sync
+    // its informers and act. Routing it here instead hands it to the
+    // machinery that already holds a window open until work converges, and
+    // it self-clears: once the Job exists, lastScheduleTime advances,
+    // overdue goes false, and the Job itself becomes the outstanding work.
+    if (cron?.overdue) return true;
+
     for (const j of jobs) {
       const st = j.status ?? {};
       if (!st.completionTime && (st.failed ?? 0) === 0) {

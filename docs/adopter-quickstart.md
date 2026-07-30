@@ -103,6 +103,11 @@ curl -sf -H "Authorization: Bearer $TOKEN" https://<your-worker>/api/v1/namespac
   revocation is deleting the cluster.
 - Not supported yet: admission webhooks, CRDs, dynamic PV provisioning
   (PVCs stay `Pending`).
+- CronJobs do fire on a parked cluster: the control plane arms an alarm
+  for the next schedule and wakes cold to run it
+  ([S27](platform-verification.md)). Each fire costs one wake-up, so a
+  `* * * * *` schedule is not an idle cluster — see
+  [cost-model.md](cost-model.md).
 
 ## What it costs
 
