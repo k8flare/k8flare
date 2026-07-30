@@ -113,7 +113,8 @@ Real kubectl needs TLS; `go test`-driven clients don't. Run the test
 suites:
 
 ```sh
-make test        # integration suite: real client-go against wrangler dev
+make test        # all test lanes (~3 min): real client-go against wrangler dev,
+                 # with and without the real controllers
 make test-kcm    # control-plane smoke with the real KCM/GC/sched dynamic workers
 ```
 
