@@ -175,7 +175,7 @@ posture" section before exposing a deployment.
 | [docs/admin-guide.md](docs/admin-guide.md) | Operator guide: deploy, secrets, cluster issuance, cost ops (Japanese) |
 | [docs/user-guide.md](docs/user-guide.md) | Cluster user guide: kubeconfig, what works, quirks (Japanese) |
 | [docs/custom-code-inventory.md](docs/custom-code-inventory.md) | Hand-written vs upstream code, generation pipeline |
-| [docs/platform-verification.md](docs/platform-verification.md) | Every platform spike + measured finding (S1–S25) |
+| [docs/platform-verification.md](docs/platform-verification.md) | Every platform spike + measured finding (S1–S26) |
 | [docs/cost-model.md](docs/cost-model.md) | Idle/active cost per component, cost invariants |
 | [docs/control-plane-architecture.md](docs/control-plane-architecture.md) | Controllers ↔ Cloudflare primitives mapping |
 | [docs/general-purpose-k8s-plan.md](docs/general-purpose-k8s-plan.md) | Conformance expansion plan |

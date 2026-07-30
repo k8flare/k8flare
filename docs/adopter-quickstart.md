@@ -35,15 +35,23 @@ Objects.
 | `name` | The Worker name claimed in your account. |
 | `containers[].authorized_keys` | Empty by default. Add your own SSH key only to debug NodeVMs. |
 
-Then set the one secret:
+Then deploy, and set the one secret:
 
 ```sh
+wrangler deploy -c packages/k8flare-worker/wrangler.jsonc
 openssl rand -hex 24 | wrangler secret put K3S_TOKEN --name <your-worker>
 ```
 
-**A deployment with no `K3S_TOKEN` accepts the publicly documented token
-`k8flare-dev-token`** — on a public `*.workers.dev` URL that is a
-world-writable Kubernetes API. Set the secret before you expose it.
+Deploy first. `wrangler secret put` against a Worker that does not exist
+yet prompts to create one (*"There doesn't seem to be a Worker called
+… Do you want to create a new Worker with that name?"*), which a piped
+`openssl` cannot answer.
+
+That ordering has a consequence you have to plan for: **between the
+deploy and the secret, your Worker is live and accepts the publicly
+documented token `k8flare-dev-token`** — on a public `*.workers.dev` URL
+that is a world-writable Kubernetes API. Set the secret immediately, and
+do not hand out the URL until you have.
 
 ## Upgrading: check the migrations block first
 
@@ -87,7 +95,9 @@ Honest state: **no deployed cluster has been billed yet.** The figures in
 not observed invoices. What *is* mechanically verified — by
 `.github/workflows/cost-gate.yml` against a real local stack — is the
 *behaviour* the cost model depends on: an idle cluster arms no alarms,
-runs no processes, and produces no Worker invocations.
+runs no processes, and produces no Worker invocations; and a cluster with
+work it can never finish (a Deployment with no nodes to schedule on)
+settles to a near-zero write rate instead of billing rows forever.
 
 Rules of thumb:
 

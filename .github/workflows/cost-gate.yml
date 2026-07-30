@@ -2,9 +2,11 @@ name: Cost Gate
 
 on:
   workflow_dispatch:
-# Manual-dispatch only, deliberately: this gate is expensive (a real k3s
-# agent, containerd and the upstream e2e suite) and the Actions quota is
-# limited. The cheap gate (ci.yml) runs automatically on every pull
+# Manual-dispatch only, deliberately: this gate is slow (a cold WASM build
+# plus ~12 minutes of deliberate sleeping -- settling windows, measurement
+# windows, and waiting for alarms to reach a parking decision) and the
+# Actions quota is limited. The k3s-agent/containerd/e2e costs this comment
+# used to cite belong to e2e-conformance.yml, not here (corrected 2026-07-30). The cheap gate (ci.yml) runs automatically on every pull
 # request instead. A fork contributor cannot dispatch this one -- a
 # maintainer runs it before merge; see CONTRIBUTING.md.
 
@@ -279,6 +281,16 @@ jobs:
             echo "$total"
           }
           BEFORE=$(count_rows)
+          # Fail loudly if the counter found nothing to count. Every branch
+          # of count_rows falls back to 0, so a changed DO state layout (this
+          # project has changed it twice) would otherwise make this step pass
+          # green while measuring nothing -- the same instrument error that
+          # made the original S26 investigation read zero writes.
+          if [ "$BEFORE" -eq 0 ]; then
+            echo "::error::found no kine rows in any Cluster DO shard -- the row counter is looking in the wrong place, so this gate is measuring nothing. Check the .wrangler/state layout." >&2
+            ls -la .wrangler/state/v3/do/ || true
+            exit 1
+          fi
           sleep 60
           AFTER=$(count_rows)
           DELTA=$((AFTER - BEFORE))
@@ -300,11 +312,17 @@ jobs:
             -H "Authorization: Bearer k8flare-dev-token" -o /dev/null
           CLUSTER_DB=".wrangler/state/v3/do/k8flare-Cluster/metadata.sqlite"
           CONTROLLERS_DB=".wrangler/state/v3/do/k8flare-Controllers/metadata.sqlite"
-          # Slower than the Node/Service park above, and legitimately so:
-          # by now the backoff has stretched the Controllers interval out
-          # (15s doubling toward 10min), and the park decision is only made
-          # when the alarm next fires. Measured locally 2026-07-30: still
-          # armed at t+180s, parked by ~t+300s.
+          # Slower than the Node/Service park above. Measured locally
+          # 2026-07-30: still armed at t+180s, parked by ~t+300s.
+          #
+          # The mechanism is NOT established. An earlier version of this
+          # comment blamed the stretched backoff interval; that is wrong --
+          # controllers/index.ts's fetch() clamps any pending alarm to
+          # <=60s on a relevant write, and the DELETE is one. Cascading GC
+          # of the ReplicaSet and Pods keeping hasUnconvergedWork() true for
+          # several ticks is a better guess, but it is a guess. Do not act
+          # on it: this alarm predicate has been broken twice already (the
+          # 94-alarms incident and d1a9503).
           for i in $(seq 1 90); do
             CLUSTER_ALARMS=$(sqlite3 -cmd ".timeout 5000" "$CLUSTER_DB" "SELECT count(*) FROM _cf_ALARM;")
             CONTROLLERS_ALARMS=$(sqlite3 -cmd ".timeout 5000" "$CONTROLLERS_DB" "SELECT count(*) FROM _cf_ALARM;")

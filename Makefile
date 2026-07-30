@@ -247,7 +247,7 @@ gen: | gen-mirrors
 
 ## check: TypeScript check (vp check)
 check:
-	vp check
+	pnpm exec vp check
 
 ## vet: go vet, split by GOOS -- a plain `go vet ./pkg/...` wildcard fails
 ## for reasons unrelated to real bugs: pkg/cfruntime is js&&wasm-only (host

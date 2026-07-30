@@ -1192,7 +1192,7 @@ cluster would reconcile forever and the alarm would never park.
 
 Actual: not yet measured (no `wrangler deploy` performed for this change).
 
-## no-op 更新の書き込みストーム (actual, 2026-07-30)
+## no-op 更新の書き込みストーム (actual: 行数レート / modeled: 月額換算, 2026-07-30)
 
 `docs/platform-verification.md` の S26 訂正の裏付け計測。「Deployment を
 作ってからノードを join する」という平凡な順序で、rows-written 課金と
@@ -1214,8 +1214,13 @@ resourceVersion 以外の全フィールドが一致することを確認済み)
 (`bytes.Equal(data, origState.data)`)が無かったこと。
 
 換算すると、修正前は Deployment 1 個あたり月あたり約 4,900 万行の
-rows-written。上の表の「rows read-written」が DO の課金軸である以上、
-これはストレージ代だけのアイドルとは程遠い。同じ形の回帰を
-`cost-gate.yml` で捕まえるには、ゲートにワークロードを 1 つ作る
-ケースを足す必要がある(現在は Node と Service しか作らないので
-この状態を通り抜ける)。
+rows-written(1,130 行/60 秒 × 2,592,000 秒 = 48,816,000)。**行数レートは
+実測だが、この月額換算は実測ではなくモデル値**である — 課金された実クラスタは
+まだ存在せず、`wrangler dev --local` の sqlite から本番 DO の課金軸へ
+外挿している(docs/adopter-quickstart.md の「What it costs」と同じ但し書き)。上の表の「rows read-written」が DO の課金軸である以上、
+これはストレージ代だけのアイドルとは程遠い。同じ形の回帰は 2 段で捕まえる: `make test` レーンの
+`TestGuaranteedUpdateSuppressesNoOpWrites`(KineStorage を直接叩く単体
+テスト、全 PR で走る)と、`cost-gate.yml` の
+"Verify an unconvergeable workload does not write forever" ステップ
+(ノードなしクラスタに Deployment を作り、全シャード合計の kine 行数の
+定常増加を 60 秒あたり 50 行未満に縛る)。
