@@ -47,10 +47,21 @@ npx wrangler dev -c packages/k8flare-worker/wrangler.jsonc --local \
 
 - **`--local`** — `wrangler.jsonc` declares a `vpc_networks` binding named
   `MESH` with `"remote": true`. VPC/Mesh bindings have no local emulation,
-  so a plain `wrangler dev` opens a *real* Cloudflare proxy session at
-  startup: it hard-fails without credentials, and — worse — silently
-  succeeds through your real account if you happen to have a cached
-  `wrangler login`. Nothing in local development touches `MESH`.
+  so a plain `wrangler dev` tries to open a *real* Cloudflare proxy session
+  at startup. What that does depends on what credentials it finds
+  (measured 2026-07-30):
+  - cached `wrangler login` resolving to **several accounts**, no
+    `account_id` in the config → hard failure: *"More than one account
+    available but unable to select one in non-interactive mode."*
+  - cached login resolving to **one account** → it succeeds, and your
+    "local" development quietly runs through your real Cloudflare account.
+  - **no credentials at all** (CI) → it does not attempt the session and
+    dev starts normally. This is why `.github/workflows/cost-gate.yml`
+    works without `--local`; do not conclude from that that you can drop
+    the flag locally.
+
+  Nothing in local development touches `MESH`, so `--local` removes the
+  question entirely.
 - **`--enable-containers=false`** — the `containers` section is declared
   unconditionally, so dev refuses to start without a running Docker daemon.
   Drop this flag (and start Docker) only when you actually want NodeVMs; the

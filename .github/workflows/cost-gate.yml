@@ -31,11 +31,13 @@ on:
 #       in) together are sufficient to prove (b) by construction: with no
 #       armed alarm and no incoming request, there is no code path left
 #       that could touch a facet or do anything else billable.
-#   (c) workers/controllers (the DO-hosted kube-controller-manager --
-#       BYO-VM/host-process is still required for actual production
-#       clusters, see docs/platform-verification.md's S8 section: this
-#       Worker is currently ~19MiB gzip, over Cloudflare's 10MiB deploy
-#       limit) produces no further activity once idle. This job can only
+#   (c) the controllers Durable Object (the DO-hosted kube-controller-manager --
+#       see docs/platform-verification.md's S8 section) produces no
+#       further activity once idle. [Updated 2026-07-30: the size problem
+#       that text described was solved by the Worker Loader route -- the
+#       control-plane binaries ship as Static Assets chunks and run as
+#       dynamic workers, so kcm/gc/sched/clusterop ARE deployed today.
+#       What this job measures is unchanged.] This job can only
 #       measure that locally (no new log lines/requests) -- it cannot
 #       reproduce S8(b)'s production `wrangler tail` CPU-ms measurement
 #       (~0.4-0.5ms CPU/wall-second measured 2026-07-02), since there is no
@@ -43,7 +45,7 @@ on:
 #       activity" signal here is the CI-feasible proxy the v2 rewrite
 #       plan's Phase 6 section anticipated for exactly this case; treat
 #       S8(b)'s method as the manual/production procedure to re-run if
-#       workers/controllers ever becomes deployable.
+#       the controllers DO ever becomes deployable.
 
 jobs:
   cost-gate:
@@ -68,7 +70,7 @@ jobs:
 
       # Both apiserver and controllers are needed here (unlike ci.yml/
       # release.yml, which only need apiserver): this job's item (c)
-      # specifically exercises workers/controllers.
+      # specifically exercises the Controllers DO.
       - name: Install binaryen (wasm-opt) -- pinned release, not apt
         # Pinned to the same version developers use locally (mise
         # aqua:web-assembly/binaryen). apt/ubuntu ships an older binaryen
@@ -98,12 +100,17 @@ jobs:
       # curl (never kubectl/client-go), so plain HTTP + a bearer header is
       # fine -- unlike e2e-conformance.yml, which needs TLS because
       # client-go's clientcmd refuses to send credentials over plain HTTP
-      # (see CLAUDE.md's local-dev-pitfalls section). Only 4 Workers are
-      # started here even though workers/controllers is also exercised --
-      # gateway/storage/apiserver/runtime are the real request path;
-      # workers/controllers is reached indirectly via storage's
-      # pingControllers(), not started for direct requests here (mirrors
-      # e2e-conformance.yml, which never starts it directly either).
+      # (see docs/development.md). One Worker is started -- since the 2026-07-06
+      # consolidation there is only one deployable Worker, and the control
+      # plane runs inside it as dynamic workers. The Controllers DO is
+      # exercised indirectly, through the Cluster DO's pingControllers()
+      # on a relevant write, not by a direct request.
+
+      # NOTE: no --local here, unlike make dev. Deliberate and verified
+      # (2026-07-30): with no credentials in the environment -- which is
+      # CI -- wrangler does not attempt the MESH remote-proxy session and
+      # dev starts normally. Adding --local would also be fine; running
+      # this locally on a logged-in machine is what needs the flag.
       - name: Start wrangler dev (real Workers + Durable Object storage)
         run: |
           nohup npx wrangler dev \
@@ -184,8 +191,9 @@ jobs:
           curl -sf -X DELETE http://127.0.0.1:8787/api/v1/namespaces/default/services/cost-gate-svc \
             -H "Authorization: Bearer k8flare-dev-token" -o /dev/null
 
-      # SAFETY_NET_INTERVAL_MS is 60s in both workers/storage/src/index.ts
-      # and workers/controllers/src/index.ts, so parking can take up to
+      # SAFETY_NET_INTERVAL_MS is 60s in both
+      # packages/k8flare-worker/src/storage/index.ts and
+      # packages/k8flare-worker/src/controllers/index.ts, so parking can take up to
       # ~60s from the deletes above (the alarm has to fire once more,
       # re-evaluate, and choose not to re-arm) -- poll rather than a fixed
       # sleep, but budget for the full interval plus margin.
