@@ -178,14 +178,62 @@ directives. Use `make gen`.)
 ## Talking to the local server
 
 `wrangler dev` serves plain HTTP, and client-go's `clientcmd` refuses to
-send credentials over non-TLS — so real `kubectl` against a kubeconfig needs
-a local TLS terminator (self-signed cert + reverse proxy). Go tests that
-build a `rest.Config{BearerToken: ...}` directly are not subject to that,
-which is why the test suites drive the server that way. `curl` works fine:
+send credentials over non-TLS. Go tests that build a
+`rest.Config{BearerToken: ...}` directly are not subject to that, which is
+why the test suites drive the server that way, and `curl` works fine:
 
 ```sh
 curl -H 'Authorization: Bearer k8flare-dev-token' localhost:8787/api/v1/namespaces
 ```
+
+Real `kubectl` against a kubeconfig needs a TLS terminator in front. Node
+is already a prerequisite, so no extra tooling is required:
+
+```sh
+mkdir -p /tmp/k8ftls && cd /tmp/k8ftls
+openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
+  -days 365 -subj "/CN=localhost" \
+  -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+
+cat > proxy.mjs <<'EOF'
+import { createServer } from "node:https";
+import { readFileSync } from "node:fs";
+import { request } from "node:http";
+
+createServer(
+  { key: readFileSync("key.pem"), cert: readFileSync("cert.pem") },
+  (req, res) => {
+    const up = request(
+      { host: "127.0.0.1", port: 8787, path: req.url, method: req.method, headers: req.headers },
+      (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); },
+    );
+    up.on("error", (e) => { res.writeHead(502); res.end(String(e)); });
+    req.pipe(up);
+  },
+).listen(6443, () => console.log("https://localhost:6443 -> http://127.0.0.1:8787"));
+EOF
+
+node proxy.mjs &
+```
+
+Then point a kubeconfig at it:
+
+```sh
+export KUBECONFIG=/tmp/k8ftls/kubeconfig
+kubectl config set-cluster k8flare --server=https://localhost:6443 \
+  --certificate-authority=/tmp/k8ftls/cert.pem --embed-certs
+kubectl config set-credentials dev --token=k8flare-dev-token
+kubectl config set-context k8flare --cluster=k8flare --user=dev
+kubectl config use-context k8flare
+
+kubectl get ns
+kubectl create deployment tlsprobe --image=nginx
+```
+
+Verified end to end with kubectl v1.33.9 on 2026-07-30: `get`, `create`,
+and streaming `get -w` all work through it. Use it for local development
+only — it terminates TLS with a throwaway certificate and forwards to a
+plain-HTTP dev server.
 
 `k8flare-dev-token` is the fallback the default cluster accepts when no
 token has been minted and `K3S_TOKEN` is unset — see
