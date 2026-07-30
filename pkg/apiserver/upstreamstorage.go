@@ -1,6 +1,7 @@
 package apiserver
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -245,6 +246,20 @@ func (k *KineStorage) GuaranteedUpdate(ctx context.Context, key string, destinat
 		data, err := EncodeToStorage(updated)
 		if err != nil {
 			return err
+		}
+
+		// No-op suppression, as upstream's etcd3 store does before its
+		// Txn (staging/src/k8s.io/apiserver/pkg/storage/etcd3/store.go:
+		// "if !origState.stale && bytes.Equal(data, origState.data)").
+		// Without it every controller sync that recomputes an identical
+		// status still writes a revision, and that write pokes the
+		// controllers again: measured 2026-07-30 at ~1,130 revisions per
+		// minute, indefinitely, for one Deployment on a node-less cluster
+		// (docs/platform-verification.md S26). Objects stored before the
+		// TypeMeta stamping fix compare unequal once, get rewritten in
+		// normalized form, and match from then on.
+		if currentRev != 0 && bytes.Equal(data, stored.Value) {
+			return k.decodeInto(stored.Value, currentRev, destination)
 		}
 
 		var newRev int64

@@ -3898,3 +3898,54 @@ Controllers DO ウェイク。アイドルではない(ワークロードは存�
 `cost-gate.yml` はこの状態を検出できない: ワークロードを 1 つも作らず、
 Node と Service だけを作ってアイドル判定している。S26 を回帰として
 捕まえるには、ワークロードありのケースを足す必要がある。
+
+### S26 訂正 (2026-07-30、同日): 原因判明 — no-op 更新の書き込みストーム
+
+上の S26 は 2 点が**誤り**だったので訂正する(不可侵ルール #4: 消さずに追記)。
+
+1. **「kine 書き込みは 0 件」は計測ミス。** Cluster DO は facets により
+   複数の sqlite に分かれており、最初の計測は 7 個あるうちの 1 個
+   (kine 行 0 件のシャード)だけを見ていた。全シャードを数え直すと
+   **60 秒で 1,130 行**書かれていた。CLAUDE.md が挙げる「計器の側の誤り」
+   そのもの。
+2. **「バックオフが壊れている」も誤り。** バックオフは仕様通り動いていた。
+   毎サイクル本物の書き込みが届くので `fetch()` の
+   `unconvergedTicks = 0`(index.ts:350)が正しくリセットしていただけ。
+   15 秒間隔は症状であって原因ではない。
+
+**真の原因**: `KineStorage.GuaranteedUpdate` に upstream etcd3 store の
+no-op 抑止がなかった。upstream は Txn の前に
+`if !origState.stale && bytes.Equal(data, origState.data)` で「値が変わって
+いない更新」を握り潰すが、こちらは無条件に新リビジョンを書いていた。
+
+結果として自己持続ループが成立していた:
+
+```
+deployment controller が同一 status を再計算 → Update
+  → kine に新リビジョン(値は前と 1 バイトも違わない)
+  → afterWrite → pingControllers → Controllers.fetch()
+  → unconvergedTicks = 0(バックオフ解除)+ 15 秒後に再武装
+  → コントローラーが再 sync → 最初に戻る
+```
+
+実測 (node-less クラスタ + 2 replica Deployment 1 個、値の差分なし):
+
+| | 修正前 | 修正後 |
+|---|---|---|
+| Deployment の resourceVersion | 5 秒で 9521→9622 (≈20/秒) | 28 で固定 |
+| kine 書き込み (120 秒) | ≈2,260 行 | **0 行** |
+| kine 総行数 | 7 分で 8,400 行、増加継続 | 159 行で定常 |
+| Controllers アラーム間隔 | 15 秒固定 | 15→30→60→120→240 秒(上限 600 秒へ) |
+
+これはコスト不変条件に対する実害だった: 平凡な操作(ノードを join する前に
+Deployment を作る)だけで rows-written 課金と kine の行数が無限に伸びる。
+修正は `pkg/apiserver/upstreamstorage.go` の 1 箇所、upstream と同じ
+`bytes.Equal` ガード。
+
+**残る未解決 (S26b)**: 修正後も約 8 分周期で `warmupUntil` が再武装され、
+`unconvergedTicks` が 0 に戻ってバックオフが 15 秒から数え直しになる
+(t=480s で観測)。`alarm()` は `armWarmup: false` を渡すので、これは
+`fetch()` 経由のポークが 8 分毎に届いていることを意味する。書き込みは
+0 件なので発生源は未特定(dev の isolate 退避かもしれない)。平均間隔は
+15 秒固定から約 40 秒に伸びており実害は小さいが、10 分上限には届いて
+いない。

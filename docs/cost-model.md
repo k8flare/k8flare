@@ -1191,3 +1191,31 @@ generation && phase == Ready`, and Secrets are deliberately **not** in
 cluster would reconcile forever and the alarm would never park.
 
 Actual: not yet measured (no `wrangler deploy` performed for this change).
+
+## no-op 更新の書き込みストーム (actual, 2026-07-30)
+
+`docs/platform-verification.md` の S26 訂正の裏付け計測。「Deployment を
+作ってからノードを join する」という平凡な順序で、rows-written 課金と
+kine の行数が**無制限に伸びていた**。
+
+計測条件: `wrangler dev --local`、ノード 0 台のクラスタに 2 replica の
+Deployment を 1 個だけ作成し、以後は誰も触らない。
+
+| | 修正前 | 修正後 |
+|---|---|---|
+| kine 行(120 秒あたり) | 約 2,260 | **0** |
+| kine 総行数 | 7 分で 8,400、増加継続 | 159 で定常 |
+| Deployment resourceVersion | 約 20/秒で増加 | 固定 |
+| Controllers アラーム間隔 | 15 秒固定 | 15→30→60→120→240 秒 |
+
+書かれていた値は前リビジョンと 1 バイトも違わなかった(GET を 2 回叩いて
+resourceVersion 以外の全フィールドが一致することを確認済み)。原因は
+`KineStorage.GuaranteedUpdate` に upstream etcd3 store の no-op 抑止
+(`bytes.Equal(data, origState.data)`)が無かったこと。
+
+換算すると、修正前は Deployment 1 個あたり月あたり約 4,900 万行の
+rows-written。上の表の「rows read-written」が DO の課金軸である以上、
+これはストレージ代だけのアイドルとは程遠い。同じ形の回帰を
+`cost-gate.yml` で捕まえるには、ゲートにワークロードを 1 つ作る
+ケースを足す必要がある(現在は Node と Service しか作らないので
+この状態を通り抜ける)。
