@@ -95,11 +95,21 @@ write.
 
 ## Test lanes
 
+`make test` runs all three lanes below, in order, in about three minutes.
+They cannot share one `wrangler dev`: the apiserver lane needs the
+controllers off and the other two need them on. Run a single lane by name
+while iterating.
+
 | Lane | Runs | Covers |
 |---|---|---|
-| `make test` | `go test ./pkg/apiserver/...`, own `wrangler dev` with `KCM_DISABLED=1` | apiserver, storage, admission, RBAC, tokens — **no controllers** |
+| `make test-apiserver` | `go test ./pkg/apiserver/...`, own `wrangler dev` with `KCM_DISABLED=1` | apiserver, storage, admission, RBAC, tokens — **no controllers** |
 | `make test-kcm` | `TestKCMDynamicWorkerControlPlane`, `-timeout 15m` | real KCM/GC/sched dynamic workers |
 | `make test-clusterop` | `TestClusterOperatorLifecycle`, `-timeout 15m` | cluster provisioning/teardown, with the workload controllers and scheduler off (`CM_DISABLED`/`SCHED_DISABLED`) |
+
+`ci.yml` runs the same three on every pull request. Until 2026-07-31 it
+ran only the first, so the real controllers had no automatic gate at all —
+the job that does exercise them, `cost-gate.yml`, is dispatch-only and a
+fork contributor cannot trigger it.
 
 The `KCM_DISABLED=1` kill switch (honoured in
 `packages/k8flare-worker/src/storage/index.ts` and

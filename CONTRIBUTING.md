@@ -40,15 +40,19 @@ binaryen (`wasm-opt`).
 |---|---|---|
 | `make check` | `vp check` — formatting + lint + TypeScript | seconds |
 | `make vet` | `go vet` in three passes: host, `GOOS=js -tags leanwidth`, `GOOS=js -tags schedwidth` | seconds (after mirrors exist) |
-| `make test` | apiserver integration suite; builds the WASM chunks, then boots its own `wrangler dev` and drives it with real client-go | quick once the chunks exist — the WASM build is the expensive part |
+| `make test` | All three lanes below, in order | ~3 min once the chunks exist — the WASM build is the expensive part |
+| `make test-apiserver` | apiserver integration suite; boots its own `wrangler dev` with `KCM_DISABLED=1` and drives it with real client-go | ~55s |
 | `make test-kcm` | Same harness with the real KCM/GC/sched dynamic workers enabled | ~40s once the chunks are built; the generous `-timeout 15m` is headroom for the first poke compiling three ~40MB WASM modules inside workerd, not the expected runtime |
 | `make test-clusterop` | Cluster-operator lifecycle against the real clusterop dynamic worker | same shape as `test-kcm` (`-timeout 15m`) |
 
 `make check` and `make vet` are cheap; run them always. `make test` is the
-default correctness gate. The two `test-*` lanes are opt-in: `make test`
-runs with `KCM_DISABLED=1`, so **controller behaviour is only covered by
-`test-kcm` / `test-clusterop`** — run the relevant one if you touched
-anything under `pkg/controllers/`.
+correctness gate and `ci.yml` runs the same three lanes on every pull
+request. Use the individual lane names while iterating.
+
+They stay separate processes because their configurations are
+incompatible: `test-apiserver` runs with `KCM_DISABLED=1`, since those
+tests assume nothing reconciles their Pods, and the other two need the
+controllers on.
 
 The first `make wasm` is the expensive step (the KCM `wasm-opt -Oz` pass
 alone is ~2 min, and a cold machine downloads several GB of Go modules);

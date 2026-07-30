@@ -120,5 +120,23 @@ jobs:
         # CI was skipping both.
         run: make vet
 
-      - name: Go test
+      # The three lanes `make test` runs, invoked directly rather than
+      # through Make: the Makefile target depends on `wasm`, and after a
+      # fresh checkout mtimes would make it rebuild everything the
+      # build:wasm step above already produced. Keep this list in step
+      # with the Makefile's `test` target.
+      #
+      # The controller lanes are here deliberately. Until 2026-07-31 CI
+      # ran only the first one, which disables the controllers -- so the
+      # real KCM, GC, scheduler and cluster operator had no automatic
+      # gate on any pull request, and the one job that does exercise them
+      # (cost-gate.yml) is dispatch-only and cannot be triggered from a
+      # fork. They add ~2 minutes.
+      - name: Go test (apiserver -- controllers off)
         run: go test ./pkg/apiserver/...
+
+      - name: Go test (real KCM/GC/scheduler dynamic workers)
+        run: K8FLARE_KCM_TEST=1 go test -count=1 -run TestKCMDynamicWorkerControlPlane -timeout 15m ./pkg/apiserver/
+
+      - name: Go test (cluster operator lifecycle)
+        run: K8FLARE_CLUSTEROP_TEST=1 go test -count=1 -run TestClusterOperatorLifecycle -timeout 15m ./pkg/apiserver/

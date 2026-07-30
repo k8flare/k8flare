@@ -112,9 +112,12 @@ make dev                         # wrangler dev(単一 config: packages/k8flare-
 make check                       # TypeScript 型チェック(vp check)
 npx tsc --noEmit -p packages/k8flare-worker/tsconfig.json   # vp check が拾わない型面の直接チェック
 make vet                         # go vet ./pkg/... ./cmd/k8flare-gen/...
-make test                        # go test ./pkg/apiserver/... (wasm ターゲットに依存、自動で先にビルドされる)
-                                 # 自前で `npx wrangler dev` を起動して実 client-go で駆動する
-                                 # (単一 config + --enable-containers=false + KCM_DISABLED:1)
+make test                        # 全テストレーン(apiserver + kcm + clusterop)を順に実行。約3分。
+                                 # 各レーンが自前で `npx wrangler dev` を起動して実 client-go で駆動する
+                                 # (単一 config + --enable-containers=false)。設定が両立しないので
+                                 # 1 プロセスにはまとめられない: apiserver レーンはコントローラー無効
+                                 # (KCM_DISABLED:1)、他の 2 つは有効が前提。
+                                 # 個別に回すなら make test-apiserver / test-kcm / test-clusterop
 make gen                         # コード生成(cmd/k8flare-gen。生成後は git diff --exit-code で検証)
 ```
 

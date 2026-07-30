@@ -262,8 +262,22 @@ vet: | gen-mirrors
 	GOFLAGS=-modfile=go.wasm.mod GOOS=js GOARCH=wasm go vet -tags leanwidth ./pkg/apiserver/cmd/... ./pkg/cfruntime/... ./pkg/controllers ./pkg/controllers/gc/... ./pkg/controllers/restconfig/... ./pkg/controllers/cmd/kcm-wasm ./pkg/controllers/cmd/gc-wasm ./pkg/controllers/clusterop/... ./pkg/controllers/cmd/clusterop-wasm ./pkg/selectormatch/...
 	GOFLAGS=-modfile=go.wasm.mod GOOS=js GOARCH=wasm go vet -tags schedwidth ./pkg/controllers/sched/... ./pkg/controllers/cmd/kcm-wasm/scheduler
 
-## test: apiserver integration tests (spins up its own wrangler dev; needs wasm built first)
-test: wasm
+## test: the whole local test gate -- every lane, in order. Each spins up
+## its own wrangler dev, because they need incompatible configurations
+## (the apiserver lane runs with the controllers OFF; the other two need
+## them on). ~3 minutes total.
+##
+## They used to be three separate opt-in targets with `test` meaning only
+## the first, which meant a green `make test` said nothing at all about
+## the real KCM, GC, scheduler or cluster operator -- and nothing else
+## covered them either, since cost-gate.yml is dispatch-only and a fork
+## cannot trigger it. Use the individual targets below while iterating.
+test: test-apiserver test-kcm test-clusterop
+
+## test-apiserver: apiserver, storage, admission, RBAC, tokens -- with the
+## controllers disabled, since these tests assume nothing reconciles their
+## Pods (the KCM_DISABLED kill switch, see CLAUDE.md).
+test-apiserver: wasm
 	go test -count=1 ./pkg/apiserver/...
 
 ## test-kcm: dw control-plane smoke -- real KCM/GC/sched dynamic workers
