@@ -82,11 +82,16 @@ passes `--enable-containers=false` so the rest works without it.
 
 ```sh
 pnpm install
-go mod download  # the k3s-flavored Kubernetes tree the mirrors copy from;
-                 # several GB on a cold machine, and `make wasm` needs it
-make wasm        # build the five WASM chunks (~2.5 min warm; longer cold)
+make wasm        # builds the five WASM chunks
 make dev         # wrangler dev --local (default port 8787)
 ```
+
+`make wasm` on a cold machine also downloads the k3s-flavored Kubernetes
+tree (a few GB) and regenerates the `.build/` module mirrors every Go
+command here depends on, so budget ~5 minutes the first time. Once the
+mirrors exist a no-op rebuild is a few seconds. Do not run `go mod
+download` by hand before that: the mirrors are `replace` targets that do
+not exist yet, so it fails until `make` has created them.
 
 `make dev` runs wrangler with `--local`: the `MESH` VPC binding in
 `wrangler.jsonc` has no local emulation, so a plain `wrangler dev` would

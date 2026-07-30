@@ -12,17 +12,29 @@ you want Pod-on-Containers NodeVMs.
 
 ```sh
 pnpm install
-go mod download   # several GB cold: the k3s-flavored Kubernetes tree
-make wasm         # build the WASM chunks
+make wasm         # regenerates the .build/ mirrors, then builds the chunks
 make dev          # wrangler dev on :8787
 ```
+
+Run `make` first, not `go`. Every Go command here resolves `k8s.io/*`
+through `replace` directives that point into `.build/`, which does not
+exist in a fresh checkout — so a bare `go mod download` or `go build`
+fails until a `make` target has run `gen-mirrors` (see "The .build/
+mirrors" below). `make wasm` does that for you; the cold run also pulls
+the k3s-flavored Kubernetes tree, a few GB.
 
 `wasm-opt` version matters. The pinned release (binaryen `version_129`, what
 CI installs and what `mise` gives you via `aqua:web-assembly/binaryen`)
 optimizes measurably better than the one Ubuntu's apt ships: the same
-`gc-wasm` source measured 65,204,713 bytes locally but 67,222,931 bytes —
-111KiB *over* the Loader cap — with apt's binaryen. Size reproducibility
-depends on the version.
+source measured 65,204,713 bytes locally but 67,222,931 bytes — 111KiB
+*over* the Loader cap — with apt's binaryen (found 2026-07-10, when CI's
+Build WASM step failed on a build that passed locally). Size
+reproducibility depends on the version.
+
+The chunk that gets hurt is whichever is closest to the cap, which today
+is **apiserver** (65.2MB, ~1.8MB of headroom) — not `gc`, which the
+original note named and which now sits 25MB clear. `make wasm` prints
+every chunk's headroom; trust that over any number written down here.
 
 ## `make dev`: the two flags that aren't conveniences
 

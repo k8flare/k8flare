@@ -41,7 +41,7 @@ binaryen (`wasm-opt`).
 | `make check` | `vp check` — formatting + lint + TypeScript | seconds |
 | `make vet` | `go vet` in three passes: host, `GOOS=js -tags leanwidth`, `GOOS=js -tags schedwidth` | seconds (after mirrors exist) |
 | `make test` | apiserver integration suite; builds the WASM chunks, then boots its own `wrangler dev` and drives it with real client-go | quick once the chunks exist — the WASM build is the expensive part |
-| `make test-kcm` | Same harness with the real KCM/GC/sched dynamic workers enabled | slow — the first poke compiles three ~40MB WASM modules inside workerd (`-timeout 15m`) |
+| `make test-kcm` | Same harness with the real KCM/GC/sched dynamic workers enabled | ~40s once the chunks are built; the generous `-timeout 15m` is headroom for the first poke compiling three ~40MB WASM modules inside workerd, not the expected runtime |
 | `make test-clusterop` | Cluster-operator lifecycle against the real clusterop dynamic worker | same shape as `test-kcm` (`-timeout 15m`) |
 
 `make check` and `make vet` are cheap; run them always. `make test` is the
