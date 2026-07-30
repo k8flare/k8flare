@@ -50,7 +50,11 @@ on:
 jobs:
   cost-gate:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Raised from 15 when the unconvergeable-workload case was added
+    # (2026-07-30): that block alone can take ~12min (180s settle + 60s
+    # measurement window + up to 450s waiting for the backed-off alarm
+    # to reach its parking decision).
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -233,6 +237,83 @@ jobs:
             tail -n +"$((BEFORE + 1))" "$RUNNER_TEMP/wrangler.log"
             exit 1
           fi
+
+      # Regression test for the write storm found on 2026-07-30
+      # (docs/platform-verification.md S26 correction, docs/cost-model.md).
+      # Everything above only ever creates a Node and a Service, so it
+      # never reaches the state that broke: a workload the controllers
+      # keep reconciling. A Deployment on a node-less cluster can never
+      # converge, and before the fix each sync rewrote a byte-identical
+      # status -- ~2,260 kine rows per 120s, forever, for one object.
+      #
+      # Rows are counted across every Cluster DO shard: facets put the
+      # kine table in several sqlite files, and sampling only the first
+      # is what made the original measurement read zero.
+      - name: Create an unconvergeable workload (no nodes exist at this point)
+        run: |
+          curl -sf -X POST http://127.0.0.1:8787/apis/apps/v1/namespaces/default/deployments \
+            -H "Authorization: Bearer k8flare-dev-token" -H "Content-Type: application/json" \
+            -d '{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"cost-gate-wl"},
+                 "spec":{"replicas":2,"selector":{"matchLabels":{"app":"cost-gate-wl"}},
+                 "template":{"metadata":{"labels":{"app":"cost-gate-wl"}},
+                 "spec":{"containers":[{"name":"c","image":"nginx"}]}}}}' \
+            -o /dev/null
+          # Settling is not instant and it is not the storm: the scheduler
+          # retries the unschedulable Pods with its own backoff, and each
+          # retry bumps the FailedScheduling Event's count -- a real field
+          # change, so no-op suppression correctly lets it through. Measured
+          # locally 2026-07-30, per-60s deltas from creation: 24, 20, 20, 4, 0.
+          echo "Letting the controllers settle (ReplicaSet, Pods, FailedScheduling events)."
+          sleep 180
+
+      - name: Verify an unconvergeable workload does not write forever
+        run: |
+          count_rows() {
+            total=0
+            for db in .wrangler/state/v3/do/k8flare-Cluster/*.sqlite; do
+              case "$db" in *metadata.sqlite) continue;; esac
+              n=$(sqlite3 -cmd ".timeout 5000" "$db" \
+                "SELECT count(*) FROM kine;" 2>/dev/null || echo 0)
+              total=$((total + n))
+            done
+            echo "$total"
+          }
+          BEFORE=$(count_rows)
+          sleep 60
+          AFTER=$(count_rows)
+          DELTA=$((AFTER - BEFORE))
+          echo "kine rows across all Cluster shards: $BEFORE -> $AFTER (delta $DELTA in 60s)"
+          # Measured 0 after the fix, ~1,130 before it. The margin is for
+          # a slow runner still settling, not for a steady write rate.
+          if [ "$DELTA" -gt 50 ]; then
+            echo "::error::a settled unconvergeable workload wrote $DELTA kine rows in 60s -- rows-written billing and kine growth are unbounded (the S26 write storm is back; check KineStorage.GuaranteedUpdate's no-op suppression)" >&2
+            exit 1
+          fi
+
+      - name: Delete the workload and verify the alarm parks again
+        run: |
+          curl -sf -X DELETE http://127.0.0.1:8787/apis/apps/v1/namespaces/default/deployments/cost-gate-wl \
+            -H "Authorization: Bearer k8flare-dev-token" -o /dev/null
+          CLUSTER_DB=".wrangler/state/v3/do/k8flare-Cluster/metadata.sqlite"
+          CONTROLLERS_DB=".wrangler/state/v3/do/k8flare-Controllers/metadata.sqlite"
+          # Slower than the Node/Service park above, and legitimately so:
+          # by now the backoff has stretched the Controllers interval out
+          # (15s doubling toward 10min), and the park decision is only made
+          # when the alarm next fires. Measured locally 2026-07-30: still
+          # armed at t+180s, parked by ~t+300s.
+          for i in $(seq 1 90); do
+            CLUSTER_ALARMS=$(sqlite3 -cmd ".timeout 5000" "$CLUSTER_DB" "SELECT count(*) FROM _cf_ALARM;")
+            CONTROLLERS_ALARMS=$(sqlite3 -cmd ".timeout 5000" "$CONTROLLERS_DB" "SELECT count(*) FROM _cf_ALARM;")
+            echo "t+$((i * 5))s: Cluster=$CLUSTER_ALARMS Controllers=$CONTROLLERS_ALARMS"
+            if [ "$CLUSTER_ALARMS" = "0" ] && [ "$CONTROLLERS_ALARMS" = "0" ]; then
+              echo "Both parked."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::alarm did not park within 450s of deleting the last workload -- an idle cluster would keep costing alarm invocations forever (cost invariant #1/#3 violated)" >&2
+          cat "$RUNNER_TEMP/wrangler.log"
+          exit 1
 
       - name: Tear down background processes
         if: always()
