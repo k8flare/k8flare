@@ -95,7 +95,7 @@ jobs:
       - name: Install binaryen (wasm-opt) -- pinned release, not apt
         # Pinned to the same version developers use locally (mise
         # aqua:web-assembly/binaryen). apt/ubuntu ships an older binaryen
-        # whose -Oz optimizes measurably worse: the SAME gc-wasm source
+        # whose -Oz optimizes measurably worse: the SAME source
         # measured 65,204,713 bytes locally (version_129) but 67,222,931
         # bytes (+2.0MB, 111KiB OVER the 64MiB Loader cap) with apt's
         # binaryen on CI -- found 2026-07-10 when the e2e workflow's
@@ -114,7 +114,11 @@ jobs:
         run: npm run build:wasm
 
       - name: Go vet
-        run: go vet ./pkg/apiserver/...
+        # `make vet`, not a bare go vet: the documented gate is three passes
+        # (host, then GOOS=js with -tags leanwidth and -tags schedwidth). The
+        # WASM-target passes are the ones that catch build-tag breakage, and
+        # CI was skipping both.
+        run: make vet
 
       - name: Go test
         run: go test ./pkg/apiserver/...

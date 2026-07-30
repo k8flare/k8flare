@@ -1,8 +1,10 @@
 node_modules/
 build/
 packages/k8flare-worker/assets/wasm/
-# Preserved on-disk artifacts of the pre-consolidation layout (the
-# assets-backup dir is the OPEN REGRESSION safeguard -- see CLAUDE.md)
+# Preserved on-disk artifacts of the pre-consolidation layout. (These were
+# once the safeguard for a build-reproducibility regression; that was
+# resolved the same day it was found -- docs/platform-verification.md's
+# "RESOLVED REGRESSION" section -- so they are only leftovers now.)
 workers/controllers/assets/
 workers/controllers/assets-backup-*/
 dist/
