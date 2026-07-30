@@ -1191,3 +1191,106 @@ generation && phase == Ready`, and Secrets are deliberately **not** in
 cluster would reconcile forever and the alarm would never park.
 
 Actual: not yet measured (no `wrangler deploy` performed for this change).
+
+## no-op 更新の書き込みストーム (actual: 行数レート / modeled: 月額換算, 2026-07-30)
+
+`docs/platform-verification.md` の S26 訂正の裏付け計測。「Deployment を
+作ってからノードを join する」という平凡な順序で、rows-written 課金と
+kine の行数が**無制限に伸びていた**。
+
+計測条件: `wrangler dev --local`、ノード 0 台のクラスタに 2 replica の
+Deployment を 1 個だけ作成し、以後は誰も触らない。
+
+| | 修正前 | 修正後 |
+|---|---|---|
+| kine 行(120 秒あたり) | 約 2,260 | **0** |
+| kine 総行数 | 7 分で 8,400、増加継続 | 159 で定常 |
+| Deployment resourceVersion | 約 20/秒で増加 | 固定 |
+| Controllers アラーム間隔 | 15 秒固定 | 15→30→60→120→240 秒 |
+
+書かれていた値は前リビジョンと 1 バイトも違わなかった(GET を 2 回叩いて
+resourceVersion 以外の全フィールドが一致することを確認済み)。原因は
+`KineStorage.GuaranteedUpdate` に upstream etcd3 store の no-op 抑止
+(`bytes.Equal(data, origState.data)`)が無かったこと。
+
+換算すると、修正前は Deployment 1 個あたり月あたり約 4,900 万行の
+rows-written(1,130 行/60 秒 × 2,592,000 秒 = 48,816,000)。**行数レートは
+実測だが、この月額換算は実測ではなくモデル値**である — 課金された実クラスタは
+まだ存在せず、`wrangler dev --local` の sqlite から本番 DO の課金軸へ
+外挿している(docs/adopter-quickstart.md の「What it costs」と同じ但し書き)。上の表の「rows read-written」が DO の課金軸である以上、
+これはストレージ代だけのアイドルとは程遠い。同じ形の回帰は 2 段で捕まえる: `make test` レーンの
+`pkg/apiserver/upstreamstorage_test.go` の 3 本(KineStorage を直接叩く
+単体テスト、全 PR で走る)と、`cost-gate.yml` の
+"Verify an unconvergeable workload does not write forever" ステップ
+(ノードなしクラスタに Deployment を作り、全シャード合計の kine 行数の
+定常増加を 60 秒あたり 50 行未満に縛る)。
+
+## CronJob の wake-up アラーム (actual + estimate, 2026-07-30)
+
+**手順違反の記録(不変条件 #5)**: この見積もりは実装の**後**に書いた。#5 は
+「実装前にコストを見積もって書く」と定めており、順序を守れなかった。内容は
+実測に基づくが、順序の逸脱としてここに残す。
+
+S27(`docs/platform-verification.md`)の修正で、CronJob が存在するクラスタは
+アイドルでも「次の発火時刻」にアラームを 1 回張るようになった。
+
+アイドル時の課金対象:
+
+| CronJob なし | 変化なし。アラームはパークする(実測: 全 alarm 0) |
+|---|---|
+| CronJob あり | **発火 1 回につき** DO アラーム 1 回 + KCM 等の dynamic worker ロード 1 回 + apiserver への list 数回 |
+
+固定間隔ポーリングではない(不変条件 #3): アラームは CronJob が存在する
+から張られ、特定の時刻に 1 回だけセットされ、最後の CronJob を削除すると
+またパークする。
+
+頻度はユーザーのスケジュール次第で、上限はユーザーが決める:
+
+| schedule | 月あたりの発火 |
+|---|---|
+| `0 3 * * *`(日次) | 30 |
+| `0 * * * *`(毎時) | 720 |
+| `*/5 * * * *` | 8,640 |
+| `* * * * *` | 43,200 |
+
+発火 1 回のコストは「コールドな制御プレーンを起こして 1 サイクル回す」分
+— dynamic worker のロードは Workers の CPU 時間課金で、I/O 待ちは無課金。
+Pod 本体はユーザーのコスト(不変条件 #6)だが、**この起床は制御プレーンの
+コスト**なので上表に含めた。`* * * * *` を置けばアイドルとは呼べない
+水準になる、というのが正直なところ。
+
+なお `overdue`(発火時刻を跨いでクラスタが落ちていた場合)は通常の
+「未収束の仕事」扱いになるため、既存の指数バックオフ(15 秒 → 10 分)の
+上限が効く。取りこぼしを検知してから Job が作られるまでの間だけ、
+そのレートでアラームが鳴る。
+
+### 実測とベースライン比較 (2026-07-30)
+
+「CronJob を置くとクラスタがパークしなくなるのでは」という懸念に対する
+測定。各 12 分、5 秒間隔サンプリング、ノード 0 台のローカルクラスタ:
+
+| 条件 | アラーム再武装 | パーク |
+|---|---|---|
+| CronJob なし | 0 | パークする |
+| CronJob 1 個・次の発火まで待機 | 発火時刻に 1 回だけ | Cluster DO はパーク |
+| **ベースライン: 素の Job 1 個(CronJob なし)** | **1.8/分** | **一度もパークせず** |
+| CronJob `*/2 * * * *` | 3.8/分 | 一度もパークせず |
+
+**ベースライン行が結論を決める**: CronJob が無くても、完走できない Job が
+1 個あるだけでクラスタはパークしなくなる。これは S26 で扱った
+「未収束ワークロード」の既存挙動であって、**CronJob ウェイクアップが
+作った問題ではない**。`*/2` がその約 2 倍になるのは、2 分ごとに新しい
+完走できない Job を作り続けるからで、スケジュールの内容がそのまま出た
+数字である。
+
+**未測定(重要)**: 上表はすべてノード 0 台での測定なので、Job が完走する
+=実際に問題になるケースの定常コストは測れていない。設計上は
+「発火 1 回 = アラーム 1 + dynamic worker ロード 1」で、その CPU 時間の
+実測値は持っていない。ノードを持つ環境で測り直すこと。
+
+**既知の改善余地**: 現在アラームは発火時に kcm/sched/gc/clusterop を
+すべてロードしている(`controllers/index.ts` の `for (const name of
+COMPONENTS)`)。cron の発火に必要なのは kcm だけなので、絞れば 1 発火
+あたりのロードは約 1/4 になる。未着手 — このアラーム経路は過去 2 回
+壊しているため(94-alarms インシデントと d1a9503)、実測を伴わない変更を
+避けた。

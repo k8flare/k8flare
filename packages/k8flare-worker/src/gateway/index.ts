@@ -20,6 +20,7 @@ import { verifyClusterToken } from "../clusters/tokens.ts";
 function isUnauthenticatedPath(url: URL): boolean {
   const p = url.pathname;
   return (
+    isHealthPath(p) ||
     p === "/version" ||
     p === "/cacerts" ||
     p === "/api" ||
@@ -27,6 +28,21 @@ function isUnauthenticatedPath(url: URL): boolean {
     /^\/api\/v1$/.test(p) ||
     /^\/apis(\/[^/]+(\/[^/]+)?)?$/.test(p)
   );
+}
+
+// The health probes, which an uptime monitor must be able to reach without
+// a cluster token. Answered here in the shell rather than passed through to
+// the Go apiserver's own /healthz (discovery.go): reaching that one costs a
+// dynamic-worker load of a 65MB module, and an unauthenticated path on a
+// public *.workers.dev URL is exactly where you do not want that to be
+// driveable by anyone.
+//
+// Be precise about what a 200 here asserts: the Worker is routable and its
+// script loaded. It does NOT assert that storage is reachable, that the
+// cluster exists, or that any control-plane component is healthy -- those
+// need a token, because probing them costs real work.
+function isHealthPath(p: string): boolean {
+  return p === "/healthz" || p === "/livez" || p === "/readyz";
 }
 
 // Watch streams are served in TS (Go WASM cannot stream), which means
@@ -256,6 +272,14 @@ export async function handleGateway(
     }
     return apiserverFetch(env, req);
   }
+  // Answered before any apiserver dispatch: see isHealthPath.
+  if (isHealthPath(url.pathname)) {
+    return new Response("ok", {
+      status: 200,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
+  }
+
   // The wasm chunk supply channel (run_worker_first) is Loader-only.
   if (url.pathname.startsWith("/wasm/")) {
     return new Response("not found", { status: 404 });

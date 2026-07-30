@@ -2,9 +2,11 @@ name: Cost Gate
 
 on:
   workflow_dispatch:
-# Manual-dispatch only, deliberately: this gate is expensive (a real k3s
-# agent, containerd and the upstream e2e suite) and the Actions quota is
-# limited. The cheap gate (ci.yml) runs automatically on every pull
+# Manual-dispatch only, deliberately: this gate is slow (a cold WASM build
+# plus ~12 minutes of deliberate sleeping -- settling windows, measurement
+# windows, and waiting for alarms to reach a parking decision) and the
+# Actions quota is limited. The k3s-agent/containerd/e2e costs this comment
+# used to cite belong to e2e-conformance.yml, not here (corrected 2026-07-30). The cheap gate (ci.yml) runs automatically on every pull
 # request instead. A fork contributor cannot dispatch this one -- a
 # maintainer runs it before merge; see CONTRIBUTING.md.
 
@@ -31,11 +33,13 @@ on:
 #       in) together are sufficient to prove (b) by construction: with no
 #       armed alarm and no incoming request, there is no code path left
 #       that could touch a facet or do anything else billable.
-#   (c) workers/controllers (the DO-hosted kube-controller-manager --
-#       BYO-VM/host-process is still required for actual production
-#       clusters, see docs/platform-verification.md's S8 section: this
-#       Worker is currently ~19MiB gzip, over Cloudflare's 10MiB deploy
-#       limit) produces no further activity once idle. This job can only
+#   (c) the controllers Durable Object (the DO-hosted kube-controller-manager --
+#       see docs/platform-verification.md's S8 section) produces no
+#       further activity once idle. [Updated 2026-07-30: the size problem
+#       that text described was solved by the Worker Loader route -- the
+#       control-plane binaries ship as Static Assets chunks and run as
+#       dynamic workers, so kcm/gc/sched/clusterop ARE deployed today.
+#       What this job measures is unchanged.] This job can only
 #       measure that locally (no new log lines/requests) -- it cannot
 #       reproduce S8(b)'s production `wrangler tail` CPU-ms measurement
 #       (~0.4-0.5ms CPU/wall-second measured 2026-07-02), since there is no
@@ -43,12 +47,16 @@ on:
 #       activity" signal here is the CI-feasible proxy the v2 rewrite
 #       plan's Phase 6 section anticipated for exactly this case; treat
 #       S8(b)'s method as the manual/production procedure to re-run if
-#       workers/controllers ever becomes deployable.
+#       the controllers DO ever becomes deployable.
 
 jobs:
   cost-gate:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Raised from 15 when the unconvergeable-workload case was added
+    # (2026-07-30): that block alone can take ~12min (180s settle + 60s
+    # measurement window + up to 450s waiting for the backed-off alarm
+    # to reach its parking decision).
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -68,7 +76,7 @@ jobs:
 
       # Both apiserver and controllers are needed here (unlike ci.yml/
       # release.yml, which only need apiserver): this job's item (c)
-      # specifically exercises workers/controllers.
+      # specifically exercises the Controllers DO.
       - name: Install binaryen (wasm-opt) -- pinned release, not apt
         # Pinned to the same version developers use locally (mise
         # aqua:web-assembly/binaryen). apt/ubuntu ships an older binaryen
@@ -98,12 +106,17 @@ jobs:
       # curl (never kubectl/client-go), so plain HTTP + a bearer header is
       # fine -- unlike e2e-conformance.yml, which needs TLS because
       # client-go's clientcmd refuses to send credentials over plain HTTP
-      # (see CLAUDE.md's local-dev-pitfalls section). Only 4 Workers are
-      # started here even though workers/controllers is also exercised --
-      # gateway/storage/apiserver/runtime are the real request path;
-      # workers/controllers is reached indirectly via storage's
-      # pingControllers(), not started for direct requests here (mirrors
-      # e2e-conformance.yml, which never starts it directly either).
+      # (see docs/development.md). One Worker is started -- since the 2026-07-06
+      # consolidation there is only one deployable Worker, and the control
+      # plane runs inside it as dynamic workers. The Controllers DO is
+      # exercised indirectly, through the Cluster DO's pingControllers()
+      # on a relevant write, not by a direct request.
+
+      # NOTE: no --local here, unlike make dev. Deliberate and verified
+      # (2026-07-30): with no credentials in the environment -- which is
+      # CI -- wrangler does not attempt the MESH remote-proxy session and
+      # dev starts normally. Adding --local would also be fine; running
+      # this locally on a logged-in machine is what needs the flag.
       - name: Start wrangler dev (real Workers + Durable Object storage)
         run: |
           nohup npx wrangler dev \
@@ -184,8 +197,9 @@ jobs:
           curl -sf -X DELETE http://127.0.0.1:8787/api/v1/namespaces/default/services/cost-gate-svc \
             -H "Authorization: Bearer k8flare-dev-token" -o /dev/null
 
-      # SAFETY_NET_INTERVAL_MS is 60s in both workers/storage/src/index.ts
-      # and workers/controllers/src/index.ts, so parking can take up to
+      # SAFETY_NET_INTERVAL_MS is 60s in both
+      # packages/k8flare-worker/src/storage/index.ts and
+      # packages/k8flare-worker/src/controllers/index.ts, so parking can take up to
       # ~60s from the deletes above (the alarm has to fire once more,
       # re-evaluate, and choose not to re-arm) -- poll rather than a fixed
       # sleep, but budget for the full interval plus margin.
@@ -225,6 +239,103 @@ jobs:
             tail -n +"$((BEFORE + 1))" "$RUNNER_TEMP/wrangler.log"
             exit 1
           fi
+
+      # Regression test for the write storm found on 2026-07-30
+      # (docs/platform-verification.md S26 correction, docs/cost-model.md).
+      # Everything above only ever creates a Node and a Service, so it
+      # never reaches the state that broke: a workload the controllers
+      # keep reconciling. A Deployment on a node-less cluster can never
+      # converge, and before the fix each sync rewrote a byte-identical
+      # status -- ~2,260 kine rows per 120s, forever, for one object.
+      #
+      # Rows are counted across every Cluster DO shard: facets put the
+      # kine table in several sqlite files, and sampling only the first
+      # is what made the original measurement read zero.
+      - name: Create an unconvergeable workload (no nodes exist at this point)
+        run: |
+          curl -sf -X POST http://127.0.0.1:8787/apis/apps/v1/namespaces/default/deployments \
+            -H "Authorization: Bearer k8flare-dev-token" -H "Content-Type: application/json" \
+            -d '{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"cost-gate-wl"},
+                 "spec":{"replicas":2,"selector":{"matchLabels":{"app":"cost-gate-wl"}},
+                 "template":{"metadata":{"labels":{"app":"cost-gate-wl"}},
+                 "spec":{"containers":[{"name":"c","image":"nginx"}]}}}}' \
+            -o /dev/null
+          # Settling is not instant and it is not the storm: the scheduler
+          # retries the unschedulable Pods with its own backoff, and each
+          # retry bumps the FailedScheduling Event's count -- a real field
+          # change, so no-op suppression correctly lets it through. Measured
+          # locally 2026-07-30, per-60s deltas from creation: 24, 20, 20, 4, 0.
+          echo "Letting the controllers settle (ReplicaSet, Pods, FailedScheduling events)."
+          sleep 180
+
+      - name: Verify an unconvergeable workload does not write forever
+        run: |
+          count_rows() {
+            total=0
+            for db in .wrangler/state/v3/do/k8flare-Cluster/*.sqlite; do
+              case "$db" in *metadata.sqlite) continue;; esac
+              n=$(sqlite3 -cmd ".timeout 5000" "$db" \
+                "SELECT count(*) FROM kine;" 2>/dev/null || echo 0)
+              total=$((total + n))
+            done
+            echo "$total"
+          }
+          BEFORE=$(count_rows)
+          # Fail loudly if the counter found nothing to count. Every branch
+          # of count_rows falls back to 0, so a changed DO state layout (this
+          # project has changed it twice) would otherwise make this step pass
+          # green while measuring nothing -- the same instrument error that
+          # made the original S26 investigation read zero writes.
+          if [ "$BEFORE" -eq 0 ]; then
+            echo "::error::found no kine rows in any Cluster DO shard -- the row counter is looking in the wrong place, so this gate is measuring nothing. Check the .wrangler/state layout." >&2
+            ls -la .wrangler/state/v3/do/ || true
+            exit 1
+          fi
+          sleep 60
+          AFTER=$(count_rows)
+          DELTA=$((AFTER - BEFORE))
+          echo "kine rows across all Cluster shards: $BEFORE -> $AFTER (delta $DELTA in 60s)"
+          # Measured 0 after the fix, ~1,130 before it. The margin is for
+          # a slow runner still settling, not for a steady write rate.
+          # If this ever flakes, raise the settle sleep above -- not this
+          # threshold. A threshold loose enough to absorb slow settling is
+          # also loose enough to absorb a partial regression, and it is the
+          # 50-against-1,130 gap that makes the assertion worth running.
+          if [ "$DELTA" -gt 50 ]; then
+            echo "::error::a settled unconvergeable workload wrote $DELTA kine rows in 60s -- rows-written billing and kine growth are unbounded (the S26 write storm is back; check KineStorage.GuaranteedUpdate's no-op suppression)" >&2
+            exit 1
+          fi
+
+      - name: Delete the workload and verify the alarm parks again
+        run: |
+          curl -sf -X DELETE http://127.0.0.1:8787/apis/apps/v1/namespaces/default/deployments/cost-gate-wl \
+            -H "Authorization: Bearer k8flare-dev-token" -o /dev/null
+          CLUSTER_DB=".wrangler/state/v3/do/k8flare-Cluster/metadata.sqlite"
+          CONTROLLERS_DB=".wrangler/state/v3/do/k8flare-Controllers/metadata.sqlite"
+          # Slower than the Node/Service park above. Measured locally
+          # 2026-07-30: still armed at t+180s, parked by ~t+300s.
+          #
+          # The mechanism is NOT established. An earlier version of this
+          # comment blamed the stretched backoff interval; that is wrong --
+          # controllers/index.ts's fetch() clamps any pending alarm to
+          # <=60s on a relevant write, and the DELETE is one. Cascading GC
+          # of the ReplicaSet and Pods keeping hasUnconvergedWork() true for
+          # several ticks is a better guess, but it is a guess. Do not act
+          # on it: this alarm predicate has been broken twice already (the
+          # 94-alarms incident and d1a9503).
+          for i in $(seq 1 90); do
+            CLUSTER_ALARMS=$(sqlite3 -cmd ".timeout 5000" "$CLUSTER_DB" "SELECT count(*) FROM _cf_ALARM;")
+            CONTROLLERS_ALARMS=$(sqlite3 -cmd ".timeout 5000" "$CONTROLLERS_DB" "SELECT count(*) FROM _cf_ALARM;")
+            echo "t+$((i * 5))s: Cluster=$CLUSTER_ALARMS Controllers=$CONTROLLERS_ALARMS"
+            if [ "$CLUSTER_ALARMS" = "0" ] && [ "$CONTROLLERS_ALARMS" = "0" ]; then
+              echo "Both parked."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::alarm did not park within 450s of deleting the last workload -- an idle cluster would keep costing alarm invocations forever (cost invariant #1/#3 violated)" >&2
+          cat "$RUNNER_TEMP/wrangler.log"
+          exit 1
 
       - name: Tear down background processes
         if: always()

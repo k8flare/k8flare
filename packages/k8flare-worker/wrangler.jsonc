@@ -98,6 +98,15 @@
   // consolidation cutover: drop Etcd (old DO state discarded,
   // user-approved 2026-07-06) and create today's classes. Fresh local
   // state replays v1+v2 in order, which nets out to the same result.
+  //
+  // ADOPTERS: diff this block on every `git pull` before you deploy.
+  // A `deleted_classes` entry destroys that Durable Object's storage --
+  // all cluster state -- and `wrangler deploy` applies any tag you have
+  // not applied yet, without prompting. This project has shipped two
+  // destructive migrations already (v3 below, and v2's Etcd drop), both
+  // deliberate pre-production wipes; a future one would take your data
+  // with it. There is no backup mechanism (docs/adopter-quickstart.md).
+  // Pin a commit, or fork and review this block, if that matters to you.
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["Etcd"] },
     {

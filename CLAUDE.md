@@ -119,6 +119,9 @@ make gen                         # コード生成(cmd/k8flare-gen。生成後�
 ```
 
 CI ゲート(`.github/workflows/`): `ci.yml`(vp check / build:wasm / go vet+test)、
+`cost-gate.yml`(手動ディスパッチ。コスト不変条件 #1/#3 を実機で機械的に
+検証する唯一の仕組み — アイドル時のアラームのパークと、未収束ワークロード
+がある時の書き込み量)、
 `e2e-conformance.yml`(**Definition of Done**。k8s v1.36.2 の e2e.test を実クラスタで
 実行し、required baseline 群 + advisory 群を評価)。
 
@@ -172,5 +175,7 @@ CI ゲート(`.github/workflows/`): `ci.yml`(vp check / build:wasm / go vet+test
 - `docs/custom-code-inventory.md` — 手書きコード vs upstream 再利用の棚卸しと「実物を使わない」判断の記録
 - `docs/k8s-version-bump.md` — go.mod の k8s.io/kubernetes pin 更新手順(regen → build → conformance CI)
 - `docs/cluster-api-design.md` — Cluster リソース(`k8flare.com/v1alpha1`)と cluster-operator の設計・実装記録(現在進行中の作業)
+- `docs/adopter-quickstart.md` — 導入検討者向けの入口(前提プリミティブ・変更必須の値・セキュリティ姿勢・コスト・撤退)
+- `docs/development.md` — ローカル開発の入口(必須フラグ・テストレーン・落とし穴)
 - `docs/admin-guide.md` / `docs/user-guide.md` — 管理者向け・クラスタ利用者向けガイド
 - `README.md` — ユーザー向け API サポート状況・デプロイ手順

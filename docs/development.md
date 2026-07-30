@@ -47,10 +47,21 @@ npx wrangler dev -c packages/k8flare-worker/wrangler.jsonc --local \
 
 - **`--local`** — `wrangler.jsonc` declares a `vpc_networks` binding named
   `MESH` with `"remote": true`. VPC/Mesh bindings have no local emulation,
-  so a plain `wrangler dev` opens a *real* Cloudflare proxy session at
-  startup: it hard-fails without credentials, and — worse — silently
-  succeeds through your real account if you happen to have a cached
-  `wrangler login`. Nothing in local development touches `MESH`.
+  so a plain `wrangler dev` tries to open a *real* Cloudflare proxy session
+  at startup. What that does depends on what credentials it finds
+  (measured 2026-07-30):
+  - cached `wrangler login` resolving to **several accounts**, no
+    `account_id` in the config → hard failure: *"More than one account
+    available but unable to select one in non-interactive mode."*
+  - cached login resolving to **one account** → it succeeds, and your
+    "local" development quietly runs through your real Cloudflare account.
+  - **no credentials at all** (CI) → it does not attempt the session and
+    dev starts normally. This is why `.github/workflows/cost-gate.yml`
+    works without `--local`; do not conclude from that that you can drop
+    the flag locally.
+
+  Nothing in local development touches `MESH`, so `--local` removes the
+  question entirely.
 - **`--enable-containers=false`** — the `containers` section is declared
   unconditionally, so dev refuses to start without a running Docker daemon.
   Drop this flag (and start Docker) only when you actually want NodeVMs; the
@@ -167,14 +178,62 @@ directives. Use `make gen`.)
 ## Talking to the local server
 
 `wrangler dev` serves plain HTTP, and client-go's `clientcmd` refuses to
-send credentials over non-TLS — so real `kubectl` against a kubeconfig needs
-a local TLS terminator (self-signed cert + reverse proxy). Go tests that
-build a `rest.Config{BearerToken: ...}` directly are not subject to that,
-which is why the test suites drive the server that way. `curl` works fine:
+send credentials over non-TLS. Go tests that build a
+`rest.Config{BearerToken: ...}` directly are not subject to that, which is
+why the test suites drive the server that way, and `curl` works fine:
 
 ```sh
 curl -H 'Authorization: Bearer k8flare-dev-token' localhost:8787/api/v1/namespaces
 ```
+
+Real `kubectl` against a kubeconfig needs a TLS terminator in front. Node
+is already a prerequisite, so no extra tooling is required:
+
+```sh
+mkdir -p /tmp/k8ftls && cd /tmp/k8ftls
+openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
+  -days 365 -subj "/CN=localhost" \
+  -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+
+cat > proxy.mjs <<'EOF'
+import { createServer } from "node:https";
+import { readFileSync } from "node:fs";
+import { request } from "node:http";
+
+createServer(
+  { key: readFileSync("key.pem"), cert: readFileSync("cert.pem") },
+  (req, res) => {
+    const up = request(
+      { host: "127.0.0.1", port: 8787, path: req.url, method: req.method, headers: req.headers },
+      (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); },
+    );
+    up.on("error", (e) => { res.writeHead(502); res.end(String(e)); });
+    req.pipe(up);
+  },
+).listen(6443, () => console.log("https://localhost:6443 -> http://127.0.0.1:8787"));
+EOF
+
+node proxy.mjs &
+```
+
+Then point a kubeconfig at it:
+
+```sh
+export KUBECONFIG=/tmp/k8ftls/kubeconfig
+kubectl config set-cluster k8flare --server=https://localhost:6443 \
+  --certificate-authority=/tmp/k8ftls/cert.pem --embed-certs
+kubectl config set-credentials dev --token=k8flare-dev-token
+kubectl config set-context k8flare --cluster=k8flare --user=dev
+kubectl config use-context k8flare
+
+kubectl get ns
+kubectl create deployment tlsprobe --image=nginx
+```
+
+Verified end to end with kubectl v1.33.9 on 2026-07-30: `get`, `create`,
+and streaming `get -w` all work through it. Use it for local development
+only — it terminates TLS with a throwaway certificate and forwards to a
+plain-HTTP dev server.
 
 `k8flare-dev-token` is the fallback the default cluster accepts when no
 token has been minted and `K3S_TOKEN` is unset — see
