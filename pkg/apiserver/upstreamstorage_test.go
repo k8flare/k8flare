@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -126,10 +127,9 @@ func TestGuaranteedUpdateSuppressesNoOpWrites(t *testing.T) {
 		return cur, nil, nil
 	}
 
-	// Two consecutive no-op updates, not one: the guard compares against the
-	// stored bytes, so an object written before an encoding change compares
-	// unequal exactly once and is rewritten in normalized form. Steady state
-	// is what is being asserted.
+	// Two consecutive no-op updates, not one: a single suppressed write
+	// proves the guard fires, but not that the skip path leaves the store
+	// usable for the next caller. Both iterations here must be suppressed.
 	for i := 1; i <= 2; i++ {
 		got := &corev1.ConfigMap{}
 		if err := ks.GuaranteedUpdate(ctx, key, got, false, nil, unchanged, nil); err != nil {
@@ -167,5 +167,117 @@ func TestGuaranteedUpdateSuppressesNoOpWrites(t *testing.T) {
 	}
 	if got.ResourceVersion == out.ResourceVersion {
 		t.Errorf("a real change must bump resourceVersion: stayed %q", got.ResourceVersion)
+	}
+}
+
+// TestGuaranteedUpdateCreatesWhenAbsent pins the `currentRev != 0` half of the
+// suppression guard. It is not a redundant "is the key there" check: on the
+// absent-key path `stored` is nil (Storage.Get returns nil, ErrNotFound), so
+// evaluating bytes.Equal(data, stored.Value) without it is a nil dereference
+// that panics the apiserver. The path is reachable in production -- upstream's
+// genericregistry.Store passes ignoreNotFound=true for any resource whose
+// strategy allows create-on-update.
+func TestGuaranteedUpdateCreatesWhenAbsent(t *testing.T) {
+	do := &fakeDO{}
+	ks := NewKineStorage(NewStorage(do.fetch, "/registry"),
+		func() runtime.Object { return &corev1.ConfigMap{} })
+
+	create := func(_ runtime.Object, _ storage.ResponseMeta) (runtime.Object, *uint64, error) {
+		return &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: "default"},
+			Data:       map[string]string{"k": "v"},
+		}, nil, nil
+	}
+	got := &corev1.ConfigMap{}
+	if err := ks.GuaranteedUpdate(context.Background(), "/configmaps/default/probe",
+		got, true, nil, create, nil); err != nil {
+		t.Fatalf("GuaranteedUpdate on an absent key: %v", err)
+	}
+	if do.puts != 1 {
+		t.Errorf("create-on-update must write exactly once: puts = %d", do.puts)
+	}
+	if got.Data["k"] != "v" {
+		t.Errorf("created object not returned: Data = %v", got.Data)
+	}
+}
+
+// TestGuaranteedUpdateSuppressesStatusRewrite is the shape the production
+// incident actually took: a controller recomputing a status containing
+// conditions and metav1.Time stamps, and storing it unchanged. ConfigMap Data
+// is a flat string map and cannot exercise the one class of bug that would
+// silently defeat the guard -- an encode round-trip that is not byte-stable,
+// which timestamps and nested condition lists are the likely source of.
+func TestGuaranteedUpdateSuppressesStatusRewrite(t *testing.T) {
+	ctx := context.Background()
+	do := &fakeDO{}
+	ks := NewKineStorage(NewStorage(do.fetch, "/registry"),
+		func() runtime.Object { return &corev1.Pod{} })
+
+	const key = "/pods/default/probe"
+	stamp := metav1.Date(2026, 7, 30, 9, 45, 51, 0, time.UTC)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: "default", CreationTimestamp: stamp},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "nginx"}}},
+		Status: corev1.PodStatus{
+			Phase:     corev1.PodPending,
+			StartTime: &stamp,
+			Conditions: []corev1.PodCondition{{
+				Type:               corev1.PodScheduled,
+				Status:             corev1.ConditionFalse,
+				Reason:             "Unschedulable",
+				Message:            "no nodes available",
+				LastProbeTime:      stamp,
+				LastTransitionTime: stamp,
+			}},
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name:  "c",
+				Image: "nginx",
+				State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "Pending"}},
+			}},
+		},
+	}
+	out := &corev1.Pod{}
+	if err := ks.Create(ctx, key, pod, out, 0); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Recompute the identical status from the stored object, as a controller
+	// sync does, and write it back. Twice.
+	rewriteStatus := func(cur runtime.Object, _ storage.ResponseMeta) (runtime.Object, *uint64, error) {
+		p := cur.(*corev1.Pod).DeepCopy()
+		p.Status = *p.Status.DeepCopy()
+		return p, nil, nil
+	}
+	for i := 1; i <= 2; i++ {
+		got := &corev1.Pod{}
+		if err := ks.GuaranteedUpdate(ctx, key, got, false, nil, rewriteStatus, nil); err != nil {
+			t.Fatalf("status rewrite #%d: %v", i, err)
+		}
+		if got.ResourceVersion != out.ResourceVersion {
+			t.Errorf("status rewrite #%d bumped resourceVersion: %q -> %q",
+				i, out.ResourceVersion, got.ResourceVersion)
+		}
+	}
+	if do.puts != 1 {
+		t.Errorf("identical status rewrites wrote %d revision(s), want 0 beyond the create. "+
+			"An encode round-trip that is not byte-stable would look exactly like this",
+			do.puts-1)
+	}
+
+	// A real status transition must still land.
+	transition := func(cur runtime.Object, _ storage.ResponseMeta) (runtime.Object, *uint64, error) {
+		p := cur.(*corev1.Pod).DeepCopy()
+		p.Status.Phase = corev1.PodRunning
+		return p, nil, nil
+	}
+	got := &corev1.Pod{}
+	if err := ks.GuaranteedUpdate(ctx, key, got, false, nil, transition, nil); err != nil {
+		t.Fatalf("status transition: %v", err)
+	}
+	if do.puts != 2 {
+		t.Errorf("a real status transition must write: puts = %d, want 2", do.puts)
+	}
+	if got.Status.Phase != corev1.PodRunning {
+		t.Errorf("transition not persisted: phase = %q", got.Status.Phase)
 	}
 }

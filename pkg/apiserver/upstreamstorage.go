@@ -255,9 +255,17 @@ func (k *KineStorage) GuaranteedUpdate(ctx context.Context, key string, destinat
 		// status still writes a revision, and that write pokes the
 		// controllers again: measured 2026-07-30 at ~1,130 revisions per
 		// minute, indefinitely, for one Deployment on a node-less cluster
-		// (docs/platform-verification.md S26). Objects stored before the
-		// TypeMeta stamping fix compare unequal once, get rewritten in
-		// normalized form, and match from then on.
+		// (docs/platform-verification.md S26).
+		//
+		// The comparison is against the raw stored bytes, and that is
+		// sound because EncodeToStorage is canonical: it round-trips
+		// through a map, and Go's encoding/json sorts map keys. Note it
+		// never consults the Scheme, so it does NOT stamp TypeMeta --
+		// objects written with it and objects written without it are two
+		// forms that each encode stably, rather than one converging on
+		// the other. Suppression is correct for either; do not read this
+		// as a guarantee that a legacy object gets normalized. (Corrected
+		// 2026-07-30: this comment previously claimed such convergence.)
 		if currentRev != 0 && bytes.Equal(data, stored.Value) {
 			return k.decodeInto(stored.Value, currentRev, destination)
 		}
