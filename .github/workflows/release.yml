@@ -67,12 +67,14 @@ jobs:
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/k8flare-agent-linux-amd64 ./cmd/agent/
 
-      # cmd/scheduler and cmd/controller-manager are both BYO-VM/host-process
-      # only -- neither can be deployed as a Worker (kube-scheduler doesn't
-      # compile for GOOS=js/wasm at all, and kube-controller-manager's real
-      # controller packages blow the 10MiB Workers gzip budget; see
-      # docs/platform-verification.md's S8 section). Both binaries ship here
-      # so a BYO VM deployment doesn't need a local Go toolchain either.
+      # cmd/scheduler and cmd/controller-manager are the HOST-PROCESS builds,
+      # shipped so a BYO VM deployment doesn't need a local Go toolchain.
+      # (Correction 2026-07-30: this comment used to say kube-scheduler
+      # "doesn't compile for GOOS=js/wasm at all". That stopped being true on
+      # 2026-07-10 -- -tags schedwidth plus the DRA/CEL severing brought it to
+      # ~45MB opt, and both kcm and sched now also ship as dynamic workers.
+      # These host binaries remain the required conformance configuration and
+      # the BYO-VM path, which is why they are still released.)
       - name: Build Scheduler (linux/arm64)
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o dist/k8flare-scheduler-linux-arm64 ./cmd/scheduler/

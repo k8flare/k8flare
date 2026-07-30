@@ -114,7 +114,11 @@ jobs:
         run: npm run build:wasm
 
       - name: Go vet
-        run: go vet ./pkg/apiserver/...
+        # `make vet`, not a bare go vet: the documented gate is three passes
+        # (host, then GOOS=js with -tags leanwidth and -tags schedwidth). The
+        # WASM-target passes are the ones that catch build-tag breakage, and
+        # CI was skipping both.
+        run: make vet
 
       - name: Go test
         run: go test ./pkg/apiserver/...
