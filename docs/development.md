@@ -111,6 +111,19 @@ ran only the first, so the real controllers had no automatic gate at all —
 the job that does exercise them, `cost-gate.yml`, is dispatch-only and a
 fork contributor cannot trigger it.
 
+**Known upstream flake on these three CI steps**: intermittent
+`Error: Network connection lost.` failures (2 of 3 CI runs on
+2026-08-09, never reproduced locally) are
+[cloudflare/workers-sdk#14641](https://github.com/cloudflare/workers-sdk/issues/14641) —
+`wrangler dev`'s ProxyWorker↔UserWorker connection pool doesn't override
+workerd's 5s idle keep-alive timeout, so a request landing on that
+boundary intermittently dies. Confirmed upstream on wrangler
+4.99.0–4.114.0, so it predates and outlives whatever version this repo
+pins; bumping or reverting wrangler will not fix it. `ci.yml` and
+`deps-k3s-update.yml` retry each of the three steps once for exactly
+this reason — a same-lane failure on both attempts is a real failure,
+not this flake. Revisit once the upstream issue is fixed.
+
 The `KCM_DISABLED=1` kill switch (honoured in
 `packages/k8flare-worker/src/storage/index.ts` and
 `src/controllers/index.ts`) is what lets `make test`'s Pods sit untouched by
