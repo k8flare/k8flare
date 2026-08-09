@@ -193,11 +193,11 @@ jobs:
       - name: Go vet (host + GOOS=js leanwidth/schedwidth passes)
         run: make vet
 
-      # Each lane clears .wrangler/state first and retries once on failure
-      # -- see ci.yml's identical steps and docs/development.md's Test
-      # lanes section for the full account (a 2026-08-09 correction of
-      # the original reasoning here). A same-lane failure on both
-      # attempts is treated as real, not swallowed.
+      # Each lane clears .wrangler/state first and retries once on
+      # failure -- same steps as ci.yml; the flake being absorbed
+      # (cloudflare/workers-sdk#14641) and the wrangler pin are covered
+      # in docs/development.md's Test lanes section. A same-lane
+      # failure on both attempts is treated as real, not swallowed.
       - name: Go test (apiserver -- controllers off)
         run: |
           for i in 1 2; do
