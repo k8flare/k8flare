@@ -193,18 +193,40 @@ jobs:
       - name: Go vet (host + GOOS=js leanwidth/schedwidth passes)
         run: make vet
 
-      # Each lane clears .wrangler/state first -- see ci.yml's identical
-      # steps for why (CLAUDE.md's documented stale-state failure mode;
-      # these three steps share one state dir with nothing clearing it
-      # between them otherwise).
+      # Each lane clears .wrangler/state first and retries once on failure
+      # -- see ci.yml's identical steps for why (stale-state per
+      # CLAUDE.md; the retry works around the confirmed, still-open
+      # upstream flake cloudflare/workers-sdk#14641, not an unknown one --
+      # a same-lane failure on both attempts is treated as real).
       - name: Go test (apiserver -- controllers off)
-        run: rm -rf .wrangler/state && go test ./pkg/apiserver/...
+        run: |
+          for i in 1 2; do
+            rm -rf .wrangler/state
+            go test ./pkg/apiserver/... && exit 0
+            [ "$i" = 1 ] && echo "::warning::apiserver lane failed attempt 1/2 -- retrying (known upstream flake, cloudflare/workers-sdk#14641)" >&2
+          done
+          echo "::error::apiserver lane failed twice -- likely a real failure, not the #14641 flake" >&2
+          exit 1
 
       - name: Go test (real KCM/GC/scheduler dynamic workers)
-        run: rm -rf .wrangler/state && K8FLARE_KCM_TEST=1 go test -count=1 -run TestKCMDynamicWorkerControlPlane -timeout 15m ./pkg/apiserver/
+        run: |
+          for i in 1 2; do
+            rm -rf .wrangler/state
+            K8FLARE_KCM_TEST=1 go test -count=1 -run TestKCMDynamicWorkerControlPlane -timeout 15m ./pkg/apiserver/ && exit 0
+            [ "$i" = 1 ] && echo "::warning::KCM lane failed attempt 1/2 -- retrying (known upstream flake, cloudflare/workers-sdk#14641)" >&2
+          done
+          echo "::error::KCM lane failed twice -- likely a real failure, not the #14641 flake" >&2
+          exit 1
 
       - name: Go test (cluster operator lifecycle)
-        run: rm -rf .wrangler/state && K8FLARE_CLUSTEROP_TEST=1 go test -count=1 -run TestClusterOperatorLifecycle -timeout 15m ./pkg/apiserver/
+        run: |
+          for i in 1 2; do
+            rm -rf .wrangler/state
+            K8FLARE_CLUSTEROP_TEST=1 go test -count=1 -run TestClusterOperatorLifecycle -timeout 15m ./pkg/apiserver/ && exit 0
+            [ "$i" = 1 ] && echo "::warning::clusterop lane failed attempt 1/2 -- retrying (known upstream flake, cloudflare/workers-sdk#14641)" >&2
+          done
+          echo "::error::clusterop lane failed twice -- likely a real failure, not the #14641 flake" >&2
+          exit 1
 
       - name: Push branch and open PR
         env:
