@@ -143,8 +143,8 @@ jobs:
       # can intermittently die with "Network connection lost."
       # (cloudflare/workers-sdk#14641 -- a 5s idle keep-alive race in
       # wrangler dev's proxy<->user-worker connection pool, confirmed
-      # upstream on the miniflare 4.x line the current wrangler pin
-      # resolves to). The same crash was far more frequent on miniflare
+      # upstream on the miniflare 4.x line, not observed on the current
+      # pin). The same crash was far more frequent on miniflare
       # 5.x-alpha, which is why wrangler is held at 4.106.0 -- see
       # docs/development.md's Test lanes section before bumping it.
       # A same-lane failure on both attempts is treated as real, not
@@ -154,9 +154,9 @@ jobs:
           for i in 1 2; do
             rm -rf .wrangler/state
             go test ./pkg/apiserver/... && exit 0
-            [ "$i" = 1 ] && echo "::warning::apiserver lane failed attempt 1/2 -- retrying (known upstream flake, cloudflare/workers-sdk#14641)" >&2
+            [ "$i" = 1 ] && echo "::warning::apiserver lane failed attempt 1/2 -- retrying once (see docs/development.md's Test lanes section)" >&2
           done
-          echo "::error::apiserver lane failed twice -- likely a real failure, not the #14641 flake" >&2
+          echo "::error::apiserver lane failed twice -- treat as a real failure" >&2
           exit 1
 
       - name: Go test (real KCM/GC/scheduler dynamic workers)
@@ -164,9 +164,9 @@ jobs:
           for i in 1 2; do
             rm -rf .wrangler/state
             K8FLARE_KCM_TEST=1 go test -count=1 -run TestKCMDynamicWorkerControlPlane -timeout 15m ./pkg/apiserver/ && exit 0
-            [ "$i" = 1 ] && echo "::warning::KCM lane failed attempt 1/2 -- retrying (known upstream flake, cloudflare/workers-sdk#14641)" >&2
+            [ "$i" = 1 ] && echo "::warning::KCM lane failed attempt 1/2 -- retrying once (see docs/development.md's Test lanes section)" >&2
           done
-          echo "::error::KCM lane failed twice -- likely a real failure, not the #14641 flake" >&2
+          echo "::error::KCM lane failed twice -- treat as a real failure" >&2
           exit 1
 
       - name: Go test (cluster operator lifecycle)
@@ -174,7 +174,7 @@ jobs:
           for i in 1 2; do
             rm -rf .wrangler/state
             K8FLARE_CLUSTEROP_TEST=1 go test -count=1 -run TestClusterOperatorLifecycle -timeout 15m ./pkg/apiserver/ && exit 0
-            [ "$i" = 1 ] && echo "::warning::clusterop lane failed attempt 1/2 -- retrying (known upstream flake, cloudflare/workers-sdk#14641)" >&2
+            [ "$i" = 1 ] && echo "::warning::clusterop lane failed attempt 1/2 -- retrying once (see docs/development.md's Test lanes section)" >&2
           done
-          echo "::error::clusterop lane failed twice -- likely a real failure, not the #14641 flake" >&2
+          echo "::error::clusterop lane failed twice -- treat as a real failure" >&2
           exit 1
