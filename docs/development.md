@@ -124,6 +124,27 @@ pins; bumping or reverting wrangler will not fix it. `ci.yml` and
 this reason — a same-lane failure on both attempts is a real failure,
 not this flake. Revisit once the upstream issue is fixed.
 
+**Correction (2026-08-09, same day):** the paragraph above is wrong
+about reverting wrangler. `wrangler@4.106.0` pins miniflare
+`4.20260630.0`; `wrangler@4.120.0` pins miniflare `5.20260801.1-alpha`
+— #14641's confirmations on wrangler 4.99.0–4.114.0 are all against
+miniflare *4.x*, not the alpha 5.x this repo briefly ran, so "predates
+and outlives whatever version this repo pins" doesn't hold. A same-day
+A/B (wrangler 4.106.0 vs. 4.120.0, one CI run each) found the KCM
+lane's fast `Network connection lost` crash on 4/5 runs of 4.120.0 and
+0/1 of 4.106.0 — not statistically conclusive at that sample size, but
+enough to decline shipping CI against an alpha runtime for an
+unrequested dependency bump. Wrangler is pinned back to `^4.106.0`.
+The clusterop lane's failures are a separate matter: it failed on
+*both* arms of the A/B, but via two different mechanisms (a clean
+5-minute internal give-up on 4.120.0, an unbounded 15-minute hang on
+4.106.0 traced to a `rest.Config` with no `Timeout` and a
+`context.Background()` with no deadline in `clusterop_test.go` /
+`kcmdw_test.go`'s shared `waitFor` — fixed alongside this correction by
+adding `Timeout: 30 * time.Second` to both). Whether that was resource
+contention from four heavy dynamic workers on a shared 2-core runner,
+now that individual requests are bounded, is unconfirmed either way.
+
 The `KCM_DISABLED=1` kill switch (honoured in
 `packages/k8flare-worker/src/storage/index.ts` and
 `src/controllers/index.ts`) is what lets `make test`'s Pods sit untouched by

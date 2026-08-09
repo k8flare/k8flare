@@ -112,7 +112,13 @@ func TestClusterOperatorLifecycle(t *testing.T) {
 	}
 
 	host := fmt.Sprintf("http://127.0.0.1:%d", port)
-	cfg := &rest.Config{Host: host, BearerToken: "k8flare-dev-token"}
+	// Timeout bounds a single request so a stuck connection fails fast
+	// instead of blocking waitFor's deadline check indefinitely (found
+	// 2026-08-09: an unbounded request hung this test the full 15m
+	// outer `go test -timeout` instead of failing at waitFor's own 5m
+	// budget -- see kcmdw_test.go's waitFor, which can only re-check
+	// its deadline between cond() calls, not during one).
+	cfg := &rest.Config{Host: host, BearerToken: "k8flare-dev-token", Timeout: 30 * time.Second}
 	dc, err := dynamic.NewForConfig(cfg)
 	if err != nil {
 		t.Fatalf("dynamic client: %v", err)

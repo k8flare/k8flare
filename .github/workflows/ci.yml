@@ -139,18 +139,19 @@ jobs:
       # state dir across the whole job with nothing clearing it between
       # them -- unlike every local pass, which cleared it per lane.
       #
-      # Each lane also retries once on failure. This is NOT masking an
-      # unknown flake (CLAUDE.md rule 5 forbids that): root-caused
-      # 2026-08-09 to a confirmed, still-open upstream bug in wrangler
-      # dev's local proxy layer -- cloudflare/workers-sdk#14641. workerd's
-      # ProxyWorker<->UserWorker connection pool doesn't override kj's 5s
-      # idle timeout, so a request landing on that boundary intermittently
-      # dies with "Error: Network connection lost."; reproduced upstream
-      # on wrangler 4.99.0-4.114.0 (i.e. it predates and outlives any
-      # version this repo pins, so bumping/reverting wrangler cannot fix
-      # it). If a lane still fails after the retry, treat that as a real
-      # failure, not this flake -- it's a coincidence for the SAME lane to
-      # hit a 5s-boundary race twice in a row.
+      # Each lane also retries once on failure -- corrected 2026-08-09,
+      # same day as the original comment here (see
+      # docs/development.md's Test lanes section for the full account,
+      # CLAUDE.md rule 4). The first cut of this blamed a specific
+      # upstream bug (cloudflare/workers-sdk#14641) confirmed only on
+      # wrangler's miniflare 4.x and called it version-independent; a
+      # same-day A/B found the KCM lane's fast crash on 4/5 runs of
+      # wrangler 4.120.0 (miniflare 5.x-alpha) and 0/1 on 4.106.0
+      # (miniflare 4.x, now the pin), so it likely IS alpha-runtime
+      # specific and the repo just isn't running that runtime anymore.
+      # The retry stays as a cheap safety net for whatever residual
+      # flakiness local-dev-server-backed CI has; a same-lane failure on
+      # both attempts is treated as real, not swallowed.
       - name: Go test (apiserver -- controllers off)
         run: |
           for i in 1 2; do

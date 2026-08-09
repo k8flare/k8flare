@@ -80,6 +80,12 @@ func TestKCMDynamicWorkerControlPlane(t *testing.T) {
 	client, err := kubernetes.NewForConfig(&rest.Config{
 		Host:        fmt.Sprintf("http://127.0.0.1:%d", port),
 		BearerToken: "k8flare-dev-token",
+		// Bounds a single request so a stuck connection fails fast
+		// instead of blocking waitFor's deadline check indefinitely
+		// (found 2026-08-09: an unbounded request hung the whole
+		// process past its outer `go test -timeout`, in
+		// clusterop_test.go which shares this same waitFor helper).
+		Timeout: 30 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("create client: %v", err)
