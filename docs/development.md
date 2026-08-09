@@ -111,39 +111,33 @@ ran only the first, so the real controllers had no automatic gate at all —
 the job that does exercise them, `cost-gate.yml`, is dispatch-only and a
 fork contributor cannot trigger it.
 
-**Known upstream flake on these three CI steps**: intermittent
-`Error: Network connection lost.` failures (2 of 3 CI runs on
-2026-08-09, never reproduced locally) are
+**Known flake on these three CI steps, and why wrangler stays on
+4.106.0**: intermittent `Error: Network connection lost.` failures
+(never reproduced locally) are
 [cloudflare/workers-sdk#14641](https://github.com/cloudflare/workers-sdk/issues/14641) —
 `wrangler dev`'s ProxyWorker↔UserWorker connection pool doesn't override
 workerd's 5s idle keep-alive timeout, so a request landing on that
-boundary intermittently dies. Confirmed upstream on wrangler
-4.99.0–4.114.0, so it predates and outlives whatever version this repo
-pins; bumping or reverting wrangler will not fix it. `ci.yml` and
-`deps-k3s-update.yml` retry each of the three steps once for exactly
-this reason — a same-lane failure on both attempts is a real failure,
-not this flake. Revisit once the upstream issue is fixed.
+boundary intermittently dies. The failure rate appears to track the
+miniflare major, not the wrangler version: rare in these lanes on
+miniflare 4.x (the issue is confirmed upstream on wrangler
+4.99.0–4.114.0), frequent on 5.x-alpha — in a 2026-08-09 A/B on CI, the
+KCM lane crashed on 4/5 runs under wrangler 4.120.0 (miniflare
+`5.20260801.1-alpha`) and 0/1 under 4.106.0 (miniflare `4.20260630.0`).
+That is why wrangler is held at 4.106.0. The hold lives in
+`pnpm-lock.yaml` — `package.json`'s `^4.106.0` range admits newer 4.x —
+so don't accept any wrangler bump without checking which miniflare
+major it pulls and A/B-ing the test lanes on actual CI runners. `ci.yml`
+and `deps-k3s-update.yml` retry each of the three steps once to absorb
+the residual miniflare-4.x flake; a same-lane failure on both attempts
+is a real failure, not this flake. Revisit the pin and the retries once
+#14641 is fixed and miniflare 5 is stable.
 
-**Correction (2026-08-09, same day):** the paragraph above is wrong
-about reverting wrangler. `wrangler@4.106.0` pins miniflare
-`4.20260630.0`; `wrangler@4.120.0` pins miniflare `5.20260801.1-alpha`
-— #14641's confirmations on wrangler 4.99.0–4.114.0 are all against
-miniflare *4.x*, not the alpha 5.x this repo briefly ran, so "predates
-and outlives whatever version this repo pins" doesn't hold. A same-day
-A/B (wrangler 4.106.0 vs. 4.120.0, one CI run each) found the KCM
-lane's fast `Network connection lost` crash on 4/5 runs of 4.120.0 and
-0/1 of 4.106.0 — not statistically conclusive at that sample size, but
-enough to decline shipping CI against an alpha runtime for an
-unrequested dependency bump. Wrangler is pinned back to `^4.106.0`.
-The clusterop lane's failures are a separate matter: it failed on
-*both* arms of the A/B, but via two different mechanisms (a clean
-5-minute internal give-up on 4.120.0, an unbounded 15-minute hang on
-4.106.0 traced to a `rest.Config` with no `Timeout` and a
-`context.Background()` with no deadline in `clusterop_test.go` /
-`kcmdw_test.go`'s shared `waitFor` — fixed alongside this correction by
-adding `Timeout: 30 * time.Second` to both). Whether that was resource
-contention from four heavy dynamic workers on a shared 2-core runner,
-now that individual requests are bounded, is unconfirmed either way.
+The KCM and clusterop lanes' client requests are individually bounded
+(`rest.Config{Timeout: 30 * time.Second}` in `kcmdw_test.go` and
+`clusterop_test.go`): a stuck request fails fast and the `waitFor`
+poll's own budget governs, instead of one hung connection riding out
+the full 15-minute `go test -timeout`. A lane that still dies at that
+outer timeout is not this flake — treat it as a real bug.
 
 The `KCM_DISABLED=1` kill switch (honoured in
 `packages/k8flare-worker/src/storage/index.ts` and
