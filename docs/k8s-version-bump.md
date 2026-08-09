@@ -53,15 +53,42 @@ process.
    further diff means every derived artifact is consistent with the new
    pin.
 
-7. **Match the conformance e2e.test binary.** `.github/workflows/e2e-conformance.yml`
-   downloads a specific `https://dl.k8s.io/vX.Y.Z/kubernetes-test-linux-amd64.tar.gz`
-   — bump that URL to the same version as the new pin (a mismatched e2e.test
-   binary tests against API behavior this apiserver's vendored types don't
-   match).
+7. **Match the conformance e2e.test binary.** Nothing to do since
+   2026-08-09: `.github/workflows/e2e-conformance.yml` derives the
+   `https://dl.k8s.io/vX.Y.Z/kubernetes-test-linux-amd64.tar.gz` version
+   from `pkg/k8s-js-overlays/upstream-module.txt` at run time (it used to
+   be a hand-bumped URL). The rationale stands: a mismatched e2e.test
+   binary tests against API behavior this apiserver's vendored types
+   don't match — which is why the version is derived, not floated.
 
 8. **Run conformance CI.** This is the Definition of Done (`CLAUDE.md`'s
    inviolable rule 1) — the required baseline focus set must stay green,
    and don't shrink it to make a bump pass.
+
+## Automation (patch releases)
+
+Since 2026-08-09, `.github/workflows/deps-k3s-update.yml` replays steps
+1–3 and 5–6 automatically (7 became a no-op the same day): weekly (or on dispatch) it asks the official
+k3s update channel for the latest stable release on the currently-pinned
+minor line, adopts that release's own `go.mod` pins via
+`packages/wasm-build/src/sync-k3s-deps.ts` (the same "mirror k3s's
+replace set verbatim" rule step 1 describes), regenerates mirrors and
+`cmd/k8flare-gen` artifacts, runs ci.yml's full validation battery
+in-workflow, and opens a `deps/*` PR.
+
+What it deliberately does NOT automate:
+
+- **The overlay sha256 review gates.** If an upstream file the overlays
+  patch changed, `make gen-mirrors` fails the workflow (which opens an
+  issue) and the bump falls back to this manual process — the pins are
+  refreshed by a human after re-reviewing the transform, never by the
+  bot.
+- **Minor-line bumps** (`v1.36` → `v1.37`): dispatch the workflow with an
+  explicit `k3s_tag` input if you want the mechanics replayed, but expect
+  the review gates and possibly `defaulterPackages` (step 4) to need
+  hands.
+- **Step 8.** `e2e-conformance.yml` is dispatch-only; the PR body's
+  checklist reminds the reviewer it is still the Definition of Done.
 
 ## What a bump commonly changes
 
