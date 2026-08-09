@@ -117,20 +117,20 @@ fork contributor cannot trigger it.
 [cloudflare/workers-sdk#14641](https://github.com/cloudflare/workers-sdk/issues/14641) —
 `wrangler dev`'s ProxyWorker↔UserWorker connection pool doesn't override
 workerd's 5s idle keep-alive timeout, so a request landing on that
-boundary intermittently dies. The failure rate appears to track the
-miniflare major, not the wrangler version: rare in these lanes on
-miniflare 4.x (the issue is confirmed upstream on wrangler
-4.99.0–4.114.0), frequent on 5.x-alpha — in a 2026-08-09 A/B on CI, the
-KCM lane crashed on 4/5 runs under wrangler 4.120.0 (miniflare
-`5.20260801.1-alpha`) and 0/1 under 4.106.0 (miniflare `4.20260630.0`).
-That is why wrangler is held at 4.106.0. The hold lives in
-`pnpm-lock.yaml` — `package.json`'s `^4.106.0` range admits newer 4.x —
-so don't accept any wrangler bump without checking which miniflare
-major it pulls and A/B-ing the test lanes on actual CI runners. `ci.yml`
-and `deps-k3s-update.yml` retry each of the three steps once to absorb
-the residual miniflare-4.x flake; a same-lane failure on both attempts
-is a real failure, not this flake. Revisit the pin and the retries once
-#14641 is fixed and miniflare 5 is stable.
+boundary intermittently dies (confirmed upstream on wrangler
+4.99.0–4.114.0, all miniflare 4.x). In a 2026-08-09 A/B on CI, the KCM
+lane crashed on 4/5 runs under wrangler 4.120.0 (miniflare
+`5.20260801.1-alpha`) and 0/1 under 4.106.0 (miniflare `4.20260630.0`,
+one sample). That is why wrangler is held at 4.106.0 — the crash has
+not been observed on the current pin, though one clean run doesn't
+prove it can't happen there too. The hold lives in `pnpm-lock.yaml` —
+`package.json`'s `^4.106.0` range admits newer 4.x — so don't accept
+any wrangler bump without checking which miniflare major it pulls and
+A/B-ing the test lanes on actual CI runners. `ci.yml` and
+`deps-k3s-update.yml` retry each of the three steps once as a safety
+net; a same-lane failure on both attempts is a real failure, not this
+flake. Revisit the pin and the retries once #14641 is fixed and
+miniflare 5 is stable.
 
 The KCM and clusterop lanes' client requests are individually bounded
 (`rest.Config{Timeout: 30 * time.Second}` in `kcmdw_test.go` and
