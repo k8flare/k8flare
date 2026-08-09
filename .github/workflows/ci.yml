@@ -132,11 +132,17 @@ jobs:
       # gate on any pull request, and the one job that does exercise them
       # (cost-gate.yml) is dispatch-only and cannot be triggered from a
       # fork. They add ~2 minutes.
+      # Each lane clears .wrangler/state first: CLAUDE.md documents this
+      # as a known deterministic-failure source for a stale/accumulated
+      # state directory (previously only stated for a resumed local run
+      # after an interruption), and these three steps otherwise share one
+      # state dir across the whole job with nothing clearing it between
+      # them -- unlike every local pass, which cleared it per lane.
       - name: Go test (apiserver -- controllers off)
-        run: go test ./pkg/apiserver/...
+        run: rm -rf .wrangler/state && go test ./pkg/apiserver/...
 
       - name: Go test (real KCM/GC/scheduler dynamic workers)
-        run: K8FLARE_KCM_TEST=1 go test -count=1 -run TestKCMDynamicWorkerControlPlane -timeout 15m ./pkg/apiserver/
+        run: rm -rf .wrangler/state && K8FLARE_KCM_TEST=1 go test -count=1 -run TestKCMDynamicWorkerControlPlane -timeout 15m ./pkg/apiserver/
 
       - name: Go test (cluster operator lifecycle)
-        run: K8FLARE_CLUSTEROP_TEST=1 go test -count=1 -run TestClusterOperatorLifecycle -timeout 15m ./pkg/apiserver/
+        run: rm -rf .wrangler/state && K8FLARE_CLUSTEROP_TEST=1 go test -count=1 -run TestClusterOperatorLifecycle -timeout 15m ./pkg/apiserver/
