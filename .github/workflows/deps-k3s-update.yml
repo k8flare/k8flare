@@ -193,14 +193,18 @@ jobs:
       - name: Go vet (host + GOOS=js leanwidth/schedwidth passes)
         run: make vet
 
+      # Each lane clears .wrangler/state first -- see ci.yml's identical
+      # steps for why (CLAUDE.md's documented stale-state failure mode;
+      # these three steps share one state dir with nothing clearing it
+      # between them otherwise).
       - name: Go test (apiserver -- controllers off)
-        run: go test ./pkg/apiserver/...
+        run: rm -rf .wrangler/state && go test ./pkg/apiserver/...
 
       - name: Go test (real KCM/GC/scheduler dynamic workers)
-        run: K8FLARE_KCM_TEST=1 go test -count=1 -run TestKCMDynamicWorkerControlPlane -timeout 15m ./pkg/apiserver/
+        run: rm -rf .wrangler/state && K8FLARE_KCM_TEST=1 go test -count=1 -run TestKCMDynamicWorkerControlPlane -timeout 15m ./pkg/apiserver/
 
       - name: Go test (cluster operator lifecycle)
-        run: K8FLARE_CLUSTEROP_TEST=1 go test -count=1 -run TestClusterOperatorLifecycle -timeout 15m ./pkg/apiserver/
+        run: rm -rf .wrangler/state && K8FLARE_CLUSTEROP_TEST=1 go test -count=1 -run TestClusterOperatorLifecycle -timeout 15m ./pkg/apiserver/
 
       - name: Push branch and open PR
         env:
