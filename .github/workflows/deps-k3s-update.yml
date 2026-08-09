@@ -60,6 +60,9 @@ concurrency:
 jobs:
   detect:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read # gh pr list, below
     outputs:
       needed: ${{ steps.decide.outputs.needed }}
       tag: ${{ steps.decide.outputs.tag }}
@@ -208,10 +211,17 @@ jobs:
           git checkout -b "$BRANCH"
           git add -A
           git commit -m "chore: sync deps to k3s $TAG" -m "Automated bump by deps-k3s-update ($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID). All overlay sha256 pins passed unchanged; wasm size gates, vet and the three test lanes ran in-workflow."
-          # --force: a previous run may have pushed this branch and then
-          # failed before opening the PR; the detect job only skips on an
-          # OPEN PR, so make retries idempotent.
-          git push --force -u origin "$BRANCH"
+          # --force-with-lease (not --force): a previous run may have
+          # pushed this branch and then failed before opening the PR --
+          # the detect job only skips on an OPEN PR, so retries need to
+          # overwrite that stale attempt. But detect's dedupe check and
+          # this push are two separate steps with a gap between them, so
+          # fetch the branch's current remote state right before pushing
+          # and let git refuse instead of clobbering if it moved in that
+          # gap (e.g. a human pushed a fixup, or a second run raced this
+          # one despite the workflow-level concurrency group).
+          git fetch origin "$BRANCH" 2>/dev/null || true
+          git push --force-with-lease -u origin "$BRANCH"
           gh pr create \
             --repo "$GITHUB_REPOSITORY" \
             --head "$BRANCH" \
