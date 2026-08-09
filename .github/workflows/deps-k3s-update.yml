@@ -194,10 +194,10 @@ jobs:
         run: make vet
 
       # Each lane clears .wrangler/state first and retries once on failure
-      # -- see ci.yml's identical steps for why (stale-state per
-      # CLAUDE.md; the retry works around the confirmed, still-open
-      # upstream flake cloudflare/workers-sdk#14641, not an unknown one --
-      # a same-lane failure on both attempts is treated as real).
+      # -- see ci.yml's identical steps and docs/development.md's Test
+      # lanes section for the full account (a 2026-08-09 correction of
+      # the original reasoning here). A same-lane failure on both
+      # attempts is treated as real, not swallowed.
       - name: Go test (apiserver -- controllers off)
         run: |
           for i in 1 2; do
