@@ -118,10 +118,17 @@ jobs:
           curl -sfL https://get.k3s.io | INSTALL_K3S_SKIP_START=true sh -
           k3s --version
 
-      - name: Download Kubernetes e2e test binaries
+      # The version is derived from the repo's own k8s pin (the overlay
+      # pin file tracks go.mod -- see docs/k8s-version-bump.md) so a
+      # dependency bump never has to edit this workflow: a mismatched
+      # e2e.test binary would test API behavior this apiserver's vendored
+      # types don't match.
+      - name: Download Kubernetes e2e test binaries (version = the repo's k8s pin)
         run: |
+          K8S_VERSION=$(awk '{print $2}' pkg/k8s-js-overlays/upstream-module.txt | sed -E 's/-k3s[0-9]+$//')
+          echo "e2e.test version: $K8S_VERSION"
           curl -sfL -o "$RUNNER_TEMP/kubernetes-test-linux-amd64.tar.gz" \
-            https://dl.k8s.io/v1.36.2/kubernetes-test-linux-amd64.tar.gz
+            "https://dl.k8s.io/$K8S_VERSION/kubernetes-test-linux-amd64.tar.gz"
           tar xzf "$RUNNER_TEMP/kubernetes-test-linux-amd64.tar.gz" -C "$RUNNER_TEMP"
 
       # Token choice: k8flare's AuthMiddleware (pkg/apiserver/auth.go) treats
@@ -414,8 +421,9 @@ jobs:
 
       # REQUIRED: the real upstream garbage collector (pkg/controllers/gc)
       # against all 7 [Conformance]-tagged tests under
-      # "[sig-api-machinery] Garbage collector" in the downloaded v1.36.2
-      # e2e.test binary (test/e2e/apimachinery/garbage_collector.go),
+      # "[sig-api-machinery] Garbage collector" in the downloaded e2e.test
+      # binary (test/e2e/apimachinery/garbage_collector.go; its version is
+      # pinned in the "Download Kubernetes e2e test binaries" step above),
       # identified locally via `e2e.test --list-tests`. Two other GC
       # tests in that file (cronjob cleanup, custom-resource
       # cascading/orphan deletion) carry no [Conformance] tag and are

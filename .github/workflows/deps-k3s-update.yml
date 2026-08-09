@@ -1,0 +1,257 @@
+name: deps-k3s-update
+
+# Automated k3s dependency bump (docs/k8s-version-bump.md, mechanized).
+#
+# Weekly (and on manual dispatch) this checks the official k3s update
+# channel for the currently-pinned MINOR line, and when a newer patch
+# release exists it replays the documented bump process:
+#
+#   sync-k3s-deps.ts  -> adopt the k3s release's own replace pins
+#                        (go.mod / go.wasm.mod / overlay upstream-module.txt;
+#                        e2e-conformance.yml needs no edit -- it derives its
+#                        e2e.test version from the overlay pin at run time)
+#   make gen-mirrors  -> regenerate .build/ mirrors from the new pin.
+#                        THIS IS THE REVIEW GATE: every upstream file the
+#                        overlays patch is sha256-pinned, and a changed
+#                        file fails the run instead of being silently
+#                        re-patched (CLAUDE.md: bumps are reviewed, not
+#                        mechanically pinned). A failure here means a
+#                        human must re-review the overlay and refresh the
+#                        pin by hand -- exactly like a local bump.
+#   go get + tidy     -> move the k3s module itself to the release commit
+#   cmd/k8flare-gen   -> regenerate version/OpenAPI/defaulters artifacts
+#   ci.yml's battery  -> tsc, build:wasm (64MiB Loader gates), make vet,
+#                        and all three wrangler-dev test lanes, in-run
+#
+# Only after all of that passes does it push a deps/* branch and open a
+# PR. Minor-line bumps stay manual (dispatch with an explicit k3s_tag if
+# you want to attempt one through the same gates -- expect overlay/pin
+# review to be required).
+#
+# Token caveat: pushes made with the default github.token do NOT trigger
+# ci.yml on the resulting PR (GitHub suppresses workflow events for its
+# own pushes). The in-run validation above covers the same ground; to get
+# ci.yml's checks on the PR too, either configure a DEPS_UPDATE_TOKEN
+# repo secret (fine-grained PAT: contents + pull-requests write) or push
+# any empty commit to the branch. e2e-conformance.yml (the Definition of
+# Done) is dispatch-only regardless -- the PR body reminds the reviewer
+# to run it against the branch before merging.
+
+on:
+  schedule:
+    - cron: "0 21 * * 1" # Mondays 21:00 UTC = Tuesdays 06:00 JST
+  workflow_dispatch:
+    inputs:
+      k3s_tag:
+        description: >-
+          Exact k3s release tag to sync to (e.g. v1.36.4+k3s1). Leave
+          empty to auto-detect the latest stable release on the
+          currently-pinned minor's update channel.
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deps-k3s-update
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      needed: ${{ steps.decide.outputs.needed }}
+      tag: ${{ steps.decide.outputs.tag }}
+      staging: ${{ steps.decide.outputs.staging }}
+      branch: ${{ steps.decide.outputs.branch }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Decide target k3s release
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.k3s_tag }}
+        run: |
+          CURRENT=$(awk '{print $2}' pkg/k8s-js-overlays/upstream-module.txt)
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          else
+            MINOR=$(echo "$CURRENT" | sed -E 's/^(v[0-9]+\.[0-9]+)\..*/\1/')
+            # Official k3s channel server: redirects to the GitHub release
+            # page of the line's latest stable release.
+            REDIRECT=$(curl -fsSLo /dev/null -w '%{url_effective}' "https://update.k3s.io/v1-release/channels/$MINOR")
+            TAG=$(basename "$REDIRECT")
+          fi
+          case "$TAG" in
+            v[0-9]*.[0-9]*.[0-9]*+k3s[0-9]*) ;;
+            *) echo "::error::'$TAG' does not look like a k3s release tag"; exit 1 ;;
+          esac
+          STAGING=$(echo "$TAG" | tr '+' '-')
+          BRANCH="deps/k3s-$STAGING"
+          {
+            echo "tag=$TAG"
+            echo "staging=$STAGING"
+            echo "branch=$BRANCH"
+          } >> "$GITHUB_OUTPUT"
+          if [ "$STAGING" = "$CURRENT" ]; then
+            echo "Already pinned to $TAG -- nothing to do."
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          elif gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number --jq 'length' | grep -qv '^0$'; then
+            echo "An open PR from $BRANCH already exists -- nothing to do."
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Bump wanted: $CURRENT -> $STAGING ($TAG)"
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  bump:
+    needs: detect
+    if: needs.detect.outputs.needed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write # push the deps/* branch
+      pull-requests: write # open the bump PR
+    env:
+      TAG: ${{ needs.detect.outputs.tag }}
+      STAGING: ${{ needs.detect.outputs.staging }}
+      BRANCH: ${{ needs.detect.outputs.branch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # With a DEPS_UPDATE_TOKEN PAT the pushed PR gets ci.yml runs;
+          # with the default token it does not (see header comment).
+          token: ${{ secrets.DEPS_UPDATE_TOKEN || github.token }}
+
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version: "24"
+
+      - name: Enable corepack (installed from npm -- runner Node images stopped bundling it, 2026-07)
+        run: npm install -g corepack@latest && corepack enable
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Sync dependency pins to ${{ env.TAG }}
+        run: node packages/wasm-build/src/sync-k3s-deps.ts "$TAG"
+
+      # The sha256 review gate (see header comment). Also regenerates the
+      # .build/ mirrors every later go command depends on.
+      - name: Regenerate .build/ module mirrors from the new pin
+        run: make gen-mirrors
+
+      - name: Bump the k3s module to the release commit (both modfiles)
+        run: |
+          LINES=$(git ls-remote --tags https://github.com/k3s-io/k3s.git "refs/tags/$TAG" "refs/tags/$TAG^{}")
+          COMMIT=$(echo "$LINES" | awk -v t="refs/tags/$TAG^{}" '$2==t{print $1}')
+          [ -n "$COMMIT" ] || COMMIT=$(echo "$LINES" | awk -v t="refs/tags/$TAG" '$2==t{print $1}')
+          if [ -z "$COMMIT" ]; then
+            echo "::error::could not resolve $TAG to a commit"; exit 1
+          fi
+          echo "k3s $TAG -> $COMMIT"
+          go get "github.com/k3s-io/k3s@$COMMIT"
+          go mod tidy
+          GOFLAGS=-modfile=go.wasm.mod go get "github.com/k3s-io/k3s@$COMMIT"
+          GOFLAGS=-modfile=go.wasm.mod go mod tidy
+
+      # Same reason as ci.yml: cmd/k8flare-gen reads swagger.json straight
+      # off k8s.io/kubernetes's module cache directory.
+      - name: Download Go modules
+        run: go mod download
+
+      - name: Regenerate derived artifacts (version, OpenAPI, defaulters)
+        run: go run ./cmd/k8flare-gen
+
+      # ---- From here down: ci.yml's validation battery, kept in step with
+      # ci.yml because PRs pushed with the default token never trigger it.
+      - name: TypeScript check
+        run: vp check
+
+      - name: TypeScript check (packages/k8flare-worker, direct tsc)
+        run: npx tsc --noEmit -p packages/k8flare-worker/tsconfig.json
+
+      - name: Install binaryen (wasm-opt) -- pinned release, not apt
+        # Same pin as ci.yml: apt's older binaryen -Oz optimizes ~2MB
+        # worse, enough to blow the 64MiB Loader cap.
+        run: |
+          curl -sSL https://github.com/WebAssembly/binaryen/releases/download/version_129/binaryen-version_129-x86_64-linux.tar.gz | sudo tar xz -C /opt
+          echo "/opt/binaryen-version_129/bin" >> "$GITHUB_PATH"
+
+      - name: Build WASM (64MiB Loader gate inside)
+        run: npm run build:wasm
+
+      - name: Go vet (host + GOOS=js leanwidth/schedwidth passes)
+        run: make vet
+
+      - name: Go test (apiserver -- controllers off)
+        run: go test ./pkg/apiserver/...
+
+      - name: Go test (real KCM/GC/scheduler dynamic workers)
+        run: K8FLARE_KCM_TEST=1 go test -count=1 -run TestKCMDynamicWorkerControlPlane -timeout 15m ./pkg/apiserver/
+
+      - name: Go test (cluster operator lifecycle)
+        run: K8FLARE_CLUSTEROP_TEST=1 go test -count=1 -run TestClusterOperatorLifecycle -timeout 15m ./pkg/apiserver/
+
+      - name: Push branch and open PR
+        env:
+          GH_TOKEN: ${{ secrets.DEPS_UPDATE_TOKEN || github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add -A
+          git commit -m "chore: sync deps to k3s $TAG" -m "Automated bump by deps-k3s-update ($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID). All overlay sha256 pins passed unchanged; wasm size gates, vet and the three test lanes ran in-workflow."
+          # --force: a previous run may have pushed this branch and then
+          # failed before opening the PR; the detect job only skips on an
+          # OPEN PR, so make retries idempotent.
+          git push --force -u origin "$BRANCH"
+          gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
+            --head "$BRANCH" \
+            --title "chore: sync deps to k3s $TAG" \
+            --body "$(cat <<EOF
+          Automated dependency bump to [k3s $TAG](https://github.com/k3s-io/k3s/releases/tag/$(printf '%s' "$TAG" | sed 's/+/%2B/')) via \`deps-k3s-update\` ([this run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)).
+
+          What moved (see the diff for exact versions):
+          - \`k8s.io/*\` staging replaces and every other pin the k3s release itself carries (etcd, spegel, ...), adopted verbatim from its go.mod by \`packages/wasm-build/src/sync-k3s-deps.ts\`
+          - \`github.com/k3s-io/k3s\` to the release commit, both \`go.mod\` and \`go.wasm.mod\`, plus \`go mod tidy\`
+          - \`pkg/*-overlays/upstream-module.txt\` mirror pins (\`e2e-conformance.yml\` derives its e2e.test version from these at run time)
+          - regenerated \`cmd/k8flare-gen\` artifacts
+
+          Verified in the workflow run linked above: overlay sha256 pins unchanged (no patched upstream file drifted), WASM chunks under the 64MiB Loader cap, \`vp check\`/\`tsc\`, \`make vet\`, and all three test lanes.
+
+          Before merging:
+          - [ ] Dispatch \`e2e-conformance.yml\` against this branch (Definition of Done -- required focus set must stay green)
+          - [ ] If this PR shows no ci.yml checks, it was pushed with the default Actions token (see the workflow's header comment); push an empty commit or configure \`DEPS_UPDATE_TOKEN\` to get them
+          EOF
+          )"
+
+  # Scheduled workflows that fail silently rot: surface failures as an
+  # issue so a human sees them without watching the Actions tab.
+  notify-failure:
+    needs: [detect, bump]
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open (or comment on) the failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TITLE="deps-k3s-update: automated bump failed"
+          RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          BODY="Automated k3s dependency bump failed: $RUN_URL -- most likely either the channel/API lookup broke or an overlay sha256 pin tripped (an upstream file the overlays patch changed and needs human re-review; see docs/k8s-version-bump.md)."
+          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$TITLE\"" --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "$GITHUB_REPOSITORY" --body "$BODY"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body "$BODY"
+          fi

@@ -125,8 +125,11 @@ CI ゲート(`.github/workflows/`): `ci.yml`(vp check / build:wasm / go vet+test
 `cost-gate.yml`(手動ディスパッチ。コスト不変条件 #1/#3 を実機で機械的に
 検証する唯一の仕組み — アイドル時のアラームのパークと、未収束ワークロード
 がある時の書き込み量)、
-`e2e-conformance.yml`(**Definition of Done**。k8s v1.36.2 の e2e.test を実クラスタで
-実行し、required baseline 群 + advisory 群を評価)。
+`e2e-conformance.yml`(**Definition of Done**。go.mod の pin と同じ k8s バージョンの
+e2e.test を実クラスタで実行し、required baseline 群 + advisory 群を評価)、
+`deps-k3s-update.yml`(週次 + 手動。同一マイナー内の k3s パッチリリースを検出して
+機械的バンプ + ci.yml 相当の検証を回し `deps/*` PR を開く。sha256 ピンに引っかかる
+変更は人間レビューへフォールバック — docs/k8s-version-bump.md の Automation 節)。
 
 ## 不可侵ルール
 
