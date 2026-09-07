@@ -10,5 +10,5 @@ package apiserver
 const (
 	kubernetesMajor      = "1"
 	kubernetesMinor      = "36"
-	kubernetesGitVersion = "v1.36.3+k8flare"
+	kubernetesGitVersion = "v1.36.4+k8flare"
 )
