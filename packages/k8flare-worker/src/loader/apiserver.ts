@@ -45,34 +45,37 @@ async function apiserverEntrypoint(env: Env): Promise<Fetcher> {
   // factory time). Cost: +$0.002/unique/day per ACTIVE cluster
   // (docs/cost-model.md).
   const doName = env.CLUSTER_DO_NAME ?? "default";
-  const worker = env.LOADER.get(`${env.LOADER_ID_SALT ?? ""}apiserver:${doName}@${manifest.sha256}`, async () => {
-    const wasm = await assembleWasm(env.ASSETS, manifest);
-    const wasmExec = await fetchWasmAsset(env.ASSETS, "wasm_exec.js").then((r) => r.text());
-    const dynamicEnv: Record<string, unknown> = {
-      STORAGE: env.STORAGE,
-      CLUSTER_DO_NAME: doName,
-      CLUSTER_BASE_PATH: env.CLUSTER_BASE_PATH ?? "",
-    };
-    // Bake ONLY the pristine K3S_TOKEN secret: ENV_K3S_TOKEN on derived
-    // envs (clusterenv.ts preserves it -- K3S_TOKEN there is the
-    // caller-presented token, and baking that would freeze the FIRST
-    // caller's token into an isolate-lifetime fallback), or K3S_TOKEN
-    // itself on raw DO envs (no CLUSTER_DO_NAME = never derived). The Go
-    // side unions this with the per-cluster vault and keeps its dev
-    // fallback for secretless dev/CI.
-    const pristine = env.ENV_K3S_TOKEN ?? (env.CLUSTER_DO_NAME ? undefined : env.K3S_TOKEN);
-    if (pristine) dynamicEnv.K3S_TOKEN = pristine;
-    return {
-      compatibilityDate: "2026-07-01",
-      mainModule: "index.js",
-      modules: {
-        "index.js": makeResidentBootstrapJS(APISERVER_PUMP_WINDOW_MS),
-        "wasm_exec.js": wasmExec,
-        "app.wasm": { wasm: wasm.buffer as ArrayBuffer },
-      },
-      env: dynamicEnv,
-    };
-  });
+  const worker = env.LOADER.get(
+    `${env.LOADER_ID_SALT ?? ""}apiserver:${doName}@${manifest.sha256}`,
+    async () => {
+      const wasm = await assembleWasm(env.ASSETS, manifest);
+      const wasmExec = await fetchWasmAsset(env.ASSETS, "wasm_exec.js").then((r) => r.text());
+      const dynamicEnv: Record<string, unknown> = {
+        STORAGE: env.STORAGE,
+        CLUSTER_DO_NAME: doName,
+        CLUSTER_BASE_PATH: env.CLUSTER_BASE_PATH ?? "",
+      };
+      // Bake ONLY the pristine K3S_TOKEN secret: ENV_K3S_TOKEN on derived
+      // envs (clusterenv.ts preserves it -- K3S_TOKEN there is the
+      // caller-presented token, and baking that would freeze the FIRST
+      // caller's token into an isolate-lifetime fallback), or K3S_TOKEN
+      // itself on raw DO envs (no CLUSTER_DO_NAME = never derived). The Go
+      // side unions this with the per-cluster vault and keeps its dev
+      // fallback for secretless dev/CI.
+      const pristine = env.ENV_K3S_TOKEN ?? (env.CLUSTER_DO_NAME ? undefined : env.K3S_TOKEN);
+      if (pristine) dynamicEnv.K3S_TOKEN = pristine;
+      return {
+        compatibilityDate: "2026-07-01",
+        mainModule: "index.js",
+        modules: {
+          "index.js": makeResidentBootstrapJS(APISERVER_PUMP_WINDOW_MS),
+          "wasm_exec.js": wasmExec,
+          "app.wasm": { wasm: wasm.buffer as ArrayBuffer },
+        },
+        env: dynamicEnv,
+      };
+    },
+  );
   return worker.getEntrypoint();
 }
 
