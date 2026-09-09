@@ -25,7 +25,8 @@ kubectl / kubelet (BYO VM: unmodified k3s embed, cmd/agent)
 packages/k8flare-worker  — the ONE deployed Worker (routing, auth, watch streaming,
    │               kubelet proxy)
    ├─► apiserver   (Go WASM, dynamic worker; real generic registry over DO storage)
-   ├─► kcm         (real kube-controller-manager: 7 workload controllers)
+   ├─► kcm         (real kube-controller-manager: 7 workload controllers plus
+   │                endpoint, endpointslice, nodeipam, nodelifecycle, tainteviction)
    ├─► gc          (real garbagecollector)
    ├─► sched       (real kube-scheduler)
    ├─► clusterop   (cluster operator: reconciles k8flare.com/v1alpha1 Clusters;
@@ -60,6 +61,9 @@ Key design points:
   apply, delete cascades via the real GC).
 - Deployments/ReplicaSets/Jobs/CronJobs/DaemonSets reconciled by the real
   kube-controller-manager; Pods bound by the real kube-scheduler.
+- Services get Endpoints and EndpointSlices, Nodes get a `spec.podCIDR`, and
+  Nodes whose Lease goes stale are marked `Ready=Unknown` and tainted -- all
+  from the real upstream controllers in the same kcm dynamic worker.
 - BYO-VM nodes: `cmd/agent` embeds the unmodified k3s agent (kubelet,
   containerd, flannel, kube-proxy) and joins over HTTPS + token, optionally
   over Cloudflare Mesh

@@ -4058,3 +4058,83 @@ S26 訂正の副作用として記録。修正前は storm の各書き込みが
 
 **残る限界**: apiserver チャンクは 65,285,282 バイト(cap まで 1,780KiB)。
 `robfig/cron` の追加で約 83KB 増えた。
+
+## S28: 手書きの 3 コントローラー代替を実 KCM の 5 コントローラーへ差し戻し (2026-09-09、実測)
+
+`pkg/apiserver` に残っていたサーバーサイドの手書き代替
+(`endpoints.go` 456 行 / `nodelifecycle.go` 316 行 / `nodecidr.go` 234 行、
+テスト込みで計 1,734 行削除)を削除し、実 kube-controller-manager の
+`endpoint` / `endpointslice` / `nodeipam` / `nodelifecycle` / `tainteviction`
+を kcm dynamic worker で走らせる形に戻した(不可侵ルール #3)。
+
+**サイズ実測**(`make wasm`、wasm-opt 後の raw バイト。Loader cap は
+67,108,864 バイト):
+
+| チャンク | バイト | cap までの余裕 |
+|---|---|---|
+| apiserver | 64,416,737 | 2,692,127 (2.57MiB) |
+| kcm | 44,203,024 | 22,905,840 (21.84MiB) |
+| sched | 44,985,213 | 22,123,651 |
+| gc | 41,298,694 | 25,810,170 |
+| clusterop | 32,328,881 | 34,779,983 |
+
+kcm は 5 コントローラー追加で 42,238,661 → 44,203,024 バイト
+(+1,964,363 = +1.87MiB)。事前スパイクの予測値 44,203,045 と 21 バイト差。
+apiserver 側は 3 ファイル削除で S27 記録時点の 65,285,282 バイトから
+64,416,737 バイトへ(-848KiB。この差分には 7-30 以降の他の変更も含む)。
+`pkg/leanclient` は Leases/EndpointSlices/DaemonSets/Endpoints の
+client/informer 表面を既に持っており、GOOS=js のコンパイルエラーはゼロ。
+
+**2026-07-06 の削除理由との関係**: 当時の削除理由はサイズではなく
+**メモリ**だった(「informer キャッシュ(全 Node・全 Lease・全
+EndpointSlice)が本番 128MiB isolate に対して純粋なオーバーヘッドで、
+ロード直後の dynamic worker が informer sync 中に死んで reload ループ
+した」)。今回それが解消したと主張できる根拠は無い。**本番 isolate での
+メモリ挙動は未検証**である。今回検証したのは (a) cap 内に収まること
+(b) `wrangler dev` 上で 2 Node・数 Pod 規模の実クラスタとして 5
+コントローラーが同時に動くこと、の 2 点だけで、当時の削除理由は
+「サーバーサイド代替があるから冗長」の部分だけが無効化された(代替を
+消したので冗長ではなくなった)。128MiB 側は本番デプロイ時に
+再確認が要る — 残課題として明記する。
+
+**機能検証**(`make test-kcm` の `TestKCMDynamicWorkerControlPlane`、
+実 client-go で dynamic worker 越しに駆動):
+
+- `nodeipam` が 2 Node に別々の /24 を `spec.podCIDR` として払い出す
+- `endpoint` / `endpointslice` が selector 付き Service + Ready Pod から
+  Endpoints と EndpointSlice を作る(`endpointslice.kubernetes.io/managed-by`
+  = `endpointslice-controller.k8s.io`、legacy 側は
+  `endpoints.kubernetes.io/managed-by` = `endpoint-controller`。
+  targetPort 名 `http` → コンテナポート 8080 の解決と Ready 条件も確認)
+- `nodelifecycle` が Lease の更新が止まった Node を Ready=Unknown
+  (reason `NodeStatusUnknown`)にし、MemoryPressure/DiskPressure/
+  PIDPressure も Unknown にする。Lease が新鮮な Node は触らない
+
+**node-lifecycle の poke 経路について(否定的な測定結果も記録)**:
+Lease の陳腐化は「書き込みの不在」で検出されるので poke を引っ掛ける
+write が無い。そこで Cluster DO の既存の安全網 alarm
+(`packages/k8flare-worker/src/storage/index.ts`、live Node がある間だけ
+武装・無くなればパーク)から、削除した `/internal/reconcile-node-lifecycle`
+POST の代わりに **Controllers DO を poke** する形に変えた
+(`pingControllers` と同じ pending-ping 経路。固定間隔ポーリングの新設では
+なく、既存 tick の中身の差し替え)。
+
+ただし **この poke が実際に効いていることを local で分離できなかった**:
+
+1. `make test-kcm` の (c) は poke をコメントアウトしても同じ 45 秒で
+   通った。テスト中は Controllers DO 自身の alarm(warmup 15 秒間隔 /
+   未収束 backoff)が窓を開け続けている。
+2. `wrangler dev` に対する手動プローブ(ワークロードゼロのクラスタに
+   Node + 陳腐化 Lease だけを置く)でも、poke 有無に関わらず 60 秒で
+   Ready=Unknown になった。Node/Lease の書き込み自体が Controllers DO を
+   起こし warmup(3 分)を張るため。
+3. warmup を跨ぐプローブ(230 秒 Lease を更新し続けてから停止)でも、
+   poke 無しで 50 秒後に Ready=Unknown になった。`wrangler dev` の
+   isolate は S27 の測定 1・2 と同じ理由(isolate が退避されず Go 側の
+   タイマーが動き続ける)で、pump window の境界を再現しない。
+
+つまり **local では pump window の欠如を再現できないので、この poke の
+必要性・有効性は測定で示せていない**。根拠はコードの筋(warmup 期限切れ
+後、収束済みクラスタでは Controllers DO の alarm はパークするので、
+live Node があるうちは何かが窓を開ける必要がある)だけである。S27 と
+同じく決定的な測定は本番か、isolate を確実に退避させるハーネスが要る。

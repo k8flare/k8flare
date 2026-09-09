@@ -340,19 +340,18 @@ func TestKCMDynamicWorkerControlPlane(t *testing.T) {
 		}
 	}
 
-	// Lease staleness, last: by this point the workload is gone, so the
-	// Controllers DO has no unconverged work holding its own alarm open
-	// and the only thing still opening pump windows for the kcm dynamic
-	// worker is the Cluster DO's node-lifecycle safety net (armed
-	// because nodeB is live -- packages/k8flare-worker/src/storage/index.ts's
-	// alarm()). That makes this both the nodelifecycle assertion the
-	// deleted nodelifecycle_test.go used to make and the regression gate
-	// for that poke path.
+	// Lease staleness, last: this is the assertion the deleted
+	// nodelifecycle_test.go used to make against pkg/apiserver's own
+	// stand-in, now driven through the real controller. It does NOT
+	// isolate which of the two alarms opened the pump window it needed
+	// (the Cluster DO's node-lifecycle safety net or the Controllers
+	// DO's own) -- measured 2026-09-09, docs/platform-verification.md
+	// S28.
 	//
 	// nodeMonitorGracePeriod is 50s and the controller anchors its grace
-	// window to the last heartbeat it OBSERVED, so the marking lands one
-	// safety-net tick after the last renewal, not 50s after the
-	// backdated renewTime.
+	// window to the last heartbeat it OBSERVED, so the marking lands
+	// relative to the last renewal, not 50s after the backdated
+	// renewTime.
 	stopLeaseB()
 	staleLease, err := client.CoordinationV1().Leases(corev1.NamespaceNodeLease).
 		Get(ctx, nodeB, metav1.GetOptions{})

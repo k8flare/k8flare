@@ -274,6 +274,18 @@ the commit implementing this for the exact repro: Node create → taint
 applied within ~2s via a real end-to-end DO-alarm→service-binding→
 apiserver round trip, not a direct call).
 
+**Superseded (2026-09-09)**: all three rows in the table above were
+deleted and handed back to the real kube-controller-manager controllers
+in the kcm dynamic worker (`endpoint`/`endpointslice`/`nodeipam`/
+`nodelifecycle`/`tainteviction`), which cost +1.87MiB on the kcm chunk and
+left it 21.8MiB under the Loader cap — the size argument that forced the
+synchronous apiserver-side versions no longer holds for kcm (it still
+holds for the apiserver chunk, which has 2.57MiB of headroom). Numbers,
+what was verified, and what was NOT (production 128MiB isolate memory) are
+in docs/platform-verification.md's S28. The alarm accounting above is
+unchanged: the same event-armed 60s safety-net tick now pokes the
+Controllers DO instead of the deleted apiserver route.
+
 ### Route B: Containers (demand-start/idle-stop) — superseded (kept for the record, user decision 2026-07-02)
 
 Estimate assuming 1vCPU+1GiB, within the Containers Paid included
