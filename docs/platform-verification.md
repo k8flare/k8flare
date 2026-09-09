@@ -4968,3 +4968,178 @@ NotFound になることまで見る。
   **リクエストの `Preconditions` を捨てている**。この conformance テストが渡す
   UID precondition が効いておらず、UID 不一致の DELETE が 409 にならず通る。
   今回の早期消失の原因ではない。
+
+## S34: host ジョブの wrangler.log に出ていた 3 種のエラーを全部ローカルで再現し、2 つを修正した (2026-09-10、実測)
+
+S33 が「未検証」として残した宿題 —— GitHub Actions run 34373872717 の
+`e2e-conformance (host)` の wrangler.log に出ていた
+
+```
+✘ [ERROR] Uncaught Error: Network connection lost.          (約 300 件)
+✘ [ERROR] call to released function                          (1 件)
+[wrangler:error] Error: Cannot perform I/O on behalf of a different request.
+    ... (I/O type: ReadableStreamSource)
+    at async apiserverFetch (packages/k8flare-worker/src/loader/apiserver.ts:101)   (5 件)
+```
+
+の発生源特定。**3 種とも `wrangler dev` でローカル再現に成功した**(S33 の
+「ローカルで再現しない」はホスト分割の再現だけを試していて、**並行書き込み
+負荷**と**途中で消える watch クライアント**を欠いていたのが理由)。
+
+再現ハーネスは `pkg/apiserver/ioctxprobe_test.go`(skip ゲート、
+`K8FLARE_IOCTX_PROBE=1`)。DW モード(kcm/gc/sched が resident DW、
+`PUMP_WINDOW_DROP_CLOSE=3`)で、ハートビートするノード + Deployment +
+**12 本の独立した client-go クライアントが PATCH pods と POST events を
+回し続ける**(2 分で約 1 万 PATCH)。途中で 8 本の watch を張って一斉に
+切り、最後に「その回ずっと 1 件もイベントが無かった GVR」(ConfigMap /
+Secret)を触る。
+
+### 1. `Cannot perform I/O on behalf of a different request` (ReadableStreamSource)
+
+**真因**: resident な Go インスタンスでは、**あるリクエストの goroutine が
+別のリクエストの JS コールバックの中で再開されうる**。Go/wasm は単一
+スレッドで、JS→Go の呼び出し(promise の `then`、`openPumpWindow`、
+setTimeout コールバック等)が入ると Go ランタイムは**その時点で runnable な
+goroutine を全部走らせてから** JS に戻る。したがってリクエスト A の
+コールバックの中でリクエスト B のハンドラが完走することがあり、そこで
+`handler_js.go` の `toJSResponse` が作る **`new Response(...)`(=
+ReadableStreamSource)は A の IoContext に属してしまう**。B の応答として
+それをシェルに返すと `ep.fetch` の await で上記例外になる。
+
+**goroutine を跨いで起こす犯人**は Go の同期プリミティブだった。
+`pkg/apiserver/cmd/apiserver-wasm/main.go` の `getTokens` が
+**`tokenCacheMu` を握ったままトークン vault 読み取り(storage fetch)を
+していた**ため、TTL 満了のたびに、待たされていた全リクエストの goroutine が
+**保持者のコールバックの中で一斉に**解放される。
+
+**フォールト注入による確定**(`tokenCacheTTL` を 60 秒 → 5 秒に変更して
+ビルドし、同じプローブを回す):
+
+| ビルド | `Cannot perform I/O` の件数 (120 秒負荷) |
+|---|---|
+| 修正前・TTL 60s | 7(1 バースト。同時 in-flight の 7 本が同時に 500) |
+| 修正前・TTL 5s | **78** |
+| 修正後・TTL 5s | **0** |
+
+**修正**: JS の I/O オブジェクトを Go 側で一切作らない。
+- `packages/k8flare-worker/src/loader/bootstrap.ts`: リクエスト本文を
+  **JS 側(そのリクエスト自身の fetch ハンドラ)で** `arrayBuffer()` し、
+  `{method, url, headers, body}` という**素の値だけ**を `handleRequest` に
+  渡す。戻り値も素のオブジェクトで受け、**`new Response(...)` は JS 側で
+  組み立てる**。
+- `pkg/cfruntime/handler_js.go`: `readBody`(JS の `arrayBuffer()` を await
+  していた)を削除。`requestFromJS` は Uint8Array をコピーするだけ。
+  `toJSResponse` は Response ではなく `{status, statusText, headers, body}`
+  を返す。ヘッダは `Headers` オブジェクトではなく `[[k,v],...]` の素の配列。
+  これで `handler_js.go` から JS の I/O オブジェクト生成が消え、使われなく
+  なった `awaitPromise` も削除した。
+
+**この修正だけで直ることを単独で確認した**: `getTokens` を**わざと元の
+ブロッキング実装に戻したまま**(TTL 5 秒)、bootstrap/handler_js の修正
+だけを入れたビルドで **0 件**。つまり `await binding.handleRequest(...)` の
+継続は、promise を解決したのが別 IoContext であっても**待っている側の
+リクエストの文脈で走る**ことが実測で分かった(事前には不明だった点)。
+
+**併せて入れた防御** (`getTokens` の single-flight 化): それでも
+「foreign な IoContext で再開された goroutine が、自分のリクエストの
+`env.STORAGE` で outbound fetch する」形は残る。`wrangler dev` はこの
+規則(捕捉済み env の使い回し)を強制しない(S31 E1)ので**ローカルでは
+観測できない**が、本番では S24 と同じ例外になるはず。そこで `tokenCacheMu`
+は**もう I/O を跨いで保持しない**(リフレッシュ中の並行呼び出しは直前の
+リストを返す)。TTL 60 秒のキャッシュなので、リフレッシュ中に 1 世代古い
+トークンを返すのは元々許容している鮮度の範囲内。
+
+**残っている同型の穴(未修正・記録のみ)**: `pkg/apiserver/bootstrap.go` の
+`bootstrapOnce` と `certmanager.go` の `CAManager.Initialize` は
+`sync.Once` / mutex を storage I/O を跨いで保持している。こちらは
+**isolate あたり 1 回(コールドスタート時)**なので同じバーストが起きるのは
+起動直後の 1 回だけで、上の Response 修正によって応答自体は安全になった。
+outbound 側の危険は残る。
+
+### 2. `call to released function`
+
+**真因**: S31 で入れた `cloudflare.AbandonFunc` / `reapAbandoned`。window が
+閉じたときに `fetch.go` の `awaitPromise` が then/catch の `js.Func` を
+手放し、**次の次の `ClosePumpWindow` で `Release()`** していた。ところが
+**放棄した promise はもっと後で settle しうる**(古い watch ストリームに
+次のイベントが届く、切れかけの fetch が最終的に "Network connection lost"
+で reject する)。released 済みの `js.Func` を JS が呼ぶと Go の
+`syscall/js` が `console.error("call to released function")` を出し、
+**その reaction は丸ごと捨てられる**。S31 のコメントは「1 window 遅らせれば
+安全」と書いていたが**それは誤り**だった(rule 4 に従い、消さずにここに
+記録する)。
+
+**発生頻度の実測**: 修正後のコードに一時計測を入れ、「放棄済みの待ちに
+あとから settle が届いた」回数を数えたところ **165 秒のプローブで 1 件**。
+CI の丸ごと 1 回の conformance run で 1 件だったのと桁が合う。稀なのは、
+dev では放棄された read が**次のイベント(=数ミリ秒後)で settle して
+しまい、reap の 2 window 前に消化される**ため。2 window(約 50 秒)何も
+来なかったストリームだけが踏む。
+
+**修正**: `js.Func` を**一切 release しない**設計に変える
+(`pkg/cfruntime/cloudflare/fetch/fetch.go`)。プロセス全体で 2 つだけの
+永続 `js.FuncOf`(resolve 用 / reject 用)を持ち、呼び出しごとに
+`Function.prototype.bind` で待ち受け id を焼いた JS 関数を作って
+`then`/`catch` に渡す。Go 側は id → チャンネルの登録簿を持ち、放棄は
+**登録簿からエントリを消すだけ**。あとから settle が来ても
+トランポリンは生きていて no-op になる。`AbandonFunc` / `reapAbandoned` は
+削除した。副次的に、旧実装が成功パスで `catch` を release し忘れていた
+リークも消えている。
+
+### 3. `Uncaught Error: Network connection lost.`
+
+**発生源は k3s の remotedialer トンネルではなく、こちらの watch ストリーム
+だった。** プローブで **watch クライアントを 8 本同時に切ると、ちょうど
+8 件**出る(切らない構成では 0 件)。1 本の中断された watch につき 1 件で、
+conformance 1 回ぶんの約 300 件はそのまま「途中で消えた watch の本数」。
+つまり**制御プレーンの故障ではなくノイズ**である。
+
+`packages/k8flare-worker/src/k8s/watch.ts` は `TransformStream` の writer に
+`writer.write(...)` を**投げっぱなし**(await も catch も無し)にしていて、
+クライアントが去った後の書き込みは reject する。さらにクライアントの離脱を
+知る手段が無いので、**WatchHub 側の WebSocket が閉じられない**まま残る
+(S31 追記が「dev で 11 分に 1306 本開いて 0 本閉じる」と記録した穴)。
+
+**修正**: `TransformStream` をやめ、`cancel()` コールバックを持つ
+`ReadableStream` を直接返す。`cancel()` はクライアント切断で発火するので、
+そこで DO 側の WebSocket を `close(1001)` する。書き込みは
+`controller.enqueue()` の同期 throw を捕捉して同じ経路に落とす。
+
+**結果は 8 件 → 3 件で、ゼロにはならなかった。** 残りは `cancel()` が走る
+前にソケットが死ぬレース分。ランタイムがストリーミング応答のポンプで
+出しているものまでは user code から抑えられていない。**プローブのゲートは
+この 1 種類だけ「情報として記録するが失敗にしない」**扱いにしてある
+(残り 2 種は 0 でなければ失敗)。
+
+**トンネルの 401 について(コードを読んだだけ、未実測)**: `/v1-k3s/connect`
+は `gateway/index.ts` の `isUnauthenticatedPath` に**入っていない**ので
+クラスタトークンの提示が要る。`verifyClusterToken` は Basic の
+パスワード部も受けるが、k3s の agent が remotedialer に載せるのは
+**ノードパスワード**でありクラスタトークンではないため、401 になるはず。
+当該 CI ログは `--log-level error` 相当で 401 のリクエスト行が残っておらず、
+**実際に 401 していたかは確認できていない**。上記のとおり
+`Network connection lost` の発生源はこちらではないので、今回は直していない。
+
+### 回帰ゲート
+
+`pkg/apiserver/ioctxprobe_test.go`(`K8FLARE_IOCTX_PROBE=1`)。既定の
+DW モードのほか `K8FLARE_IOCTX_MODE=host` で CI の host ジョブと同じ分割
+(TLS + ホスト実 KCM + `CM_DISABLED`/`SCHED_DISABLED`)も張れる。
+`K8FLARE_IOCTX_WORKERS` / `_SECONDS` / `_DROP_CLOSE` / `_LOG` で調整する。
+**常設レーンには入れていない**(1 回 3 分弱かかり、S32/S33 のプローブと
+同じ扱い)。修正を revert すると `Cannot perform I/O` で落ちる(実測、
+12 件)。
+
+### 未検証
+
+- **CI / 本番での確認**(push・デプロイ禁止のため未実施)。この 3 件が
+  実際に conformance の GC テストの非決定的失敗(S33)を消すかは未確認。
+  S33 のガードと合わせて 2 段構えになっている状態。
+- `Network connection lost` の残り 3 件を消す方法。ランタイム側で出て
+  いるのか、まだこちらに抑えられる余地があるのかを切り分けていない。
+- watch の WebSocket リーク(S31 追記の 1306 本)が `cancel()` 経路で
+  実際に閉じるようになったかの**本数の実測**。コード上は閉じるが数えて
+  いない。
+- `bootstrapOnce` / `CAManager.Initialize` が I/O を跨いで保持している件
+  (上記 1 の「残っている同型の穴」)。本番でしか出ない。
+- `/v1-k3s/connect` の 401(上記 3)。
