@@ -105,6 +105,7 @@ func TestKCMDynamicWorkerControlPlane(t *testing.T) {
 	}
 
 	replicas := int32(2)
+	kcmLoadedAt := time.Now()
 	if _, err := client.AppsV1().Deployments(ns).Create(ctx, &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "web"},
 		Spec: appsv1.DeploymentSpec{
@@ -325,6 +326,41 @@ func TestKCMDynamicWorkerControlPlane(t *testing.T) {
 	if len(slice.Ports) != 1 || slice.Ports[0].Port == nil || *slice.Ports[0].Port != 8080 {
 		t.Errorf("EndpointSlice ports = %+v, want the resolved container port 8080", slice.Ports)
 	}
+
+	// A Node registered LONG after the kcm dynamic worker was loaded must
+	// be served just as fast as one registered right after it. Everything
+	// above happens within the first pump window or two, so it cannot
+	// tell a reflector that is still watching from one whose watch died
+	// at a pump-window boundary and was never re-established -- the S31
+	// production defect, where a Node registered 13 minutes in went
+	// 6+ minutes without a podCIDR while the Controllers DO kept pumping
+	// every 15s, and only a fresh Loader id fixed it.
+	//
+	// The budget is the elapsed test so far, topped up only if the
+	// assertions above ran unusually fast, so this phase normally costs
+	// nothing beyond the bounded wait at the end of it.
+	if remaining := 3*time.Minute - time.Since(kcmLoadedAt); remaining > 0 {
+		t.Logf("waiting %s more so the kcm has been live for 3 minutes before the late Node registers", remaining.Round(time.Second))
+		time.Sleep(remaining)
+	}
+	const nodeLate = "kcmdw-node-late"
+	if _, err := client.CoreV1().Nodes().Create(ctx, &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: nodeLate},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create late node: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = client.CoreV1().Nodes().Delete(context.Background(), nodeLate, metav1.DeleteOptions{})
+		_ = client.CoordinationV1().Leases(corev1.NamespaceNodeLease).
+			Delete(context.Background(), nodeLate, metav1.DeleteOptions{})
+	})
+	markNodeReady(t, ctx, client, nodeLate)
+	stopLeaseLate := keepNodeLeaseFresh(ctx, client, nodeLate)
+	defer stopLeaseLate()
+	waitFor(t, time.Minute, "nodeipam assigned a podCIDR to a Node registered 3 minutes after kcm loaded", func() bool {
+		node, err := client.CoreV1().Nodes().Get(ctx, nodeLate, metav1.GetOptions{})
+		return err == nil && node.Spec.PodCIDR != ""
+	})
 
 	// Namespace deletion must leave nothing behind, with the LIVE
 	// controllers racing the sweep (admission + post-delete events
