@@ -4723,3 +4723,129 @@ Pod がスケジュールされることを要求する。修正を revert す�
 
 撤収後(15:45Z〜)は前回同様にパークを確認する。本番はこのブランチ
 (239fcd00)がデプロイされたまま。
+
+## S32: 書き込みストームの真因は no-op poke ループではなく「taint 立ち退き ⇄ ReplicaSet ⇄ scheduler」のホットループ (2026-09-10、ローカル実測)
+
+S31 追記 2 が「S26 の no-op 書き込みストームと同型。要調査」と書いた
+`PUT deployments/s31-probe/status` ×24/90秒 を、ローカルで**再現し計測した**。
+結論は追記 2 の推測と違う: no-op poke ループではない(S26 の抑止は効いている)。
+Node がダウンしている間、実 kcm の taint-eviction-controller が Pod を消し、
+実 replicaset controller が作り直し、実 scheduler が**同じ tainted Node に
+バインドし直し**、また消される、という**実書き込みのホットループ**だった。
+
+### 計測方法(再現手順)
+
+`pkg/apiserver/s32probe_test.go`(`K8FLARE_S32_PROBE=1` でのみ走るプローブ。
+既定は skip)。2 Node + 2 replica Deployment(`nodeSelector` で nodeB に固定)
++ 各 Node の fakeKubelet(Lease 更新・Node status heartbeat・Pod を
+Running/Ready にする・削除された Pod の finalize)。nodeB の kubelet を止めて
+`docker pause` 相当を作り、90 秒後に戻す。書き込み量は namespace facet の
+kine リビジョン(`deploy rv=`)で測る — 抑止された no-op は進めないので、
+実際に受理された書き込みだけを数える。
+
+request 単位の内訳は、計測中だけ gateway に一時的なトレースを入れて採った
+(`wrangler dev` のログは外部リクエストしか出さず、`SELF` binding 経由の
+内部 fetch は出ないため)。**このトレースはコミットしていない** — 公開
+fetch のホットパスに分岐とレスポンス clone を足すため。以後の再測定は
+facet リビジョンで足りる。
+
+### 実測(修正前 / 修正後、同一手順)
+
+| | 修正前 | 修正後 |
+|---|---|---|
+| Node ダウン中の 1 分間の全書き込み | **784** | **27** |
+| うち `PUT deployments/s32-probe/status` | **230** | **2** |
+| Node ダウン 90 秒間の facet リビジョン増分 | 142 → 739(30 秒で約 600) | 107 → 107(**0**) |
+| ダウン中の Pod create / delete / binding | 61 / 61 / 61(約 30 秒) | 0 / 0 / 0 |
+
+ループの現物(修正前のログ、`taint_eviction.go:111 "Deleting pod"` が
+1 秒あたり約 2 件で無限に続く):
+
+```
+01:30:02 POST   /api/v1/namespaces/s32/pods                        201 (replicaset)
+01:30:02 POST   /api/v1/namespaces/s32/pods/…-s9knh/binding         201 (kube-scheduler)
+01:30:02 PATCH  /api/v1/namespaces/s32/pods/…-s9knh/status          200 (taint-eviction)
+01:30:02 DELETE /api/v1/namespaces/s32/pods/…-s9knh                 200 (taint-eviction)
+01:30:02 PUT    /apis/apps/v1/…/deployments/s32-probe/status        200
+```
+
+`deployments/status` の PUT は**このループの結果**であって原因ではない。しかも
+同じリビジョンを返す PUT が 2〜3 回連続する(`rv=134` ×3、`rv=139` ×3 等)——
+つまり S26 の no-op 抑止(`KineStorage.GuaranteedUpdate` の `bytes.Equal`)は
+効いていて DO への書き込みは発生しておらず、`afterWrite`/`pingControllers` も
+呼ばれていない。**S31 追記 2 の「S26 と同型」という見立ては誤りだったので
+訂正する。**
+
+### 原因と修正
+
+この apiserver には upstream の DefaultTolerationSeconds admission が無く、
+どの Pod も `node.kubernetes.io/not-ready:NoExecute` /
+`node.kubernetes.io/unreachable:NoExecute` を許容しない。upstream なら 300 秒
+待つところを、taint が付いた瞬間に立ち退きが走る。
+
+修正は `pkg/apiserver/defaults.go` の `ApplyDefaults`(create パス)に
+versioned 型版の同 admission を足すだけ。upstream の
+`plugin/pkg/admission/defaulttolerationseconds` を**そのままリンクはできない**:
+internal `api.Pod` を admit するため `k8s.io/kubernetes/pkg/apis/core` /
+`apiserver/pkg/admission` / `component-base/featuregate` / `spf13/pflag` を
+引き込み、apiserver チャンクの残り 2595KiB には収まらない。キーと Operator /
+Effect は `k8s.io/api` の定数、300 秒はプラグイン側が非公開なので値だけ写した
+(その旨は当該コードの doc comment に記録)。`make wasm` の headroom は
+2595KiB で**変化なし**。
+
+### 回帰ゲート
+
+kcm レーン(`pkg/apiserver/kcmdw_test.go`)の Node 障害→復帰サイクルに、
+その namespace facet のリビジョン増分の上限(400)を足した。同時に、この
+サイクルで立ち退き対象になる 2 replica Deployment(nodeB 固定)を先に作る
+ようにした — Pod が無いと上限判定が空振りするため。
+
+### 残る欠陥(未修正・記録)
+
+1. **実 scheduler が `unreachable:NoSchedule` の付いた Node に bind する。**
+ 上のループの構成要素で、TaintToleration の filter は NoSchedule を弾く
+ はずなのに、taint 付与から 30 秒以上あとも bind し続けた(修正前ログ、
+ `ua=kube-scheduler`)。sched DW の Node informer キャッシュが古いままだと
+ いう S31 と同じクラスの疑い。トレランス追加でループ自体は止まったので
+ 優先度は下がったが、欠陥としては残っている。
+2. **`POST events` が最初の数回 400 を返す。** 実 kcm の event broadcaster が
+ `apiVersion`/`kind` の無い body を送り、こちらの apiserver が
+ `"Object 'Kind' is missing"` で弾く(upstream は URL パスから推論する)。
+ リトライで 201 になるので致命ではないが、node-controller の NodeNotReady
+ event などが落ちている。
+
+## S31 追記 3: 復帰後の taint 除去に数分かかる件は、ローカルでは resident pump でもホスト実 KCM でも再現しない (2026-09-10、ローカル実測)
+
+追記 2 の「本番では unpause から約 5〜6 分 taint が残る」について、次の一手と
+書いた「実 KCM をホストで動かした場合との比較」を実施した。
+
+`s32probe_test.go` に `K8FLARE_S32_HOST_KCM=1` を追加(e2e-conformance.yml の
+`host` バリアントと同じ分割: `CM_DISABLED:1` + `SCHED_DISABLED:1` で DW 側を
+落とし、`cmd/controller-manager` の実バイナリを `wrangler dev` に向ける。
+clientcmd が plain HTTP にトークンを送らないので自己署名証明書 +
+`--local-protocol https` を使う)。
+
+| 構成 | Node ダウン | Ready=True 後に taint が消えるまで |
+|---|---|---|
+| resident pump(kcm DW) | 90 秒 | **10 秒** |
+| resident pump(kcm DW) | 10 分 | **20 秒**(別ラン、S32 の 1 回目) |
+| ホスト実 kube-controller-manager | 90 秒 | **10 秒** |
+
+**つまりローカルではどちらも速く、本番の 5〜6 分はどちらの構成でも再現しない。**
+追記 2 の候補 (b)「upstream nodelifecycle 自体の挙動」は**否定された**
+(ホスト実 KCM が 10 秒で外す)。候補 (a)「window 終端で watch が切れる
+タイミング問題」は、ローカルの resident pump も同じ window 機構で回っていて
+10〜20 秒で外せているので、**ローカルの条件では成立しない**。残るのは本番
+固有の条件(isolate の寿命 / Loader id / DO の実配置)であり、S31 本文と
+同じクラスの本番限定現象として扱う。
+
+**したがって「ローカルで速いから直った」とは書かない。** 本番で再測定する
+までこの項目は未解決とし、推測に基づく修正は入れない。ホスト比較を
+再実行する手順だけプローブに残した。
+
+### 未検証
+
+- 本番での再測定(トレランス修正込みでのデプロイ後)。デプロイは指示待ち。
+- 上の「残る欠陥」1 の sched DW の Node キャッシュ鮮度。
+- 10 分より長いダウン(本番は 9.9 分)でのローカル挙動。90 秒 / 10 分の
+ 2 点しか測っていない。

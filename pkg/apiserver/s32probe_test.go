@@ -163,6 +163,8 @@ func TestS32WriteStormProbe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	hostKCM := os.Getenv("K8FLARE_S32_HOST_KCM") == "1"
+	scheme := "http"
 	args := []string{"wrangler", "dev",
 		"-c", "packages/k8flare-worker/wrangler.jsonc",
 		"--enable-containers=false",
@@ -172,6 +174,28 @@ func TestS32WriteStormProbe(t *testing.T) {
 	}
 	if drop := os.Getenv("K8FLARE_S32_DROP_CLOSE"); drop != "" {
 		args = append(args, "--var", "PUMP_WINDOW_DROP_CLOSE:"+drop)
+	}
+	if hostKCM {
+		// Same split e2e-conformance.yml's `host` variant runs: the kcm
+		// dynamic worker unloaded, the workload controllers served by the
+		// real host kube-controller-manager process, and TLS terminated
+		// because clientcmd refuses to send a bearer token over plain
+		// HTTP (CLAUDE.md's local-development pitfalls).
+		certDir := t.TempDir()
+		key, crt := certDir+"/dev.key", certDir+"/dev.crt"
+		openssl := exec.Command("openssl", "req", "-x509", "-nodes", "-newkey", "rsa:2048",
+			"-days", "1", "-keyout", key, "-out", crt,
+			"-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost")
+		if out, err := openssl.CombinedOutput(); err != nil {
+			t.Fatalf("generate dev cert: %v: %s", err, out)
+		}
+		args = append(args,
+			"--var", "CM_DISABLED:1",
+			"--var", "SCHED_DISABLED:1",
+			"--local-protocol", "https",
+			"--https-key-path", key,
+			"--https-cert-path", crt)
+		scheme = "https"
 	}
 	cmd := exec.Command("npx", args...)
 	cmd.Dir = projectRoot
@@ -198,13 +222,18 @@ func TestS32WriteStormProbe(t *testing.T) {
 		time.Sleep(time.Second)
 	}
 
+	server := fmt.Sprintf("%s://127.0.0.1:%d", scheme, port)
 	client, err := kubernetes.NewForConfig(&rest.Config{
-		Host:        fmt.Sprintf("http://127.0.0.1:%d", port),
-		BearerToken: "k8flare-dev-token",
-		Timeout:     30 * time.Second,
+		Host:            server,
+		BearerToken:     "k8flare-dev-token",
+		Timeout:         30 * time.Second,
+		TLSClientConfig: rest.TLSClientConfig{Insecure: scheme == "https"},
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if hostKCM {
+		startHostControllerManager(t, projectRoot, server, logFile)
 	}
 	ctx := context.Background()
 	const ns = "s32"
@@ -247,9 +276,19 @@ func TestS32WriteStormProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	waitFor(t, 4*time.Minute, "deployment available", func() bool {
+	// Host-KCM mode runs no scheduler at all (SCHED_DISABLED, and
+	// cmd/scheduler is not started): nothing binds these Pods, so they
+	// stay Pending. That is fine for what this mode measures -- taint
+	// removal latency, which only involves nodelifecycle.
+	waitFor(t, 4*time.Minute, "deployment converged", func() bool {
 		d, err := client.AppsV1().Deployments(ns).Get(ctx, "s32-probe", metav1.GetOptions{})
-		return err == nil && d.Status.AvailableReplicas == 2
+		if err != nil {
+			return false
+		}
+		if hostKCM {
+			return d.Status.Replicas == 2
+		}
+		return d.Status.AvailableReplicas == 2
 	})
 
 	report := func(label string) {
@@ -327,6 +366,40 @@ func TestS32WriteStormProbe(t *testing.T) {
 		report(fmt.Sprintf("after+%ds", (i+1)*15))
 	}
 	t.Logf("S32 PHASE end at %s", time.Now().Format("15:04:05"))
+}
+
+func startHostControllerManager(t *testing.T, projectRoot, server string, log *os.File) {
+	t.Helper()
+	bin := t.TempDir() + "/k8flare-controller-manager"
+	build := exec.Command("go", "build", "-o", bin, "./cmd/controller-manager/")
+	build.Dir = projectRoot
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build controller-manager: %v: %s", err, out)
+	}
+	cm := exec.Command(bin,
+		"--server="+server,
+		"--token=k8flare-dev-token",
+		"--data-dir="+t.TempDir(),
+		"--insecure-skip-tls-verify")
+	cm.Dir = projectRoot
+	cm.Stdout = log
+	cm.Stderr = log
+	cm.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cm.Start(); err != nil {
+		t.Fatalf("start controller-manager: %v", err)
+	}
+	t.Cleanup(func() {
+		// SIGKILL, not SIGTERM: the real kube-controller-manager keeps
+		// running after a group SIGTERM here and Wait then never returns
+		// (measured 2026-09-10, the probe hung for 10 minutes past its
+		// last phase).
+		_ = syscall.Kill(-cm.Process.Pid, syscall.SIGKILL)
+		_, _ = cm.Process.Wait()
+	})
+	time.Sleep(5 * time.Second)
+	if cm.ProcessState != nil && cm.ProcessState.Exited() {
+		t.Fatalf("controller-manager exited immediately; see the probe log")
+	}
 }
 
 func taintKeys(n *corev1.Node) []string {
