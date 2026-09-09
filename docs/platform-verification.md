@@ -4849,3 +4849,122 @@ clientcmd が plain HTTP にトークンを送らないので自己署名証明�
 - 上の「残る欠陥」1 の sched DW の Node キャッシュ鮮度。
 - 10 分より長いダウン(本番は 9.9 分)でのローカル挙動。90 秒 / 10 分の
  2 点しか測っていない。
+
+## S33: foreground 削除で RC が依存 Pod より先に消える件 — ローカル再現に失敗、apiserver 側にガードを入れた (2026-09-10、実測)
+
+必須 conformance の退行。GitHub Actions run 34373872717、ジョブ
+`e2e-conformance (host)`(ホスト kube-scheduler + ホスト kube-controller-manager、
+gc は dynamic worker)のステップ "Run garbage collector conformance tests
+(required)" で
+
+```
+[sig-api-machinery] Garbage collector should keep the rc around until all its pods are deleted if the deleteOptions says so [Serial] [Conformance]
+FAILED at test/e2e/apimachinery/garbage_collector.go:711
+```
+
+が落ちた。2026-07-11 に required 7/7 として昇格した 1 本。
+
+### 前提の訂正: 「約 5 秒」ではなく「1 秒以内」
+
+当初「RC が約 5 秒で消えた」と整理していたが、**これは誤り**だった(rule 4 に
+従い訂正を記録する)。upstream のポーリングは `1*time.Second` 間隔で、RC が
+まだ在るあいだ毎回 `%d pods remaining` を出す。CI ログにその行は **1 本も無い**。
+つまり RC は DELETE(16:38:36.849)の**最初のポーリング、約 1 秒後には既に
+NotFound** だった。
+
+この 1 秒という値が切り分けの決め手になる。ローカルで実 GC に 40 Pod を
+カスケードさせると 5〜15 秒かかる。1 秒未満で finalizer が外れるということは、
+GC が「依存ゼロのグラフ」を見て `blockingDependents()` が即座に空を返した、
+という形以外に説明が付かない。**一部を取りこぼした**のではなく、**そもそも
+Pod を 1 つも知らなかった**。
+
+### 実測で否定した仮説
+
+- **再 list が古い resourceVersion で古い状態を返す。** 否定。
+  `KineStorage.GetList` は `k.s.List(ctx, prefix, 0, 0)` と revision・limit を
+  ともに 0 で固定して呼ぶ。Go apiserver はクライアントの `resourceVersion` も
+  `limit` も storage 層に渡していないので、`storeList` の
+  `AND mkv.id <= ?4`(point-in-time)分岐も、all-namespaces fan-out の
+  continue トークン無し切り詰めも、**API 経由では到達不能**。一度この筋で
+  書きかけたが、コードを追って否定した。
+- **finalizer がそもそも付かない。** 否定。`upstreamregistry.go` は
+  `EnableGarbageCollection: true` を立てており、ローカル再現でも毎回
+  `finalizers=[foregroundDeletion]` が観測された。
+- **書き込みバーストで watch イベントが落ちる。** 否定。生きた watcher に
+  対して 40 Pod を同時 POST する試験を 3 回回して **40/40** が毎回届いた。
+
+### ローカル再現には失敗した
+
+`pkg/apiserver/gcprobe_test.go`(skip ゲート、S32 プローブと同じ形)を書いて
+以下をすべて試したが、**RC は毎回正しく全 Pod より後に消えた**:
+
+| 条件 | 結果 |
+|---|---|
+| kcm を DW に載せて 10 / 40 replicas | PASS(5 秒で 0 Pod) |
+| 手製 Pod(`BlockOwnerDeletion` + linger finalizer) | PASS |
+| Pod 生成後に 180 秒 settle | PASS |
+| **CI と同じホスト分割**(ホスト実 KCM、`SCHED_DISABLED`、TLS、40 replicas) | PASS(5.1 秒) |
+| 上記 + `PUMP_WINDOW_DROP_CLOSE=2` | PASS(5.1 秒) |
+| 上記 + ハートビートする Node を置いて 5 分ウォームアップしてから RC 作成 | PASS(15.3 秒、Pod → RC の順序も保持) |
+
+**再現できていない以上、真因は特定できていない。** 有力だが未確認の仮説は
+「CI では gc DW の Pod informer が空だった」。傍証として当該 run の
+`wrangler.log` には `Network connection lost` /
+`Cannot perform I/O on behalf of a different request` /
+`call to released function` が多数出ており、S31 と同じ I/O コンテキスト系の
+失敗で informer が餌をもらえていなかった形と整合する。ただし**グラフの中身を
+直接観測してはいない**ので、事実としては書かない。
+
+### 入れた修正(真因修正ではなく、apiserver 側のガード)
+
+実 garbagecollector は「**自分のグラフ**に blocking dependent が無い」ことを
+根拠に foregroundDeletion finalizer を外す。そのグラフは informer の鮮度以上に
+正しくなり得ず、resident DW では window 境界ごとに watch が切れる(S31)。
+そこで、finalize-delete の可否を**グラフではなくストレージ**で判定する:
+
+`pkg/apiserver/gracefuldelete.go` に `refuseForegroundFinalize` を追加し、
+`handler.go` の `finalizeDelete` の先頭で呼ぶ。対象オブジェクトが
+`deletionTimestamp` + `foregroundDeletion` を持つ状態で、その UID を
+`BlockOwnerDeletion: true` の ownerReference で指す namespaced オブジェクトが
+まだ 1 つでも残っていれば **Conflict を返して削除を完了させない**。GC は
+`retry.RetryOnConflict` → workqueue の指数バックオフで再試行し、カスケードが
+実際に終わってから完了する。
+
+隣にある `sweepOrphanStragglers`(orphan 側の同じ問題への対処)の foreground
+版であり、理由も同じ: ここでは GC の per-GVR watch にストリーム間の順序保証が
+無いので、**ストレージを直接読む apiserver が最終判断を持つ**。upstream に
+どちらのガードも無いのは、upstream の informer がここまで遅れないから。
+
+コスト: finalize-delete 時にしか走らず、`foregroundDeletion` を持たない
+オブジェクトは即 return する。ポーリングも alarm も増えない(不変条件 #3)。
+
+### 回帰テスト
+
+`pkg/apiserver/foregroundguard_test.go`。**kcm レーンではなく apiserver レーン**
+(`KCM_DISABLED`)に置いた — gc DW が生きていると依存 Pod が本当に消えてしまい、
+「早すぎる finalizer クリア」の窓がその回の GC のタイミング任せになるため。
+テスト自身が「グラフが古い GC」を演じる: RC を foreground 削除 → 依存 Pod を
+残したまま finalizer を空にする更新を投げ、**Conflict で拒否され RC が残る**
+ことを要求する。その後 Pod を消してから同じ更新を投げると、今度は RC が
+NotFound になることまで見る。
+
+修正前のバイナリでは
+`clearing foregroundDeletion with 2 blocking dependents alive = <nil>, want Conflict`
+で落ちる(実測)。`make wasm` を挟まないと Go の変更が DW に載らないので、
+このゲートを触るときは再ビルドを忘れないこと。
+
+### 未検証
+
+- **CI での確認**(push 禁止のため未実施)。この修正が当該 conformance を
+  実際に緑にするかは未確認。
+- **真因そのもの**。gc DW の Pod informer が CI で空だったのか、空だったなら
+  なぜかは未特定。上のガードは症状を止めるが原因は残っている。
+- `wrangler.log` の `Network connection lost` /
+  `Cannot perform I/O on behalf of a different request` /
+  `call to released function` の発生源。S31 の残課題と同じ系統に見えるが
+  切り分けていない。
+- 付随して見つかった別のバグ(未修正): `upstreamMarkForDeletion` は
+  `&metav1.DeleteOptions{PropagationPolicy: &policy}` を新規に組み立てており、
+  **リクエストの `Preconditions` を捨てている**。この conformance テストが渡す
+  UID precondition が効いておらず、UID 不一致の DELETE が 409 にならず通る。
+  今回の早期消失の原因ではない。
