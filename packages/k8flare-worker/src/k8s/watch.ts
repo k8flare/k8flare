@@ -89,7 +89,19 @@ export async function handleWatch(
     );
   }
 
-  const resourceVersion = url.searchParams.get("resourceVersion") || "0";
+  // sendInitialEvents asks for the whole current state as synthetic ADDED
+  // events before the initial-events-end bookmark, with resourceVersion
+  // acting as a freshness floor rather than a replay cursor -- replaying
+  // from it instead hands a re-listing WatchList reflector a stream with
+  // no items, and Replace()ing an informer cache with that empties it.
+  // The controllers then act on the phantom deletions: measured
+  // 2026-09-09, the real nodelifecycle controller logged "Removing Node"
+  // for both healthy Nodes and dropped their health entries, so Lease
+  // staleness was never detected again (docs/platform-verification.md
+  // S31). Harmless before pump windows bounded the watch streams, because
+  // a reflector that never had to re-list only ever asked from 0.
+  const sendInitialEvents = url.searchParams.get("sendInitialEvents") === "true";
+  const resourceVersion = sendInitialEvents ? "0" : url.searchParams.get("resourceVersion") || "0";
   // Unknown resource = 404 Status, like upstream -- NOT an empty 200
   // stream. RESOURCE_KINDS behind resourceKindForPath is generated from
   // apidef.Table, so null here means the Go apiserver doesn't serve the
