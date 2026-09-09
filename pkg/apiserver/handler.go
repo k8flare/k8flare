@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 
@@ -288,15 +287,6 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			}
 		}
 
-		// Nodes that don't specify a PodCIDR get one allocated here,
-		// synchronously, before the first write -- see nodecidr.go.
-		if node, ok := rObj.(*corev1.Node); ok {
-			if err := AssignPodCIDR(ctx, store.storage, node); err != nil {
-				writeInternalError(w, fmt.Errorf("allocate PodCIDR: %w", err))
-				return
-			}
-		}
-
 		obj, err := store.Create(ctx, namespace, rObj)
 		if err != nil {
 			writeResourceError(w, err, resource, name)
@@ -304,7 +294,6 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		}
 
 		ApplyPostCreateEffects(ctx, stores, obj)
-		TriggerEndpointsReconcile(ctx, store.storage, namespace, obj)
 
 		writeRuntimeObject(w, http.StatusCreated, obj)
 
@@ -354,7 +343,6 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			writeResourceError(w, err, resource, name)
 			return
 		}
-		TriggerEndpointsReconcile(ctx, store.storage, namespace, obj)
 		writeRuntimeObject(w, http.StatusOK, obj)
 
 	case http.MethodDelete:
@@ -454,21 +442,6 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			if svcList, ok := obj.(*corev1.ServiceList); ok {
 				for i := range svcList.Items {
 					ReleaseClusterIP(ctx, store.storage, &svcList.Items[i])
-					DeleteServiceEndpoints(ctx, store.storage, namespace, svcList.Items[i].Name)
-				}
-			}
-			if nodeList, ok := obj.(*corev1.NodeList); ok {
-				for i := range nodeList.Items {
-					ReleasePodCIDR(ctx, store.storage, &nodeList.Items[i])
-				}
-			}
-			if _, ok := obj.(*corev1.PodList); ok {
-				// Every matching Pod in this namespace is gone -- one
-				// reconcile pass recomputes every affected Service's
-				// Endpoints/EndpointSlice, same as a single Pod delete
-				// below, without needing to iterate per-Pod.
-				if err := ReconcileNamespaceEndpoints(ctx, store.storage, namespace); err != nil {
-					log.Printf("endpoints reconciliation error for namespace %s: %v", namespace, err)
 				}
 			}
 			writeRuntimeObject(w, http.StatusOK, obj)
@@ -522,7 +495,7 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 				return
 			}
 		}
-		settleDeletedObject(ctx, store.storage, namespace, obj)
+		settleDeletedObject(ctx, store.storage, obj)
 		writeRuntimeObject(w, http.StatusOK, obj)
 
 	case http.MethodPatch:
@@ -575,7 +548,6 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 
 			obj, err := store.Update(ctx, namespace, name, patchedObj)
 			if err == nil {
-				TriggerEndpointsReconcile(ctx, store.storage, namespace, obj)
 				writeRuntimeObject(w, http.StatusOK, obj)
 				return
 			}
@@ -594,21 +566,15 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 }
 
 // settleDeletedObject runs the per-resource effects every COMPLETED
-// deletion needs: ClusterIP release + Endpoints removal for Services,
-// PodCIDR release for Nodes, and the endpoints reconcile trigger. Shared
+// deletion needs: ClusterIP release for Services. Shared
 // by the DELETE path and finalizeDelete -- before 2026-07-25 the
-// finalizer-completion deletes (PUT/PATCH) skipped the Service/Node
+// finalizer-completion deletes (PUT/PATCH) skipped the Service
 // effects, leaking the ClusterIP of any Service that finished deleting
 // via a cleared finalizer (found by review).
-func settleDeletedObject(ctx context.Context, storage *Storage, namespace string, obj runtime.Object) {
+func settleDeletedObject(ctx context.Context, storage *Storage, obj runtime.Object) {
 	if svc, ok := obj.(*corev1.Service); ok {
 		ReleaseClusterIP(ctx, storage, svc)
-		DeleteServiceEndpoints(ctx, storage, namespace, svc.Name)
 	}
-	if node, ok := obj.(*corev1.Node); ok {
-		ReleasePodCIDR(ctx, storage, node)
-	}
-	TriggerEndpointsReconcile(ctx, storage, namespace, obj)
 }
 
 // finalizeDelete completes the deletion of an object whose last
@@ -629,7 +595,7 @@ func finalizeDelete(ctx context.Context, store *ResourceStore, namespacedStores 
 	if err != nil {
 		return nil, err
 	}
-	settleDeletedObject(ctx, store.storage, namespace, obj)
+	settleDeletedObject(ctx, store.storage, obj)
 	return obj, nil
 }
 

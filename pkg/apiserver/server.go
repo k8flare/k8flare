@@ -99,7 +99,7 @@ func NewServer(cfg ServerConfig) *http.ServeMux {
 	// Supervisor endpoints (/cacerts, /v1-k3s/*)
 	RegisterSupervisorHandlers(mux, cam, storage, cfg.Tokens, cfg.ClusterBasePath)
 
-	// Internal endpoints, service-binding-only (/internal/*)
+	// Internal endpoints, service-binding-only (/internal/*, internal.go)
 	RegisterInternalHandlers(mux, storage)
 
 	// One auth-wrapped route per GroupVersion in apidef.Table. Namespace
