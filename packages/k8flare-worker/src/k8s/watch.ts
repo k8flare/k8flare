@@ -199,9 +199,42 @@ export async function handleWatch(
   ws.accept();
 
   // Stream kine events as Kubernetes WatchEvent JSON lines
-  const { readable, writable } = new TransformStream();
-  const writer = writable.getWriter();
   const encoder = new TextEncoder();
+
+  let clientGone = false;
+  let sink: ReadableStreamDefaultController<Uint8Array> | null = null;
+  const retire = (): void => {
+    clientGone = true;
+    try {
+      ws.close(1001, "watch client gone");
+    } catch {
+      // ignore
+    }
+  };
+  const readable = new ReadableStream<Uint8Array>({
+    start(controller) {
+      sink = controller;
+    },
+    cancel() {
+      retire();
+    },
+  });
+  const push = (chunk: Uint8Array): void => {
+    if (clientGone || sink === null) return;
+    try {
+      sink.enqueue(chunk);
+    } catch {
+      retire();
+    }
+  };
+  const closeWriter = (): void => {
+    if (clientGone) return;
+    try {
+      sink?.close();
+    } catch {
+      // ignore
+    }
+  };
 
   ws.addEventListener("message", (event: MessageEvent) => {
     try {
@@ -227,7 +260,7 @@ export async function handleWatch(
             },
           },
         };
-        writer.write(encoder.encode(JSON.stringify(bookmarkEvent) + "\n"));
+        push(encoder.encode(JSON.stringify(bookmarkEvent) + "\n"));
       }
       if (data.events) {
         for (const kineEvent of data.events) {
@@ -272,9 +305,7 @@ export async function handleWatch(
             }
           }
 
-          writer.write(
-            encoder.encode(JSON.stringify({ type: finalType, object: finalObject }) + "\n"),
-          );
+          push(encoder.encode(JSON.stringify({ type: finalType, object: finalObject }) + "\n"));
         }
       }
     } catch {
@@ -283,19 +314,11 @@ export async function handleWatch(
   });
 
   ws.addEventListener("close", () => {
-    try {
-      writer.close();
-    } catch {
-      // ignore
-    }
+    closeWriter();
   });
 
   ws.addEventListener("error", () => {
-    try {
-      writer.close();
-    } catch {
-      // ignore
-    }
+    closeWriter();
   });
 
   // Keep the Worker alive while the WebSocket is open. Without this, the
