@@ -4472,7 +4472,7 @@ Go の stdout/stderr は `wasm_exec.js` の `console.log` に出るが、**DW �
 理由が完全に不可視だった。DW 内の Go を追うときは `wasm_exec.js` の当該行を
 一時的に `console.error` に差し替えること(ビルド生成物なのでコミットはしない)。
 
-### 修正後に露出した別の欠陥: pump window 境界が nodelifecycle の猶予タイマーを巻き戻す(未解決)
+### 修正後に露出した別の欠陥: 再 list が informer キャッシュを空にする(原因判明・修正済み)
 
 修正で dev が本番と同じ「window の外では止まる」挙動になった結果、**実
 nodelifecycle の Lease 失効検知が収束しなくなった**。`kcmdw_test.go` の
@@ -4506,27 +4506,74 @@ Lease を 5 分バックデートし、もう片方は 5 秒毎に更新し続�
   `watch ended with error ... cloudflare: pump window closed` が出て、次の
   window で list からやり直せている(想定どおり)。
 
-未解明なのは「境界を跨ぐと何が `nodeHealthMap` の `probeTimestamp` を
-更新させるのか」。`tryUpdateNodeHealth` は observed Lease の `RenewTime` が
-saved より新しいときにしか更新しないはずで、バックデートした Lease は
-それに当たらない。ここは追い切れていない。
+**真因(kcm を `-v=4` でビルドし直して判明)**: 猶予タイマーの問題ですら
+なかった。V(4) ログに出ていたのはこれ:
 
-コストの観点でも境界の再 list は無視できない: KCM の約 15 個に加えて GC の
-メタデータ informer が約 45 個あり、**window が閉じるたびに約 60 本の watch が
-切れて全部が list からやり直す**。window を延ばすほど再 list は減るので、
-window 長は「短いほど安い」ではない(コスト不変条件 #5 の見積もり対象)。
-ただし本番の IoContext 上限(約 60 秒、S30 実測)より長い window は取れず、
-上限より長い `setTimeout` を仕掛けると `closePumpWindow` が発火しないまま
-リクエストだけが死に、S31 の元の欠陥が別経路で再来する。**この上限と
-`nodeMonitorGracePeriod` の関係が、resident モデルで周期的コントローラーを
-動かすうえでの本質的な制約**であり、設計判断が要る。
+```
+12:40:32.652  reflector.go:507] "Caches populated" type="*v1.Node"
+12:40:34.314  node_lifecycle_controller.go:679] "Controller observed a Node deletion" node="v4x-a"
+12:40:34.314  node_lifecycle_controller.go:679] "Controller observed a Node deletion" node="v4x-b"
+12:40:34.314  controller_utils.go:173] "Recording event message for node" event="Removing Node v4x-a from Controller"
+```
+
+健全な Node 2 台が **消えたことにされて** `knownNodeSet` と
+`nodeHealthMap` から落とされ、以後 `monitorNodeHealth` の対象ですら
+なくなっていた。だから何分待っても Ready=Unknown にならない。
+
+WatchList モードの reflector は、再 list のとき
+`sendInitialEvents=true&resourceVersionMatch=NotOlderThan&resourceVersion=<いま持っている rv>`
+で watch を張る。これは「rv 以上の鮮度の**現在の全状態**を synthetic ADDED
+で送れ」という意味で、`resourceVersion` は**鮮度の下限**であって再生カーソル
+ではない。`packages/k8flare-worker/src/k8s/watch.ts` はこれを再生カーソルと
+して WatchHub に渡していたため、**現在 rv からの再 list はアイテム 0 件 +
+initial-events-end bookmark だけのストリーム**になり、reflector はその空集合
+で `Replace()` して informer キャッシュを空にしていた。手で叩いた確認:
+
+```
+$ curl '.../api/v1/nodes'                      -> items 2, resourceVersion 76
+$ curl '.../api/v1/nodes?watch=true&sendInitialEvents=true&resourceVersionMatch=NotOlderThan&resourceVersion=76&allowWatchBookmarks=true'
+{"type":"BOOKMARK","object":{"kind":"Node",...,"annotations":{"k8s.io/initial-events-end":"true"}}}   # ADDED が 1 件も無い
+$ curl '.../api/v1/nodes?watch=true&sendInitialEvents=true&...&resourceVersion=0&...'
+{"type":"ADDED","object":{...v4x-a...}}                                                                # 0 からなら正しく全件
+```
+
+**pump window 導入前は踏まなかった**: resident インスタンスが再 list を
+必要としなかったので、reflector は起動時の rv=0 でしか list せず、常に
+正しい経路を通っていた。window で watch が切られるようになって初めて
+「現在 rv からの再 list」が毎 window 走り、この欠陥が常時発火した。
+window 長との相関(上の A/B)も、window が長いほど再 list の回数が減って
+猶予期間 50 秒を跨ぐ確率が下がる、というだけのことだった。
+
+**修正**: `sendInitialEvents=true` のときは replay revision を 0 に固定する
+(commit "fix: serve the full state for sendInitialEvents watch requests")。
+修正後、同じプローブで **36 秒で収束**(window は既定の 25,000ms のまま)、
+phantom deletion は 0 件。
+
+なお **GC も同じ空キャッシュを見ていた**はずで、実際この欠陥の再現中に
+Deployment の ReplicaSet が消える現象を観測している(Deployment の status は
+replicas:1/updatedReplicas:1 のまま、RS だけ存在しない)。オーナーが居ない
+と判断した実 garbagecollector による削除と整合するが、単独では確認して
+いない。**空の informer キャッシュは黙って壊れるのではなく、実物を消しに
+かかる**という点で、これは S31 の元の欠陥より危険度が高い。
+
+コストの観点では境界の再 list が無視できない、という点は修正後も残る:
+KCM の約 15 個に加えて GC のメタデータ informer が約 45 個あり、**window が
+閉じるたびに約 60 本の watch が切れて全部が list からやり直す**。しかも上の
+修正で、その再 list は毎回**全件**を返す(それが正しい挙動)。window を
+延ばすほど再 list の回数は減るので、window 長は「短いほど安い」ではない。
+本番の IoContext 上限(約 60 秒、S30 実測)より長い window は取れず、上限より
+長い `setTimeout` を仕掛けると `closePumpWindow` が発火しないままリクエスト
+だけが死に、S31 の元の欠陥が別経路で再来する。**この再 list 増幅の実測が
+未了**(コスト不変条件 #5): 現行 25,000ms の window で rows read が
+どれだけ増えるかは cost-gate で測っていない。
 
 ### 未検証
 
 - **本番での確認**(デプロイ禁止のため未実施)。本番は S30 続報時点の
   dfbbac18 のまま。
-- 上記 nodelifecycle の巻き戻しの機序と、その修正。`make test-kcm` は
-  この assertion で失敗する状態のまま(このコミット時点)。
+- 空 informer キャッシュを見た実 garbagecollector が ReplicaSet を実際に
+  削除したのか(観測はしたが、単独では確認していない)。
+- window ごとの全件再 list によるコスト増(rows read)の実測。
 - 本番で散発していた `Cannot perform I/O on behalf of a different request` が
   この修正で消えるか。ローカルでは E1 のとおり dev がこの規則を強制しないため
   確認できない。
