@@ -4354,3 +4354,182 @@ tainteviction のインメモリタイマー(S28 残課題 2)の評価は保留�
 **未実施**: Node を 300 秒超停止させた場合の Unknown → taint → 立ち退きの
 計測(上記欠陥と交絡するため)。本番は現在この修正込みのブランチ
 (dfbbac18、`LOADER_ID_SALT=s30c/`)がデプロイされたまま。
+
+## S31: resident DW の informer watch 失速の真因 — 「インスタンスを生んだリクエストは生き続ける」という前提が本番では成り立たない (2026-09-09、実測)
+
+S30 続報の「残る欠陥(プロダクション化のブロッカー)」の追跡。**ローカル
+(`wrangler dev`)で再現に成功し、根本原因を特定して修正した。** 本番での
+検証は未実施(デプロイは指示待ち)。
+
+### 根本原因
+
+resident DW(kcm / gc / sched / clusterop)の **outbound fetch が、インスタンスを
+生成したリクエスト 1 つに永久に紐付いていた**。
+
+1. `pkg/controllers/restconfig` と `pkg/controllers/clusterop/bridge.go` は
+   `cloudflare.GetBinding("GATEWAY")` で Fetcher を **1 回だけ**取得していた。
+   これは `Go.run` 時点の env、すなわち **isolate を最初に生成したリクエスト**の
+   env である。
+2. `ResidentService` はコントローラーの run ループを、その同じリクエストの
+   `cloudflare.WaitUntil` の中で起動していた。両者は「S8 の知見どおり、この
+   WaitUntil の promise は決して解決しないので、このリクエストはインスタンスが
+   死ぬまで生き続ける」という前提でつり合っていた。
+3. **本番はこの前提を満たさない。** waitUntil には上限があり、リクエストは
+   打ち切られる(S30 で実測: DW の list/watch が wallTime 60 秒で `canceled`)。
+4. 打ち切られた後、その Fetcher の `fetch()` は **失敗しない**。返る promise が
+   **解決も棄却もされないまま放棄される**。したがって promise を待つ goroutine は
+   **isolate の寿命が尽きるまでブロックしたまま**になる。エラーログも、
+   client-go の backoff ログも、リトライも一切出ない。
+5. reflector は 60 秒で watch を切られた後の張り直しでここに嵌まる。以降その
+   informer は二度と更新を受け取らない。**新しい Loader id で fresh load する
+   以外に回復手段が無い**、という S30 の観測と完全に一致する。
+
+S24 で修正した「stateless な apiserver DW が `sync.OnceValue` で Fetcher を
+掴んで `Cannot perform I/O on behalf of a different request` を投げる」問題と
+**同じ捕捉ミスの、resident 版**である。S24 の修正(`BindingFromContext`)は
+per-request 経路だけを直しており、resident 経路には `GetBinding` の doc comment
+として「resident は自分の WaitUntil の中から使うので GetBinding のままで正しい」
+と**明示的に書かれていた**。その一文が誤りだった(rule 4 に従い、削除ではなく
+本節に記録する)。本番 tail に散発していた `Cannot perform I/O ...` は同じ捕捉の
+別の顔(IoContext がまだ生きているうちに触った場合はこちらになる)。
+
+### 実測した根拠
+
+**E1: `wrangler dev` はクロスリクエスト I/O 規則を強制しない。** worker_loaders
+バインディング付きの探針 Worker を立て、リクエスト 1 の env を保持してリクエスト 2
+から使う形を DW 実形状で試した。`sameEnvObject=true`、fetch も成功。**dev では
+捕捉した env が永久に有効**であり、本番の規則が再現されない。これが `make test-kcm`
+がこの欠陥を数か月見逃してきた理由である(S27 の「dev は isolate を evict しない」
+と同じ系統の dev/prod 差)。
+
+**E2(決定打): 放棄される promise は dev でも再現する。** window(リクエスト)を
+3 秒で閉じ、20 秒かかる fetch をその中で開始する探針を回したところ、window が
+閉じた後、その promise は **then も catch も一切呼ばれなかった**。つまり
+「失敗」ではなく「無応答」であり、Go 側は `select` の第 2 の腕を持たない限り
+永久に待つ。本番の tail に retry storm が全く無かったことの説明でもある。
+
+**E3: ローカル再現(3 回)。** kcm を Deployment 作成でロードし、4 分間ポークを
+続けた後に Node + kube-node-lease Lease を登録し、実 nodeipam の podCIDR 付与を
+待つスクリプトを 3 つのコード状態で回した:
+
+| # | コード状態 | 結果 |
+|---|---|---|
+| 1 | 修正前(bootstrap の boot waitUntil が dev では永久に開いたまま) | `podCIDR=10.42.0.0/24 after 0s` — **再現せず** |
+| 2 | bootstrap のみ修正(pump window を本番同様に閉じる)+ Go 側は `GetBinding` のまま | `NO podCIDR after 120s -- DEFECT REPRODUCED` |
+| 3 | 修正後(Go 側も live window から解決) | `podCIDR=10.42.0.0/24 after 0s` |
+
+つまり **dev で本番の欠陥を再現するには、dev 側でも pump window を本番と同じく
+閉じる必要があった**。この window を閉じる変更自体を修正に含めたので、以後は
+Go グルーの退行がローカルでも捕まる。
+
+**E4: 修正後の挙動が event-armed であることの確認。** 実行 3 の DW ログで、
+「window が閉じたので放棄した待ち」が **11:22:51 に 15 件、11:23:06 に 15 件**
+(= kcm の informer 数ぶん、window 1 つにつき 1 巡)出たあと、**3 分間まったくの
+無音**になり、11:26:06 の Node 登録のポークで開いた window で即座に再 watch して
+1 秒以内に podCIDR を付けた。ポーク間は本当に何も動いておらず(コスト不変条件
+#1/#3)、それでいて次のポークには即応する。
+
+### 修正
+
+- `pkg/cfruntime/cloudflare/window.go`(新規): 開いている pump window の登録簿。
+  JS 側が dispatch 毎に `openPumpWindow(env)` / `closePumpWindow(id)` で開閉する。
+- `packages/k8flare-worker/src/loader/bootstrap.ts`: 各 dispatch を window として
+  publish し、`ctx.waitUntil` のタイマー満了で閉じる。
+- `pkg/cfruntime/cloudflare/fetch`: `WithLiveBinding(name)` を追加。**呼び出し毎に**
+  現在開いている window から Fetcher を解決し、開いていなければ次のポークまで
+  待つ。待つのはタイマーもポーリングも伴わない(コスト不変条件 #2: I/O 待ちは
+  無課金)。in-flight の呼び出しは window が閉じた時点で `ErrPumpWindowClosed` に
+  して手放し、client-go に生きた window でリトライさせる。
+- `pkg/cfruntime/residentservice.go`: `cloudflare.WaitUntil` をやめ、run を素の
+  goroutine で起動する。特定のリクエストに紐付けるものを無くした。
+- `pkg/cfruntime/cloudflare/env.go`: `GetBinding` と `WaitUntil` を削除。
+  `EnvFromContext` は context → 現在の window → boot env の順に解決する
+  (S24 が残した「context の無い vault read が boot env に落ちる」穴も、
+  これで生きた window に載る)。
+- 回帰テスト: `pkg/apiserver/kcmdw_test.go` に、kcm ロードから 3 分以上経った
+  あとに Node を登録して podCIDR を要求するフェーズを追加。既存の assertion は
+  すべて最初の 1〜2 window 以内に完結しており、この欠陥を検出できなかった。
+  待ち時間はテスト自身の経過時間で相殺するので、レーンの実時間はほぼ増えない。
+
+### 却下した実装(記録)
+
+**window が閉じるときに in-flight fetch を `AbortController` で畳む**、を最初に
+実装したが**動かない**。Go の goroutine は「そのとき動いている JS コールバック」の
+中で再開するため、AbortController はリクエスト A の下で生成され、リクエスト B の
+下で `abort()` されうる。これ自体がクロスリクエスト I/O アクセスであり、
+`I/O type: RefcountedCanceler` の例外でインスタンス全体が exit code 2 で落ちた。
+I/O オブジェクトに一切触れない `window.Done()` の待ち合わせだけが安全な畳み方。
+
+副産物として、JS 境界の呼び出しは全て `recover` で Go の error に変換するように
+した(`fetch.go` の `jsCall`)。捕捉していないと、リクエスト境界で投げられた
+例外 1 つが resident インスタンス全体を落とす。
+
+### デバッグ上の落とし穴(記録)
+
+Go の stdout/stderr は `wasm_exec.js` の `console.log` に出るが、**DW の
+`console.log` は `wrangler dev` のコンソールに出てこない**(`console.error` は
+出る)。そのため上記の panic は「Go program has already exited」だけが見えて
+理由が完全に不可視だった。DW 内の Go を追うときは `wasm_exec.js` の当該行を
+一時的に `console.error` に差し替えること(ビルド生成物なのでコミットはしない)。
+
+### 修正後に露出した別の欠陥: pump window 境界が nodelifecycle の猶予タイマーを巻き戻す(未解決)
+
+修正で dev が本番と同じ「window の外では止まる」挙動になった結果、**実
+nodelifecycle の Lease 失効検知が収束しなくなった**。`kcmdw_test.go` の
+S28 由来の assertion(2 分以内に Ready=Unknown + unreachable taint)が
+タイムアウトする。
+
+window 長だけを変えた A/B(他は同一、Go 側は修正済み。ノード 2 台、片方の
+Lease を 5 分バックデートし、もう片方は 5 秒毎に更新し続けてポークを供給):
+
+| `PUMP_WINDOW_MS`(Controllers DO) | 結果 |
+|---|---|
+| 25,000(現行) | 240 秒待っても Ready=True のまま |
+| 50,000 | 240 秒待っても Ready=True のまま |
+| 300,000 | **46 秒で Ready=Unknown + unreachable taint** |
+
+`nodeMonitorGracePeriod` は 50 秒。window ≤ 50 秒では収束せず、window が
+猶予期間より十分長いと即座に収束する、という切れ方をしている。つまり
+**window 境界を跨ぐと猶予タイマーが実質巻き戻る**。S30 の本番観測「健全な
+ノードが Ready=Unknown ↔ True をフラップする」も、本番の IoContext 上限
+(約 60 秒)が猶予期間 50 秒とほぼ同じであることの現れとして整合する。
+
+切り分けで**否定した**仮説(いずれも実測):
+
+- **Go のタイマーが window 境界で死ぬ**: 否定。`time.Tick(5s)` のログを
+  resident に仕込んで計測したところ、window を跨いで 150 秒間 30 回、
+  5 秒間隔でずれなく発火し続けた。
+- **kcm インスタンスが壊れている / 応答しない**: 否定。同じインスタンスで
+  Deployment を作ると 15 秒で ReplicaSet、20 秒で Pod が作られる。
+  nodeipam の podCIDR 付与も即座。イベント駆動の経路は健全。
+- **reflector が張り直せていない**: 否定。window が閉じるたび
+  `watch ended with error ... cloudflare: pump window closed` が出て、次の
+  window で list からやり直せている(想定どおり)。
+
+未解明なのは「境界を跨ぐと何が `nodeHealthMap` の `probeTimestamp` を
+更新させるのか」。`tryUpdateNodeHealth` は observed Lease の `RenewTime` が
+saved より新しいときにしか更新しないはずで、バックデートした Lease は
+それに当たらない。ここは追い切れていない。
+
+コストの観点でも境界の再 list は無視できない: KCM の約 15 個に加えて GC の
+メタデータ informer が約 45 個あり、**window が閉じるたびに約 60 本の watch が
+切れて全部が list からやり直す**。window を延ばすほど再 list は減るので、
+window 長は「短いほど安い」ではない(コスト不変条件 #5 の見積もり対象)。
+ただし本番の IoContext 上限(約 60 秒、S30 実測)より長い window は取れず、
+上限より長い `setTimeout` を仕掛けると `closePumpWindow` が発火しないまま
+リクエストだけが死に、S31 の元の欠陥が別経路で再来する。**この上限と
+`nodeMonitorGracePeriod` の関係が、resident モデルで周期的コントローラーを
+動かすうえでの本質的な制約**であり、設計判断が要る。
+
+### 未検証
+
+- **本番での確認**(デプロイ禁止のため未実施)。本番は S30 続報時点の
+  dfbbac18 のまま。
+- 上記 nodelifecycle の巻き戻しの機序と、その修正。`make test-kcm` は
+  この assertion で失敗する状態のまま(このコミット時点)。
+- 本番で散発していた `Cannot perform I/O on behalf of a different request` が
+  この修正で消えるか。ローカルでは E1 のとおり dev がこの規則を強制しないため
+  確認できない。
+- tainteviction のインメモリタイマー(S28 残課題 2)と、Node を 300 秒超停止
+  させたときの Unknown → taint → 立ち退き。どちらも本欠陥と交絡していたため
+  S30 で保留したままで、本節では扱っていない。

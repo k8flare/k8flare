@@ -70,8 +70,7 @@ func EnvFromContext(ctx gocontext.Context) js.Value {
 }
 
 // BindingFromContext returns the named binding from the request-scoped
-// env -- the per-request analog of GetBinding, for resident binaries that
-// must not reuse an earlier request's Fetcher.
+// env, for binaries that must not reuse an earlier request's Fetcher.
 func BindingFromContext(ctx gocontext.Context, name string) js.Value {
 	return EnvFromContext(ctx).Get(name)
 }
