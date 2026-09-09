@@ -268,8 +268,14 @@ export class Controllers {
     // id carries a token fingerprint: rotation = new id = fresh isolate,
     // and the stale one is simply never addressed again.
     const tokenTag = await this.tokenTag();
+    // Fault injection (see Env.PUMP_WINDOW_DROP_CLOSE): production can
+    // tear a poke's IoContext down before its ctx.waitUntil timer runs,
+    // which leaves a pump window open forever on the Go side. `wrangler
+    // dev` never does that (S31 E1), so the only way to cover the
+    // resulting wedge locally is to drop the close deliberately.
+    const dropCloseEvery = Number(this.env.PUMP_WINDOW_DROP_CLOSE ?? 0) || 0;
     const worker = this.env.LOADER.get(
-      `${this.env.LOADER_ID_SALT ?? ""}${name}:${doName}@${manifest.sha256}#${tokenTag}`,
+      `${this.env.LOADER_ID_SALT ?? ""}${name}:${doName}@${manifest.sha256}#${tokenTag}${dropCloseEvery ? `!${dropCloseEvery}` : ""}`,
       async () => {
         const wasm = await assembleWasm(this.env.ASSETS, manifest);
         const wasmExec = await fetchWasmAsset(this.env.ASSETS, "wasm_exec.js").then((r) =>
@@ -289,7 +295,7 @@ export class Controllers {
           compatibilityDate: "2026-07-01",
           mainModule: "index.js",
           modules: {
-            "index.js": makeResidentBootstrapJS(PUMP_WINDOW_MS),
+            "index.js": makeResidentBootstrapJS(PUMP_WINDOW_MS, dropCloseEvery),
             "wasm_exec.js": wasmExec,
             "app.wasm": { wasm: wasm.buffer as ArrayBuffer },
           },

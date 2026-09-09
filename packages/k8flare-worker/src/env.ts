@@ -103,6 +103,13 @@ export interface Env {
   // dynamic-worker isolate with it. Absent = "default".
   CLUSTER_DO_NAME?: string;
   LOADER_ID_SALT?: string;
+  // Harness fault injection, N = "drop every Nth resident dispatch's
+  // pump-window close". Emulates production tearing a poke's IoContext
+  // down before its ctx.waitUntil timer runs, which `wrangler dev`
+  // never does (docs/platform-verification.md S31 E1) -- see
+  // controllers/index.ts and loader/bootstrap.ts. Never set in
+  // production.
+  PUMP_WINDOW_DROP_CLOSE?: string;
   // Multi-cluster: the public URL path prefix ("/c/<id>", "" for
   // default) the supervisor advertises to joining agents.
   CLUSTER_BASE_PATH?: string;
