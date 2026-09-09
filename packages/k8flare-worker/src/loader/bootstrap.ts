@@ -54,9 +54,11 @@ async function instantiate(env, ctx) {
 }
 `;
 
-export function makeResidentBootstrapJS(pumpWindowMs: number): string {
+export function makeResidentBootstrapJS(pumpWindowMs: number, dropCloseEvery = 0): string {
   return `${COMMON}
 const PUMP_WINDOW_MS = ${pumpWindowMs};
+const DROP_CLOSE_EVERY = ${dropCloseEvery};
+let dispatchCount = 0;
 let bindingPromise = null;
 
 export default {
@@ -67,11 +69,12 @@ export default {
     // background goroutines, and retire it when the window closes -- they
     // outlive any single dispatch, but the platform only lets them perform
     // I/O on behalf of a request that is still open (S31).
-    const pumpWindow = binding.openPumpWindow(env);
+    const pumpWindow = binding.openPumpWindow(env, PUMP_WINDOW_MS);
+    const dropClose = DROP_CLOSE_EVERY > 0 && ++dispatchCount % DROP_CLOSE_EVERY === 0;
     ctx.waitUntil(
       new Promise((resolve) =>
         setTimeout(() => {
-          binding.closePumpWindow(pumpWindow);
+          if (!dropClose) binding.closePumpWindow(pumpWindow);
           resolve();
         }, PUMP_WINDOW_MS),
       ),

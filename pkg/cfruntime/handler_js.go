@@ -74,7 +74,7 @@ func init() {
 	// IoContext is still open when they need to issue outbound I/O --
 	// see cloudflare.Window.
 	binding.Set("openPumpWindow", js.FuncOf(func(_ js.Value, args []js.Value) any {
-		return cloudflare.OpenPumpWindow(args[0])
+		return cloudflare.OpenPumpWindow(args[0], args[1].Int())
 	}))
 	binding.Set("closePumpWindow", js.FuncOf(func(_ js.Value, args []js.Value) any {
 		cloudflare.ClosePumpWindow(args[0].Int())

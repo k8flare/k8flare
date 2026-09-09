@@ -7,6 +7,7 @@ import (
 	"errors"
 	"sync"
 	"syscall/js"
+	"time"
 )
 
 // ErrPumpWindowClosed reports that the pump window an outbound call was
@@ -34,9 +35,20 @@ var ErrPumpWindowClosed = errors.New("cloudflare: pump window closed")
 // which is itself a cross-request I/O access and panics the whole
 // instance (measured 2026-09-09, S31). Waiting on Done is the only
 // teardown that touches no I/O object at all.
+//
+// A window therefore also carries its own expiry and closes itself when
+// it is reached, rather than trusting the JS side to say so: the close
+// callback rides on the dispatch's ctx.waitUntil, and production can
+// tear that request's IoContext down before the timer ever runs. One
+// dropped close was enough to wedge the whole resident instance for good
+// -- everything blocked on that window's Done waits for a channel nobody
+// will ever close, which is S31's original symptom by another route
+// (measured 2026-09-09, S31 addendum).
 type Window struct {
-	env  js.Value
-	done chan struct{}
+	env     js.Value
+	done    chan struct{}
+	expires time.Time
+	timer   *time.Timer
 }
 
 // Env returns the request env this window carries: the source of every
@@ -60,17 +72,30 @@ var (
 	reapable  []js.Func
 )
 
-// OpenPumpWindow publishes env as this isolate's outbound-I/O anchor and
-// returns the id the JS side passes back to ClosePumpWindow.
-func OpenPumpWindow(env js.Value) int {
+// expiryGrace keeps the Go-side expiry a clear backstop rather than a
+// second authority on when a window ends: the JS close normally lands
+// first, and only a dispatch whose IoContext died without running it
+// falls through to the timer.
+const expiryGrace = 2 * time.Second
+
+// OpenPumpWindow publishes env as this isolate's outbound-I/O anchor for
+// the next lifetimeMs and returns the id the JS side passes back to
+// ClosePumpWindow.
+func OpenPumpWindow(env js.Value, lifetimeMs int) int {
+	lifetime := time.Duration(lifetimeMs)*time.Millisecond + expiryGrace
 	windowsMu.Lock()
 	windowID++
 	id := windowID
-	w := &Window{env: env, done: make(chan struct{})}
+	w := &Window{env: env, done: make(chan struct{}), expires: time.Now().Add(lifetime)}
 	byID[id] = w
 	windows = append(windows, w)
 	notify := openedCh
 	openedCh = make(chan struct{})
+	// Arms no cost of its own: the Go runtime already keeps a JS timer
+	// for its next deadline, and a frozen isolate simply fires this late
+	// -- on the dispatch that gives the released goroutines somewhere to
+	// retry (cost invariant #3: event-armed, one shot, self-disarming).
+	w.timer = time.AfterFunc(lifetime, func() { closeWindow(id) })
 	windowsMu.Unlock()
 	close(notify)
 	return id
@@ -103,7 +128,16 @@ func reapAbandoned() {
 // calls before anything is woken, so a goroutine released by it waits for
 // the next window instead of issuing I/O into a dying IoContext.
 func ClosePumpWindow(id int) {
+	closeWindow(id)
 	reapAbandoned()
+}
+
+// closeWindow is the one place a window is retired, shared by the JS
+// close and the expiry timer. Releasing the waiters is the last thing it
+// does and nothing after it can fail: reaping js.Funcs used to run
+// first, and anything it threw would have left every goroutine blocked
+// on this window's Done with no second chance.
+func closeWindow(id int) {
 	windowsMu.Lock()
 	w := byID[id]
 	if w == nil {
@@ -117,6 +151,7 @@ func ClosePumpWindow(id int) {
 			break
 		}
 	}
+	w.timer.Stop()
 	windowsMu.Unlock()
 	close(w.done)
 }
@@ -129,13 +164,12 @@ func ClosePumpWindow(id int) {
 func CurrentWindow(ctx gocontext.Context) (*Window, error) {
 	for {
 		windowsMu.Lock()
-		if n := len(windows); n > 0 {
-			w := windows[n-1]
-			windowsMu.Unlock()
-			return w, nil
-		}
+		w := newestLive()
 		wait := openedCh
 		windowsMu.Unlock()
+		if w != nil {
+			return w, nil
+		}
 		select {
 		case <-wait:
 		case <-ctx.Done():
@@ -144,13 +178,29 @@ func CurrentWindow(ctx gocontext.Context) (*Window, error) {
 	}
 }
 
+// newestLive returns the newest window that has not passed its expiry,
+// which is not the same as the newest window: a goroutine can be resumed
+// by the JS event loop ahead of the expiry timer that is about to retire
+// it, and handing it a window whose request is already gone is how a
+// call ends up waiting on a promise that will never settle.
+// Callers hold windowsMu.
+func newestLive() *Window {
+	now := time.Now()
+	for i := len(windows) - 1; i >= 0; i-- {
+		if now.Before(windows[i].expires) {
+			return windows[i]
+		}
+	}
+	return nil
+}
+
 // currentWindowEnv is the non-blocking form behind EnvFromContext's
 // fallback.
 func currentWindowEnv() (js.Value, bool) {
 	windowsMu.Lock()
 	defer windowsMu.Unlock()
-	if n := len(windows); n > 0 {
-		return windows[n-1].env, true
+	if w := newestLive(); w != nil {
+		return w.env, true
 	}
 	return js.Value{}, false
 }
