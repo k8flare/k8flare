@@ -84,7 +84,21 @@ export default {
     // that first instantiated the isolate (handler_js.go dispatch). The
     // env captured in instantiate() above is only used to run the Go
     // program; per-request I/O bindings must come from here.
-    return binding.handleRequest(request, env);
+    const raw = await request.arrayBuffer();
+    const out = await binding.handleRequest(
+      {
+        method: request.method,
+        url: request.url,
+        headers: [...request.headers],
+        body: raw.byteLength === 0 ? null : new Uint8Array(raw),
+      },
+      env,
+    );
+    return new Response(out.body, {
+      status: out.status,
+      statusText: out.statusText,
+      headers: out.headers,
+    });
   },
 };
 `;

@@ -134,9 +134,10 @@ func requestFromJS(reqObj js.Value) (*http.Request, error) {
 		return nil, err
 	}
 	header := headerFromJS(reqObj.Get("headers"))
-	body, err := readBody(reqObj)
-	if err != nil {
-		return nil, fmt.Errorf("read request body: %w", err)
+	var body []byte
+	if raw := reqObj.Get("body"); !raw.IsNull() && !raw.IsUndefined() {
+		body = make([]byte, raw.Get("byteLength").Int())
+		js.CopyBytesToGo(body, raw)
 	}
 	return &http.Request{
 		Method:        reqObj.Get("method").String(),
@@ -149,23 +150,6 @@ func requestFromJS(reqObj js.Value) (*http.Request, error) {
 	}, nil
 }
 
-// readBody reads a JS Request/Response body (a nullable ReadableStream)
-// in one shot via arrayBuffer() rather than pulling a ReadableStream
-// reader chunk by chunk -- see dispatch's doc comment for why every
-// caller in this repo can tolerate that.
-func readBody(reqObj js.Value) ([]byte, error) {
-	if reqObj.Get("body").IsNull() {
-		return nil, nil
-	}
-	buf, err := awaitPromise(reqObj.Call("arrayBuffer"))
-	if err != nil {
-		return nil, err
-	}
-	data := make([]byte, buf.Get("byteLength").Int())
-	js.CopyBytesToGo(data, js.Global().Get("Uint8Array").New(buf))
-	return data, nil
-}
-
 type nopCloser struct{ *bytes.Reader }
 
 func (nopCloser) Close() error { return nil }
@@ -174,8 +158,7 @@ func (nopCloser) Close() error { return nil }
 // own entries() iterator already comma-joins repeated header names per
 // the Fetch spec, so splitting each value back out on "," reconstructs
 // the original multi-value header.
-func headerFromJS(headers js.Value) http.Header {
-	entries := js.Global().Get("Array").Call("from", headers.Call("entries"))
+func headerFromJS(entries js.Value) http.Header {
 	n := entries.Length()
 	h := make(http.Header, n)
 	for i := 0; i < n; i++ {
@@ -189,13 +172,16 @@ func headerFromJS(headers js.Value) http.Header {
 }
 
 func headerToJS(header http.Header) js.Value {
-	h := js.Global().Get("Headers").New()
+	pairs := js.Global().Get("Array").New()
 	for key, values := range header {
 		for _, v := range values {
-			h.Call("append", key, v)
+			pair := js.Global().Get("Array").New()
+			pair.Call("push", key)
+			pair.Call("push", v)
+			pairs.Call("push", pair)
 		}
 	}
-	return h
+	return pairs
 }
 
 // responseRecorder is a minimal buffered http.ResponseWriter -- see
@@ -216,47 +202,22 @@ func (w *responseRecorder) WriteHeader(status int)      { w.status = status }
 // get Response(null, ...) even if something was written to them --
 // matches the Fetch API's own contract, not a choice made here.
 func (w *responseRecorder) toJSResponse() js.Value {
-	respInit := js.Global().Get("Object").New()
-	respInit.Set("status", w.status)
-	respInit.Set("statusText", http.StatusText(w.status))
-	respInit.Set("headers", headerToJS(w.header))
+	out := js.Global().Get("Object").New()
+	out.Set("status", w.status)
+	out.Set("statusText", http.StatusText(w.status))
+	out.Set("headers", headerToJS(w.header))
 
 	switch w.status {
 	case http.StatusSwitchingProtocols, http.StatusNoContent, http.StatusResetContent, http.StatusNotModified:
-		return js.Global().Get("Response").New(js.Null(), respInit)
+		out.Set("body", js.Null())
+		return out
 	}
 
 	body := w.body.Bytes()
 	jsBody := js.Global().Get("Uint8Array").New(len(body))
 	js.CopyBytesToJS(jsBody, body)
-	return js.Global().Get("Response").New(jsBody, respInit)
-}
-
-// awaitPromise blocks the calling goroutine until promise settles,
-// returning its resolved value or converting a rejection into a Go
-// error. Safe to call from any goroutine -- the then/catch callbacks run
-// on the single JS thread and hand off through a channel.
-func awaitPromise(promise js.Value) (js.Value, error) {
-	resultCh := make(chan js.Value, 1)
-	errCh := make(chan error, 1)
-	var then, catch js.Func
-	then = js.FuncOf(func(_ js.Value, args []js.Value) any {
-		defer then.Release()
-		resultCh <- args[0]
-		return js.Undefined()
-	})
-	catch = js.FuncOf(func(_ js.Value, args []js.Value) any {
-		defer catch.Release()
-		errCh <- fmt.Errorf("js promise rejected: %s", args[0].Call("toString").String())
-		return js.Undefined()
-	})
-	promise.Call("then", then).Call("catch", catch)
-	select {
-	case v := <-resultCh:
-		return v, nil
-	case err := <-errCh:
-		return js.Value{}, err
-	}
+	out.Set("body", jsBody)
+	return out
 }
 
 // ServeNonBlock registers handler to serve every dispatched request but
