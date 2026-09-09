@@ -582,6 +582,9 @@ func settleDeletedObject(ctx context.Context, storage *Storage, obj runtime.Obje
 // sweep, storage delete, per-resource settle. Shared by the PUT and
 // PATCH finalizer-completion paths.
 func finalizeDelete(ctx context.Context, store *ResourceStore, namespacedStores []*ResourceStore, namespace, name string, write runtime.Object) (runtime.Object, error) {
+	if err := refuseForegroundFinalize(ctx, store, namespacedStores, namespace, name); err != nil {
+		return nil, err
+	}
 	if err := finalizeDeleteWithOrphanSweep(ctx, store, namespacedStores, namespace, name); err != nil {
 		return nil, err
 	}
