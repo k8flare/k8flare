@@ -4580,3 +4580,115 @@ KCM の約 15 個に加えて GC のメタデータ informer が約 45 個あり
 - tainteviction のインメモリタイマー(S28 残課題 2)と、Node を 300 秒超停止
   させたときの Unknown → taint → 立ち退き。どちらも本欠陥と交絡していたため
   S30 で保留したままで、本節では扱っていない。
+
+## S31 追記: 本番検証と、window の close が届かないと resident が二度と回復しない (2026-09-09、実測)
+
+S31 をデプロイした状態の本番(k8flare.kooffice.workers.dev、13:15-13:42Z)で
+BYO VM のノードを使って測った結果。
+
+**直った 2 件**:
+
+- kcm ロードの **6 分後**に登録した Node が podCIDR を得て、その 2 Pod が
+  Running、EndpointSlices まで **10 秒以内**。S31 前は「新しい Loader id で
+  ロードし直すまで永遠に来ない」だった。
+- ノードを `docker pause` → **61 秒以内**に Ready=Unknown +
+  `node.kubernetes.io/unreachable` (NoSchedule + NoExecute)。実 tainteviction が
+  Pod を立ち退かせ、ReplicaSet が作り直して Pending になるところまで実 k8s と
+  同じ挙動。
+
+**残った 1 件(本追記の対象)**: 約 9.5 分止めたノードを `docker unpause` すると、
+kubelet の status 書き込みで Node は即座に Ready=True に戻るのに、**2 つの
+unreachable taint が外れず、代替 Pod が 5 分以上 Pending のまま**だった。
+20〜30 秒毎に Deployment の annotation を書いてポークし続けても変わらない。
+**新しい Loader id で kcm をロードし直すと 15 秒で taint が外れて Pod が
+スケジュールされた**ので、壊れているのは resident インスタンスの側。
+
+### ローカル再現(段階を追って否定した仮説を含む)
+
+指示のシナリオ(Deployment 2 replicas + Node + 10 秒毎の Lease 更新 → 2 分
+停止 → 再開)をそのまま dev で回すと**再現しない**。taint は 45 秒で外れる。
+条件を寄せていっても直らなかった:
+
+| 試行 | 結果 |
+|---|---|
+| 1 ノード、2 分停止 | 45 秒で taint 除去。ただし NoExecute が付かず立ち退きも無い |
+| 1 ノード、10 分停止 | 15 秒で taint 除去 |
+| 2 ノード(1 台は cordon した健全ノード)、10 分停止 | **本番と同じく NoExecute + 立ち退きまで再現**。しかし復帰は 24 秒 |
+
+1 ノードだと nodelifecycle が full disruption モードに入って立ち退きを止める
+ため、本番の挙動を出すには**健全なノードがもう 1 台要る**(本番にもあった)。
+つまり「長時間の無ハートビート」も「NoExecute + 立ち退き」も**引き金ではない**。
+
+`watch.ts` に一時ログを入れて分かった別件: dev では watch の WebSocket が
+**11 分で 1306 本開いて 0 本しか閉じない**。dev が `IoContext` を畳まないので
+`handleWatch` が window より長生きするだけで、本番の挙動ではない。ただし
+コスト不変条件に触れる実在の穴なので**未処理項目として記録**する(本欠陥の
+真因ではないので本追記では直していない)。
+
+### 真因: JS の close が届かなかった window は永久に「生きている」ことになる
+
+S31 が本番で確認した事実「リクエストの `IoContext` は、その `ctx.waitUntil` の
+タイマーより先に畳まれることがある」を、window 自身にも当てはめると答えが出る。
+window を retire するのは `closePumpWindow` だけで、これは**そのディスパッチの
+`ctx.waitUntil` に乗った `setTimeout` から呼ばれる**。リクエストが先に死ぬと
+close は永久に来ず、window は登録されたまま「最新の window」で在り続ける。
+
+以降 `CurrentWindow` はその死んだ window を返し続け、`WithLiveBinding` の
+呼び出しは**誰も閉じないチャンネル**(`Done()`)を待って刺さる。resident の
+outbound I/O が全部そこで止まるので、informer は張り直せず、
+nodelifecycle は Node の復帰を見られない。ポークは届くが何も進まない。
+**新しい Loader id でしか回復しない**という本番の観測とも一致する。
+`wrangler dev` は `IoContext` をそこまで厳しく畳まないので、この経路は
+ローカルでは自然発生しない。
+
+**フォールト注入で再現**: `PUMP_WINDOW_DROP_CLOSE=N` を足して N 回に 1 回
+`closePumpWindow` を落とすようにした(bootstrap の JS 側)。N=2 で
+「ロードの数分後に Node を登録して podCIDR を待つ」フェーズが**3 分待っても
+来ない**ようになり、本番と同じ「二度と回復しない」状態がローカルで出た。
+close が 1 回落ちるだけで instance 全体が終わる。
+
+### 修正
+
+`pkg/cfruntime/cloudflare/window.go`: window に**自分の寿命を持たせて自分で
+閉じる**。bootstrap が約束した `PUMP_WINDOW_MS` を `openPumpWindow` の引数で
+Go 側に渡し(`handler_js.go`)、`lifetime + 2 秒`の `time.AfterFunc` で
+`closeWindow` を呼ぶ。`CurrentWindow` / `currentWindowEnv` は
+`newestLive()`(expiry を過ぎていない最新の window)しか返さないので、
+タイマーより先に goroutine が起きても死んだ window は掴まない。retire の
+処理は `closeWindow` に一本化し、**待っている goroutine を起こすのを最後に
+する**(以前は先に `js.Func` の回収をしていて、そこで throw すると全員が
+取り残された)。
+
+コスト不変条件との関係: 追加のタイマーは window 1 本につき 1 発の
+one-shot で、close が正常に届けば `Stop()` される(#3 の event-armed。
+ポーリングではない)。isolate が凍結されていれば発火は遅れるだけで、
+起きたときのディスパッチ = 解放された goroutine がリトライできる瞬間なので
+遅れて困らない。常駐プロセスも壁時計課金も増えない。
+
+### 回帰テスト
+
+`pkg/apiserver/kcmdw_test.go` のレーンを **`PUMP_WINDOW_DROP_CLOSE=3` で
+走らせる**(3 ディスパッチに 1 回 close を落とす)ようにし、末尾に復帰
+フェーズを足した: 止めていたノードの Lease 更新と status 書き込みを再開し、
+unreachable taint が外れることと、そのノードに `nodeSelector` で固定した
+Pod がスケジュールされることを要求する。修正を revert すると既存の
+「遅れて登録した Node」フェーズで落ちる(podCIDR が来ない)。レーンの実時間は
+約 275 秒のまま。
+
+ノードには hostname ラベルと kubelet 相当の capacity/allocatable を持たせた。
+`NodeResourcesFit` は allocatable の pod 数が無いノードを全部弾くので、
+これが無いと固定 Pod はどこにも載らない。
+
+### 未検証
+
+- **本番での確認**(デプロイ禁止のため未実施)。上の本番数値は S31 の
+  コード(この追記の修正を含まない)で測ったもの。
+- 本番で実際に close が落ちていたことの直接証拠(ログでは取れていない)。
+  再現はフォールト注入によるもので、「本番でこの経路が起きうる」の根拠は
+  S31 で実測した `IoContext` の早期畳み込みと、症状(新しい Loader id で
+  しか回復しない)の一致まで。
+- dev で観測した watch WebSocket の leak(11 分で 1306 本)。dev 固有の
+  可能性が高いが、本番でのソケット数は測っていない。
+- DefaultTolerationSeconds admission がこの apiserver に無いため、
+  unreachable/not-ready の Pod が upstream の 300 秒猶予なしで即座に
+  立ち退く(本番で実測)。**ギャップとして記録するのみ、今回は実装しない**。
