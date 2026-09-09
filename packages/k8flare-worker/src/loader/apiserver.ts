@@ -45,7 +45,7 @@ async function apiserverEntrypoint(env: Env): Promise<Fetcher> {
   // factory time). Cost: +$0.002/unique/day per ACTIVE cluster
   // (docs/cost-model.md).
   const doName = env.CLUSTER_DO_NAME ?? "default";
-  const worker = env.LOADER.get(`apiserver:${doName}@${manifest.sha256}`, async () => {
+  const worker = env.LOADER.get(`${env.LOADER_ID_SALT ?? ""}apiserver:${doName}@${manifest.sha256}`, async () => {
     const wasm = await assembleWasm(env.ASSETS, manifest);
     const wasmExec = await fetchWasmAsset(env.ASSETS, "wasm_exec.js").then((r) => r.text());
     const dynamicEnv: Record<string, unknown> = {

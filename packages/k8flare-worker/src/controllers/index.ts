@@ -269,7 +269,7 @@ export class Controllers {
     // and the stale one is simply never addressed again.
     const tokenTag = await this.tokenTag();
     const worker = this.env.LOADER.get(
-      `${name}:${doName}@${manifest.sha256}#${tokenTag}`,
+      `${this.env.LOADER_ID_SALT ?? ""}${name}:${doName}@${manifest.sha256}#${tokenTag}`,
       async () => {
         const wasm = await assembleWasm(this.env.ASSETS, manifest);
         const wasmExec = await fetchWasmAsset(this.env.ASSETS, "wasm_exec.js").then((r) =>

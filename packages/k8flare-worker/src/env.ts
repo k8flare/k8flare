@@ -102,6 +102,7 @@ export interface Env {
   // stamps it as the X-K8flare-Cluster header and keys the per-cluster
   // dynamic-worker isolate with it. Absent = "default".
   CLUSTER_DO_NAME?: string;
+  LOADER_ID_SALT?: string;
   // Multi-cluster: the public URL path prefix ("/c/<id>", "" for
   // default) the supervisor advertises to joining agents.
   CLUSTER_BASE_PATH?: string;
