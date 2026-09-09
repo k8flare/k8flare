@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall/js"
+
+	"github.com/k8flare/k8flare/pkg/cfruntime/cloudflare"
 )
 
 // RedirectMode is the redirect mode of an outbound fetch() request.
@@ -30,7 +32,8 @@ const (
 )
 
 type Client struct {
-	binding js.Value
+	binding  js.Value
+	liveName string
 }
 
 type ClientOption func(*Client)
@@ -39,6 +42,20 @@ type ClientOption func(*Client)
 // binding) instead of the global fetch (js.Global()).
 func WithBinding(binding js.Value) ClientOption {
 	return func(c *Client) { c.binding = binding }
+}
+
+// WithLiveBinding routes fetch() through the named binding taken from
+// whichever pump window is open when each individual request is issued,
+// waiting for one to open if none is.
+//
+// Resident binaries whose background goroutines outlive any single
+// dispatch (the controllers) must use this rather than WithBinding: a
+// binding captured once belongs to the request that supplied it, and
+// after that request's IoContext is torn down its calls neither succeed
+// nor fail -- the promises simply never settle, wedging the caller for
+// the isolate's lifetime (S31).
+func WithLiveBinding(name string) ClientOption {
+	return func(c *Client) { c.liveName = name }
 }
 
 func NewClient(opts ...ClientOption) *Client {
@@ -52,15 +69,41 @@ func NewClient(opts ...ClientOption) *Client {
 // HTTPClient returns an *http.Client whose RoundTripper calls the
 // client's binding.fetch() for every request.
 func (c *Client) HTTPClient(redirect RedirectMode) *http.Client {
-	return &http.Client{Transport: &roundTripper{binding: c.binding, redirect: redirect}}
+	return &http.Client{Transport: &roundTripper{binding: c.binding, liveName: c.liveName, redirect: redirect}}
 }
 
 type roundTripper struct {
 	binding  js.Value
+	liveName string
 	redirect RedirectMode
 }
 
+// jsCall invokes a JS method, turning the JS exceptions syscall/js raises
+// as Go panics into ordinary errors. Every I/O object this package
+// touches belongs to a request context that the runtime can tear down
+// underneath it, and a panic on that boundary takes the whole resident
+// instance down (exit code 2) instead of failing the one call that the
+// caller is already prepared to retry.
+func jsCall(v js.Value, method string, args ...any) (result js.Value, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			result, err = js.Value{}, fmt.Errorf("js %s: %v", method, r)
+		}
+	}()
+	return v.Call(method, args...), nil
+}
+
 func (t *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	binding := t.binding
+	var window *cloudflare.Window
+	if t.liveName != "" {
+		w, err := cloudflare.CurrentWindow(req.Context())
+		if err != nil {
+			return nil, fmt.Errorf("fetch: waiting for a pump window: %w", err)
+		}
+		window, binding = w, w.Env().Get(t.liveName)
+	}
+
 	jsReq, err := requestToJS(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch: encode request: %w", err)
@@ -68,11 +111,15 @@ func (t *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	init := js.Global().Get("Object").New()
 	init.Set("redirect", string(t.redirect))
 
-	jsResp, err := awaitPromise(t.binding.Call("fetch", jsReq, init))
+	promise, err := jsCall(binding, "fetch", jsReq, init)
 	if err != nil {
 		return nil, fmt.Errorf("fetch: %w", err)
 	}
-	return responseFromJS(jsResp)
+	jsResp, err := awaitPromise(window, promise)
+	if err != nil {
+		return nil, fmt.Errorf("fetch: %w", err)
+	}
+	return responseFromJS(window, jsResp)
 }
 
 func requestToJS(req *http.Request) (js.Value, error) {
@@ -103,13 +150,13 @@ func requestToJS(req *http.Request) (js.Value, error) {
 // version, kube-controller-manager's and the garbage collector's
 // informers never completed a single sync (found live 2026-07-10, see
 // docs/platform-verification.md's cfruntime-rewrite correction).
-func responseFromJS(resp js.Value) (*http.Response, error) {
+func responseFromJS(window *cloudflare.Window, resp js.Value) (*http.Response, error) {
 	status := resp.Get("status").Int()
 	header := headerFromJS(resp.Get("headers"))
 
 	var body io.ReadCloser = http.NoBody
 	if stream := resp.Get("body"); !stream.IsNull() && !stream.IsUndefined() {
-		body = &streamBody{stream: stream}
+		body = &streamBody{stream: stream, window: window}
 	}
 
 	contentLength := int64(-1) // unknown (e.g. a streaming watch)
@@ -136,6 +183,7 @@ func responseFromJS(resp js.Value) (*http.Response, error) {
 type streamBody struct {
 	stream js.Value
 	reader js.Value // lazily: stream.getReader()
+	window *cloudflare.Window
 	buf    bytes.Buffer
 	eof    bool
 }
@@ -146,10 +194,21 @@ func (b *streamBody) Read(p []byte) (int, error) {
 			return 0, io.EOF
 		}
 		if b.reader.IsUndefined() {
-			b.reader = b.stream.Call("getReader")
+			reader, err := jsCall(b.stream, "getReader")
+			if err != nil {
+				b.eof = true
+				return 0, fmt.Errorf("read response stream: %w", err)
+			}
+			b.reader = reader
 		}
-		result, err := awaitPromise(b.reader.Call("read"))
+		pending, err := jsCall(b.reader, "read")
 		if err != nil {
+			b.eof = true
+			return 0, fmt.Errorf("read response stream: %w", err)
+		}
+		result, err := awaitPromise(b.window, pending)
+		if err != nil {
+			b.eof = true
 			return 0, fmt.Errorf("read response stream: %w", err)
 		}
 		if result.Get("done").Bool() {
@@ -164,11 +223,25 @@ func (b *streamBody) Read(p []byte) (int, error) {
 	return b.buf.Read(p)
 }
 
+func (b *streamBody) windowOpen() bool {
+	if b.window == nil {
+		return true
+	}
+	select {
+	case <-b.window.Done():
+		return false
+	default:
+		return true
+	}
+}
+
 func (b *streamBody) Close() error {
-	if !b.reader.IsUndefined() {
-		b.reader.Call("cancel")
-	} else if !b.stream.IsUndefined() && !b.stream.IsNull() {
-		b.stream.Call("cancel")
+	if !b.eof && b.windowOpen() {
+		if !b.reader.IsUndefined() {
+			_, _ = jsCall(b.reader, "cancel")
+		} else if !b.stream.IsUndefined() && !b.stream.IsNull() {
+			_, _ = jsCall(b.stream, "cancel")
+		}
 	}
 	b.eof = true
 	return nil
@@ -198,10 +271,13 @@ func headerToJS(header http.Header) js.Value {
 	return h
 }
 
-// awaitPromise blocks the calling goroutine until promise settles.
+// awaitPromise blocks the calling goroutine until promise settles, or
+// until window closes -- a promise created under a torn-down IoContext is
+// abandoned by the runtime rather than rejected, so without that second
+// arm the caller would block for the isolate's lifetime.
 // Duplicated from pkg/cfruntime's own copy rather than shared through an
 // internal package -- see pkg/cfruntime/README.md for why.
-func awaitPromise(promise js.Value) (js.Value, error) {
+func awaitPromise(window *cloudflare.Window, promise js.Value) (js.Value, error) {
 	resultCh := make(chan js.Value, 1)
 	errCh := make(chan error, 1)
 	var then, catch js.Func
@@ -215,11 +291,26 @@ func awaitPromise(promise js.Value) (js.Value, error) {
 		errCh <- fmt.Errorf("js promise rejected: %s", args[0].Call("toString").String())
 		return js.Undefined()
 	})
-	promise.Call("then", then).Call("catch", catch)
+	settled, err := jsCall(promise, "then", then)
+	if err != nil {
+		then.Release()
+		catch.Release()
+		return js.Value{}, err
+	}
+	if _, err := jsCall(settled, "catch", catch); err != nil {
+		return js.Value{}, err
+	}
+	var closed <-chan struct{}
+	if window != nil {
+		closed = window.Done()
+	}
 	select {
 	case v := <-resultCh:
 		return v, nil
 	case err := <-errCh:
 		return js.Value{}, err
+	case <-closed:
+		cloudflare.AbandonFunc(then, catch)
+		return js.Value{}, cloudflare.ErrPumpWindowClosed
 	}
 }
