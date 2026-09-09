@@ -4138,3 +4138,37 @@ POST の代わりに **Controllers DO を poke** する形に変えた
 後、収束済みクラスタでは Controllers DO の alarm はパークするので、
 live Node があるうちは何かが窓を開ける必要がある)だけである。S27 と
 同じく決定的な測定は本番か、isolate を確実に退避させるハーネスが要る。
+
+## S29: upstream `k8s.io/apiserver/pkg/endpoints` で手書き REST 層を置き換える案 — サイズで NO-GO (2026-09-09、実測)
+
+S25 の次段(手書き handler.go / subresource.go / table.go / discovery.go /
+watch.go を upstream の `endpoints.APIGroupVersion.InstallREST` +
+`endpoints/discovery` で置き換える)の可否を S25 と同じ方法で計測した
+(`tmp-endpointsspike/main.go` に pkg/apiserver と InstallREST 閉包を
+import する main、`-tags leanwidth -ldflags="-s -w" -trimpath` → wasm-opt -Oz。
+binaryen 129 / go1.26.5)。
+
+| ビルド | raw | wasm-opt 後 | cap 67,108,864 との差 |
+|---|---|---|---|
+| baseline apiserver-wasm | 76,397,999 | 64,877,427 | +2,231,437 |
+| + `endpoints` 閉包(InstallREST + discovery) | 80,402,057 | 68,388,344 | **-1,279,480** |
+| + 追加オーバーレイ 3 点(storageversion スタブ / apihelpers から APF 分離 / `cases.Title` 置換) | 78,973,274 | 67,191,434 | -82,570 |
+
+- コンパイル: `endpoints → storageversion → Clientset.InternalV1alpha1()`
+  が leanwidth の刈られた clientset に無い 1 件のみ失敗。6 行のスタブ
+  オーバーレイで閉包全体が GOOS=js でビルドできる(go-restful /
+  x/net/websocket / wsstream / admission / audit / managedfields はそのまま通る)。
+- 増分 +3,510,946 バイト(opt 後)の内訳: endpoints/handlers 395KB、
+  flowcontrol/v1 377KB(apihelpers 経由の巻き添え)、structured-merge-diff
+  285KB、endpoints 215KB、managedfields 118KB、apiserverinternal/v1alpha1
+  116KB(storageversion 経由)、x/text 239KB(`cases.Title`)、websocket 104KB。
+- 置き換えで消せる手書き 5 ファイルのコード実体は 156,596 バイト
+  (pkg/apiserver 自身の全コード 631,844 バイトの 24.8%)で、opt 後換算
+  約 0.19〜0.23MB。依存パッケージは 1 つも解放されない(残る pkg/apiserver
+  が同じものを使う)。
+- 結論: オーバーレイ 3 点 + 手書き削除を全部足しても cap 前後 ±0.15MB で、
+  kubectl が直接待つ apiserver チャンクをヘッドルームほぼゼロで出荷する
+  ことになる。**S25 が残した fieldmanager/admission(SSA 機構、genericregistry
+  が無条件 import)の構造的な削減が先**。それまでは NO-GO。
+
+計測のみで、コード・オーバーレイはコミットしていない(worktree を破棄)。

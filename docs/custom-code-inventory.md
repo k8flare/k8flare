@@ -188,6 +188,10 @@ conformance CI の required に昇格させた上で段階的に退役する方�
 
 ## 7. 縮小候補 (今後 upstream 置換を検討する価値がある順)
 
+(2026-09-09 追記: handler/subresource/table/discovery/watch を upstream
+`k8s.io/apiserver/pkg/endpoints` に置き換える案は実測で cap 超過(+3.5MB
+に対し余裕 2.2MB)のため NO-GO — docs/platform-verification.md S29。)
+
 (2026-07-26 追記: 本丸の generic registry 置換はフェーズ 0 スパイクで
 **GO 判定** — js リンク可・wasm-opt 後 64.99MB で cap 内。実測と
 オーバーレイの詳細は docs/platform-verification.md S25。)
