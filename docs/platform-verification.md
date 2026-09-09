@@ -4311,3 +4311,46 @@ tainteviction のインメモリタイマー)は本番では評価できなか�
   除去)/Service/Node を削除、コンテナ・ボリューム・イメージ・作業ディレクトリを
   ホストから削除。Containers アプリのインスタンスは終始 0。本番は 7/26 版
   (d1474833)にロールバックした状態のまま。
+
+### S30 続報 (2026-09-09 同日): 発見 1 の修正で本番コントローラーが復活、発見 2 は発見 1 の帰結だった。残る欠陥は resident DW の informer watch 失速
+
+**修正**: `apiserverFetch` が DO 経由の呼び出し(`gateway.internal` ホスト =
+Controllers DO の `apiGet`)に対して **別の Loader id(`do/` スコープ)**を
+使うようにした(commit "fix: load a separate apiserver dynamic worker for
+DO-origin requests")。同一 id を stateless isolate と DO isolate の両方から
+要求すると後者が "Unable to deserialize cloned data" で落ちる、という S30 の
+仮説どおり、スコープ分離後は **deserialize 例外 0 件**(ソルト `s30b/` で
+再デプロイ、09:43Z〜)。Loader unique が 1 つ増える($0.002/日)。
+
+**発見 2 の再解釈**: 「DW が毎分リロードされる」ログ(`load queued/starting`
+→ 直後に `dynamic worker up`)は Controllers DO の各 alarm/fetch 呼び出しで
+entrypoint stub を取り直しているだけで(stub はリクエストスコープ、S2 item 4
+のとおりロード済み id の factory は走らない)、DO の再起動ではなかった。
+コントローラーが反応しなかった真因は発見 1(DO 発の apiserver 呼び出しの
+全滅)で、修正後は `kubectl scale` に **20 秒以内**で反応した。
+
+**修正後の実測(ノード再 join、privileged Docker コンテナ)**:
+
+| 項目 | 実測 |
+|---|---|
+| kcm を fresh load した直後 | Node 登録 → podCIDR / Pod Running ×2 / EndpointSlice(実 endpointslice controller、Pod IP 入り)が **20 秒以内**に全部揃う |
+| kcm がロード済みのまま(09:46Z ロード)で 09:59Z に Node を登録 | **6 分以上 podCIDR が付かず、Pod は Pending、EndpointSlice なし**。同時刻に外部からの `kubectl get nodes --watch` / Lease watch は ADDED/MODIFIED を正常に受信。Loader id のソルトを上げて kcm を強制 fresh load した途端に 20 秒以内で全部揃った |
+| Node Ready のフラップ | 修正後 6 分間の 15 秒サンプリングで **フラップなし**(Ready=True 継続) |
+| 撤収後のパーク | ワークロード・Node 削除(10:12Z)の 2 分後から **12 分間 Worker/DO ともリクエスト 0 件**。コスト不変条件 #1/#3 を本番で初めて確認 |
+
+**残る欠陥(プロダクション化のブロッカー)**: resident DW(kcm)の informer
+watch が、初回 list 以降のある時点から Node/Lease の更新を受け取らなくなる。
+外部 watch は正常なので WatchHub 側ではなく、DW 内の reflector が pump window
+の終端(watch ストリームの `canceled`、wallTime 60 秒)後に張り直す watch
+リクエストが、リクエストコンテキストの無い状態から発行されて失敗している
+可能性が高い(同時間帯の tail に `Cannot perform I/O on behalf of a different
+request` が散発)。S28 で見えた「健全ノードの Ready=Unknown フラップ」は
+これの帰結(Lease 更新がキャッシュに届かず 50 秒で Unknown、次の fresh
+list/pump で True に戻る)で、実 nodelifecycle 固有の問題ではない。
+修正の当たりは pkg/cfruntime(DW 内 outbound fetch を現在の pump の
+IoContext に紐付ける / window 内で再 watch させる)。これが直るまで
+tainteviction のインメモリタイマー(S28 残課題 2)の評価は保留。
+
+**未実施**: Node を 300 秒超停止させた場合の Unknown → taint → 立ち退きの
+計測(上記欠陥と交絡するため)。本番は現在この修正込みのブランチ
+(dfbbac18、`LOADER_ID_SALT=s30c/`)がデプロイされたまま。
