@@ -32,11 +32,12 @@ export { WatchHub } from "./watchhub.ts";
 //
 // Node lifecycle is the one controller input with no write to hook a poke
 // to: staleness is detected by the ABSENCE of an expected Lease renewal.
-// So while a Node is live, every safety-net tick queues a Controllers DO
-// poke (see alarm() below), giving the real nodelifecycle controller a
-// pump window in which to notice -- an event-armed safety net (armed by
-// any Node write, see needsNodeLifecycleAttention; parked once no Node is
-// left), not a fixed polling loop.
+// So while a Node is live, every safety-net tick sends the Controllers DO
+// its own alarm-origin poke (see alarm() below), giving the real
+// nodelifecycle controller a pump window in which to notice -- an
+// event-armed safety net (armed by any Node write, see
+// needsNodeLifecycleAttention; parked once no Node is left), not a fixed
+// polling loop.
 const SAFETY_NET_INTERVAL_MS = 60_000;
 // How long to wait after a write that needs node-lifecycle attention
 // before waking the alarm, so a burst of writes coalesces into a single
@@ -270,6 +271,22 @@ export class Cluster {
     }
   }
 
+  /** Alarm-origin sibling of pingControllers, for the node-lifecycle
+   * safety net only: it opens a kcm pump window and nothing else. No
+   * pending-ping flag either -- the next tick is 60s away for as long as
+   * a Node is live, which is the retry. */
+  private async pokeNodeLifecycle(): Promise<void> {
+    const controllers = this.env.CONTROLLERS;
+    if (!controllers) return; // not bound in some dev/test configs
+    if (this.env.KCM_DISABLED === "1") return; // test kill switch
+    try {
+      const stub = controllers.get(controllers.idFromName(this.selfName()));
+      await stub.fetch("http://controllers.internal/safety-net/node-lifecycle");
+    } catch {
+      // best-effort; the next safety-net tick retries
+    }
+  }
+
   /** Same best-effort contract as pingControllers, for the
    * cf-containers-scheduler -- a direct DO binding call post-consolidation
    * (no token needed: DOs are not publicly routable; the public /nodes
@@ -485,14 +502,16 @@ export class Cluster {
   async alarm(): Promise<void> {
     this.initialize();
     // Lease staleness has no write to arm a poke from (see this file's
-    // header comment), so while a Node is live every tick queues one
-    // through the same pending-ping path a relevant write would use: the
-    // real nodelifecycle controller in the kcm dynamic worker only makes
-    // progress inside a pump window, and this is what opens one. Guarded
-    // on the binding existing so an unbound dev/test config can't leave
-    // an undeliverable flag holding the alarm chain open.
-    if (this.env.CONTROLLERS && hasPendingSafetyNetWork(this.sql)) {
-      await this.ctx.storage.put("pendingPing:controllers", true);
+    // header comment), so while a Node is live every tick opens one kcm
+    // pump window: the real nodelifecycle controller in the kcm dynamic
+    // worker only makes progress inside such a window. Deliberately NOT
+    // the write path's pending-ping/pingControllers route -- that one is
+    // a write-origin poke, and the Controllers DO answers it by arming
+    // its own warmup window and 60s alarm chain, which an idle BYO node
+    // must not do (see the /safety-net/node-lifecycle path in
+    // controllers/index.ts and its alarm()'s comment on that regression).
+    if (hasPendingSafetyNetWork(this.sql)) {
+      await this.pokeNodeLifecycle();
     }
     const undelivered = await this.deliverPendingPings();
     // Re-arm the safety net if there's still a live Node that needs

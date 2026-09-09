@@ -311,12 +311,16 @@ export class Controllers {
   // retrying) its detached load, whose completion delivers the first
   // dispatch. Never awaited from fetch() -- see the components field's
   // doc comment.
-  private poke(name: ComponentName, request?: Request): Promise<Response> | null {
+  private poke(
+    name: ComponentName,
+    request?: Request,
+    opts?: { armWarmup?: boolean },
+  ): Promise<Response> | null {
     const c = this.components[name];
     if (c.entrypoint) {
       return c.entrypoint.fetch(request ?? "http://controllers.internal/healthz");
     }
-    void this.ensure(name)
+    void this.ensure(name, opts)
       .then((f) => f && f.fetch("http://controllers.internal/healthz"))
       .catch(() => {}); // already logged in ensure()
     return null;
@@ -338,6 +342,22 @@ export class Controllers {
     // must not be touched by controllers.
     if (this.env.KCM_DISABLED === "1") {
       return Response.json({ controllerManager: "disabled (KCM_DISABLED=1)" });
+    }
+    // The Cluster DO's node-lifecycle safety net (storage/index.ts) --
+    // ALARM-origin, so it deliberately skips everything the write path
+    // below does: no warmup window (an alarm-triggered load must not arm
+    // one, see ensure()), no backoff reset, and no alarm of this DO's
+    // own. Doing any of those on a 60s tick would revive exactly the
+    // "idle BYO node kept a pointless 60s chain alive" regression
+    // alarm()'s comment describes (cost invariants #1/#3). All it owes
+    // the nodelifecycle controller is one kcm pump window.
+    if (new URL(request.url).pathname === "/safety-net/node-lifecycle") {
+      await this.dropRotatedComponents();
+      const kcm = this.poke("kcm", undefined, { armWarmup: false });
+      const status = kcm
+        ? await kcm.then(() => "pumped").catch((err) => `dispatch failed: ${err}`)
+        : "loading";
+      return Response.json({ nodeLifecycle: status });
     }
     // Arm the safety net if it isn't already, so a redeploy/panic/
     // eviction that resets the dynamic workers still gets noticed and
@@ -391,7 +411,7 @@ export class Controllers {
   async alarm(): Promise<void> {
     if (this.env.KCM_DISABLED === "1") return; // test kill switch; do not re-arm
     // Park check FIRST, before touching any dynamic worker: an alarm
-    // firing on an idle cluster used to ensure()+load all three ~40MB
+    // firing on an idle cluster used to ensure()+load all four ~40MB
     // components just to then decide to park -- and on a hibernated DO
     // that load re-armed the warmup window, chaining the alarm forever
     // (see ensure()'s warmup comment; measured live 2026-07-26). The
@@ -440,10 +460,14 @@ export class Controllers {
     // only makes progress inside pump windows, and nothing else opens
     // them once storage's per-write pokes stop coming); conversely a
     // cluster with an idle BYO node kept a pointless 60s chain alive.
-    // "Work exists" for the slimmed KCM (five workload controllers) is
-    // exactly workload convergence: any Deployment/ReplicaSet/Job whose
-    // status lags its spec. Checked via the same gateway API the KCM
-    // itself uses; 2-3 cheap list calls per tick, and only while ticking.
+    // "Work exists" for the KCM's twelve controllers is exactly workload
+    // convergence: any Deployment/ReplicaSet/Job whose status lags its
+    // spec. Checked via the same gateway API the KCM itself uses; 2-3
+    // cheap list calls per tick, and only while ticking.
+    // Node lifecycle is deliberately OUTSIDE this predicate -- Lease
+    // staleness has no spec/status gap to observe, so the Cluster DO's
+    // safety net pumps it instead (see the /safety-net/node-lifecycle
+    // path in fetch() and storage/index.ts's alarm()).
     if (warmupActive) {
       await this.state.storage.put("unconvergedTicks", 0);
       this.state.storage.setAlarm(Date.now() + 15_000);
