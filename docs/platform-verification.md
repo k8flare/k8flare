@@ -4243,3 +4243,71 @@ binaryen 129 / go1.26.5)。
   が無条件 import)の構造的な削減が先**。それまでは NO-GO。
 
 計測のみで、コード・オーバーレイはコミットしていない(worktree を破棄)。
+
+## S30: 本番(KOOFFICE アカウント)での S28 検証 — 本番コントロールプレーンが 7/26 版の時点で既に機能していないことが判明 (2026-09-09、実測)
+
+feat/reduce-custom-code(S28 の 5 コントローラー復帰)を k8flare.kooffice.workers.dev
+にデプロイし、eixooh8 上の privileged Docker コンテナ(独立 netns、`--net=host`
+なし、8GB/4CPU 制限)で BYO ノード 1 台を join させて計測した。監視は
+`wrangler tail --format json` と GraphQL(workersInvocationsAdaptive /
+durableObjectsInvocationsAdaptiveGroups / durableObjectsPeriodicGroups)の
+5 分毎ポーリング。
+
+**結論: 本番ではコントローラーの watch 配信と Controllers DO → Loader の経路が
+7/26 版の時点で既に壊れており、S28 の残課題(nodelifecycle の pump 依存、
+tainteviction のインメモリタイマー)は本番では評価できなかった。**
+切り分けは `wrangler rollback` で 7/26 版(d1474833)に戻して同じ試験を
+繰り返すことで行った。
+
+### 発見 1(先行、ブランチ非依存): DO 発の `LOADER.get()` が "Unable to deserialize cloned data due to invalid or unsupported version" で失敗する
+
+- Controllers DO の `hasUnconvergedWork()`(`SELF.fetch` → シェル →
+  `apiserverFetch` → `LOADER.get(apiserver id)`)が **全て**この例外で落ちる。
+  外部からの kubectl(stateless 経路)は同じ id で正常。`loadComponent` の
+  kcm/gc/sched ロードも間欠的に同じ例外。
+- Loader id に env 由来のソルト(`LOADER_ID_SALT`、本ブランチで追加)を付けて
+  再デプロイすると、**DO が最初にロードした id(kcm 等)は成功**し、**stateless
+  側が先にロードした id(apiserver)を DO から要求すると失敗**した。同一マシン上
+  で別 isolate が既にロード済みの worker を共有する経路(S19 G3)が壊れている
+  形と整合する。
+- 7/26 版でも同じ: ロールバック後 4 分間で kcm/gc/sched のロード失敗 8 件、
+  KCM の `PUT deployments/status` が例外 16 件。デプロイ前の GraphQL でも
+  10 分毎に 7 リクエスト(= 600 秒バックオフ上限で回り続ける Controllers DO
+  alarm の list 群)が全件 `clientDisconnected` だった。
+- 帰結: `hasUnconvergedWork()` が本番では決して false を返せず、**Controllers DO
+  の alarm は永久にパークしない**(コスト不変条件 #1/#3 違反が 7/26 以降ずっと
+  本番で起きていた)。今回の計測窓(08:15Z〜09:45Z)の累計は Worker 6,498 req /
+  DO 7,117 req(うち DO エラー 885)。ストレージ read/write ユニットは 0。
+
+### 発見 2(先行、ブランチ非依存): 動的ワーカーが毎分リロードされ、コントローラーが初回 list 以降の変更に反応しない
+
+- tail に `controllers: {kcm,gc,sched} load queued/starting` が **毎分 1〜3 回**
+  並ぶ(Controllers DO のメモリ上の entrypoint が失われている = DO の再起動)。
+  GraphQL の status には `exceededMemory` は現れず、tail は overload サンプリングに
+  入っていたため、原因(128MiB isolate 超過か、別の理由か)は未確定。
+- 症状: Deployment 作成直後(ロード直後の list)には ReplicaSet/Pod が作られる
+  が、その後 `kubectl scale` に **3 分以上反応しない**。7/26 版でも同じ。
+  Service を作っても Endpoints/EndpointSlice は 10 分以上作られない。
+- KCM の list/watch リクエストは 60 秒で `canceled`(pump window の終端)。
+
+### ブランチ側で測れたもの
+
+| 項目 | 実測 |
+|---|---|
+| Node 登録 → 実 nodeipam による podCIDR 付与 | 20 秒以内(`10.42.0.0/24`) |
+| Node 登録 → Pod Running | 20 秒以内 |
+| 12 コントローラー + 実ノード 1 台での `exceeded memory` | tail 上は 0 件(ただしサンプリング中) |
+| 実 nodelifecycle の挙動 | 健全なノード(Lease は 10 秒毎に更新成功)が Ready=Unknown ↔ True を 2 回フラップ。Unknown 時の lastHeartbeatTime は初回 list 時点の値 = informer キャッシュが更新されていない。発見 2 と交絡しており単独評価は不可 |
+| 実 endpoint/endpointslice | 本番では未評価(発見 2) |
+
+### その他
+
+- k3s agent の remotedialer トンネル(`/v1-k3s/connect`)が 401 で 3 秒毎に
+  リトライし続ける(3 分で 65 リクエスト)。管理トークンでの join では期待
+  される挙動か未確認。
+- `Cannot perform I/O on behalf of a different request` が agent 由来リクエスト
+  で散発し、`apiserverFetch` のリトライで成功している。
+- 撤収: Deployment/RS(foreground 削除のファイナライザは GC が動かないため手で
+  除去)/Service/Node を削除、コンテナ・ボリューム・イメージ・作業ディレクトリを
+  ホストから削除。Containers アプリのインスタンスは終始 0。本番は 7/26 版
+  (d1474833)にロールバックした状態のまま。
