@@ -28,7 +28,7 @@ const APISERVER_PUMP_WINDOW_MS = 15000;
 //    the Cluster DO route) and the K3S_TOKEN var main.go reads.
 let manifestCache: WasmManifest | null = null;
 
-async function apiserverEntrypoint(env: Env): Promise<Fetcher> {
+async function apiserverEntrypoint(env: Env, idScope: string): Promise<Fetcher> {
   if (!manifestCache) {
     manifestCache = await fetchWasmManifest(env.ASSETS, "apiserver");
     if (!manifestCache) {
@@ -46,7 +46,7 @@ async function apiserverEntrypoint(env: Env): Promise<Fetcher> {
   // (docs/cost-model.md).
   const doName = env.CLUSTER_DO_NAME ?? "default";
   const worker = env.LOADER.get(
-    `${env.LOADER_ID_SALT ?? ""}apiserver:${doName}@${manifest.sha256}`,
+    `${env.LOADER_ID_SALT ?? ""}${idScope}apiserver:${doName}@${manifest.sha256}`,
     async () => {
       const wasm = await assembleWasm(env.ASSETS, manifest);
       const wasmExec = await fetchWasmAsset(env.ASSETS, "wasm_exec.js").then((r) => r.text());
@@ -91,12 +91,13 @@ export async function apiserverFetch(env: Env, req: Request): Promise<Response> 
   if (!stamped.headers.has(CLUSTER_HEADER)) {
     stamped.headers.set(CLUSTER_HEADER, env.CLUSTER_DO_NAME ?? "default");
   }
+  const idScope = new URL(req.url).hostname === "gateway.internal" ? "do/" : "";
   const attempts = req.method === "GET" || req.method === "HEAD" ? 3 : 1;
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
     if (i > 0) await new Promise((r) => setTimeout(r, 250 * 2 ** (i - 1)));
     try {
-      const ep = await apiserverEntrypoint(env);
+      const ep = await apiserverEntrypoint(env, idScope);
       const resp = await ep.fetch((i === attempts - 1 ? stamped : stamped.clone()) as Request);
       if (resp.status < 500 || i === attempts - 1) return resp;
     } catch (err) {
