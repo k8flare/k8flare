@@ -4692,3 +4692,34 @@ Pod がスケジュールされることを要求する。修正を revert す�
 - DefaultTolerationSeconds admission がこの apiserver に無いため、
   unreachable/not-ready の Pod が upstream の 300 秒猶予なしで即座に
   立ち退く(本番で実測)。**ギャップとして記録するのみ、今回は実装しない**。
+
+### S31 追記 2 (2026-09-09 15:19-15:44Z、本番): 「close 欠落」修正後も復帰は約 6 分かかる — 詰まりではなく遅延
+
+上の追記の修正(window の自前期限)込みでデプロイし(239fcd00、
+`LOADER_ID_SALT=s31c/`)、同じ手順を本番で繰り返した:
+
+| 段階 | 実測 |
+|---|---|
+| kcm ロードの 6.5 分後に Node 登録 | podCIDR / Pod Running ×2: 15 秒、EndpointSlice: 39 秒 |
+| `docker pause` | 61 秒で Ready=Unknown + unreachable ×2、Pod 立ち退き → 代替 Pod Pending(再現) |
+| 9.9 分後に `docker unpause` | Ready=True は即時。**unreachable taint は 255 秒経っても残る**が、**15:41〜15:43 の間(unpause から約 5〜6 分)に除去され、Pod は Running に戻った** |
+
+つまり前回(13:34Z)観測した「fresh load するまで回復しない」は、fresh load
+(13:40Z のデプロイ)が**同じ約 6 分の遅延の終端と重なっただけ**の可能性が
+高く、上の追記の「close 欠落で永久に詰まる」は本番の真因とは**確認できて
+いない**(ローカルでは close を意図的に落とすと再現する実在の穴なので修正
+自体は残す)。
+
+遅延中の tail(90 秒間): kcm は生きていて、Node の watch を張り直し
+(window 終端 32 秒で `canceled` → 再 watch)、`PATCH nodes/k8flare-verify-1`
+×2、`PUT deployments/s31-probe/status` **×24**(S26 の no-op 書き込みストーム
+と同型。要調査)、sched は Pod の binding を POST。例外は無し。したがって
+残るのは「復帰直後の nodelifecycle が taint を外すまでに数分かかる」理由の
+特定で、候補は (a) 各 window 終端で watch が切られ、reflector の再 watch と
+`monitorNodeHealth`(5 秒周期)のタイミングが噛み合わず観測が遅れる、
+(b) upstream nodelifecycle 自体の挙動(Unknown からの復帰後、`nodeHealthMap`
+の probe timestamp 更新を待つ)。実 KCM をホストで動かした場合の復帰時間との
+比較が次の一手。
+
+撤収後(15:45Z〜)は前回同様にパークを確認する。本番はこのブランチ
+(239fcd00)がデプロイされたまま。
