@@ -5143,3 +5143,21 @@ DW モードのほか `K8FLARE_IOCTX_MODE=host` で CI の host ジョブと同�
 - `bootstrapOnce` / `CAManager.Initialize` が I/O を跨いで保持している件
   (上記 1 の「残っている同型の穴」)。本番でしか出ない。
 - `/v1-k3s/connect` の 401(上記 3)。
+
+### S34 追記 (2026-09-09 20:58Z): CI と本番の確認結果
+
+- e2e-conformance run 34398403238(S34 修正込み、dbad2f9): **required の
+  `host` variant は baseline + GC 7 件すべて success**。1 つ前の run
+  34390383167(S33 ガードまで)でも host は success で、required は 2 回連続
+  green。`sched-dw` も 2 回連続 success。
+- `kcm-dw`(advisory)は GC の "should not delete dependents that have both
+  valid owner and owner that's waiting for dependents to be deleted" で失敗:
+  rc1 を Foreground 削除してから **90 秒間、rc1 が残ったまま 25 Pod に
+  deletionTimestamp が付かない**(`garbage_collector.go:795`)。host variant で
+  S33 が見た「RC が 1 秒で消える」とは逆向きで、gc DW が削除に**着手しない**
+  形。kcm DW と gc DW が同居する variant でのみ出ており、pump window
+  (60 秒)と reflector の再 watch の噛み合わせで gc の処理開始が 90 秒を
+  超えたと考えられる。未解決の advisory 項目として残す。
+- 本番(a203d30e、`LOADER_ID_SALT=s34a/`): Deployment を 1→3 にスケールして
+  40 秒以内に RS 3/3・Pod 3、`kubectl delete deploy` から約 100 秒で実 GC が
+  RS/Pod を全部回収。撤収後 20:06Z 以降 50 分間リクエスト 0 件(パーク)。
