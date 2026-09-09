@@ -239,10 +239,10 @@ Containers, zero new alarm polling beyond what already existed.
 
 | Feature                                                | Mechanism                                                                                                                  | Real upstream reuse                                                                                                                                                                             | Measured incremental gzip cost                                          |
 | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| Node PodCIDR allocation                                | Synchronous, apiserver's Node-create path (`pkg/apiserver/nodecidr.go`)                                                    | `k8s.io/kubernetes/pkg/controller/nodeipam/ipam/cidrset.CidrSet` (leaf package, no client-go)                                                                                                   | +11KB (isolated); +35KB (real feature, incl. CAS persistence glue)      |
-| Endpoints/EndpointSlice                                | Synchronous, on every Service/Pod write incl. the `/status` subresource (`pkg/apiserver/endpoints.go`)                     | `k8s.io/endpointslice/util` (`IsPodReady`/`ShouldSetHostname`, separate lightweight package); `labels.SelectorFromValidatedSet`; small hand-ported functions where the real ones are unexported | +34KB (isolated util import); +97KB (real feature)                      |
-| Node lifecycle (Lease staleness → Unknown+taint+evict) | Cluster DO's existing event-armed safety-net alarm pings a new internal apiserver route (`pkg/apiserver/nodelifecycle.go`) | Real grace-period defaults (`nodelifecycle/config/v1alpha1`), real taint ops (`pkg/util/taints`), real toleration matching (`corev1.Toleration.ToleratesTaint`)                                 | +53KB (full feature, incl. the two lightweight upstream packages above) |
-| **All three combined**                                 | —                                                                                                                          | —                                                                                                                                                                                               | **+150,104 bytes (146.6KB), 7,699,133 → 7,849,237 bytes gzip**          |
+| Node PodCIDR allocation _(superseded 2026-09-09, see the note below)_  | Synchronous, apiserver's Node-create path (`pkg/apiserver/nodecidr.go`)                                                    | `k8s.io/kubernetes/pkg/controller/nodeipam/ipam/cidrset.CidrSet` (leaf package, no client-go)                                                                                                   | +11KB (isolated); +35KB (real feature, incl. CAS persistence glue)      |
+| Endpoints/EndpointSlice _(superseded 2026-09-09, see the note below)_  | Synchronous, on every Service/Pod write incl. the `/status` subresource (`pkg/apiserver/endpoints.go`)                     | `k8s.io/endpointslice/util` (`IsPodReady`/`ShouldSetHostname`, separate lightweight package); `labels.SelectorFromValidatedSet`; small hand-ported functions where the real ones are unexported | +34KB (isolated util import); +97KB (real feature)                      |
+| Node lifecycle (Lease staleness → Unknown+taint+evict) _(superseded 2026-09-09, see the note below)_ | Cluster DO's existing event-armed safety-net alarm pings a new internal apiserver route (`pkg/apiserver/nodelifecycle.go`) | Real grace-period defaults (`nodelifecycle/config/v1alpha1`), real taint ops (`pkg/util/taints`), real toleration matching (`corev1.Toleration.ToleratesTaint`)                                 | +53KB (full feature, incl. the two lightweight upstream packages above) |
+| **All three combined** _(all superseded 2026-09-09; kept per rule 4, deleted from the code)_ | —                                                                                                                          | —                                                                                                                                                                                               | **+150,104 bytes (146.6KB), 7,699,133 → 7,849,237 bytes gzip**          |
 
 **What was _not_ reusable, and why (the negative-space finding this phase
 adds)**: `k8s.io/endpointslice`'s root package exports exactly the one
@@ -282,9 +282,22 @@ left it 21.8MiB under the Loader cap — the size argument that forced the
 synchronous apiserver-side versions no longer holds for kcm (it still
 holds for the apiserver chunk, which has 2.57MiB of headroom). Numbers,
 what was verified, and what was NOT (production 128MiB isolate memory) are
-in docs/platform-verification.md's S28. The alarm accounting above is
-unchanged: the same event-armed 60s safety-net tick now pokes the
-Controllers DO instead of the deleted apiserver route.
+in docs/platform-verification.md's S28.
+
+**Alarm accounting (corrected the same day)**: this note first claimed the
+accounting above was "unchanged". It is not, and the first attempt at it
+was a cost regression. What holds now: while at least one Node is live,
+each 60s safety-net tick costs one Cluster DO alarm plus **one kcm pump**
+— the tick sends the Controllers DO a dedicated alarm-origin poke
+(`/safety-net/node-lifecycle`) that only ensures and pumps the kcm
+component, with `armWarmup:false`. It deliberately does NOT reuse the
+write-path poke (`pingControllers`), which arms a 3-minute warmup window,
+resets the unconverged backoff, and re-arms the Controllers DO's own 60s
+alarm: doing that on every tick revives exactly the "an idle BYO node kept
+a pointless 60s chain alive" regression `controllers/index.ts`'s `alarm()`
+comment records (cost invariants #1/#3). So the steady state with Nodes is
+one alarm + one pump per minute and **no Controllers DO alarm chain**, and
+everything parks once the last Node is gone.
 
 ### Route B: Containers (demand-start/idle-stop) — superseded (kept for the record, user decision 2026-07-02)
 

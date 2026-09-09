@@ -4097,6 +4097,25 @@ EndpointSlice)が本番 128MiB isolate に対して純粋なオーバーヘッ�
 消したので冗長ではなくなった)。128MiB 側は本番デプロイ時に
 再確認が要る — 残課題として明記する。
 
+**未検証項目(残課題、2026-09-09 レビューで 2・3 を追加)**:
+
+1. 本番 128MiB isolate でのメモリ挙動(上記)。
+2. **`tainteviction` の `tolerationSeconds` タイマーは kcm isolate の
+   インメモリ状態である**(NoExecute テイントを見た時刻を起点に
+   `timedWorkerQueue` が遅延立ち退きを保持する。既定 300 秒)。削除した
+   `nodelifecycle.go` は永続化された Node condition のタイムスタンプから
+   立ち退き時刻を毎回計算し直していたので**再起動に強かった**。kcm の
+   isolate が 300 秒より短い間隔で退避・再ロードされると、到達不能 Node
+   上の Pod が**いつまでも立ち退かない**可能性がある。正しさに関わる
+   後退の候補だが**未計測** — isolate の退避は S27/S28 と同じ理由で
+   local では再現できず、本番か退避を強制できるハーネスが要る。
+3. **Pod が動き出すまでのレイテンシ。** `computeclass.go` は Pod 毎に
+   Node 名を先にピン留めする(`kubernetes.io/hostname` セレクタ)ため、
+   その Node の podCIDR 払い出しが apiserver の同期パスではなく kcm の
+   pump window 待ちになった。`pkg/agent/flannel.go` は podCIDR が空の間
+   ポーリングし続ける実装なので壊れはしないが、Node 登録から Pod が
+   起動するまでの時間は pump window の分だけ伸びる。未計測。
+
 **機能検証**(`make test-kcm` の `TestKCMDynamicWorkerControlPlane`、
 実 client-go で dynamic worker 越しに駆動):
 
@@ -4110,6 +4129,35 @@ EndpointSlice)が本番 128MiB isolate に対して純粋なオーバーヘッ�
   (reason `NodeStatusUnknown`)にし、MemoryPressure/DiskPressure/
   PIDPressure も Unknown にする。Lease が新鮮な Node は触らない
 
+**削除したユニットテストの移植内訳(訂正 2026-09-09)**: `kcmdw_test.go`
+のコメントは当初「削除したユニットテストがカバーしていたものを下に移植
+した」と書いていたが、これは広すぎた。実際に移植したのは次のもので:
+
+- `nodecidr_allocator_test.go`: clusterCIDR 内の別々の /24 を 2 Node へ
+- `endpoints_test.go`: selector + Ready Pod → Endpoints/EndpointSlice、
+  targetPort 名の解決、managed-by ラベル、targetRef
+- `endpoints_test.go`: selector 無しの Service には Endpoints を作らない
+  (レビュー指摘で 2026-09-09 に追加。ExternalName ケースは省略)
+- `nodelifecycle_test.go`: Lease 陳腐化 → Ready=Unknown + 3 条件 Unknown、
+  `node.kubernetes.io/unreachable` テイント付与(同上で追加)、
+  Lease が新鮮な Node は不変
+
+移植せずに落としたのは次の 4 つ:
+
+- `TestReconcileNodeLifecycle_EvictsPodsPastEvictionTimeout` — 立ち退きの
+  タイミングは upstream `tainteviction` の責務になった(上の未検証項目 2
+  はこの範囲の残リスク)
+- `TestReconcileNamespaceEndpoints_NotReadyPodGoesToNotReadyAddresses` —
+  Ready/NotReady の振り分けは upstream `endpoint` の判定そのもの
+- `TestDeleteServiceEndpoints` の冪等性 — Service 削除に伴う Endpoints の
+  始末が upstream reconciler + GC 経路に移った
+- `TestNodeCIDRAllocator` の release/reuse・既存 podCIDR の occupy —
+  upstream `cidrset.CidrSet` の内部挙動で、upstream 自身のユニットテストが
+  持っている
+
+いずれも「振る舞いの持ち主が upstream に移り、conformance でカバーされる」
+という理由であり、**required focus set は減らしていない**(不可侵ルール #1)。
+
 **node-lifecycle の poke 経路について(否定的な測定結果も記録)**:
 Lease の陳腐化は「書き込みの不在」で検出されるので poke を引っ掛ける
 write が無い。そこで Cluster DO の既存の安全網 alarm
@@ -4118,6 +4166,18 @@ write が無い。そこで Cluster DO の既存の安全網 alarm
 POST の代わりに **Controllers DO を poke** する形に変えた
 (`pingControllers` と同じ pending-ping 経路。固定間隔ポーリングの新設では
 なく、既存 tick の中身の差し替え)。
+
+**訂正 (2026-09-09、同日のレビュー指摘)**: 「`pingControllers` と同じ
+pending-ping 経路」を使ったのが誤りだった。その経路は**書き込み由来の
+poke** で、Controllers DO の `fetch()` はそれに対して (a) warmup 窓
+(3 分)を張り (b) `unconvergedTicks` をリセットし (c) 自分の 60 秒
+alarm を再武装する。live Node がある限り 60 秒毎にこれを行うと、
+`controllers/index.ts` の `alarm()` コメントが記録している
+「アイドルの BYO node が無意味な 60 秒チェーンを生かし続ける」回帰
+そのものになる(コスト不変条件 #1/#3 違反)。専用の alarm 由来パス
+`/safety-net/node-lifecycle` に変更し、kcm の `ensure(armWarmup:false)`
+と pump 1 回だけを行い、backoff にも Controllers DO の alarm にも
+触らないようにした。会計は docs/cost-model.md の該当節に記載。
 
 ただし **この poke が実際に効いていることを local で分離できなかった**:
 

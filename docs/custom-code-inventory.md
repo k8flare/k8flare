@@ -177,6 +177,21 @@ upstream プラグとの既知の差分 (未実装、必要になったら追加
   (10s) がどのみち走るため実害は小さいが、Lease 期限からの
   deadline-armed 化が正しい形 — 縮小候補として記録。
 
+### 追記 (2026-09-09): 既知の先行問題 — CONTROLLERS 未バインド時に alarm が止まらない
+
+[storage/index.ts](../packages/k8flare-worker/src/storage/index.ts) の
+`afterWrite` は `CONTROLLERS` バインディングの有無に関わらず
+`pendingPing:controllers` を立てるのに、`pingControllers` はバインドが無い
+ケース(`if (!controllers) return;`)でそのフラグを消さない。結果、
+CONTROLLERS を持たない構成では未配送フラグが残り続け、安全網 alarm が
+60 秒毎に再武装し続ける(コスト不変条件 #1/#3 に触れる)。同じ状況で
+`pingNodes` は `SCHEDULER` 未バインド時にフラグを削除しており、非対称。
+
+2026-09-09 の S28 レビューで指摘されたが、**このブランチで入ったもの
+ではなく先行して存在する**問題であり、実配置の `wrangler.jsonc` では
+常にバインドされているため観測された実害は無い。修正するなら
+`pingNodes` に合わせてフラグを削除する形が素直 — ここでは記録に留める。
+
 ## 6. ホストバイナリの退役方針 (2026-07-25 ユーザー決定)
 
 `cmd/scheduler` / `cmd/controller-manager` は WASM 版 (sched/kcm 動的ワーカー) を
