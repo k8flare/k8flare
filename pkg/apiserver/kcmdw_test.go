@@ -15,6 +15,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
@@ -57,6 +58,15 @@ func TestKCMDynamicWorkerControlPlane(t *testing.T) {
 		"--port", fmt.Sprintf("%d", port),
 		"--persist-to", t.TempDir(),
 		"--log-level", "error",
+		// Every third resident dispatch loses its pump-window close, the
+		// way production loses one whose IoContext is torn down before
+		// ctx.waitUntil's timer runs. `wrangler dev` never does that on
+		// its own (S31 E1), and one lost close used to wedge the whole
+		// resident instance until a fresh Loader id -- measured
+		// 2026-09-09 as "no podCIDR after 3 minutes" with this set and
+		// the window expiry backstop reverted (S31 addendum). So this
+		// whole lane doubles as that regression's gate.
+		"--var", "PUMP_WINDOW_DROP_CLOSE:3",
 	)
 	cmd.Dir = projectRoot
 	devNull, _ := os.Open(os.DevNull)
@@ -147,7 +157,10 @@ func TestKCMDynamicWorkerControlPlane(t *testing.T) {
 	const nodeA, nodeB = "kcmdw-node-a", "kcmdw-node-b"
 	for _, name := range []string{nodeA, nodeB} {
 		if _, err := client.CoreV1().Nodes().Create(ctx, &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{Name: name},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   name,
+				Labels: map[string]string{corev1.LabelHostname: name},
+			},
 		}, metav1.CreateOptions{}); err != nil {
 			t.Fatalf("create node %s: %v", name, err)
 		}
@@ -484,6 +497,57 @@ func TestKCMDynamicWorkerControlPlane(t *testing.T) {
 			t.Errorf("node with a fresh Lease was marked %s, want it left Ready=True", cond.Status)
 		}
 	}
+
+	// Coming BACK is its own assertion, and the one production actually
+	// failed: a node paused for 9.5 minutes went Ready=True the moment
+	// its kubelet resumed, yet the unreachable taints stayed on it and
+	// its replacement Pods stayed Pending for 5+ minutes, until a fresh
+	// Loader id (docs/platform-verification.md, S31 addendum). Marking a
+	// node unreachable exercises the informers up to the point of
+	// failure; only un-marking it proves they are still live afterwards.
+	//
+	// The Pod pinned to the recovered node makes the consequence visible
+	// rather than just the taint: while the NoSchedule taint is there it
+	// cannot be placed anywhere (nodeA is excluded by the selector), so
+	// its binding is exactly what the production report was missing.
+	const recoveryNS = "kcmdw-recovery"
+	if _, err := client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: recoveryNS},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create recovery namespace: %v", err)
+	}
+	if _, err := client.CoreV1().Pods(recoveryNS).Create(ctx, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pinned"},
+		Spec: corev1.PodSpec{
+			NodeSelector: map[string]string{corev1.LabelHostname: nodeB},
+			Containers:   []corev1.Container{{Name: "c", Image: "nginx:1.27"}},
+		},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create pinned pod: %v", err)
+	}
+
+	markNodeReady(t, ctx, client, nodeB)
+	stopLeaseB2 := keepNodeLeaseFresh(ctx, client, nodeB)
+	defer stopLeaseB2()
+
+	waitFor(t, 90*time.Second, "nodelifecycle un-tainted the recovered node", func() bool {
+		node, err := client.CoreV1().Nodes().Get(ctx, nodeB, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		ready := false
+		for _, cond := range node.Status.Conditions {
+			if cond.Type == corev1.NodeReady {
+				ready = cond.Status == corev1.ConditionTrue
+			}
+		}
+		return ready && !hasTaint(node, corev1.TaintNodeUnreachable) &&
+			!hasTaint(node, corev1.TaintNodeNotReady)
+	})
+	waitFor(t, 90*time.Second, "scheduler placed a Pod on the recovered node", func() bool {
+		pod, err := client.CoreV1().Pods(recoveryNS).Get(ctx, "pinned", metav1.GetOptions{})
+		return err == nil && pod.Spec.NodeName == nodeB
+	})
 }
 
 // hasTaint reports whether node carries a taint with this key, whatever
@@ -500,24 +564,40 @@ func hasTaint(node *corev1.Node, key string) bool {
 }
 
 // markNodeReady posts the Ready=True status a real kubelet posts at
-// registration. Without it the real nodelifecycle controller treats the
-// Node as one whose kubelet never reported and uses
-// nodeStartupGracePeriod instead of nodeMonitorGracePeriod.
+// registration -- and re-posts it when a recovered "kubelet" starts
+// heartbeating again. Without it the real nodelifecycle controller treats
+// the Node as one whose kubelet never reported and uses
+// nodeStartupGracePeriod instead of nodeMonitorGracePeriod. The capacity
+// is what a real kubelet reports too, and the scheduler needs it: with
+// allocatable.pods absent, NodeResourcesFit rejects every Pod for
+// exceeding an allowed pod count of zero.
+//
+// Get-modify-update: the live nodelifecycle controller writes this same
+// status, so a single-shot UpdateStatus can lose a resourceVersion race.
 func markNodeReady(t *testing.T, ctx context.Context, client kubernetes.Interface, name string) {
 	t.Helper()
-	node, err := client.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("get node %s: %v", name, err)
-	}
-	now := metav1.NewTime(time.Now())
-	node.Status.Conditions = []corev1.NodeCondition{{
-		Type:               corev1.NodeReady,
-		Status:             corev1.ConditionTrue,
-		Reason:             "KubeletReady",
-		LastHeartbeatTime:  now,
-		LastTransitionTime: now,
-	}}
-	if _, err := client.CoreV1().Nodes().UpdateStatus(ctx, node, metav1.UpdateOptions{}); err != nil {
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		node, err := client.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		now := metav1.NewTime(time.Now())
+		node.Status.Capacity = corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("4"),
+			corev1.ResourceMemory: resource.MustParse("8Gi"),
+			corev1.ResourcePods:   resource.MustParse("110"),
+		}
+		node.Status.Allocatable = node.Status.Capacity
+		node.Status.Conditions = []corev1.NodeCondition{{
+			Type:               corev1.NodeReady,
+			Status:             corev1.ConditionTrue,
+			Reason:             "KubeletReady",
+			LastHeartbeatTime:  now,
+			LastTransitionTime: now,
+		}}
+		_, err = client.CoreV1().Nodes().UpdateStatus(ctx, node, metav1.UpdateOptions{})
+		return err
+	}); err != nil {
 		t.Fatalf("mark node %s ready: %v", name, err)
 	}
 }
