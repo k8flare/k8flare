@@ -14,10 +14,12 @@ import (
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/retry"
 )
 
 // TestKCMDynamicWorkerControlPlane is the LOCAL stand-in for the parts of
@@ -121,9 +123,14 @@ func TestKCMDynamicWorkerControlPlane(t *testing.T) {
 
 	// The real KCM (deployment + replicaset controllers, loaded as a
 	// dynamic worker by this write's poke) must produce 2 Pods. First
-	// poke includes the in-workerd WASM compile, so the budget is
-	// generous; a green run typically finishes in well under a minute.
-	waitFor(t, 5*time.Minute, "KCM created 2 pods", func() bool {
+	// poke includes the in-workerd WASM compile, so this phase gets the
+	// largest budget of the test; a green run typically finishes in well
+	// under a minute. Every budget in this test is sized so that their
+	// SUM plus the fixed sleep below stays comfortably inside the
+	// harness `-timeout 15m` (Makefile's test-kcm, ci.yml): overrunning
+	// that is a `panic: test timed out` in which t.Cleanup never runs and
+	// the wrangler dev process group is leaked.
+	waitFor(t, 3*time.Minute, "KCM created 2 pods", func() bool {
 		pods, err := client.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
 		return err == nil && len(pods.Items) == 2
 	})
@@ -133,8 +140,9 @@ func TestKCMDynamicWorkerControlPlane(t *testing.T) {
 	// and nodelifecycle controllers work from. Both replaced
 	// pkg/apiserver's own AssignPodCIDR/ReconcileNodeLifecycle on
 	// 2026-09-09 (docs/platform-verification.md S28), so the assertions
-	// ported below are what those deleted unit tests used to cover, now
-	// driven through the real controllers.
+	// below port the load-bearing part of what those deleted unit tests
+	// covered, now driven through the real controllers. What was dropped
+	// rather than ported, and why, is listed in S28.
 	const nodeA, nodeB = "kcmdw-node-a", "kcmdw-node-b"
 	for _, name := range []string{nodeA, nodeB} {
 		if _, err := client.CoreV1().Nodes().Create(ctx, &corev1.Node{
@@ -164,7 +172,7 @@ func TestKCMDynamicWorkerControlPlane(t *testing.T) {
 	}
 	podCIDRs := map[string]string{}
 	for _, name := range []string{nodeA, nodeB} {
-		waitFor(t, 3*time.Minute, "nodeipam assigned "+name+" a podCIDR", func() bool {
+		waitFor(t, time.Minute, "nodeipam assigned "+name+" a podCIDR", func() bool {
 			node, err := client.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
 			if err != nil || node.Spec.PodCIDR == "" {
 				return false
@@ -216,7 +224,19 @@ func TestKCMDynamicWorkerControlPlane(t *testing.T) {
 	}, metav1.CreateOptions{}); err != nil {
 		t.Fatalf("create service: %v", err)
 	}
-	epPod, err := client.CoreV1().Pods(ns).Create(ctx, &corev1.Pod{
+	// A Service with no selector is the endpoint controller's explicit
+	// no-op case: those Endpoints belong to whoever manages them by hand,
+	// and the controller must never create or touch one. What the deleted
+	// endpoints_test.go's selector-less case covered.
+	if _, err := client.CoreV1().Services(ns).Create(ctx, &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "ep-noselector"},
+		Spec: corev1.ServiceSpec{
+			Ports: []corev1.ServicePort{{Name: "http", Port: 80, Protocol: corev1.ProtocolTCP}},
+		},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create selector-less service: %v", err)
+	}
+	if _, err := client.CoreV1().Pods(ns).Create(ctx, &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "ep-web-1", Labels: map[string]string{"app": "ep-web"}},
 		Spec: corev1.PodSpec{
 			NodeName: nodeA,
@@ -226,21 +246,29 @@ func TestKCMDynamicWorkerControlPlane(t *testing.T) {
 				Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: 8080, Protocol: corev1.ProtocolTCP}},
 			}},
 		},
-	}, metav1.CreateOptions{})
-	if err != nil {
+	}, metav1.CreateOptions{}); err != nil {
 		t.Fatalf("create endpoints pod: %v", err)
 	}
-	epPod.Status = corev1.PodStatus{
-		Phase:      corev1.PodRunning,
-		PodIP:      "10.42.0.5",
-		PodIPs:     []corev1.PodIP{{IP: "10.42.0.5"}},
-		Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
-	}
-	if _, err := client.CoreV1().Pods(ns).UpdateStatus(ctx, epPod, metav1.UpdateOptions{}); err != nil {
+	// Get-modify-update: the live controllers write to this Pod too, so a
+	// single-shot UpdateStatus can lose a resourceVersion race and 409.
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		epPod, err := client.CoreV1().Pods(ns).Get(ctx, "ep-web-1", metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		epPod.Status = corev1.PodStatus{
+			Phase:      corev1.PodRunning,
+			PodIP:      "10.42.0.5",
+			PodIPs:     []corev1.PodIP{{IP: "10.42.0.5"}},
+			Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
+		}
+		_, err = client.CoreV1().Pods(ns).UpdateStatus(ctx, epPod, metav1.UpdateOptions{})
+		return err
+	}); err != nil {
 		t.Fatalf("update endpoints pod status: %v", err)
 	}
 
-	waitFor(t, 3*time.Minute, "endpoint controller published the ready pod", func() bool {
+	waitFor(t, time.Minute, "endpoint controller published the ready pod", func() bool {
 		eps, err := client.CoreV1().Endpoints(ns).Get(ctx, "ep-web", metav1.GetOptions{})
 		if err != nil || len(eps.Subsets) != 1 {
 			return false
@@ -260,8 +288,14 @@ func TestKCMDynamicWorkerControlPlane(t *testing.T) {
 	if ref := eps.Subsets[0].Addresses[0].TargetRef; ref == nil || ref.Name != "ep-web-1" {
 		t.Errorf("Endpoints targetRef = %+v, want the ep-web-1 Pod", ref)
 	}
+	// The controller has demonstrably processed this namespace's Services
+	// by now, so the selector-less one still having no Endpoints is a
+	// real assertion rather than a race with a pending sync.
+	if _, err := client.CoreV1().Endpoints(ns).Get(ctx, "ep-noselector", metav1.GetOptions{}); !errors.IsNotFound(err) {
+		t.Errorf("endpoint controller created Endpoints for a selector-less Service (get err = %v)", err)
+	}
 
-	waitFor(t, 3*time.Minute, "endpointslice controller published the ready pod", func() bool {
+	waitFor(t, time.Minute, "endpointslice controller published the ready pod", func() bool {
 		slices, err := client.DiscoveryV1().EndpointSlices(ns).List(ctx, metav1.ListOptions{
 			LabelSelector: discoveryv1.LabelServiceName + "=ep-web",
 		})
@@ -298,7 +332,7 @@ func TestKCMDynamicWorkerControlPlane(t *testing.T) {
 	if err := client.CoreV1().Namespaces().Delete(ctx, ns, metav1.DeleteOptions{}); err != nil {
 		t.Fatalf("delete namespace: %v", err)
 	}
-	waitFor(t, 2*time.Minute, "namespace fully deleted", func() bool {
+	waitFor(t, time.Minute, "namespace fully deleted", func() bool {
 		_, err := client.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
 		return err != nil
 	})
@@ -312,7 +346,7 @@ func TestKCMDynamicWorkerControlPlane(t *testing.T) {
 	// that more likely: fewer writes mean fewer pokes, so the controllers
 	// get fewer pump windows and the backoff stretches sooner (the
 	// tradeoff recorded as S26b in docs/platform-verification.md).
-	waitFor(t, 2*time.Minute, "all pods gone cluster-wide", func() bool {
+	waitFor(t, 90*time.Second, "all pods gone cluster-wide", func() bool {
 		pods, err := client.CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
 		return err == nil && len(pods.Items) == 0
 	})
@@ -365,21 +399,25 @@ func TestKCMDynamicWorkerControlPlane(t *testing.T) {
 		t.Fatalf("backdate node lease: %v", err)
 	}
 
-	waitFor(t, 3*time.Minute, "nodelifecycle marked the stale node Ready=Unknown", func() bool {
+	waitFor(t, 2*time.Minute, "nodelifecycle marked the stale node Ready=Unknown and unreachable", func() bool {
 		node, err := client.CoreV1().Nodes().Get(ctx, nodeB, metav1.GetOptions{})
 		if err != nil {
 			return false
 		}
+		unknown := false
 		for _, cond := range node.Status.Conditions {
 			if cond.Type == corev1.NodeReady {
-				return cond.Status == corev1.ConditionUnknown && cond.Reason == "NodeStatusUnknown"
+				unknown = cond.Status == corev1.ConditionUnknown && cond.Reason == "NodeStatusUnknown"
 			}
 		}
-		return false
+		return unknown && hasTaint(node, corev1.TaintNodeUnreachable)
 	})
 	staleNode, err := client.CoreV1().Nodes().Get(ctx, nodeB, metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get stale node: %v", err)
+	}
+	if !hasTaint(staleNode, corev1.TaintNodeUnreachable) {
+		t.Errorf("stale node taints = %+v, want one keyed %s", staleNode.Spec.Taints, corev1.TaintNodeUnreachable)
 	}
 	// The other three conditions monitorNodeHealth transitions alongside
 	// Ready (NodeNetworkUnavailable is deliberately excluded upstream).
@@ -410,6 +448,19 @@ func TestKCMDynamicWorkerControlPlane(t *testing.T) {
 			t.Errorf("node with a fresh Lease was marked %s, want it left Ready=True", cond.Status)
 		}
 	}
+}
+
+// hasTaint reports whether node carries a taint with this key, whatever
+// its effect: nodelifecycle applies the unreachable taint as NoSchedule
+// and NoExecute in two separate passes, and this test only cares that
+// the Node was tainted at all.
+func hasTaint(node *corev1.Node, key string) bool {
+	for _, taint := range node.Spec.Taints {
+		if taint.Key == key {
+			return true
+		}
+	}
+	return false
 }
 
 // markNodeReady posts the Ready=True status a real kubelet posts at
