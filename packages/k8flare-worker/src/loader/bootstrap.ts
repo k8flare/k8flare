@@ -63,7 +63,19 @@ export default {
   async fetch(request, env, ctx) {
     if (!bindingPromise) bindingPromise = instantiate(env, ctx);
     const binding = await bindingPromise;
-    ctx.waitUntil(new Promise((resolve) => setTimeout(resolve, PUMP_WINDOW_MS)));
+    // Publish this request as an I/O anchor for the Go instance's
+    // background goroutines, and retire it when the window closes -- they
+    // outlive any single dispatch, but the platform only lets them perform
+    // I/O on behalf of a request that is still open (S31).
+    const pumpWindow = binding.openPumpWindow(env);
+    ctx.waitUntil(
+      new Promise((resolve) =>
+        setTimeout(() => {
+          binding.closePumpWindow(pumpWindow);
+          resolve();
+        }, PUMP_WINDOW_MS),
+      ),
+    );
     // Forward THIS request's env so a resident Go instance resolves
     // request-scoped bindings from the current request instead of the one
     // that first instantiated the isolate (handler_js.go dispatch). The

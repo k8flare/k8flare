@@ -68,6 +68,18 @@ func init() {
 		return js.Global().Get("Promise").New(executor)
 	})
 	binding.Set("handleRequest", handleRequestFn)
+
+	// The pump-window pair the resident bootstrap brackets every dispatch
+	// with. It is what lets background goroutines find a request whose
+	// IoContext is still open when they need to issue outbound I/O --
+	// see cloudflare.Window.
+	binding.Set("openPumpWindow", js.FuncOf(func(_ js.Value, args []js.Value) any {
+		return cloudflare.OpenPumpWindow(args[0])
+	}))
+	binding.Set("closePumpWindow", js.FuncOf(func(_ js.Value, args []js.Value) any {
+		cloudflare.ClosePumpWindow(args[0].Int())
+		return js.Undefined()
+	}))
 }
 
 // yieldToEventLoop blocks the calling goroutine until a fresh JS
