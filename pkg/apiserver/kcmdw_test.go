@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"syscall"
 	"testing"
 	"time"
@@ -435,6 +436,46 @@ func TestKCMDynamicWorkerControlPlane(t *testing.T) {
 	// window to the last heartbeat it OBSERVED, so the marking lands
 	// relative to the last renewal, not 50s after the backdated
 	// renewTime.
+	// A live workload pinned to the node that is about to go unreachable,
+	// so the taint-eviction/replicaset/scheduler triangle is actually
+	// exercised while it is down. Without a Pod on nodeB the write-rate
+	// bound further down would pass vacuously.
+	const recoveryNS = "kcmdw-recovery"
+	if _, err := client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: recoveryNS},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create recovery namespace: %v", err)
+	}
+	evictReplicas := int32(2)
+	if _, err := client.AppsV1().Deployments(recoveryNS).Create(ctx, &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "evictme"},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &evictReplicas,
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "evictme"}},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "evictme"}},
+				Spec: corev1.PodSpec{
+					NodeSelector: map[string]string{corev1.LabelHostname: nodeB},
+					Containers:   []corev1.Container{{Name: "c", Image: "nginx:1.27"}},
+				},
+			},
+		},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create eviction-bait deployment: %v", err)
+	}
+	waitFor(t, 2*time.Minute, "scheduler bound both eviction-bait pods to the node about to fail", func() bool {
+		pods, err := client.CoreV1().Pods(recoveryNS).List(ctx, metav1.ListOptions{})
+		if err != nil || len(pods.Items) != 2 {
+			return false
+		}
+		for i := range pods.Items {
+			if pods.Items[i].Spec.NodeName != nodeB {
+				return false
+			}
+		}
+		return true
+	})
+
 	stopLeaseB()
 	staleLease, err := client.CoordinationV1().Leases(corev1.NamespaceNodeLease).
 		Get(ctx, nodeB, metav1.GetOptions{})
@@ -461,6 +502,8 @@ func TestKCMDynamicWorkerControlPlane(t *testing.T) {
 		}
 		return unknown && hasTaint(node, corev1.TaintNodeUnreachable)
 	})
+	revisionAtOutage := namespaceRevision(t, ctx, client, recoveryNS)
+
 	staleNode, err := client.CoreV1().Nodes().Get(ctx, nodeB, metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get stale node: %v", err)
@@ -510,12 +553,6 @@ func TestKCMDynamicWorkerControlPlane(t *testing.T) {
 	// rather than just the taint: while the NoSchedule taint is there it
 	// cannot be placed anywhere (nodeA is excluded by the selector), so
 	// its binding is exactly what the production report was missing.
-	const recoveryNS = "kcmdw-recovery"
-	if _, err := client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: recoveryNS},
-	}, metav1.CreateOptions{}); err != nil {
-		t.Fatalf("create recovery namespace: %v", err)
-	}
 	if _, err := client.CoreV1().Pods(recoveryNS).Create(ctx, &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "pinned"},
 		Spec: corev1.PodSpec{
@@ -548,6 +585,48 @@ func TestKCMDynamicWorkerControlPlane(t *testing.T) {
 		pod, err := client.CoreV1().Pods(recoveryNS).Get(ctx, "pinned", metav1.GetOptions{})
 		return err == nil && pod.Spec.NodeName == nodeB
 	})
+
+	// Write-rate bound over the whole outage-and-recovery cycle. The
+	// counter is this namespace's facet revision, which advances once per
+	// accepted write to anything in it (Pods, ReplicaSets, the Deployment
+	// and its status, events) and not at all for a suppressed no-op, so
+	// it measures exactly the storm S26 and S31 addendum 2 describe.
+	//
+	// Before Pods carried the not-ready/unreachable NoExecute tolerations
+	// (pkg/apiserver/defaults.go), taint eviction deleted every Pod on the
+	// unreachable Node the instant it was tainted, the replicaset
+	// controller recreated them, the scheduler re-bound them to the same
+	// Node and eviction deleted them again: measured at 784 writes and 230
+	// deployment-status PUTs in the single minute the Node was down,
+	// against 27 writes and 2 PUTs for the same minute afterwards
+	// (docs/platform-verification.md S32). The bound is deliberately an
+	// order of magnitude above the healthy figure so it fails on the loop
+	// coming back rather than on normal convergence churn.
+	writes := namespaceRevision(t, ctx, client, recoveryNS) - revisionAtOutage
+	t.Logf("node outage/recovery cycle cost %d writes in namespace %s", writes, recoveryNS)
+	const maxOutageWrites = 400
+	if writes > maxOutageWrites {
+		t.Errorf("node outage/recovery cycle cost %d writes in namespace %s, want <= %d: a write storm is back",
+			writes, recoveryNS, maxOutageWrites)
+	}
+}
+
+// namespaceRevision reads the kine revision of a namespace's facet, which
+// every accepted write to an object in it advances (see
+// KineStorage.updateListRevision). A List is the only way to observe it
+// from a client: a single object's resourceVersion only moves when that
+// object itself is written.
+func namespaceRevision(t *testing.T, ctx context.Context, client kubernetes.Interface, ns string) int64 {
+	t.Helper()
+	list, err := client.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list pods in %s: %v", ns, err)
+	}
+	rev, err := strconv.ParseInt(list.ResourceVersion, 10, 64)
+	if err != nil {
+		t.Fatalf("parse list resourceVersion %q: %v", list.ResourceVersion, err)
+	}
+	return rev
 }
 
 // hasTaint reports whether node carries a taint with this key, whatever
