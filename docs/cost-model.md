@@ -297,7 +297,9 @@ alarm: doing that on every tick revives exactly the "an idle BYO node kept
 a pointless 60s chain alive" regression `controllers/index.ts`'s `alarm()`
 comment records (cost invariants #1/#3). So the steady state with Nodes is
 one alarm + one pump per minute and **no Controllers DO alarm chain**, and
-everything parks once the last Node is gone.
+everything parks once the last Node is gone. Measured against real
+`wrangler dev` rather than asserted (60.9s between consecutive pokes with
+one Node, zero pokes in the 150s after deleting it) — S28 has the numbers.
 
 ### Route B: Containers (demand-start/idle-stop) — superseded (kept for the record, user decision 2026-07-02)
 

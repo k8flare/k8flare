@@ -4179,6 +4179,17 @@ alarm を再武装する。live Node がある限り 60 秒毎にこれを行う
 と pump 1 回だけを行い、backoff にも Controllers DO の alarm にも
 触らないようにした。会計は docs/cost-model.md の該当節に記載。
 
+**新経路の実測 (2026-09-09)**: alarm 由来分岐に一時的な計装(到達したら
+ConfigMap を 1 個作る)を入れて `wrangler dev` で測った。Node を 1 個
+作ると `/safety-net/node-lifecycle` が **60.9 秒間隔でちょうど 1 回ずつ**
+到達し(タイムスタンプ 1788940060217 → 1788940121145、差 60,928ms)、
+その Node を削除すると **150 秒待って追加の到達はゼロ**(パーク)。
+「live Node がある間だけ 60 秒に 1 回 kcm を pump し、Node が消えたら
+止まる」という会計はこれで実測済み。ただし**この pump が無いと
+nodelifecycle が止まるのか**は相変わらず測れていない(上記 1〜3 の測定と
+同じ理由で local では isolate の退避を再現できない)。計装は
+コミットしていない。
+
 ただし **この poke が実際に効いていることを local で分離できなかった**:
 
 1. `make test-kcm` の (c) は poke をコメントアウトしても同じ 45 秒で
