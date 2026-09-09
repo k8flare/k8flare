@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall/js"
 
 	"github.com/k8flare/k8flare/pkg/cfruntime/cloudflare"
@@ -278,26 +279,20 @@ func headerToJS(header http.Header) js.Value {
 // Duplicated from pkg/cfruntime's own copy rather than shared through an
 // internal package -- see pkg/cfruntime/README.md for why.
 func awaitPromise(window *cloudflare.Window, promise js.Value) (js.Value, error) {
-	resultCh := make(chan js.Value, 1)
-	errCh := make(chan error, 1)
-	var then, catch js.Func
-	then = js.FuncOf(func(_ js.Value, args []js.Value) any {
-		defer then.Release()
-		resultCh <- args[0]
-		return js.Undefined()
-	})
-	catch = js.FuncOf(func(_ js.Value, args []js.Value) any {
-		defer catch.Release()
-		errCh <- fmt.Errorf("js promise rejected: %s", args[0].Call("toString").String())
-		return js.Undefined()
-	})
-	settled, err := jsCall(promise, "then", then)
+	w := &promiseWaiter{result: make(chan js.Value, 1), failure: make(chan error, 1)}
+	waitersMu.Lock()
+	waiterSeq++
+	id := waiterSeq
+	waiters[id] = w
+	waitersMu.Unlock()
+
+	settled, err := jsCall(promise, "then", onSettled.Call("bind", js.Null(), id, false))
 	if err != nil {
-		then.Release()
-		catch.Release()
+		dropWaiter(id)
 		return js.Value{}, err
 	}
-	if _, err := jsCall(settled, "catch", catch); err != nil {
+	if _, err := jsCall(settled, "catch", onSettled.Call("bind", js.Null(), id, true)); err != nil {
+		dropWaiter(id)
 		return js.Value{}, err
 	}
 	var closed <-chan struct{}
@@ -305,12 +300,46 @@ func awaitPromise(window *cloudflare.Window, promise js.Value) (js.Value, error)
 		closed = window.Done()
 	}
 	select {
-	case v := <-resultCh:
+	case v := <-w.result:
 		return v, nil
-	case err := <-errCh:
+	case err := <-w.failure:
 		return js.Value{}, err
 	case <-closed:
-		cloudflare.AbandonFunc(then, catch)
+		dropWaiter(id)
 		return js.Value{}, cloudflare.ErrPumpWindowClosed
 	}
+}
+
+type promiseWaiter struct {
+	result  chan js.Value
+	failure chan error
+}
+
+var (
+	waitersMu sync.Mutex
+	waiterSeq int
+	waiters   = map[int]*promiseWaiter{}
+
+	onSettled = js.FuncOf(func(_ js.Value, args []js.Value) any {
+		id, rejected, value := args[0].Int(), args[1].Bool(), args[2]
+		waitersMu.Lock()
+		w := waiters[id]
+		delete(waiters, id)
+		waitersMu.Unlock()
+		if w == nil {
+			return js.Undefined()
+		}
+		if rejected {
+			w.failure <- fmt.Errorf("js promise rejected: %s", value.Call("toString").String())
+		} else {
+			w.result <- value
+		}
+		return js.Undefined()
+	})
+)
+
+func dropWaiter(id int) {
+	waitersMu.Lock()
+	delete(waiters, id)
+	waitersMu.Unlock()
 }

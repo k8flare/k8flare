@@ -66,10 +66,6 @@ var (
 	windowID int
 	byID     = map[int]*Window{}
 	openedCh = make(chan struct{})
-
-	abandonMu sync.Mutex
-	abandoned []js.Func
-	reapable  []js.Func
 )
 
 // expiryGrace keeps the Go-side expiry a clear backstop rather than a
@@ -101,35 +97,11 @@ func OpenPumpWindow(env js.Value, lifetimeMs int) int {
 	return id
 }
 
-// AbandonFunc hands over callbacks whose promise can no longer settle
-// because the window it was issued under closed. They are released one
-// window-close later rather than immediately: a promise the runtime has
-// not yet abandoned could still deliver into a callback between this
-// window's close and its IoContext actually going away, and invoking a
-// released js.Func is a hard JS error.
-func AbandonFunc(fns ...js.Func) {
-	abandonMu.Lock()
-	defer abandonMu.Unlock()
-	abandoned = append(abandoned, fns...)
-}
-
-func reapAbandoned() {
-	abandonMu.Lock()
-	stale := reapable
-	reapable = abandoned
-	abandoned = nil
-	abandonMu.Unlock()
-	for _, fn := range stale {
-		fn.Release()
-	}
-}
-
 // ClosePumpWindow retires the window: it stops being the anchor for new
 // calls before anything is woken, so a goroutine released by it waits for
 // the next window instead of issuing I/O into a dying IoContext.
 func ClosePumpWindow(id int) {
 	closeWindow(id)
-	reapAbandoned()
 }
 
 // closeWindow is the one place a window is retired, shared by the JS
