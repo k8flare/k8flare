@@ -103,18 +103,25 @@ func TestForegroundFinalizeWaitsForBlockingDependents(t *testing.T) {
 		t.Fatalf("rc must outlive its dependents, but the refused clear removed it: %v", err)
 	}
 
-	for _, name := range podNames {
+	for i, name := range podNames {
 		if err := client.CoreV1().Pods(ns).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
 			t.Fatalf("delete dependent %s: %v", name, err)
 		}
-	}
-
-	// Same clear, now that nothing blocks: it must complete the deletion.
-	if err := clearFinalizers(ctx, client, ns, rc.Name); err != nil {
-		t.Fatalf("clearing foregroundDeletion with no dependents left: %v", err)
-	}
-	if _, err := client.CoreV1().ReplicationControllers(ns).Get(ctx, rc.Name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
-		t.Errorf("rc after the last dependent went away = %v, want NotFound", err)
+		last := i == len(podNames)-1
+		_, err := client.CoreV1().ReplicationControllers(ns).Get(ctx, rc.Name, metav1.GetOptions{})
+		// Deleting the LAST blocking dependent must complete the owner's
+		// deletion right there, with no further write from anyone. There
+		// is no garbage collector in this lane, so nothing else could do
+		// it -- and in the kcm lane the GC's own retry of the finalizer
+		// patch is rate-limited far past the upstream conformance test's
+		// budget once this guard has refused it a few times
+		// (docs/platform-verification.md S36).
+		if last && !apierrors.IsNotFound(err) {
+			t.Errorf("rc after its last blocking dependent went away = %v, want NotFound", err)
+		}
+		if !last && err != nil {
+			t.Errorf("rc with a blocking dependent still alive = %v, want it kept", err)
+		}
 	}
 }
 

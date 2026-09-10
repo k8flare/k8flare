@@ -90,6 +90,7 @@ wasm-selector: $(ASSETS)/selector.wasm
 $(ASSETS)/apiserver.manifest.json: $(APISERVER_SRC) $(ASSETS)/wasm_exec.js | gen-mirrors
 	@command -v wasm-opt >/dev/null 2>&1 || { echo "wasm-opt not found -- install binaryen (mise: aqua:web-assembly/binaryen, apt/brew: binaryen)" >&2; exit 1; }
 	@mkdir -p $(ASSETS) $(BUILD)
+	set -e; \
 	echo "== apiserver (./pkg/apiserver/cmd/apiserver-wasm)"; \
 	GOFLAGS=-modfile=go.wasm.mod GOOS=js GOARCH=wasm go build -tags leanwidth -ldflags="-s -w" -trimpath -o $(BUILD)/apiserver.wasm ./pkg/apiserver/cmd/apiserver-wasm; \
 	wasm-opt -Oz \
@@ -118,6 +119,7 @@ $(ASSETS)/apiserver.manifest.json: $(APISERVER_SRC) $(ASSETS)/wasm_exec.js | gen
 $(ASSETS)/kcm.manifest.json: $(KCM_SRC) $(ASSETS)/wasm_exec.js | gen-mirrors
 	@command -v wasm-opt >/dev/null 2>&1 || { echo "wasm-opt not found -- install binaryen (mise: aqua:web-assembly/binaryen, apt/brew: binaryen)" >&2; exit 1; }
 	@mkdir -p $(ASSETS) $(BUILD)
+	set -e; \
 	echo "== kcm (./pkg/controllers/cmd/kcm-wasm)"; \
 	GOFLAGS=-modfile=go.wasm.mod GOOS=js GOARCH=wasm go build -tags leanwidth -ldflags="-s -w" -trimpath -o $(BUILD)/kcm.wasm ./pkg/controllers/cmd/kcm-wasm; \
 	wasm-opt -Oz \
@@ -148,6 +150,7 @@ $(ASSETS)/kcm.manifest.json: $(KCM_SRC) $(ASSETS)/wasm_exec.js | gen-mirrors
 $(ASSETS)/gc.manifest.json: $(GC_SRC) $(ASSETS)/wasm_exec.js | gen-mirrors
 	@command -v wasm-opt >/dev/null 2>&1 || { echo "wasm-opt not found -- install binaryen (mise: aqua:web-assembly/binaryen, apt/brew: binaryen)" >&2; exit 1; }
 	@mkdir -p $(ASSETS) $(BUILD)
+	set -e; \
 	echo "== gc (./pkg/controllers/cmd/gc-wasm)"; \
 	GOFLAGS=-modfile=go.wasm.mod GOOS=js GOARCH=wasm go build -tags leanwidth -ldflags="-s -w" -trimpath -o $(BUILD)/gc.wasm ./pkg/controllers/cmd/gc-wasm; \
 	wasm-opt -Oz \
@@ -177,6 +180,7 @@ $(ASSETS)/gc.manifest.json: $(GC_SRC) $(ASSETS)/wasm_exec.js | gen-mirrors
 $(ASSETS)/sched.manifest.json: $(SCHED_SRC) $(ASSETS)/wasm_exec.js | gen-mirrors
 	@command -v wasm-opt >/dev/null 2>&1 || { echo "wasm-opt not found -- install binaryen (mise: aqua:web-assembly/binaryen, apt/brew: binaryen)" >&2; exit 1; }
 	@mkdir -p $(ASSETS) $(BUILD)
+	set -e; \
 	echo "== sched (./pkg/controllers/cmd/kcm-wasm/scheduler)"; \
 	GOFLAGS=-modfile=go.wasm.mod GOOS=js GOARCH=wasm go build -tags schedwidth -ldflags="-s -w" -trimpath -o $(BUILD)/sched.wasm ./pkg/controllers/cmd/kcm-wasm/scheduler; \
 	wasm-opt -Oz \
@@ -202,6 +206,7 @@ $(ASSETS)/sched.manifest.json: $(SCHED_SRC) $(ASSETS)/wasm_exec.js | gen-mirrors
 $(ASSETS)/clusterop.manifest.json: $(CLUSTEROP_SRC) $(ASSETS)/wasm_exec.js | gen-mirrors
 	@command -v wasm-opt >/dev/null 2>&1 || { echo "wasm-opt not found -- install binaryen (mise: aqua:web-assembly/binaryen, apt/brew: binaryen)" >&2; exit 1; }
 	@mkdir -p $(ASSETS) $(BUILD)
+	set -e; \
 	echo "== clusterop (./pkg/controllers/cmd/clusterop-wasm)"; \
 	GOFLAGS=-modfile=go.wasm.mod GOOS=js GOARCH=wasm go build -tags leanwidth -ldflags="-s -w" -trimpath -o $(BUILD)/clusterop.wasm ./pkg/controllers/cmd/clusterop-wasm; \
 	wasm-opt -Oz \

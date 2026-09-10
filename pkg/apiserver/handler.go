@@ -496,6 +496,9 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			}
 		}
 		settleDeletedObject(ctx, store.storage, obj)
+		if store.namespaced {
+			FinishUnblockedForegroundOwners(ctx, namespacedStores, store, namespace, obj)
+		}
 		writeRuntimeObject(w, http.StatusOK, obj)
 
 	case http.MethodPatch:
@@ -599,6 +602,9 @@ func finalizeDelete(ctx context.Context, store *ResourceStore, namespacedStores 
 		return nil, err
 	}
 	settleDeletedObject(ctx, store.storage, obj)
+	if store.namespaced {
+		FinishUnblockedForegroundOwners(ctx, namespacedStores, store, namespace, obj)
+	}
 	return obj, nil
 }
 

@@ -5377,3 +5377,267 @@ flaky**(不可侵ルール 5 の対象)。症状は 2 種類に分かれる:
    着手するまでの遅延が pump window と reflector の張り直しに律速されている
    疑いが濃い。本番で `kubectl delete --cascade=foreground` が数分待たされうる
    ことを意味するので、advisory とはいえ製品側の欠陥として追う。
+
+---
+
+## S36: dw variant の GC foreground 削除が 90 秒に間に合わない件 — 真因は「実 GC の per-item バックオフに、失敗でないものを失敗として渡していた」 (2026-09-10、ローカル実測)
+
+S35 追記 2 が flaky として残した 2 症状のうち、**「foreground 削除が 90 秒に
+間に合わない」を再現・計測し、原因を特定して直した**。対象は upstream の
+
+```
+[sig-api-machinery] Garbage collector should not delete dependents that have both
+valid owner and owner that's waiting for dependents to be deleted [Serial] [Conformance]
+```
+
+で、`failed to delete rc simpletest-rc-to-be-deleted, err: context deadline exceeded`
+(`garbage_collector.go:795`)。発生: run 34390383167 / 34398403238 (kcm-dw)、
+34445918793 (sched-dw)。run 34440157442 は 3 variant 緑。
+
+### まず CI ログを読んで、当初の仮説を否定した
+
+指示された第一仮説は「gc DW がポークを貰えず着手できていない」だった。**これは
+CI では成り立たない**。run 34445918793 の sched-dw の `wrangler.log` を落として
+数えたところ:
+
+- DELETE 後の 90 秒間に kubelet の `PUT .../leases/e2e-runner-...` が **9 件**。
+  Lease は `CONTROLLER_RELEVANT_PREFIXES` に入っているので、gc は約 10 秒毎に
+  window を貰えている。ポーク欠乏ではない。
+- そして e2e 本体のログは「GC は仕事をしていた」と言っている:
+  55 → 31 → 27 → **25 で停止**。最後に残った 25 Pod の ObjectMeta は
+  `OwnerReferences:[simpletest-rc-to-stay]` のみ・`DeletionTimestamp:<nil>` で、
+  **カスケードは正しく完了している**。落ちたのは「rc1 自身が消えない」1 点だけ。
+
+つまり症状は「着手しない」ではなく **「カスケードは終わったのに owner の
+foregroundDeletion finalizer が外れない」**。
+
+なお `wrangler dev --log-level info` は**内部リクエスト(service binding 経由の
+DW のトラフィック)を一切ログしない**(当該ログの `watch=true` 件数は 0)。
+gc の挙動は wrangler.log からは見えないので、ここから先はローカル再現に移った。
+
+### ローカル再現(`pkg/apiserver/gcmultiowner_test.go`、skip ゲート)
+
+upstream テストと同形のプローブを書いた: RC1(N replicas)+ RC2(0 replicas)
+→ 半数の Pod に RC2 の ownerRef を strategic-merge patch で追加 → RC1 を
+`propagationPolicy=Foreground` + UID precondition で削除 → (a) 依存に
+deletionTimestamp が付くまで (b) RC1 が消えるまで を計測。variant は
+`K8FLARE_GCMO_VARIANT=kcm-dw|sched-dw|host` で CI と同じ分割を張る。
+
+**素の設定では再現しない。** 最初の測定(kcm-dw、25 replicas、ハートビートする
+ノード 1 台、warmup 240 秒、5 runs)は `rcGone` が 32.8s / 4.4s / 4.4s / 4.4s /
+4.4s で全緑。**再現に必要だった追加要素は 2 つ**:
+
+1. **replicas を CI の実値(55)にする。** `estimateMaximumPods(10,100)` は
+   allocatable pods 110 のノード 1 台で 55 を返す(残る半数 27 が、CI ログの
+   「25 pods remaining」とも一致する)。
+2. **依存 Pod を Terminating のまま滞留させる。** CI には実 kubelet が居るので
+   GC が DELETE した Pod は grace period のあいだ deletionTimestamp 付きで
+   生き残り、その間 **owner をブロックし続ける**。ノードの無い dev では GC の
+   DELETE で即座に消えるので、この「GC のグラフとストレージが食い違う窓」が
+   一度も開かない。Pod テンプレートに finalizer を仕込み、20 秒後に外す
+   ゴルーチン(`releasePodsAfterGrace`)で kubelet の grace を代役させた。
+
+この 2 つを入れると再現する(kcm-dw、55 replicas、grace 20 秒、warmup 200 秒):
+
+| run | 最初の依存削除 | rc1 消滅 |
+|---|---|---|
+| 0 | 51.5s | 83.2s |
+| 1 | 2.6s | **90 秒で消えず** |
+| 2 | 2.6s | **90 秒で消えず** |
+
+(3 runs の別実行では 0 / 1 / 2 が 51.2s→84.8s、8.7s→未消滅、8.9s→未消滅)
+
+### 真因: 実 garbagecollector の per-item 指数バックオフ
+
+gc DW を `-v=2`(一時ビルド)+ `wasm_exec.js` の `console.log`→`console.error`
+差し替えで覗くと、決定的なログが出た。run 0 の「remove DeleteDependents
+finalizer for item」の発火時刻:
+
+```
+11:28:38.438  38.869  39.313  39.748  40.217  40.703  41.300  42.065  43.121  44.826  47.827
+11:30:01.292   ← 12 回目。11 回目から 73 秒後
+```
+
+間隔が 0.43 → 0.44 → 0.43 → 0.47 → 0.49 → 0.60 → 0.77 → 1.06 → 1.71 → 3.0 →
+**73** と倍々になっている。実 GC の workqueue は
+`workqueue.DefaultTypedControllerRateLimiter`(= `ItemExponentialFailureRateLimiter`
+**5ms 起点・1000 秒上限** + トークンバケット)で、`attemptToDeleteWorker` が
+エラーを返すと `AddRateLimited` する。**11 回続けて失敗すると次の試行が 70 秒超
+先に飛ぶ** ——これが 90 秒予算を食い破っている当のものだった。
+
+そのバックオフに、こちらは**「失敗ではないもの」を 2 種類渡していた**:
+
+**(A) S33 のガードが返す Conflict。** `refuseForegroundFinalize`
+(`pkg/apiserver/gracefuldelete.go`)は、GC のグラフがストレージより先に進んで
+いるとき finalizer クリアを Conflict で拒否する。これ自体は正しい(S33 の
+「rc が依存より先に消える」を止めているのはこれ)。しかし GC 側では
+`removeFinalizer` の `retry.RetryOnConflict`(4 ステップ・約 1.5 秒)を使い切った
+あとの**item エラー**になり、上のバックオフを 1 段進める。カスケード中は必ず
+ブロッカーが居るので、これが連続する。
+
+**(B) pump window が閉じて放棄された outbound 呼び出し。** `ErrPumpWindowClosed`
+は API の失敗ではなく「借りていたリクエスト文脈をプラットフォームが引き上げた」
+だけで、次のポークで即座にやり直せる。にもかかわらず client-go にはただの
+エラーとして上がり、同じバックオフを進める。実測(FETCHTRACE を一時的に仕込んだ
+ビルド、3 runs で ok 1085 / fail 17):
+
+```
+FETCHTRACE start win=167 remaining=26.99s GET /api/v1/pods                     (ほか 11 本)
+FETCHTRACE fail  win=167 after=24.993s    GET /api/v1/pods: cloudflare: pump window closed
+```
+
+**1 つの window に載った 12 本の informer 再 list が、全部 25 秒(= window 寿命
+まるごと)待たされてから放棄されている。** 同型の失敗が GC の live read でも
+起きており、同じ Pod の GET が 3 回連続で 21〜24 秒待って放棄され、その Pod は
+テストの 90 秒のあいだ deletionTimestamp を貰えなかった(= CI の「25 pods has
+nil DeletionTimestamp」と同じ形)。
+
+**この 25 秒がどこから来ているか**(切り分け結果):
+
+- **window が死産(stillborn)なのではない。** `closeWindow` に発生源ログを入れて
+  数えたところ **495/495 が JS 由来**で、期限切れフォールバックは 1 件も無い。
+  ポークの `ctx.waitUntil` は正常に発火している。
+- **リクエストはシェルに届いていて、返ってこない。** シェルの公開 fetch と
+  `loader/apiserver.ts` の DW ディスパッチの両方に in/out ログを入れて突き合わ
+  せると、同じ `PATCH /api/v1/namespaces/.../pods/<name>` が **dispatch 3 回 /
+  return 1 回**(GET も 3/2)。他のリクエストは同時刻に 1〜380ms で捌けている。
+  つまり **apiserver DW が特定のリクエストにだけ永久に応答しない**。
+- **apiserver の per-request 経路には放棄の受け皿が無かった。**
+  `pkg/apiserver/cmd/apiserver-wasm` は `WithBinding(BindingFromContext(...))` を
+  使うので `awaitPromise` の window が nil で、**`Done()` の腕が存在しない**。
+  放棄された promise は reject されない(S31 E2)ので、その goroutine は
+  **isolate の寿命が尽きるまで**ブロックし、リクエストは永久に返らない。
+  S31 が resident 経路について直した欠陥が、per-request 経路に残っていた。
+
+**なぜ host variant だけ安定して緑なのか**も、これで説明が付く: host は gc DW
+1 本だけで、kcm/sched が同じ workerd と同じ apiserver を叩かない。バックオフを
+進める失敗の発生率がそのまま低い。「常駐 DW の本数と相関する」という当初の観測は
+正しく、ただし相関の中身はポークの回数ではなく**失敗の回数**だった。
+
+### 修正(すべてプラットフォームのグルー側。upstream の garbagecollector は無改変)
+
+1. **`pkg/cfruntime/cloudflare/fetch/fetch.go`: 放棄は失敗ではないので、次の
+   生きた window でやり直す。** `ErrPumpWindowClosed` で終わった呼び出しを
+   最大 2 回まで再発行する(`windowHandoffAttempts`)。ボディは 1 回だけ読んで
+   保持し、再送可能な verb(GET/HEAD/PUT/PATCH/DELETE)に限る —— 放棄された
+   呼び出しがサーバーに届いたかは分からず、`generateName` 付きの POST を
+   再送すると 2 個目のオブジェクトを作ってしまうため。待ちはチャンネル受信
+   だけでタイマーもポーリングも無い(コスト不変条件 #2/#3)。
+2. **同ファイル: 応答ヘッダの待ちに 10 秒の上限(`responseHeaderDeadline`)。**
+   放棄された promise は reject されないので、上限が無い限り window が閉じるまで
+   (per-request 経路では永久に)待つ。**ボディ読み取りには適用しない** ——
+   watch はヘッダは即返り、そのあと window の寿命ぶん開いているのが設計どおり。
+   期限切れは `ErrPumpWindowClosed` をラップして返すので、上の handoff 再送が
+   そのまま効く。これで最悪の停止が 25〜50 秒から約 20 秒になり、per-request
+   経路の「永久に返らない」が消える。
+3. **`pkg/apiserver/gracefuldelete.go`: 最後のブロッカーが消えた瞬間に
+   apiserver 側で foreground 削除を完了させる**(`FinishUnblockedForegroundOwners`、
+   `handler.go` の DELETE 完了時と `finalizeDelete` から呼ぶ)。GC の再試行を
+   一切待たないので、(A) のバックオフが結果に効かなくなる。`blockingDependent`
+   には「まず消えたオブジェクト自身のストアを見る」引数を足した(カスケードの
+   依存は普通同じ種類なので、「まだブロックされている」という普通の答えが
+   1 回の list で返る)。
+4. **ポーク/アラーム方針の穴を 2 つ塞いだ**(下記)。
+
+### 併せて見つかった、独立に再現するポーク方針の欠陥
+
+- **`/registry/replicationcontrollers/` が `CONTROLLER_RELEVANT_PREFIXES` に
+  無かった。** 実 replicationcontroller コントローラーは kcm DW の 12 本のうちの
+  1 つなのに、RC の作成も foreground 削除のスタンプも**ポークを 1 回も出さない**。
+  ノードのハートビートのような他の書き込みが無いクラスタでは、RC を作っても
+  Pod が作られない(S27 で記録された「ノードなし Deployment」と同型)。
+  CI では kubelet の Lease が代わりにポークしていたので露出していなかった。
+- **`hasUnconvergedWork()` が「進行中の削除」を仕事として認識しない。**
+  foreground 削除中の owner は spec と status が食い違わないので、
+  Deployment/ReplicaSet/Job の spec-status 差分では見えない。したがってアイドル
+  クラスタでは**カスケードの途中でアラームがパークする**。Go 側に
+  `GET /internal/pending-deletions`(`CountPendingGracefulDeletions` —
+  deletionTimestamp + orphan/foregroundDeletion finalizer を持つ namespaced
+  オブジェクトの数)を足し、Controllers DO の park 判定に流した。あわせて
+  `/api/v1/replicationcontrollers` を spec-status 差分のリストに追加した。
+  event-armed のまま: 削除が終われば 0 に戻ってパークする。
+
+### 修正後の実測(同一条件: kcm-dw、55 replicas、grace 20 秒、warmup 200 秒)
+
+| run | 最初の依存削除 | rc1 消滅 |
+|---|---|---|
+| 0 | 29.5s | 63.3s |
+| 1 | 2.6s | 38.0s |
+| 2 | 10.9s | 52.0s |
+| 3 | 3.2s | 52.5s |
+| 4 | 0.8s | **90 秒で消えず** |
+
+修正前 5/5 相当で 3 本が予算超過だったのに対し **1 本**。別の単発実行では
+35.6s → 68.7s で緑。**残る 1 本は消えていない**(下記「未検証・未解決」)。
+なお **このプローブ条件は CI より厳しい**(CI のカスケードは約 15 秒で終わって
+いるのに対し、ここでは Pod ごとに 20 秒の人工 grace が乗り、ポークも 5 秒毎の
+偽 kubelet だけ)。
+
+### 回帰テスト
+
+- **kcm レーン**(`pkg/apiserver/kcmdw_test.go`): upstream テストと同じ owner
+  形状(RC 12 replicas + 残る RC、半数を二重所有、Pod に grace finalizer)で
+  foreground 削除し、**upstream と同じ 90 秒**でカスケード完了・残存 Pod 数・
+  残存 Pod の ownerRef が 1 本だけ・deletionTimestamp が無いことを要求する。
+  レーンの実時間は 335.69s(修正前は約 275〜330s)、`-timeout 15m` の内側。
+- **apiserver レーン**(`pkg/apiserver/foregroundguard_test.go`): S33 の
+  ガードのテストの末尾を差し替えた。**最後のブロッカーを消したら、誰の書き込みも
+  無しに owner が消えていること**を要求する。このレーンには GC が居ない
+  (`KCM_DISABLED`)ので、これは修正 3 の決定的なゲートになる。
+  修正 3 を外したビルドで実測:
+  `rc after its last blocking dependent went away = <nil>, want NotFound` で落ちる。
+  修正を戻すと PASS。
+
+### 副産物: `make wasm` がビルド失敗を隠していた(修正済み)
+
+`Makefile` の各 wasm レシピは `go build ...; wasm-opt ...; ...` と **`;` で
+連結**していたため、`go build` が失敗しても wasm-opt が**古い `.wasm`** を
+最適化してチャンクを更新し、レシピ全体が成功扱いになる。本作業中に実際に
+踏んだ(`fetch.go` の `time` import 漏れでビルドが落ちていたのに
+`make wasm` は「apiserver: 64464402 bytes」と成功を報告し、新しいコードが
+1 つも載っていないバイナリでテストしていた)。5 つのレシピの先頭に
+`set -e; \` を足して修正した。
+
+### 併走課題(S35 追記 2 の症状 1)の切り分け結果 — こちらは別物
+
+kcm-dw run 34445918793 の `connection reset by peer` + workerd の
+`kj/async-io-unix.c++:186: disconnected: ::write(...): Broken pipe` を
+同じログで突き合わせた:
+
+- **`Uncaught Error: Network connection lost.` 102 件は原因ではない。** 全件が
+  wrangler.log の 65〜1254 行目に収まっていて、Broken pipe は **1423 行目**。
+  時間的に先に終わっている。`/v1-k3s/connect` の 401 との近接相関も無い
+  (102 件中 101 件は前後 11 行以内に `connect` が無い)。S34 の結論
+  「途中で消えた watch クライアント 1 本につき 1 件のノイズ」と矛盾しない
+  (ローカルの本作業のプローブでは、外部 watch クライアントを張らないので
+  1157 件の watch 放棄に対して **NCL は 0 件**だった)。
+- **Broken pipe の直前は明確な過負荷**: `POST .../binding 201 (8487ms)` が
+  9 連、`DELETE .../replicationcontrollers/simpletest.rc` が **503 (10525ms)**、
+  `POST events` が **503 (5432ms)**、`GET pods/... 200 (10595ms)`、
+  `PUT leases 409 (10447ms)`。クライアントはこの窓で諦め、workerd は既に
+  閉じたソケットへ書いて Broken pipe を出している。**結果であって原因では
+  ない。** S23 の「巨大 WASM 同居の emulation 限界」と同じ場所に見えるが、
+  今回も同一視できる根拠は無い。指示どおり**記録のみ**で直していない。
+
+### 未検証・未解決
+
+- **CI での確認**(push 禁止のため未実施)。この修正が当該 conformance を
+  実際に緑にするかは未確認。
+- **残る 1/5 の予算超過**。上表 run 4 は、カスケードが t+60.8s で終わって
+  28 Pod(= 二重所有の 27 + 1)まで落ちたあと、その 1 本が消えず owner も
+  消えなかった。ブロッカーが 1 つ残っているのだから拒否は正しく、直すべきは
+  「その 1 Pod の削除がなぜ来ないか」。GC の item バックオフがまだ効いている
+  疑いが濃いが、**特定していない**。不可侵ルール 5 の観点では **flaky が
+  1/5 残っている**ことを正直に記録する。
+- **apiserver DW が特定のリクエストに応答しなくなる理由そのもの。** 応答ヘッダ
+  10 秒上限で「永久に返らない」は消えたが、**なぜその 1 本だけ 10 秒応答が
+  無いのか**は未特定(`bootstrapOnce` / `CAManager.Initialize` が I/O を跨いで
+  `sync.Once`/mutex を保持している S34 の残穴が候補だが、確認していない)。
+- **window 境界ごとの全件再 list のコスト**(S31 追記が残した宿題)は今回も
+  未実測。上の FETCHTRACE で「1 window に 12 本の再 list が同時に載る」ことは
+  見えたが、rows read の実測はしていない。
+- `FinishUnblockedForegroundOwners` は **1 段だけ**完了させる。完了した owner
+  自身がさらに別の terminating な owner のブロッカーだった場合、その次の段は
+  実 GC 任せ(再帰させていない)。
+- 本作業のプローブ(`gcmultiowner_test.go`)は **常設レーンに入れていない**
+  (1 実行 5〜17 分。S32/S33/S34 のプローブと同じ扱い)。

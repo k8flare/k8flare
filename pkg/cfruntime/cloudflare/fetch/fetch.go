@@ -11,6 +11,7 @@ package fetch
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"syscall/js"
+	"time"
 
 	"github.com/k8flare/k8flare/pkg/cfruntime/cloudflare"
 )
@@ -94,7 +96,62 @@ func jsCall(v js.Value, method string, args ...any) (result js.Value, err error)
 	return v.Call(method, args...), nil
 }
 
+// windowHandoffAttempts bounds how many times one RoundTrip is re-issued
+// on a fresh pump window after the window it was issued under closed
+// without the response ever arriving. A closed window is not an API
+// failure and must not be reported as one -- see
+// docs/platform-verification.md S36.
+const windowHandoffAttempts = 2
+
+// responseHeaderDeadline bounds the wait for a response's headers, and
+// only that: a promise the runtime abandons is never rejected, so without
+// a deadline such a call blocks its caller until the pump window closes,
+// or -- on the per-request path, which has no window at all -- for the
+// isolate's lifetime. Body reads are deliberately NOT bounded by it; a
+// watch stream is answered immediately and then stays open for its
+// window's lifetime by design. See docs/platform-verification.md S36.
+const responseHeaderDeadline = 10 * time.Second
+
 func (t *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	body, err := readRequestBody(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch: read request body: %w", err)
+	}
+	var lastErr error
+	for attempt := 0; attempt < windowHandoffAttempts; attempt++ {
+		resp, err := t.roundTripOnce(req, body)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		if !errors.Is(err, cloudflare.ErrPumpWindowClosed) || !replayableOnNewWindow(req) {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
+// replayableOnNewWindow reports whether re-issuing req after its window
+// was withdrawn is safe: the abandoned call may or may not have reached
+// the server, and a POST with a generateName would mint a second object.
+func replayableOnNewWindow(req *http.Request) bool {
+	switch req.Method {
+	case http.MethodGet, http.MethodHead, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+func readRequestBody(req *http.Request) ([]byte, error) {
+	if req.Body == nil {
+		return nil, nil
+	}
+	defer req.Body.Close()
+	return io.ReadAll(req.Body)
+}
+
+func (t *roundTripper) roundTripOnce(req *http.Request, body []byte) (*http.Response, error) {
 	binding := t.binding
 	var window *cloudflare.Window
 	if t.liveName != "" {
@@ -105,10 +162,7 @@ func (t *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 		window, binding = w, w.Env().Get(t.liveName)
 	}
 
-	jsReq, err := requestToJS(req)
-	if err != nil {
-		return nil, fmt.Errorf("fetch: encode request: %w", err)
-	}
+	jsReq := requestToJS(req, body)
 	init := js.Global().Get("Object").New()
 	init.Set("redirect", string(t.redirect))
 
@@ -116,27 +170,23 @@ func (t *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fetch: %w", err)
 	}
-	jsResp, err := awaitPromise(window, promise)
+	jsResp, err := awaitPromise(window, promise, responseHeaderDeadline)
 	if err != nil {
 		return nil, fmt.Errorf("fetch: %w", err)
 	}
 	return responseFromJS(window, jsResp)
 }
 
-func requestToJS(req *http.Request) (js.Value, error) {
+func requestToJS(req *http.Request, body []byte) js.Value {
 	opts := js.Global().Get("Object").New()
 	opts.Set("method", req.Method)
 	opts.Set("headers", headerToJS(req.Header))
-	if req.Body != nil {
-		body, err := io.ReadAll(req.Body)
-		if err != nil {
-			return js.Value{}, err
-		}
+	if body != nil {
 		jsBody := js.Global().Get("Uint8Array").New(len(body))
 		js.CopyBytesToJS(jsBody, body)
 		opts.Set("body", jsBody)
 	}
-	return js.Global().Get("Request").New(req.URL.String(), opts), nil
+	return js.Global().Get("Request").New(req.URL.String(), opts)
 }
 
 // responseFromJS wraps the JS Response body's ReadableStream in a
@@ -207,7 +257,7 @@ func (b *streamBody) Read(p []byte) (int, error) {
 			b.eof = true
 			return 0, fmt.Errorf("read response stream: %w", err)
 		}
-		result, err := awaitPromise(b.window, pending)
+		result, err := awaitPromise(b.window, pending, 0)
 		if err != nil {
 			b.eof = true
 			return 0, fmt.Errorf("read response stream: %w", err)
@@ -278,7 +328,7 @@ func headerToJS(header http.Header) js.Value {
 // arm the caller would block for the isolate's lifetime.
 // Duplicated from pkg/cfruntime's own copy rather than shared through an
 // internal package -- see pkg/cfruntime/README.md for why.
-func awaitPromise(window *cloudflare.Window, promise js.Value) (js.Value, error) {
+func awaitPromise(window *cloudflare.Window, promise js.Value, deadline time.Duration) (js.Value, error) {
 	w := &promiseWaiter{result: make(chan js.Value, 1), failure: make(chan error, 1)}
 	waitersMu.Lock()
 	waiterSeq++
@@ -299,6 +349,12 @@ func awaitPromise(window *cloudflare.Window, promise js.Value) (js.Value, error)
 	if window != nil {
 		closed = window.Done()
 	}
+	var expired <-chan time.Time
+	if deadline > 0 {
+		timer := time.NewTimer(deadline)
+		defer timer.Stop()
+		expired = timer.C
+	}
 	select {
 	case v := <-w.result:
 		return v, nil
@@ -307,6 +363,9 @@ func awaitPromise(window *cloudflare.Window, promise js.Value) (js.Value, error)
 	case <-closed:
 		dropWaiter(id)
 		return js.Value{}, cloudflare.ErrPumpWindowClosed
+	case <-expired:
+		dropWaiter(id)
+		return js.Value{}, fmt.Errorf("%w: no response within %s", cloudflare.ErrPumpWindowClosed, deadline)
 	}
 }
 

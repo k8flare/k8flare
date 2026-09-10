@@ -144,11 +144,20 @@ func sweepOrphanStragglers(ctx context.Context, namespacedStores []*ResourceStor
 // "" when none remain. That is the same predicate the real
 // garbagecollector's node.blockingDependents() applies, evaluated
 // against storage instead of against its dependency graph.
-func blockingDependent(ctx context.Context, namespacedStores []*ResourceStore, namespace, ownerUID string) (string, error) {
+//
+// first, when non-nil, is looked at before the rest: a cascade's
+// dependents are nearly always all of one kind, so starting there lets
+// the common "still blocked" answer come back after one list instead of
+// walking every namespaced resource.
+func blockingDependent(ctx context.Context, namespacedStores []*ResourceStore, namespace, ownerUID string, first *ResourceStore) (string, error) {
 	if ownerUID == "" || namespace == "" {
 		return "", nil
 	}
-	for _, rs := range namespacedStores {
+	ordered := namespacedStores
+	if first != nil {
+		ordered = append([]*ResourceStore{first}, namespacedStores...)
+	}
+	for _, rs := range ordered {
 		listObj, err := rs.List(ctx, namespace, "", "")
 		if err != nil {
 			return "", fmt.Errorf("foreground guard: list %s: %w", rs.resource, err)
@@ -207,7 +216,7 @@ func refuseForegroundFinalize(ctx context.Context, rs *ResourceStore, namespaced
 	if m == nil || m.DeletionTimestamp == nil || !containsString(m.Finalizers, metav1.FinalizerDeleteDependents) {
 		return nil
 	}
-	blocker, err := blockingDependent(ctx, namespacedStores, namespace, string(m.UID))
+	blocker, err := blockingDependent(ctx, namespacedStores, namespace, string(m.UID), nil)
 	if err != nil {
 		return err
 	}
@@ -216,6 +225,108 @@ func refuseForegroundFinalize(ctx context.Context, rs *ResourceStore, namespaced
 	}
 	return apierrors.NewConflict(schema.GroupResource{Resource: rs.resource}, name,
 		fmt.Errorf("foreground deletion is still waiting on dependent %s", blocker))
+}
+
+// FinishUnblockedForegroundOwners completes the deletion of any owner
+// that `deleted` was the last blocking dependent of, so that finishing a
+// foreground cascade never depends on the real garbagecollector
+// retrying the finalizer patch refuseForegroundFinalize above rejected.
+// Why that retry is expensive enough to matter:
+// docs/platform-verification.md S36.
+func FinishUnblockedForegroundOwners(ctx context.Context, namespacedStores []*ResourceStore, deletedFrom *ResourceStore, namespace string, deleted runtime.Object) {
+	if namespacedStores == nil || namespace == "" {
+		return
+	}
+	m := getObjectMeta(deleted)
+	if m == nil {
+		return
+	}
+	for _, ref := range m.OwnerReferences {
+		if ref.BlockOwnerDeletion == nil || !*ref.BlockOwnerDeletion {
+			continue
+		}
+		ownerStore := storeForKind(namespacedStores, ref.Kind)
+		if ownerStore == nil {
+			continue
+		}
+		owner, err := ownerStore.Get(ctx, namespace, ref.Name)
+		if err != nil {
+			continue
+		}
+		om := getObjectMeta(owner)
+		if om == nil || om.UID != ref.UID || om.DeletionTimestamp == nil ||
+			!containsString(om.Finalizers, metav1.FinalizerDeleteDependents) {
+			continue
+		}
+		blocker, err := blockingDependent(ctx, namespacedStores, namespace, string(om.UID), deletedFrom)
+		if err != nil || blocker != "" {
+			continue
+		}
+		clearForegroundFinalizer(ctx, ownerStore, namespace, ref.Name, string(ref.UID))
+	}
+}
+
+func clearForegroundFinalizer(ctx context.Context, rs *ResourceStore, namespace, name, uid string) {
+	for attempt := 0; attempt < markDeletionRetries; attempt++ {
+		obj, err := rs.Get(ctx, namespace, name)
+		if err != nil {
+			return
+		}
+		m := getObjectMeta(obj)
+		if m == nil || string(m.UID) != uid || m.DeletionTimestamp == nil ||
+			!containsString(m.Finalizers, metav1.FinalizerDeleteDependents) {
+			return
+		}
+		kept := make([]string, 0, len(m.Finalizers))
+		for _, f := range m.Finalizers {
+			if f != metav1.FinalizerDeleteDependents {
+				kept = append(kept, f)
+			}
+		}
+		if len(kept) == 0 {
+			kept = nil
+		}
+		m.Finalizers = kept
+		written, err := rs.Update(ctx, namespace, name, obj)
+		if isStatusReason(err, metav1.StatusReasonConflict) {
+			continue
+		}
+		if err == nil {
+			settleDeletedObject(ctx, rs.storage, written)
+		}
+		return
+	}
+}
+
+// CountPendingGracefulDeletions counts objects the real garbagecollector
+// still owes work on: a deletionTimestamp plus the "orphan" or
+// "foregroundDeletion" finalizer that only it clears. The Controllers DO
+// treats a non-zero count as unconverged work, because a cascade in
+// flight is exactly the state its workload spec/status probe cannot see --
+// docs/platform-verification.md S36.
+func CountPendingGracefulDeletions(ctx context.Context, namespacedStores []*ResourceStore) (int, error) {
+	pending := 0
+	for _, rs := range namespacedStores {
+		listObj, err := rs.List(ctx, "", "", "")
+		if err != nil {
+			return 0, fmt.Errorf("pending deletions: list %s: %w", rs.resource, err)
+		}
+		items, err := meta.ExtractList(listObj)
+		if err != nil {
+			return 0, fmt.Errorf("pending deletions: extract %s list: %w", rs.resource, err)
+		}
+		for _, item := range items {
+			m := getObjectMeta(item)
+			if m == nil || m.DeletionTimestamp == nil {
+				continue
+			}
+			if containsString(m.Finalizers, metav1.FinalizerDeleteDependents) ||
+				containsString(m.Finalizers, metav1.FinalizerOrphanDependents) {
+				pending++
+			}
+		}
+	}
+	return pending, nil
 }
 
 // stripOwnerRef removes ownerUID from one named object's
