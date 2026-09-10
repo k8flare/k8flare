@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -376,6 +377,85 @@ func TestKCMDynamicWorkerControlPlane(t *testing.T) {
 		return err == nil && node.Spec.PodCIDR != ""
 	})
 
+	// Foreground cascade delete, with the owner shape the upstream
+	// conformance test "should not delete dependents that have both valid
+	// owner and owner that's waiting for dependents to be deleted" uses:
+	// a ReplicationController whose dependents are partly shared with a
+	// second RC that stays. That test fails in e2e-conformance's dw
+	// variants (docs/platform-verification.md S36) because the real
+	// garbagecollector's per-item workqueue backoff doubles from 5ms
+	// towards a 1000s ceiling on every failure, and this platform used to
+	// hand it two kinds of non-failure as failures: an outbound call
+	// abandoned when its pump window closed, and the Conflict
+	// refuseForegroundFinalize returns while a cascade is still running.
+	//
+	// The upstream test allows 90s. This asserts the same bound, on a
+	// smaller owner so the phase costs about 30s.
+	const gcNS = "kcmdw-foreground"
+	if _, err := client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: gcNS},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create foreground-delete namespace: %v", err)
+	}
+	const gcReplicas = 12
+	// A finalizer on the pods stands in for a real kubelet's termination
+	// grace period: in CI a dependent the GC deletes keeps its
+	// deletionTimestamp, and therefore keeps blocking its owner, until the
+	// node confirms it is gone. A nodeless dev cluster would otherwise
+	// remove each pod inside the GC's own DELETE and never open the window
+	// in which the GC's graph and storage disagree.
+	doomed := newForegroundOwnerRC(t, ctx, client, gcNS, "doomed", gcReplicas)
+	survivor := newForegroundOwnerRC(t, ctx, client, gcNS, "survivor", 0)
+	releaseGracePods := releasePodsAfterGrace(ctx, client, gcNS, 10*time.Second)
+	defer releaseGracePods()
+	waitFor(t, 2*time.Minute, "replication controller created its pods", func() bool {
+		cur, err := client.CoreV1().ReplicationControllers(gcNS).Get(ctx, doomed.Name, metav1.GetOptions{})
+		return err == nil && cur.Status.Replicas == gcReplicas
+	})
+	shared, err := client.CoreV1().Pods(gcNS).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list foreground-delete pods: %v", err)
+	}
+	adopt := fmt.Sprintf(`{"metadata":{"ownerReferences":[{"apiVersion":"v1","kind":"ReplicationController","name":%q,"uid":%q}]}}`,
+		survivor.Name, survivor.UID)
+	for i := 0; i < gcReplicas/2; i++ {
+		if _, err := client.CoreV1().Pods(gcNS).Patch(ctx, shared.Items[i].Name,
+			types.StrategicMergePatchType, []byte(adopt), metav1.PatchOptions{}); err != nil {
+			t.Fatalf("give pod %s a second owner: %v", shared.Items[i].Name, err)
+		}
+	}
+	fg := metav1.DeletePropagationForeground
+	if err := client.CoreV1().ReplicationControllers(gcNS).Delete(ctx, doomed.Name, metav1.DeleteOptions{
+		PropagationPolicy: &fg,
+		Preconditions:     metav1.NewUIDPreconditions(string(doomed.UID)),
+	}); err != nil {
+		t.Fatalf("foreground-delete the replication controller: %v", err)
+	}
+	waitFor(t, 90*time.Second, "foreground-deleted replication controller finished its cascade", func() bool {
+		_, err := client.CoreV1().ReplicationControllers(gcNS).Get(ctx, doomed.Name, metav1.GetOptions{})
+		return errors.IsNotFound(err)
+	})
+	survivors, err := client.CoreV1().Pods(gcNS).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list surviving pods: %v", err)
+	}
+	if len(survivors.Items) != gcReplicas/2 {
+		t.Errorf("foreground cascade left %d pods, want the %d owned by the surviving rc",
+			len(survivors.Items), gcReplicas/2)
+	}
+	for i := range survivors.Items {
+		pod := &survivors.Items[i]
+		if pod.DeletionTimestamp != nil {
+			t.Errorf("pod %s owned by the surviving rc was marked for deletion", pod.Name)
+		}
+		if len(pod.OwnerReferences) != 1 || pod.OwnerReferences[0].Name != survivor.Name {
+			t.Errorf("pod %s owners = %+v, want only the surviving rc", pod.Name, pod.OwnerReferences)
+		}
+	}
+	if err := client.CoreV1().Namespaces().Delete(ctx, gcNS, metav1.DeleteOptions{}); err != nil {
+		t.Fatalf("delete foreground-delete namespace: %v", err)
+	}
+
 	// Namespace deletion must leave nothing behind, with the LIVE
 	// controllers racing the sweep (admission + post-delete events
 	// sweep regression: commits 9dfbb35 / a012a01).
@@ -609,6 +689,28 @@ func TestKCMDynamicWorkerControlPlane(t *testing.T) {
 		t.Errorf("node outage/recovery cycle cost %d writes in namespace %s, want <= %d: a write storm is back",
 			writes, recoveryNS, maxOutageWrites)
 	}
+}
+
+func newForegroundOwnerRC(t *testing.T, ctx context.Context, client kubernetes.Interface, ns, name string, replicas int32) *corev1.ReplicationController {
+	t.Helper()
+	labels := map[string]string{"owner": name}
+	rc, err := client.CoreV1().ReplicationControllers(ns).Create(ctx, &corev1.ReplicationController{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: corev1.ReplicationControllerSpec{
+			Replicas: &replicas,
+			Selector: labels,
+			Template: &corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels, Finalizers: []string{"k8flare.test/grace"}},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "c", Image: "registry.k8s.io/pause:3.10"}},
+				},
+			},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create replication controller %s: %v", name, err)
+	}
+	return rc
 }
 
 // namespaceRevision reads the kine revision of a namespace's facet, which
