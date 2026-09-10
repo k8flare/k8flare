@@ -2,7 +2,11 @@ import type { KineEvent, KineKV, WatchEvent } from "./types.ts";
 import { decodeKineValue } from "./helpers.ts";
 import { dwAuth } from "./auth.ts";
 import { urlToStoragePrefix, resourceKindForPath } from "./url-mapping.ts";
-import { validateSelectors, objectMatchesSelectors } from "./selector-wasm.ts";
+import {
+  ensureSelectorsReady,
+  validateSelectors,
+  objectMatchesSelectors,
+} from "./selector-wasm.ts";
 
 /** Decode a kine KV's JSON value into an object, stamping resourceVersion. */
 function decodeKineValueObject(kv: KineKV): Record<string, unknown> {
@@ -135,6 +139,21 @@ export async function handleWatch(
   const labelSelectorParam = url.searchParams.get("labelSelector") || "";
   const hasSelectors = fieldSelectorParam !== "" || labelSelectorParam !== "";
   if (hasSelectors) {
+    try {
+      await ensureSelectorsReady();
+    } catch (e) {
+      return new Response(
+        JSON.stringify({
+          kind: "Status",
+          apiVersion: "v1",
+          status: "Failure",
+          message: `selector matching unavailable: ${e}`,
+          reason: "InternalError",
+          code: 500,
+        }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
     const selErr = validateSelectors(labelSelectorParam, fieldSelectorParam);
     if (selErr !== "") {
       return new Response(
