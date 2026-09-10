@@ -61,7 +61,7 @@ documentation or guesswork alone has a proven cost.
 | S6  | R2 (PVC access isolation, S3 access from Containers)                                                                                                                        | verified (desk research + one read-only check)                                                                                                                                                                                                                                                                                                                                                                                                                        | Phase 8                                                               |
 | S7  | Re-verifying apiserver residency (double-checking the rejection)                                                                                                            | not started                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Final confirmation of the rejection decision                          |
 | S8  | Whether controllers can run WASM-resident (reframed 2026-07-02: WASM execution-_shape_ design material, not a go/no-go gate — Containers isn't an option under any outcome) | partially confirmed — (a)(c)(d) verified locally with real 10+ min runs; the outbound-`net/http` crash found mid-spike has a verified one-file library-level fix (`wasm_exec.js` patch); startup-tax measured against the real apiserver binary (~14ms cold); `ctx.waitUntil` confirmed to keep the whole scheduler pumped with no client connected (45s+ observed) — see the S8 follow-up subsection for the failure-mode layer table and candidate execution shapes | ★Highest priority. Informs which WASM execution shape Phase 5 adopts  |
-| S14 | ASSETS/R2 → Worker Loader runtime code supply (routing around the 10MiB gzip deploy cap for the real kube-controller-manager WASM)                                          | verified locally end-to-end (spike: `spikes/s14-loader-external-fetch/FINDINGS.md`; production-path integration: this file's S14 section) — Loader has its own hard 64MiB total-module-bytes cap, satisfied via `-s -w` + `wasm-opt -Oz` (59.6MiB); Loader caps/eviction/memory in production still unverified                                                                                                                                                        | workers/controllers deploy path (real KCM in Workers)                 |
+| S14 | ASSETS/R2 → Worker Loader runtime code supply (routing around the 10MiB gzip deploy cap for the real kube-controller-manager WASM — the gzip cap is historical, removed 2026-09; the channel is still required for other reasons, see S35)                                          | verified locally end-to-end (spike: `spikes/s14-loader-external-fetch/FINDINGS.md`; production-path integration: this file's S14 section) — Loader has its own hard 64MiB total-module-bytes cap, satisfied via `-s -w` + `wasm-opt -Oz` (59.6MiB); Loader caps/eviction/memory in production still unverified                                                                                                                                                        | workers/controllers deploy path (real KCM in Workers)                 |
 
 ---
 
@@ -287,6 +287,8 @@ in that file.
    dominant cost rather than the Loader — the curve shape is indicative
    only. **Production limits (e.g. whether the ordinary 10MiB gzip
    script cap applies to loaded code) remain unverified.**
+   (2026-09: the gzip script cap no longer exists and the Worker limit is
+   64 MiB, but the Loader's own 67,108,864-byte cap is unchanged — S35.)
 3. **`env` binding forwarding — the most important finding of this
    spike**: plain values and `Fetcher` (service bindings) pass through
    `WorkerCode.env` with a real RPC round-trip confirmed; **both
@@ -1671,6 +1673,9 @@ works unchanged inside the loaded worker. This removes the 10MiB gzip
 deploy blocker that had kept `workers/controllers` undeployable
 (gzip was ~13.6MB); `workers/apiserver` still ships conventionally
 (gzip 7.98MB < 10MiB).
+(Historical: the 10MiB gzip cap was removed in 2026-09 and the Worker
+limit is now 64 MiB. The supply channel is still required — five binaries
+totalling ~216.8 MiB cannot share one Worker — see S35.)
 
 **New execution-shape finding — the pump window:** unlike the previous
 DO-hosted shape (where `DurableObjectState.waitUntil` kept the Go
@@ -1842,6 +1847,8 @@ nodeipam's `cloudprovider.Interface` (all sha256-pinned in
 opt (957KiB under the Loader cap)**, and verified live (Deployment
 create → 2 Pods in 5s, scale-down 5s, Events recorded, no panics).
 gzip is 13.2MB, so the normal-Worker (10MiB gzip) route stays closed.
+(Historical: that gzip cap was removed in 2026-09 — S35. The route stays
+closed anyway, now on the 64 MiB raw Worker limit.)
 
 **Still open — the scheduler:** its earlier 66.4MB figure was an
 artifact of the same lost mirror state; against the reproducible
@@ -2330,7 +2337,9 @@ compareSignal = os.Interrupt`, a portable `os.Signal`) but there is no
    compile for GOOS=js/wasm (verified, see below) — but `k8s.io/client-go`'s
    generated typed clientset + informers alone already exceed Cloudflare
    Workers' 10MiB gzip deployment limit, before any controller logic is
-   added.** Isolated, incremental `GOOS=js GOARCH=wasm go build` +
+   added.** (Historical: that gzip limit was removed in 2026-09 — S35.
+   The binaries still cannot ship in the Worker script, now because of
+   the 64 MiB raw limit.) Isolated, incremental `GOOS=js GOARCH=wasm go build` +
    `gzip | wc -c` measurements (`workers/apiserver/build/app.wasm`, this
    repo's only other real data point, is 7.07MiB gzip for comparison):
 
@@ -5161,3 +5170,171 @@ DW モードのほか `K8FLARE_IOCTX_MODE=host` で CI の host ジョブと同�
 - 本番(a203d30e、`LOADER_ID_SALT=s34a/`): Deployment を 1→3 にスケールして
   40 秒以内に RS 3/3・Pod 3、`kubectl delete deploy` から約 100 秒で実 GC が
   RS/Pod を全部回収。撤収後 20:06Z 以降 50 分間リクエスト 0 件(パーク)。
+
+---
+
+## S35: workerd の新モジュールレジストリ (`new_module_registry`) — 何が買えて何が買えないか (2026-09-10、実測)
+
+Cloudflare が workerd のモジュールレジストリを作り直した
+(blog 2026-09, <https://blog.cloudflare.com/workers-module-registry-nodejs/>)。
+この repo に効く変更は次の 5 点:
+
+1. オプトインの互換性フラグ `new_module_registry`
+2. specifier が URL として解決される
+3. `import.meta.url` / `import.meta.main` / `import.meta.resolve`
+4. WebAssembly の source-phase import (`import source x from './a.wasm'`,
+   `await import.source(...)`)
+5. **モジュールは最初に import された時点で遅延コンパイルされる**
+   (static / dynamic のどちらでも)
+
+同じアナウンスで **Worker のサイズ上限が全プラン 64 MiB になり、
+圧縮後 (gzip) バンドル上限は撤廃**された。
+
+### 採用したもの: `new_module_registry` (shell Worker のみ)
+
+`packages/k8flare-worker/wrangler.jsonc` の `compatibility_flags` に
+追加した。**同梱 workerd (wrangler 4.106.0) がこのフラグを受け付ける
+こと自体が対応の証明**になる —— 未知のフラグを渡すと workerd は起動を
+拒否する。3 レーンとも通過: test-apiserver ok 55.568s /
+test-kcm PASS 300.32s / test-clusterop PASS 70.02s。shell に static
+バンドルされた `import selectorWasmModule from "@wasm/selector.wasm"`
+も、Loader が供給する dynamic worker 側のモジュール
+(`loader/bootstrap.ts` の `import wasmModule from "./app.wasm"`) も
+そのまま動く。
+
+**ハーネスは全部 config から継承する** —— repo 内のどこにも
+`--compatibility-flags` を渡している箇所は無く、`wrangler dev` を自前で
+起動する全部が `-c packages/k8flare-worker/wrangler.jsonc` を指している
+(`pkg/apiserver/apiserver_test.go` / `kcmdw_test.go` / `clusterop_test.go` /
+`gcprobe_test.go` / `ioctxprobe_test.go` / `s32probe_test.go`、
+`.github/workflows/e2e-conformance.yml` / `cost-gate.yml` /
+`smoke-nodes.yml`、`package.json` の `dev`、`Makefile` の `dev`)。
+CLI フラグの追加は不要。
+
+**ただし dynamic worker には効いていない。** `WorkerCode` を組み立てて
+いる 3 箇所 (`loader/apiserver.ts` の `compatibilityDate: "2026-07-01"`、
+`controllers/index.ts` の同左、`storage/facets.ts` の
+`compatibilityDate: "2026-03-24"`) はどれも `compatibilityFlags` を
+渡していないので、Loader 側の ~30-64MB の WASM は従来どおりの扱いの
+まま。今回は shell の module graph だけが対象。
+
+### 実測 1: Loader の cap は変わっていない —— S29 の NO-GO は据え置き
+
+Worker 本体の上限が 64 MiB になっても、**Worker Loader の
+dynamic worker 1 つあたりの cap は 67,108,864 バイトのまま**。
+プローブ: 60MiB の loader モジュールはロードでき、64MiB 以上は
+
+```
+Dynamic Worker code size (67108919 bytes) exceeds the maximum allowed size of 67108864 bytes.
+```
+
+で失敗する。したがって S29 の「upstream の
+`k8s.io/apiserver/pkg/endpoints` レイヤーは載らない」という NO-GO は、
+2026-07 の測定だけでなく **2026-09 の再測定でも裏付けられた**。
+
+### 実測 2: gzip 上限の撤廃は「結論」ではなく「理由」を無効化する
+
+**訂正 (rule 4)。** S8 / S14 と `docs/cost-model.md` の該当箇所は、
+ASSETS+LOADER のコード供給チャンネルが存在する理由を
+「Workers の 10MiB gzip デプロイ上限を回避するため」と記録している。
+**この理由は 2026-09 時点で成立しない**(圧縮後上限は撤廃された)。
+歴史的記述としてそのまま残すが、現在の理由は別で、**チャンネル自体は
+依然として必須**:
+
+- 5 つのバイナリの opt 後の実サイズ合計が **227,309,657 バイト
+  (約 216.8 MiB)** —— apiserver 64,447,322 / kcm 44,215,888 /
+  gc 41,309,324 / sched 44,995,728 / clusterop 32,341,395。
+  64 MiB の Worker 1 つに同居させられない(apiserver 単体ですら
+  上限の 96%)。
+- Static Assets の 1 ファイル上限は 25MiB のままで、チャンクに割る
+  必要も変わらない。
+
+以下の各所に「gzip の数字は歴史的なもの」という 1 行ポインタを足した
+(歴史的記述そのものは編集していない): 本ファイル S5/S14 の一覧表・
+S2 の「Size」項・S14 本文・Phase 10 の scheduler 節・Phase 5 の
+client-go 測定節、`docs/cost-model.md` の route A 節。
+
+### 実測 3: selector.wasm を hot path から外した
+
+`packages/k8flare-worker/src/k8s/selector-wasm.ts` は 4,582,761 バイト
+(shell バンドルの 98%) の Go WASM を **トップレベル static import**
+していた。使うのは label/field selector 付きの watch だけなのに、
+素の kubectl CRUD リクエストまで全部これを払っていた。遅延コンパイル
+が入ったので dynamic `import()` の裏に移した:
+
+- `ensureSelectorsReady()` (async, memoize 済み・in-flight promise も
+  共有) が `wasm_exec` と `selector.wasm` を dynamic import して Go
+  ランタイムを立てる
+- `validateSelectors()` / `objectMatchesSelectors()` は **同期のまま**
+  (broadcast path で watcher ごと・イベントごとに走るため)
+- `watch.ts` は selector が実際に付いている時だけ、既存の
+  `validateSelectors()` 呼び出しの直前で 1 回 await する
+- ロードに失敗したら watch を 500 Status で落とす(黙って全一致に
+  しない)
+
+**バンドルの before/after** (`wrangler deploy --dry-run --outdir`):
+
+| | before | after |
+| --- | --- | --- |
+| Total Upload | 4679.36 KiB | 4682.85 KiB |
+| gzip | 1370.28 KiB | 1370.60 KiB |
+| `index.js` | 208,903 B | 212,474 B |
+| entry graph 内の参照 | `import selectorWasmModule from "./9fa9fad…-selector.wasm"` (static, 先頭) | `await import("./9fa9fad…-selector.wasm")` (dynamic, `boot()` 内) |
+
+**アップロード量はほぼ変わらない**(+3.49 KiB = 追加した TS の分)。
+wasm は before/after どちらも別ファイルとして出力されており、
+**買えたのはデプロイサイズではなく isolate 起動時のコンパイル**である。
+
+**遅延を証明した実験(決定的)**: `assets/wasm/selector.wasm` を同じ
+バイト数のランダムデータで置き換えて `wrangler dev` を起動した。
+
+- static import 版(変更前のコードを戻したもの): **workerd がそもそも
+  起動しない**。
+  `service core:user:k8flare: Uncaught CompileError: WasmModuleObject::Compile(): expected magic word 00 61 73 6d, found d1 22 62 0f @+0`
+  → `The Workers runtime failed to start.`。curl は `code=000`。
+- dynamic import 版(採用したもの): **起動する**。selector を使わない
+  `/clusters/probe` は 410 を返し、selector 付き watch を初めて叩いた
+  ときだけ
+  `{"kind":"Status",…,"message":"selector matching unavailable: CompileError: WasmModuleObject::Compile(): …","reason":"InternalError","code":500}`
+  になる。
+
+つまり **static import では isolate 起動時にコンパイルされていて、
+dynamic import では最初の import まで一切コンパイルされない**。
+実験後、実ファイル (sha256 `fb34e37a068a4e66095d26f4ed0f0f7d43646b33849cfd6a6aa59fc49b0640f2`)
+に戻してある。
+
+回帰ゲートとして `pkg/apiserver/apiserver_test.go` の
+`TestPodWatchLabelSelector` を追加した(apiserver レーン)。
+`boot()` を強制的に throw させると
+`Watch: selector matching unavailable: …` で落ちることを確認済み。
+
+### 採用しなかったもの: source-phase import
+
+`await import.source("@wasm/selector.wasm")` は **esbuild (wrangler) は
+通る** —— 出力に
+`await import.source("./9fa9fad…-selector.wasm")` と specifier を
+書き換えた形で残り、Total Upload 4682.84 KiB / gzip 1370.59 KiB で
+ビルドも成功する。しかし **TypeScript 6.0.2 が構文を知らない**:
+
+```
+error TS18061: 'source' is not a valid meta-property for keyword 'import'. Did you mean 'meta' or 'defer'?
+```
+
+`make check` / `npx tsc --noEmit` / CI の型チェックが落ちるので採用せず、
+素の dynamic `import()` にした(遅延は上記のとおりこれで達成できて
+いる)。tsc が対応したら乗り換えを検討する価値はある。
+
+### 未検証
+
+- **本番での確認**(デプロイ禁止のため未実施)。上の遅延コンパイルは
+  ローカル workerd (wrangler 4.106.0 同梱) での測定。
+- **isolate 起動時間の実数**。「4.58MB のコンパイルが消えて何 ms 速く
+  なったか」は測っていない。`wrangler dev` の初回リクエストは計測時点
+  で既にウォームで、5-28ms のレンジに埋もれて差が見えなかったため、
+  上の bad-wasm による二値実験に切り替えた。
+- selector 付き watch の**初回**レイテンシがどれだけ増えるか
+  (コンパイルがそこへ移動しただけなので、その watch は遅くなるはず)。
+- dynamic worker 側に `new_module_registry` を渡した場合に何が変わるか
+  (今回は渡していない)。
+- `import.meta.resolve` / URL specifier / `import.meta.main` は
+  この repo では未使用・未検証。

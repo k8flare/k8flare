@@ -173,7 +173,9 @@ chain over a Cloudflare service binding. This validates route A's cost
 _shape_ (informers idle on I/O, billing should track actual reconcile
 work) qualitatively, but **the compiled `app.wasm` for all ten
 controllers together is ~19MiB gzip — Cloudflare Workers' 10MiB gzip
-limit blocks deployment before any cost measurement against production
+limit (historical: removed 2026-09, see platform-verification.md S35 —
+the ASSETS+LOADER channel is still required, on the 64 MiB raw limit)
+blocks deployment before any cost measurement against production
 billing can even be attempted** (S8(b)'s CPU-ms/hour methodology, proven
 against a minimal toy binary, could not be re-run against the real
 controllers binary this phase — there is nothing to `wrangler deploy` yet).
@@ -1173,6 +1175,10 @@ ids -- one ~26ms Go-runtime instantiation per gateway isolate at first
 selector use, ~0ms per synchronous match call afterwards (execution
 model verified in docs/platform-verification.md S22). Bundle impact:
 +1.3MB gzip against the Worker script's 10MiB deploy budget.
+(2026-09-10: that gzip budget no longer exists, and the module moved
+behind a dynamic import so it is no longer compiled at isolate startup
+-- only a watch that actually carries a selector pays for it. Upload
+size is unchanged; see platform-verification.md S35.)
 Functional gains measured live: set-based operators (`in`, `!key`)
 now work, and invalid selectors 400 at watch open like upstream
 (previously silently mis-applied).
