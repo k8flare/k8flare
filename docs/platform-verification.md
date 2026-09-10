@@ -61,7 +61,7 @@ documentation or guesswork alone has a proven cost.
 | S6  | R2 (PVC access isolation, S3 access from Containers)                                                                                                                        | verified (desk research + one read-only check)                                                                                                                                                                                                                                                                                                                                                                                                                        | Phase 8                                                               |
 | S7  | Re-verifying apiserver residency (double-checking the rejection)                                                                                                            | not started                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Final confirmation of the rejection decision                          |
 | S8  | Whether controllers can run WASM-resident (reframed 2026-07-02: WASM execution-_shape_ design material, not a go/no-go gate — Containers isn't an option under any outcome) | partially confirmed — (a)(c)(d) verified locally with real 10+ min runs; the outbound-`net/http` crash found mid-spike has a verified one-file library-level fix (`wasm_exec.js` patch); startup-tax measured against the real apiserver binary (~14ms cold); `ctx.waitUntil` confirmed to keep the whole scheduler pumped with no client connected (45s+ observed) — see the S8 follow-up subsection for the failure-mode layer table and candidate execution shapes | ★Highest priority. Informs which WASM execution shape Phase 5 adopts  |
-| S14 | ASSETS/R2 → Worker Loader runtime code supply (routing around the 10MiB gzip deploy cap for the real kube-controller-manager WASM)                                          | verified locally end-to-end (spike: `spikes/s14-loader-external-fetch/FINDINGS.md`; production-path integration: this file's S14 section) — Loader has its own hard 64MiB total-module-bytes cap, satisfied via `-s -w` + `wasm-opt -Oz` (59.6MiB); Loader caps/eviction/memory in production still unverified                                                                                                                                                        | workers/controllers deploy path (real KCM in Workers)                 |
+| S14 | ASSETS/R2 → Worker Loader runtime code supply (routing around the 10MiB gzip deploy cap for the real kube-controller-manager WASM — the gzip cap is historical, removed 2026-09; the channel is still required for other reasons, see S35)                                          | verified locally end-to-end (spike: `spikes/s14-loader-external-fetch/FINDINGS.md`; production-path integration: this file's S14 section) — Loader has its own hard 64MiB total-module-bytes cap, satisfied via `-s -w` + `wasm-opt -Oz` (59.6MiB); Loader caps/eviction/memory in production still unverified                                                                                                                                                        | workers/controllers deploy path (real KCM in Workers)                 |
 
 ---
 
@@ -287,6 +287,8 @@ in that file.
    dominant cost rather than the Loader — the curve shape is indicative
    only. **Production limits (e.g. whether the ordinary 10MiB gzip
    script cap applies to loaded code) remain unverified.**
+   (2026-09: the gzip script cap no longer exists and the Worker limit is
+   64 MiB, but the Loader's own 67,108,864-byte cap is unchanged — S35.)
 3. **`env` binding forwarding — the most important finding of this
    spike**: plain values and `Fetcher` (service bindings) pass through
    `WorkerCode.env` with a real RPC round-trip confirmed; **both
@@ -1671,6 +1673,9 @@ works unchanged inside the loaded worker. This removes the 10MiB gzip
 deploy blocker that had kept `workers/controllers` undeployable
 (gzip was ~13.6MB); `workers/apiserver` still ships conventionally
 (gzip 7.98MB < 10MiB).
+(Historical: the 10MiB gzip cap was removed in 2026-09 and the Worker
+limit is now 64 MiB. The supply channel is still required — five binaries
+totalling ~216.8 MiB cannot share one Worker — see S35.)
 
 **New execution-shape finding — the pump window:** unlike the previous
 DO-hosted shape (where `DurableObjectState.waitUntil` kept the Go
@@ -1842,6 +1847,8 @@ nodeipam's `cloudprovider.Interface` (all sha256-pinned in
 opt (957KiB under the Loader cap)**, and verified live (Deployment
 create → 2 Pods in 5s, scale-down 5s, Events recorded, no panics).
 gzip is 13.2MB, so the normal-Worker (10MiB gzip) route stays closed.
+(Historical: that gzip cap was removed in 2026-09 — S35. The route stays
+closed anyway, now on the 64 MiB raw Worker limit.)
 
 **Still open — the scheduler:** its earlier 66.4MB figure was an
 artifact of the same lost mirror state; against the reproducible
@@ -2330,7 +2337,9 @@ compareSignal = os.Interrupt`, a portable `os.Signal`) but there is no
    compile for GOOS=js/wasm (verified, see below) — but `k8s.io/client-go`'s
    generated typed clientset + informers alone already exceed Cloudflare
    Workers' 10MiB gzip deployment limit, before any controller logic is
-   added.** Isolated, incremental `GOOS=js GOARCH=wasm go build` +
+   added.** (Historical: that gzip limit was removed in 2026-09 — S35.
+   The binaries still cannot ship in the Worker script, now because of
+   the 64 MiB raw limit.) Isolated, incremental `GOOS=js GOARCH=wasm go build` +
    `gzip | wc -c` measurements (`workers/apiserver/build/app.wasm`, this
    repo's only other real data point, is 7.07MiB gzip for comparison):
 
@@ -4058,3 +4067,1287 @@ S26 訂正の副作用として記録。修正前は storm の各書き込みが
 
 **残る限界**: apiserver チャンクは 65,285,282 バイト(cap まで 1,780KiB)。
 `robfig/cron` の追加で約 83KB 増えた。
+
+## S28: 手書きの 3 コントローラー代替を実 KCM の 5 コントローラーへ差し戻し (2026-09-09、実測)
+
+`pkg/apiserver` に残っていたサーバーサイドの手書き代替
+(`endpoints.go` 456 行 / `nodelifecycle.go` 316 行 / `nodecidr.go` 234 行、
+テスト込みで計 1,734 行削除)を削除し、実 kube-controller-manager の
+`endpoint` / `endpointslice` / `nodeipam` / `nodelifecycle` / `tainteviction`
+を kcm dynamic worker で走らせる形に戻した(不可侵ルール #3)。
+
+**サイズ実測**(`make wasm`、wasm-opt 後の raw バイト。Loader cap は
+67,108,864 バイト):
+
+| チャンク | バイト | cap までの余裕 |
+|---|---|---|
+| apiserver | 64,416,718 | 2,692,146 (2.57MiB) |
+| kcm | 44,203,024 | 22,905,840 (21.84MiB) |
+| sched | 44,985,213 | 22,123,651 |
+| gc | 41,298,694 | 25,810,170 |
+| clusterop | 32,328,881 | 34,779,983 |
+
+kcm は 5 コントローラー追加で 42,238,661 → 44,203,024 バイト
+(+1,964,363 = +1.87MiB)。事前スパイクの予測値 44,203,045 と 21 バイト差。
+apiserver 側は 3 ファイル削除で S27 記録時点の 65,285,282 バイトから
+64,416,718 バイトへ(-848KiB。この差分には 7-30 以降の他の変更も含む)。
+`pkg/leanclient` は Leases/EndpointSlices/DaemonSets/Endpoints の
+client/informer 表面を既に持っており、GOOS=js のコンパイルエラーはゼロ。
+
+**2026-07-06 の削除理由との関係**: 当時の削除理由はサイズではなく
+**メモリ**だった(「informer キャッシュ(全 Node・全 Lease・全
+EndpointSlice)が本番 128MiB isolate に対して純粋なオーバーヘッドで、
+ロード直後の dynamic worker が informer sync 中に死んで reload ループ
+した」)。今回それが解消したと主張できる根拠は無い。**本番 isolate での
+メモリ挙動は未検証**である。今回検証したのは (a) cap 内に収まること
+(b) `wrangler dev` 上で 2 Node・数 Pod 規模の実クラスタとして 5
+コントローラーが同時に動くこと、の 2 点だけで、当時の削除理由は
+「サーバーサイド代替があるから冗長」の部分だけが無効化された(代替を
+消したので冗長ではなくなった)。128MiB 側は本番デプロイ時に
+再確認が要る — 残課題として明記する。
+
+**未検証項目(残課題、2026-09-09 レビューで 2・3 を追加)**:
+
+1. 本番 128MiB isolate でのメモリ挙動(上記)。
+2. **`tainteviction` の `tolerationSeconds` タイマーは kcm isolate の
+   インメモリ状態である**(NoExecute テイントを見た時刻を起点に
+   `timedWorkerQueue` が遅延立ち退きを保持する。既定 300 秒)。削除した
+   `nodelifecycle.go` は永続化された Node condition のタイムスタンプから
+   立ち退き時刻を毎回計算し直していたので**再起動に強かった**。kcm の
+   isolate が 300 秒より短い間隔で退避・再ロードされると、到達不能 Node
+   上の Pod が**いつまでも立ち退かない**可能性がある。正しさに関わる
+   後退の候補だが**未計測** — isolate の退避は S27/S28 と同じ理由で
+   local では再現できず、本番か退避を強制できるハーネスが要る。
+3. **Pod が動き出すまでのレイテンシ。** `computeclass.go` は Pod 毎に
+   Node 名を先にピン留めする(`kubernetes.io/hostname` セレクタ)ため、
+   その Node の podCIDR 払い出しが apiserver の同期パスではなく kcm の
+   pump window 待ちになった。`pkg/agent/flannel.go` は podCIDR が空の間
+   ポーリングし続ける実装なので壊れはしないが、Node 登録から Pod が
+   起動するまでの時間は pump window の分だけ伸びる。未計測。
+
+**機能検証**(`make test-kcm` の `TestKCMDynamicWorkerControlPlane`、
+実 client-go で dynamic worker 越しに駆動):
+
+- `nodeipam` が 2 Node に別々の /24 を `spec.podCIDR` として払い出す
+- `endpoint` / `endpointslice` が selector 付き Service + Ready Pod から
+  Endpoints と EndpointSlice を作る(`endpointslice.kubernetes.io/managed-by`
+  = `endpointslice-controller.k8s.io`、legacy 側は
+  `endpoints.kubernetes.io/managed-by` = `endpoint-controller`。
+  targetPort 名 `http` → コンテナポート 8080 の解決と Ready 条件も確認)
+- `nodelifecycle` が Lease の更新が止まった Node を Ready=Unknown
+  (reason `NodeStatusUnknown`)にし、MemoryPressure/DiskPressure/
+  PIDPressure も Unknown にする。Lease が新鮮な Node は触らない
+
+**削除したユニットテストの移植内訳(訂正 2026-09-09)**: `kcmdw_test.go`
+のコメントは当初「削除したユニットテストがカバーしていたものを下に移植
+した」と書いていたが、これは広すぎた。実際に移植したのは次のもので:
+
+- `nodecidr_allocator_test.go`: clusterCIDR 内の別々の /24 を 2 Node へ
+- `endpoints_test.go`: selector + Ready Pod → Endpoints/EndpointSlice、
+  targetPort 名の解決、managed-by ラベル、targetRef
+- `endpoints_test.go`: selector 無しの Service には Endpoints を作らない
+  (レビュー指摘で 2026-09-09 に追加。ExternalName ケースは省略)
+- `nodelifecycle_test.go`: Lease 陳腐化 → Ready=Unknown + 3 条件 Unknown、
+  `node.kubernetes.io/unreachable` テイント付与(同上で追加)、
+  Lease が新鮮な Node は不変
+
+移植せずに落としたのは次の 4 つ:
+
+- `TestReconcileNodeLifecycle_EvictsPodsPastEvictionTimeout` — 立ち退きの
+  タイミングは upstream `tainteviction` の責務になった(上の未検証項目 2
+  はこの範囲の残リスク)
+- `TestReconcileNamespaceEndpoints_NotReadyPodGoesToNotReadyAddresses` —
+  Ready/NotReady の振り分けは upstream `endpoint` の判定そのもの
+- `TestDeleteServiceEndpoints` の冪等性 — Service 削除に伴う Endpoints の
+  始末が upstream reconciler + GC 経路に移った
+- `TestNodeCIDRAllocator` の release/reuse・既存 podCIDR の occupy —
+  upstream `cidrset.CidrSet` の内部挙動で、upstream 自身のユニットテストが
+  持っている
+
+いずれも「振る舞いの持ち主が upstream に移り、conformance でカバーされる」
+という理由であり、**required focus set は減らしていない**(不可侵ルール #1)。
+
+**node-lifecycle の poke 経路について(否定的な測定結果も記録)**:
+Lease の陳腐化は「書き込みの不在」で検出されるので poke を引っ掛ける
+write が無い。そこで Cluster DO の既存の安全網 alarm
+(`packages/k8flare-worker/src/storage/index.ts`、live Node がある間だけ
+武装・無くなればパーク)から、削除した `/internal/reconcile-node-lifecycle`
+POST の代わりに **Controllers DO を poke** する形に変えた
+(`pingControllers` と同じ pending-ping 経路。固定間隔ポーリングの新設では
+なく、既存 tick の中身の差し替え)。
+
+**訂正 (2026-09-09、同日のレビュー指摘)**: 「`pingControllers` と同じ
+pending-ping 経路」を使ったのが誤りだった。その経路は**書き込み由来の
+poke** で、Controllers DO の `fetch()` はそれに対して (a) warmup 窓
+(3 分)を張り (b) `unconvergedTicks` をリセットし (c) 自分の 60 秒
+alarm を再武装する。live Node がある限り 60 秒毎にこれを行うと、
+`controllers/index.ts` の `alarm()` コメントが記録している
+「アイドルの BYO node が無意味な 60 秒チェーンを生かし続ける」回帰
+そのものになる(コスト不変条件 #1/#3 違反)。専用の alarm 由来パス
+`/safety-net/node-lifecycle` に変更し、kcm の `ensure(armWarmup:false)`
+と pump 1 回だけを行い、backoff にも Controllers DO の alarm にも
+触らないようにした。会計は docs/cost-model.md の該当節に記載。
+
+**新経路の実測 (2026-09-09)**: alarm 由来分岐に一時的な計装(到達したら
+ConfigMap を 1 個作る)を入れて `wrangler dev` で測った。Node を 1 個
+作ると `/safety-net/node-lifecycle` が **60.9 秒間隔でちょうど 1 回ずつ**
+到達し(タイムスタンプ 1788940060217 → 1788940121145、差 60,928ms)、
+その Node を削除すると **150 秒待って追加の到達はゼロ**(パーク)。
+「live Node がある間だけ 60 秒に 1 回 kcm を pump し、Node が消えたら
+止まる」という会計はこれで実測済み。ただし**この pump が無いと
+nodelifecycle が止まるのか**は相変わらず測れていない(上記 1〜3 の測定と
+同じ理由で local では isolate の退避を再現できない)。計装は
+コミットしていない。
+
+ただし **この poke が実際に効いていることを local で分離できなかった**:
+
+1. `make test-kcm` の (c) は poke をコメントアウトしても同じ 45 秒で
+   通った。テスト中は Controllers DO 自身の alarm(warmup 15 秒間隔 /
+   未収束 backoff)が窓を開け続けている。
+2. `wrangler dev` に対する手動プローブ(ワークロードゼロのクラスタに
+   Node + 陳腐化 Lease だけを置く)でも、poke 有無に関わらず 60 秒で
+   Ready=Unknown になった。Node/Lease の書き込み自体が Controllers DO を
+   起こし warmup(3 分)を張るため。
+3. warmup を跨ぐプローブ(230 秒 Lease を更新し続けてから停止)でも、
+   poke 無しで 50 秒後に Ready=Unknown になった。`wrangler dev` の
+   isolate は S27 の測定 1・2 と同じ理由(isolate が退避されず Go 側の
+   タイマーが動き続ける)で、pump window の境界を再現しない。
+
+つまり **local では pump window の欠如を再現できないので、この poke の
+必要性・有効性は測定で示せていない**。根拠はコードの筋(warmup 期限切れ
+後、収束済みクラスタでは Controllers DO の alarm はパークするので、
+live Node があるうちは何かが窓を開ける必要がある)だけである。S27 と
+同じく決定的な測定は本番か、isolate を確実に退避させるハーネスが要る。
+
+## S29: upstream `k8s.io/apiserver/pkg/endpoints` で手書き REST 層を置き換える案 — サイズで NO-GO (2026-09-09、実測)
+
+S25 の次段(手書き handler.go / subresource.go / table.go / discovery.go /
+watch.go を upstream の `endpoints.APIGroupVersion.InstallREST` +
+`endpoints/discovery` で置き換える)の可否を S25 と同じ方法で計測した
+(`tmp-endpointsspike/main.go` に pkg/apiserver と InstallREST 閉包を
+import する main、`-tags leanwidth -ldflags="-s -w" -trimpath` → wasm-opt -Oz。
+binaryen 129 / go1.26.5)。
+
+| ビルド | raw | wasm-opt 後 | cap 67,108,864 との差 |
+|---|---|---|---|
+| baseline apiserver-wasm | 76,397,999 | 64,877,427 | +2,231,437 |
+| + `endpoints` 閉包(InstallREST + discovery) | 80,402,057 | 68,388,344 | **-1,279,480** |
+| + 追加オーバーレイ 3 点(storageversion スタブ / apihelpers から APF 分離 / `cases.Title` 置換) | 78,973,274 | 67,191,434 | -82,570 |
+
+- コンパイル: `endpoints → storageversion → Clientset.InternalV1alpha1()`
+  が leanwidth の刈られた clientset に無い 1 件のみ失敗。6 行のスタブ
+  オーバーレイで閉包全体が GOOS=js でビルドできる(go-restful /
+  x/net/websocket / wsstream / admission / audit / managedfields はそのまま通る)。
+- 増分 +3,510,946 バイト(opt 後)の内訳: endpoints/handlers 395KB、
+  flowcontrol/v1 377KB(apihelpers 経由の巻き添え)、structured-merge-diff
+  285KB、endpoints 215KB、managedfields 118KB、apiserverinternal/v1alpha1
+  116KB(storageversion 経由)、x/text 239KB(`cases.Title`)、websocket 104KB。
+- 置き換えで消せる手書き 5 ファイルのコード実体は 156,596 バイト
+  (pkg/apiserver 自身の全コード 631,844 バイトの 24.8%)で、opt 後換算
+  約 0.19〜0.23MB。依存パッケージは 1 つも解放されない(残る pkg/apiserver
+  が同じものを使う)。
+- 結論: オーバーレイ 3 点 + 手書き削除を全部足しても cap 前後 ±0.15MB で、
+  kubectl が直接待つ apiserver チャンクをヘッドルームほぼゼロで出荷する
+  ことになる。**S25 が残した fieldmanager/admission(SSA 機構、genericregistry
+  が無条件 import)の構造的な削減が先**。それまでは NO-GO。
+
+計測のみで、コード・オーバーレイはコミットしていない(worktree を破棄)。
+
+## S30: 本番(KOOFFICE アカウント)での S28 検証 — 本番コントロールプレーンが 7/26 版の時点で既に機能していないことが判明 (2026-09-09、実測)
+
+feat/reduce-custom-code(S28 の 5 コントローラー復帰)を k8flare.kooffice.workers.dev
+にデプロイし、eixooh8 上の privileged Docker コンテナ(独立 netns、`--net=host`
+なし、8GB/4CPU 制限)で BYO ノード 1 台を join させて計測した。監視は
+`wrangler tail --format json` と GraphQL(workersInvocationsAdaptive /
+durableObjectsInvocationsAdaptiveGroups / durableObjectsPeriodicGroups)の
+5 分毎ポーリング。
+
+**結論: 本番ではコントローラーの watch 配信と Controllers DO → Loader の経路が
+7/26 版の時点で既に壊れており、S28 の残課題(nodelifecycle の pump 依存、
+tainteviction のインメモリタイマー)は本番では評価できなかった。**
+切り分けは `wrangler rollback` で 7/26 版(d1474833)に戻して同じ試験を
+繰り返すことで行った。
+
+### 発見 1(先行、ブランチ非依存): DO 発の `LOADER.get()` が "Unable to deserialize cloned data due to invalid or unsupported version" で失敗する
+
+- Controllers DO の `hasUnconvergedWork()`(`SELF.fetch` → シェル →
+  `apiserverFetch` → `LOADER.get(apiserver id)`)が **全て**この例外で落ちる。
+  外部からの kubectl(stateless 経路)は同じ id で正常。`loadComponent` の
+  kcm/gc/sched ロードも間欠的に同じ例外。
+- Loader id に env 由来のソルト(`LOADER_ID_SALT`、本ブランチで追加)を付けて
+  再デプロイすると、**DO が最初にロードした id(kcm 等)は成功**し、**stateless
+  側が先にロードした id(apiserver)を DO から要求すると失敗**した。同一マシン上
+  で別 isolate が既にロード済みの worker を共有する経路(S19 G3)が壊れている
+  形と整合する。
+- 7/26 版でも同じ: ロールバック後 4 分間で kcm/gc/sched のロード失敗 8 件、
+  KCM の `PUT deployments/status` が例外 16 件。デプロイ前の GraphQL でも
+  10 分毎に 7 リクエスト(= 600 秒バックオフ上限で回り続ける Controllers DO
+  alarm の list 群)が全件 `clientDisconnected` だった。
+- 帰結: `hasUnconvergedWork()` が本番では決して false を返せず、**Controllers DO
+  の alarm は永久にパークしない**(コスト不変条件 #1/#3 違反が 7/26 以降ずっと
+  本番で起きていた)。今回の計測窓(08:15Z〜09:45Z)の累計は Worker 6,498 req /
+  DO 7,117 req(うち DO エラー 885)。ストレージ read/write ユニットは 0。
+
+### 発見 2(先行、ブランチ非依存): 動的ワーカーが毎分リロードされ、コントローラーが初回 list 以降の変更に反応しない
+
+- tail に `controllers: {kcm,gc,sched} load queued/starting` が **毎分 1〜3 回**
+  並ぶ(Controllers DO のメモリ上の entrypoint が失われている = DO の再起動)。
+  GraphQL の status には `exceededMemory` は現れず、tail は overload サンプリングに
+  入っていたため、原因(128MiB isolate 超過か、別の理由か)は未確定。
+- 症状: Deployment 作成直後(ロード直後の list)には ReplicaSet/Pod が作られる
+  が、その後 `kubectl scale` に **3 分以上反応しない**。7/26 版でも同じ。
+  Service を作っても Endpoints/EndpointSlice は 10 分以上作られない。
+- KCM の list/watch リクエストは 60 秒で `canceled`(pump window の終端)。
+
+### ブランチ側で測れたもの
+
+| 項目 | 実測 |
+|---|---|
+| Node 登録 → 実 nodeipam による podCIDR 付与 | 20 秒以内(`10.42.0.0/24`) |
+| Node 登録 → Pod Running | 20 秒以内 |
+| 12 コントローラー + 実ノード 1 台での `exceeded memory` | tail 上は 0 件(ただしサンプリング中) |
+| 実 nodelifecycle の挙動 | 健全なノード(Lease は 10 秒毎に更新成功)が Ready=Unknown ↔ True を 2 回フラップ。Unknown 時の lastHeartbeatTime は初回 list 時点の値 = informer キャッシュが更新されていない。発見 2 と交絡しており単独評価は不可 |
+| 実 endpoint/endpointslice | 本番では未評価(発見 2) |
+
+### その他
+
+- k3s agent の remotedialer トンネル(`/v1-k3s/connect`)が 401 で 3 秒毎に
+  リトライし続ける(3 分で 65 リクエスト)。管理トークンでの join では期待
+  される挙動か未確認。
+- `Cannot perform I/O on behalf of a different request` が agent 由来リクエスト
+  で散発し、`apiserverFetch` のリトライで成功している。
+- 撤収: Deployment/RS(foreground 削除のファイナライザは GC が動かないため手で
+  除去)/Service/Node を削除、コンテナ・ボリューム・イメージ・作業ディレクトリを
+  ホストから削除。Containers アプリのインスタンスは終始 0。本番は 7/26 版
+  (d1474833)にロールバックした状態のまま。
+
+### S30 続報 (2026-09-09 同日): 発見 1 の修正で本番コントローラーが復活、発見 2 は発見 1 の帰結だった。残る欠陥は resident DW の informer watch 失速
+
+**修正**: `apiserverFetch` が DO 経由の呼び出し(`gateway.internal` ホスト =
+Controllers DO の `apiGet`)に対して **別の Loader id(`do/` スコープ)**を
+使うようにした(commit "fix: load a separate apiserver dynamic worker for
+DO-origin requests")。同一 id を stateless isolate と DO isolate の両方から
+要求すると後者が "Unable to deserialize cloned data" で落ちる、という S30 の
+仮説どおり、スコープ分離後は **deserialize 例外 0 件**(ソルト `s30b/` で
+再デプロイ、09:43Z〜)。Loader unique が 1 つ増える($0.002/日)。
+
+**発見 2 の再解釈**: 「DW が毎分リロードされる」ログ(`load queued/starting`
+→ 直後に `dynamic worker up`)は Controllers DO の各 alarm/fetch 呼び出しで
+entrypoint stub を取り直しているだけで(stub はリクエストスコープ、S2 item 4
+のとおりロード済み id の factory は走らない)、DO の再起動ではなかった。
+コントローラーが反応しなかった真因は発見 1(DO 発の apiserver 呼び出しの
+全滅)で、修正後は `kubectl scale` に **20 秒以内**で反応した。
+
+**修正後の実測(ノード再 join、privileged Docker コンテナ)**:
+
+| 項目 | 実測 |
+|---|---|
+| kcm を fresh load した直後 | Node 登録 → podCIDR / Pod Running ×2 / EndpointSlice(実 endpointslice controller、Pod IP 入り)が **20 秒以内**に全部揃う |
+| kcm がロード済みのまま(09:46Z ロード)で 09:59Z に Node を登録 | **6 分以上 podCIDR が付かず、Pod は Pending、EndpointSlice なし**。同時刻に外部からの `kubectl get nodes --watch` / Lease watch は ADDED/MODIFIED を正常に受信。Loader id のソルトを上げて kcm を強制 fresh load した途端に 20 秒以内で全部揃った |
+| Node Ready のフラップ | 修正後 6 分間の 15 秒サンプリングで **フラップなし**(Ready=True 継続) |
+| 撤収後のパーク | ワークロード・Node 削除(10:12Z)の 2 分後から **12 分間 Worker/DO ともリクエスト 0 件**。コスト不変条件 #1/#3 を本番で初めて確認 |
+
+**残る欠陥(プロダクション化のブロッカー)**: resident DW(kcm)の informer
+watch が、初回 list 以降のある時点から Node/Lease の更新を受け取らなくなる。
+外部 watch は正常なので WatchHub 側ではなく、DW 内の reflector が pump window
+の終端(watch ストリームの `canceled`、wallTime 60 秒)後に張り直す watch
+リクエストが、リクエストコンテキストの無い状態から発行されて失敗している
+可能性が高い(同時間帯の tail に `Cannot perform I/O on behalf of a different
+request` が散発)。S28 で見えた「健全ノードの Ready=Unknown フラップ」は
+これの帰結(Lease 更新がキャッシュに届かず 50 秒で Unknown、次の fresh
+list/pump で True に戻る)で、実 nodelifecycle 固有の問題ではない。
+修正の当たりは pkg/cfruntime(DW 内 outbound fetch を現在の pump の
+IoContext に紐付ける / window 内で再 watch させる)。これが直るまで
+tainteviction のインメモリタイマー(S28 残課題 2)の評価は保留。
+
+**未実施**: Node を 300 秒超停止させた場合の Unknown → taint → 立ち退きの
+計測(上記欠陥と交絡するため)。本番は現在この修正込みのブランチ
+(dfbbac18、`LOADER_ID_SALT=s30c/`)がデプロイされたまま。
+
+## S31: resident DW の informer watch 失速の真因 — 「インスタンスを生んだリクエストは生き続ける」という前提が本番では成り立たない (2026-09-09、実測)
+
+S30 続報の「残る欠陥(プロダクション化のブロッカー)」の追跡。**ローカル
+(`wrangler dev`)で再現に成功し、根本原因を特定して修正した。** 本番での
+検証は未実施(デプロイは指示待ち)。
+
+### 根本原因
+
+resident DW(kcm / gc / sched / clusterop)の **outbound fetch が、インスタンスを
+生成したリクエスト 1 つに永久に紐付いていた**。
+
+1. `pkg/controllers/restconfig` と `pkg/controllers/clusterop/bridge.go` は
+   `cloudflare.GetBinding("GATEWAY")` で Fetcher を **1 回だけ**取得していた。
+   これは `Go.run` 時点の env、すなわち **isolate を最初に生成したリクエスト**の
+   env である。
+2. `ResidentService` はコントローラーの run ループを、その同じリクエストの
+   `cloudflare.WaitUntil` の中で起動していた。両者は「S8 の知見どおり、この
+   WaitUntil の promise は決して解決しないので、このリクエストはインスタンスが
+   死ぬまで生き続ける」という前提でつり合っていた。
+3. **本番はこの前提を満たさない。** waitUntil には上限があり、リクエストは
+   打ち切られる(S30 で実測: DW の list/watch が wallTime 60 秒で `canceled`)。
+4. 打ち切られた後、その Fetcher の `fetch()` は **失敗しない**。返る promise が
+   **解決も棄却もされないまま放棄される**。したがって promise を待つ goroutine は
+   **isolate の寿命が尽きるまでブロックしたまま**になる。エラーログも、
+   client-go の backoff ログも、リトライも一切出ない。
+5. reflector は 60 秒で watch を切られた後の張り直しでここに嵌まる。以降その
+   informer は二度と更新を受け取らない。**新しい Loader id で fresh load する
+   以外に回復手段が無い**、という S30 の観測と完全に一致する。
+
+S24 で修正した「stateless な apiserver DW が `sync.OnceValue` で Fetcher を
+掴んで `Cannot perform I/O on behalf of a different request` を投げる」問題と
+**同じ捕捉ミスの、resident 版**である。S24 の修正(`BindingFromContext`)は
+per-request 経路だけを直しており、resident 経路には `GetBinding` の doc comment
+として「resident は自分の WaitUntil の中から使うので GetBinding のままで正しい」
+と**明示的に書かれていた**。その一文が誤りだった(rule 4 に従い、削除ではなく
+本節に記録する)。本番 tail に散発していた `Cannot perform I/O ...` は同じ捕捉の
+別の顔(IoContext がまだ生きているうちに触った場合はこちらになる)。
+
+### 実測した根拠
+
+**E1: `wrangler dev` はクロスリクエスト I/O 規則を強制しない。** worker_loaders
+バインディング付きの探針 Worker を立て、リクエスト 1 の env を保持してリクエスト 2
+から使う形を DW 実形状で試した。`sameEnvObject=true`、fetch も成功。**dev では
+捕捉した env が永久に有効**であり、本番の規則が再現されない。これが `make test-kcm`
+がこの欠陥を数か月見逃してきた理由である(S27 の「dev は isolate を evict しない」
+と同じ系統の dev/prod 差)。
+
+**E2(決定打): 放棄される promise は dev でも再現する。** window(リクエスト)を
+3 秒で閉じ、20 秒かかる fetch をその中で開始する探針を回したところ、window が
+閉じた後、その promise は **then も catch も一切呼ばれなかった**。つまり
+「失敗」ではなく「無応答」であり、Go 側は `select` の第 2 の腕を持たない限り
+永久に待つ。本番の tail に retry storm が全く無かったことの説明でもある。
+
+**E3: ローカル再現(3 回)。** kcm を Deployment 作成でロードし、4 分間ポークを
+続けた後に Node + kube-node-lease Lease を登録し、実 nodeipam の podCIDR 付与を
+待つスクリプトを 3 つのコード状態で回した:
+
+| # | コード状態 | 結果 |
+|---|---|---|
+| 1 | 修正前(bootstrap の boot waitUntil が dev では永久に開いたまま) | `podCIDR=10.42.0.0/24 after 0s` — **再現せず** |
+| 2 | bootstrap のみ修正(pump window を本番同様に閉じる)+ Go 側は `GetBinding` のまま | `NO podCIDR after 120s -- DEFECT REPRODUCED` |
+| 3 | 修正後(Go 側も live window から解決) | `podCIDR=10.42.0.0/24 after 0s` |
+
+つまり **dev で本番の欠陥を再現するには、dev 側でも pump window を本番と同じく
+閉じる必要があった**。この window を閉じる変更自体を修正に含めたので、以後は
+Go グルーの退行がローカルでも捕まる。
+
+**E4: 修正後の挙動が event-armed であることの確認。** 実行 3 の DW ログで、
+「window が閉じたので放棄した待ち」が **11:22:51 に 15 件、11:23:06 に 15 件**
+(= kcm の informer 数ぶん、window 1 つにつき 1 巡)出たあと、**3 分間まったくの
+無音**になり、11:26:06 の Node 登録のポークで開いた window で即座に再 watch して
+1 秒以内に podCIDR を付けた。ポーク間は本当に何も動いておらず(コスト不変条件
+#1/#3)、それでいて次のポークには即応する。
+
+### 修正
+
+- `pkg/cfruntime/cloudflare/window.go`(新規): 開いている pump window の登録簿。
+  JS 側が dispatch 毎に `openPumpWindow(env)` / `closePumpWindow(id)` で開閉する。
+- `packages/k8flare-worker/src/loader/bootstrap.ts`: 各 dispatch を window として
+  publish し、`ctx.waitUntil` のタイマー満了で閉じる。
+- `pkg/cfruntime/cloudflare/fetch`: `WithLiveBinding(name)` を追加。**呼び出し毎に**
+  現在開いている window から Fetcher を解決し、開いていなければ次のポークまで
+  待つ。待つのはタイマーもポーリングも伴わない(コスト不変条件 #2: I/O 待ちは
+  無課金)。in-flight の呼び出しは window が閉じた時点で `ErrPumpWindowClosed` に
+  して手放し、client-go に生きた window でリトライさせる。
+- `pkg/cfruntime/residentservice.go`: `cloudflare.WaitUntil` をやめ、run を素の
+  goroutine で起動する。特定のリクエストに紐付けるものを無くした。
+- `pkg/cfruntime/cloudflare/env.go`: `GetBinding` と `WaitUntil` を削除。
+  `EnvFromContext` は context → 現在の window → boot env の順に解決する
+  (S24 が残した「context の無い vault read が boot env に落ちる」穴も、
+  これで生きた window に載る)。
+- 回帰テスト: `pkg/apiserver/kcmdw_test.go` に、kcm ロードから 3 分以上経った
+  あとに Node を登録して podCIDR を要求するフェーズを追加。既存の assertion は
+  すべて最初の 1〜2 window 以内に完結しており、この欠陥を検出できなかった。
+  待ち時間はテスト自身の経過時間で相殺するので、レーンの実時間はほぼ増えない。
+
+### 却下した実装(記録)
+
+**window が閉じるときに in-flight fetch を `AbortController` で畳む**、を最初に
+実装したが**動かない**。Go の goroutine は「そのとき動いている JS コールバック」の
+中で再開するため、AbortController はリクエスト A の下で生成され、リクエスト B の
+下で `abort()` されうる。これ自体がクロスリクエスト I/O アクセスであり、
+`I/O type: RefcountedCanceler` の例外でインスタンス全体が exit code 2 で落ちた。
+I/O オブジェクトに一切触れない `window.Done()` の待ち合わせだけが安全な畳み方。
+
+副産物として、JS 境界の呼び出しは全て `recover` で Go の error に変換するように
+した(`fetch.go` の `jsCall`)。捕捉していないと、リクエスト境界で投げられた
+例外 1 つが resident インスタンス全体を落とす。
+
+### デバッグ上の落とし穴(記録)
+
+Go の stdout/stderr は `wasm_exec.js` の `console.log` に出るが、**DW の
+`console.log` は `wrangler dev` のコンソールに出てこない**(`console.error` は
+出る)。そのため上記の panic は「Go program has already exited」だけが見えて
+理由が完全に不可視だった。DW 内の Go を追うときは `wasm_exec.js` の当該行を
+一時的に `console.error` に差し替えること(ビルド生成物なのでコミットはしない)。
+
+### 修正後に露出した別の欠陥: 再 list が informer キャッシュを空にする(原因判明・修正済み)
+
+修正で dev が本番と同じ「window の外では止まる」挙動になった結果、**実
+nodelifecycle の Lease 失効検知が収束しなくなった**。`kcmdw_test.go` の
+S28 由来の assertion(2 分以内に Ready=Unknown + unreachable taint)が
+タイムアウトする。
+
+window 長だけを変えた A/B(他は同一、Go 側は修正済み。ノード 2 台、片方の
+Lease を 5 分バックデートし、もう片方は 5 秒毎に更新し続けてポークを供給):
+
+| `PUMP_WINDOW_MS`(Controllers DO) | 結果 |
+|---|---|
+| 25,000(現行) | 240 秒待っても Ready=True のまま |
+| 50,000 | 240 秒待っても Ready=True のまま |
+| 300,000 | **46 秒で Ready=Unknown + unreachable taint** |
+
+`nodeMonitorGracePeriod` は 50 秒。window ≤ 50 秒では収束せず、window が
+猶予期間より十分長いと即座に収束する、という切れ方をしている。つまり
+**window 境界を跨ぐと猶予タイマーが実質巻き戻る**。S30 の本番観測「健全な
+ノードが Ready=Unknown ↔ True をフラップする」も、本番の IoContext 上限
+(約 60 秒)が猶予期間 50 秒とほぼ同じであることの現れとして整合する。
+
+切り分けで**否定した**仮説(いずれも実測):
+
+- **Go のタイマーが window 境界で死ぬ**: 否定。`time.Tick(5s)` のログを
+  resident に仕込んで計測したところ、window を跨いで 150 秒間 30 回、
+  5 秒間隔でずれなく発火し続けた。
+- **kcm インスタンスが壊れている / 応答しない**: 否定。同じインスタンスで
+  Deployment を作ると 15 秒で ReplicaSet、20 秒で Pod が作られる。
+  nodeipam の podCIDR 付与も即座。イベント駆動の経路は健全。
+- **reflector が張り直せていない**: 否定。window が閉じるたび
+  `watch ended with error ... cloudflare: pump window closed` が出て、次の
+  window で list からやり直せている(想定どおり)。
+
+**真因(kcm を `-v=4` でビルドし直して判明)**: 猶予タイマーの問題ですら
+なかった。V(4) ログに出ていたのはこれ:
+
+```
+12:40:32.652  reflector.go:507] "Caches populated" type="*v1.Node"
+12:40:34.314  node_lifecycle_controller.go:679] "Controller observed a Node deletion" node="v4x-a"
+12:40:34.314  node_lifecycle_controller.go:679] "Controller observed a Node deletion" node="v4x-b"
+12:40:34.314  controller_utils.go:173] "Recording event message for node" event="Removing Node v4x-a from Controller"
+```
+
+健全な Node 2 台が **消えたことにされて** `knownNodeSet` と
+`nodeHealthMap` から落とされ、以後 `monitorNodeHealth` の対象ですら
+なくなっていた。だから何分待っても Ready=Unknown にならない。
+
+WatchList モードの reflector は、再 list のとき
+`sendInitialEvents=true&resourceVersionMatch=NotOlderThan&resourceVersion=<いま持っている rv>`
+で watch を張る。これは「rv 以上の鮮度の**現在の全状態**を synthetic ADDED
+で送れ」という意味で、`resourceVersion` は**鮮度の下限**であって再生カーソル
+ではない。`packages/k8flare-worker/src/k8s/watch.ts` はこれを再生カーソルと
+して WatchHub に渡していたため、**現在 rv からの再 list はアイテム 0 件 +
+initial-events-end bookmark だけのストリーム**になり、reflector はその空集合
+で `Replace()` して informer キャッシュを空にしていた。手で叩いた確認:
+
+```
+$ curl '.../api/v1/nodes'                      -> items 2, resourceVersion 76
+$ curl '.../api/v1/nodes?watch=true&sendInitialEvents=true&resourceVersionMatch=NotOlderThan&resourceVersion=76&allowWatchBookmarks=true'
+{"type":"BOOKMARK","object":{"kind":"Node",...,"annotations":{"k8s.io/initial-events-end":"true"}}}   # ADDED が 1 件も無い
+$ curl '.../api/v1/nodes?watch=true&sendInitialEvents=true&...&resourceVersion=0&...'
+{"type":"ADDED","object":{...v4x-a...}}                                                                # 0 からなら正しく全件
+```
+
+**pump window 導入前は踏まなかった**: resident インスタンスが再 list を
+必要としなかったので、reflector は起動時の rv=0 でしか list せず、常に
+正しい経路を通っていた。window で watch が切られるようになって初めて
+「現在 rv からの再 list」が毎 window 走り、この欠陥が常時発火した。
+window 長との相関(上の A/B)も、window が長いほど再 list の回数が減って
+猶予期間 50 秒を跨ぐ確率が下がる、というだけのことだった。
+
+**修正**: `sendInitialEvents=true` のときは replay revision を 0 に固定する
+(commit "fix: serve the full state for sendInitialEvents watch requests")。
+修正後、同じプローブで **36 秒で収束**(window は既定の 25,000ms のまま)、
+phantom deletion は 0 件。
+
+なお **GC も同じ空キャッシュを見ていた**はずで、実際この欠陥の再現中に
+Deployment の ReplicaSet が消える現象を観測している(Deployment の status は
+replicas:1/updatedReplicas:1 のまま、RS だけ存在しない)。オーナーが居ない
+と判断した実 garbagecollector による削除と整合するが、単独では確認して
+いない。**空の informer キャッシュは黙って壊れるのではなく、実物を消しに
+かかる**という点で、これは S31 の元の欠陥より危険度が高い。
+
+コストの観点では境界の再 list が無視できない、という点は修正後も残る:
+KCM の約 15 個に加えて GC のメタデータ informer が約 45 個あり、**window が
+閉じるたびに約 60 本の watch が切れて全部が list からやり直す**。しかも上の
+修正で、その再 list は毎回**全件**を返す(それが正しい挙動)。window を
+延ばすほど再 list の回数は減るので、window 長は「短いほど安い」ではない。
+本番の IoContext 上限(約 60 秒、S30 実測)より長い window は取れず、上限より
+長い `setTimeout` を仕掛けると `closePumpWindow` が発火しないままリクエスト
+だけが死に、S31 の元の欠陥が別経路で再来する。**この再 list 増幅の実測が
+未了**(コスト不変条件 #5): 現行 25,000ms の window で rows read が
+どれだけ増えるかは cost-gate で測っていない。
+
+### 未検証
+
+- **本番での確認**(デプロイ禁止のため未実施)。本番は S30 続報時点の
+  dfbbac18 のまま。
+- 空 informer キャッシュを見た実 garbagecollector が ReplicaSet を実際に
+  削除したのか(観測はしたが、単独では確認していない)。
+- window ごとの全件再 list によるコスト増(rows read)の実測。
+- 本番で散発していた `Cannot perform I/O on behalf of a different request` が
+  この修正で消えるか。ローカルでは E1 のとおり dev がこの規則を強制しないため
+  確認できない。
+- tainteviction のインメモリタイマー(S28 残課題 2)と、Node を 300 秒超停止
+  させたときの Unknown → taint → 立ち退き。どちらも本欠陥と交絡していたため
+  S30 で保留したままで、本節では扱っていない。
+
+## S31 追記: 本番検証と、window の close が届かないと resident が二度と回復しない (2026-09-09、実測)
+
+S31 をデプロイした状態の本番(k8flare.kooffice.workers.dev、13:15-13:42Z)で
+BYO VM のノードを使って測った結果。
+
+**直った 2 件**:
+
+- kcm ロードの **6 分後**に登録した Node が podCIDR を得て、その 2 Pod が
+  Running、EndpointSlices まで **10 秒以内**。S31 前は「新しい Loader id で
+  ロードし直すまで永遠に来ない」だった。
+- ノードを `docker pause` → **61 秒以内**に Ready=Unknown +
+  `node.kubernetes.io/unreachable` (NoSchedule + NoExecute)。実 tainteviction が
+  Pod を立ち退かせ、ReplicaSet が作り直して Pending になるところまで実 k8s と
+  同じ挙動。
+
+**残った 1 件(本追記の対象)**: 約 9.5 分止めたノードを `docker unpause` すると、
+kubelet の status 書き込みで Node は即座に Ready=True に戻るのに、**2 つの
+unreachable taint が外れず、代替 Pod が 5 分以上 Pending のまま**だった。
+20〜30 秒毎に Deployment の annotation を書いてポークし続けても変わらない。
+**新しい Loader id で kcm をロードし直すと 15 秒で taint が外れて Pod が
+スケジュールされた**ので、壊れているのは resident インスタンスの側。
+
+### ローカル再現(段階を追って否定した仮説を含む)
+
+指示のシナリオ(Deployment 2 replicas + Node + 10 秒毎の Lease 更新 → 2 分
+停止 → 再開)をそのまま dev で回すと**再現しない**。taint は 45 秒で外れる。
+条件を寄せていっても直らなかった:
+
+| 試行 | 結果 |
+|---|---|
+| 1 ノード、2 分停止 | 45 秒で taint 除去。ただし NoExecute が付かず立ち退きも無い |
+| 1 ノード、10 分停止 | 15 秒で taint 除去 |
+| 2 ノード(1 台は cordon した健全ノード)、10 分停止 | **本番と同じく NoExecute + 立ち退きまで再現**。しかし復帰は 24 秒 |
+
+1 ノードだと nodelifecycle が full disruption モードに入って立ち退きを止める
+ため、本番の挙動を出すには**健全なノードがもう 1 台要る**(本番にもあった)。
+つまり「長時間の無ハートビート」も「NoExecute + 立ち退き」も**引き金ではない**。
+
+`watch.ts` に一時ログを入れて分かった別件: dev では watch の WebSocket が
+**11 分で 1306 本開いて 0 本しか閉じない**。dev が `IoContext` を畳まないので
+`handleWatch` が window より長生きするだけで、本番の挙動ではない。ただし
+コスト不変条件に触れる実在の穴なので**未処理項目として記録**する(本欠陥の
+真因ではないので本追記では直していない)。
+
+### 真因: JS の close が届かなかった window は永久に「生きている」ことになる
+
+S31 が本番で確認した事実「リクエストの `IoContext` は、その `ctx.waitUntil` の
+タイマーより先に畳まれることがある」を、window 自身にも当てはめると答えが出る。
+window を retire するのは `closePumpWindow` だけで、これは**そのディスパッチの
+`ctx.waitUntil` に乗った `setTimeout` から呼ばれる**。リクエストが先に死ぬと
+close は永久に来ず、window は登録されたまま「最新の window」で在り続ける。
+
+以降 `CurrentWindow` はその死んだ window を返し続け、`WithLiveBinding` の
+呼び出しは**誰も閉じないチャンネル**(`Done()`)を待って刺さる。resident の
+outbound I/O が全部そこで止まるので、informer は張り直せず、
+nodelifecycle は Node の復帰を見られない。ポークは届くが何も進まない。
+**新しい Loader id でしか回復しない**という本番の観測とも一致する。
+`wrangler dev` は `IoContext` をそこまで厳しく畳まないので、この経路は
+ローカルでは自然発生しない。
+
+**フォールト注入で再現**: `PUMP_WINDOW_DROP_CLOSE=N` を足して N 回に 1 回
+`closePumpWindow` を落とすようにした(bootstrap の JS 側)。N=2 で
+「ロードの数分後に Node を登録して podCIDR を待つ」フェーズが**3 分待っても
+来ない**ようになり、本番と同じ「二度と回復しない」状態がローカルで出た。
+close が 1 回落ちるだけで instance 全体が終わる。
+
+### 修正
+
+`pkg/cfruntime/cloudflare/window.go`: window に**自分の寿命を持たせて自分で
+閉じる**。bootstrap が約束した `PUMP_WINDOW_MS` を `openPumpWindow` の引数で
+Go 側に渡し(`handler_js.go`)、`lifetime + 2 秒`の `time.AfterFunc` で
+`closeWindow` を呼ぶ。`CurrentWindow` / `currentWindowEnv` は
+`newestLive()`(expiry を過ぎていない最新の window)しか返さないので、
+タイマーより先に goroutine が起きても死んだ window は掴まない。retire の
+処理は `closeWindow` に一本化し、**待っている goroutine を起こすのを最後に
+する**(以前は先に `js.Func` の回収をしていて、そこで throw すると全員が
+取り残された)。
+
+コスト不変条件との関係: 追加のタイマーは window 1 本につき 1 発の
+one-shot で、close が正常に届けば `Stop()` される(#3 の event-armed。
+ポーリングではない)。isolate が凍結されていれば発火は遅れるだけで、
+起きたときのディスパッチ = 解放された goroutine がリトライできる瞬間なので
+遅れて困らない。常駐プロセスも壁時計課金も増えない。
+
+### 回帰テスト
+
+`pkg/apiserver/kcmdw_test.go` のレーンを **`PUMP_WINDOW_DROP_CLOSE=3` で
+走らせる**(3 ディスパッチに 1 回 close を落とす)ようにし、末尾に復帰
+フェーズを足した: 止めていたノードの Lease 更新と status 書き込みを再開し、
+unreachable taint が外れることと、そのノードに `nodeSelector` で固定した
+Pod がスケジュールされることを要求する。修正を revert すると既存の
+「遅れて登録した Node」フェーズで落ちる(podCIDR が来ない)。レーンの実時間は
+約 275 秒のまま。
+
+ノードには hostname ラベルと kubelet 相当の capacity/allocatable を持たせた。
+`NodeResourcesFit` は allocatable の pod 数が無いノードを全部弾くので、
+これが無いと固定 Pod はどこにも載らない。
+
+### 未検証
+
+- **本番での確認**(デプロイ禁止のため未実施)。上の本番数値は S31 の
+  コード(この追記の修正を含まない)で測ったもの。
+- 本番で実際に close が落ちていたことの直接証拠(ログでは取れていない)。
+  再現はフォールト注入によるもので、「本番でこの経路が起きうる」の根拠は
+  S31 で実測した `IoContext` の早期畳み込みと、症状(新しい Loader id で
+  しか回復しない)の一致まで。
+- dev で観測した watch WebSocket の leak(11 分で 1306 本)。dev 固有の
+  可能性が高いが、本番でのソケット数は測っていない。
+- DefaultTolerationSeconds admission がこの apiserver に無いため、
+  unreachable/not-ready の Pod が upstream の 300 秒猶予なしで即座に
+  立ち退く(本番で実測)。**ギャップとして記録するのみ、今回は実装しない**。
+
+### S31 追記 2 (2026-09-09 15:19-15:44Z、本番): 「close 欠落」修正後も復帰は約 6 分かかる — 詰まりではなく遅延
+
+上の追記の修正(window の自前期限)込みでデプロイし(239fcd00、
+`LOADER_ID_SALT=s31c/`)、同じ手順を本番で繰り返した:
+
+| 段階 | 実測 |
+|---|---|
+| kcm ロードの 6.5 分後に Node 登録 | podCIDR / Pod Running ×2: 15 秒、EndpointSlice: 39 秒 |
+| `docker pause` | 61 秒で Ready=Unknown + unreachable ×2、Pod 立ち退き → 代替 Pod Pending(再現) |
+| 9.9 分後に `docker unpause` | Ready=True は即時。**unreachable taint は 255 秒経っても残る**が、**15:41〜15:43 の間(unpause から約 5〜6 分)に除去され、Pod は Running に戻った** |
+
+つまり前回(13:34Z)観測した「fresh load するまで回復しない」は、fresh load
+(13:40Z のデプロイ)が**同じ約 6 分の遅延の終端と重なっただけ**の可能性が
+高く、上の追記の「close 欠落で永久に詰まる」は本番の真因とは**確認できて
+いない**(ローカルでは close を意図的に落とすと再現する実在の穴なので修正
+自体は残す)。
+
+遅延中の tail(90 秒間): kcm は生きていて、Node の watch を張り直し
+(window 終端 32 秒で `canceled` → 再 watch)、`PATCH nodes/k8flare-verify-1`
+×2、`PUT deployments/s31-probe/status` **×24**(S26 の no-op 書き込みストーム
+と同型。要調査)、sched は Pod の binding を POST。例外は無し。したがって
+残るのは「復帰直後の nodelifecycle が taint を外すまでに数分かかる」理由の
+特定で、候補は (a) 各 window 終端で watch が切られ、reflector の再 watch と
+`monitorNodeHealth`(5 秒周期)のタイミングが噛み合わず観測が遅れる、
+(b) upstream nodelifecycle 自体の挙動(Unknown からの復帰後、`nodeHealthMap`
+の probe timestamp 更新を待つ)。実 KCM をホストで動かした場合の復帰時間との
+比較が次の一手。
+
+撤収後(15:45Z〜)は前回同様にパークを確認する。本番はこのブランチ
+(239fcd00)がデプロイされたまま。
+
+## S32: 書き込みストームの真因は no-op poke ループではなく「taint 立ち退き ⇄ ReplicaSet ⇄ scheduler」のホットループ (2026-09-10、ローカル実測)
+
+S31 追記 2 が「S26 の no-op 書き込みストームと同型。要調査」と書いた
+`PUT deployments/s31-probe/status` ×24/90秒 を、ローカルで**再現し計測した**。
+結論は追記 2 の推測と違う: no-op poke ループではない(S26 の抑止は効いている)。
+Node がダウンしている間、実 kcm の taint-eviction-controller が Pod を消し、
+実 replicaset controller が作り直し、実 scheduler が**同じ tainted Node に
+バインドし直し**、また消される、という**実書き込みのホットループ**だった。
+
+### 計測方法(再現手順)
+
+`pkg/apiserver/s32probe_test.go`(`K8FLARE_S32_PROBE=1` でのみ走るプローブ。
+既定は skip)。2 Node + 2 replica Deployment(`nodeSelector` で nodeB に固定)
++ 各 Node の fakeKubelet(Lease 更新・Node status heartbeat・Pod を
+Running/Ready にする・削除された Pod の finalize)。nodeB の kubelet を止めて
+`docker pause` 相当を作り、90 秒後に戻す。書き込み量は namespace facet の
+kine リビジョン(`deploy rv=`)で測る — 抑止された no-op は進めないので、
+実際に受理された書き込みだけを数える。
+
+request 単位の内訳は、計測中だけ gateway に一時的なトレースを入れて採った
+(`wrangler dev` のログは外部リクエストしか出さず、`SELF` binding 経由の
+内部 fetch は出ないため)。**このトレースはコミットしていない** — 公開
+fetch のホットパスに分岐とレスポンス clone を足すため。以後の再測定は
+facet リビジョンで足りる。
+
+### 実測(修正前 / 修正後、同一手順)
+
+| | 修正前 | 修正後 |
+|---|---|---|
+| Node ダウン中の 1 分間の全書き込み | **784** | **27** |
+| うち `PUT deployments/s32-probe/status` | **230** | **2** |
+| Node ダウン 90 秒間の facet リビジョン増分 | 142 → 739(30 秒で約 600) | 107 → 107(**0**) |
+| ダウン中の Pod create / delete / binding | 61 / 61 / 61(約 30 秒) | 0 / 0 / 0 |
+
+ループの現物(修正前のログ、`taint_eviction.go:111 "Deleting pod"` が
+1 秒あたり約 2 件で無限に続く):
+
+```
+01:30:02 POST   /api/v1/namespaces/s32/pods                        201 (replicaset)
+01:30:02 POST   /api/v1/namespaces/s32/pods/…-s9knh/binding         201 (kube-scheduler)
+01:30:02 PATCH  /api/v1/namespaces/s32/pods/…-s9knh/status          200 (taint-eviction)
+01:30:02 DELETE /api/v1/namespaces/s32/pods/…-s9knh                 200 (taint-eviction)
+01:30:02 PUT    /apis/apps/v1/…/deployments/s32-probe/status        200
+```
+
+`deployments/status` の PUT は**このループの結果**であって原因ではない。しかも
+同じリビジョンを返す PUT が 2〜3 回連続する(`rv=134` ×3、`rv=139` ×3 等)——
+つまり S26 の no-op 抑止(`KineStorage.GuaranteedUpdate` の `bytes.Equal`)は
+効いていて DO への書き込みは発生しておらず、`afterWrite`/`pingControllers` も
+呼ばれていない。**S31 追記 2 の「S26 と同型」という見立ては誤りだったので
+訂正する。**
+
+### 原因と修正
+
+この apiserver には upstream の DefaultTolerationSeconds admission が無く、
+どの Pod も `node.kubernetes.io/not-ready:NoExecute` /
+`node.kubernetes.io/unreachable:NoExecute` を許容しない。upstream なら 300 秒
+待つところを、taint が付いた瞬間に立ち退きが走る。
+
+修正は `pkg/apiserver/defaults.go` の `ApplyDefaults`(create パス)に
+versioned 型版の同 admission を足すだけ。upstream の
+`plugin/pkg/admission/defaulttolerationseconds` を**そのままリンクはできない**:
+internal `api.Pod` を admit するため `k8s.io/kubernetes/pkg/apis/core` /
+`apiserver/pkg/admission` / `component-base/featuregate` / `spf13/pflag` を
+引き込み、apiserver チャンクの残り 2595KiB には収まらない。キーと Operator /
+Effect は `k8s.io/api` の定数、300 秒はプラグイン側が非公開なので値だけ写した
+(その旨は当該コードの doc comment に記録)。`make wasm` の headroom は
+2595KiB で**変化なし**。
+
+### 回帰ゲート
+
+kcm レーン(`pkg/apiserver/kcmdw_test.go`)の Node 障害→復帰サイクルに、
+その namespace facet のリビジョン増分の上限(400)を足した。同時に、この
+サイクルで立ち退き対象になる 2 replica Deployment(nodeB 固定)を先に作る
+ようにした — Pod が無いと上限判定が空振りするため。
+
+### 残る欠陥(未修正・記録)
+
+1. **実 scheduler が `unreachable:NoSchedule` の付いた Node に bind する。**
+ 上のループの構成要素で、TaintToleration の filter は NoSchedule を弾く
+ はずなのに、taint 付与から 30 秒以上あとも bind し続けた(修正前ログ、
+ `ua=kube-scheduler`)。sched DW の Node informer キャッシュが古いままだと
+ いう S31 と同じクラスの疑い。トレランス追加でループ自体は止まったので
+ 優先度は下がったが、欠陥としては残っている。
+2. **`POST events` が最初の数回 400 を返す。** 実 kcm の event broadcaster が
+ `apiVersion`/`kind` の無い body を送り、こちらの apiserver が
+ `"Object 'Kind' is missing"` で弾く(upstream は URL パスから推論する)。
+ リトライで 201 になるので致命ではないが、node-controller の NodeNotReady
+ event などが落ちている。
+
+## S31 追記 3: 復帰後の taint 除去に数分かかる件は、ローカルでは resident pump でもホスト実 KCM でも再現しない (2026-09-10、ローカル実測)
+
+追記 2 の「本番では unpause から約 5〜6 分 taint が残る」について、次の一手と
+書いた「実 KCM をホストで動かした場合との比較」を実施した。
+
+`s32probe_test.go` に `K8FLARE_S32_HOST_KCM=1` を追加(e2e-conformance.yml の
+`host` バリアントと同じ分割: `CM_DISABLED:1` + `SCHED_DISABLED:1` で DW 側を
+落とし、`cmd/controller-manager` の実バイナリを `wrangler dev` に向ける。
+clientcmd が plain HTTP にトークンを送らないので自己署名証明書 +
+`--local-protocol https` を使う)。
+
+| 構成 | Node ダウン | Ready=True 後に taint が消えるまで |
+|---|---|---|
+| resident pump(kcm DW) | 90 秒 | **10 秒** |
+| resident pump(kcm DW) | 10 分 | **20 秒**(別ラン、S32 の 1 回目) |
+| ホスト実 kube-controller-manager | 90 秒 | **10 秒** |
+
+**つまりローカルではどちらも速く、本番の 5〜6 分はどちらの構成でも再現しない。**
+追記 2 の候補 (b)「upstream nodelifecycle 自体の挙動」は**否定された**
+(ホスト実 KCM が 10 秒で外す)。候補 (a)「window 終端で watch が切れる
+タイミング問題」は、ローカルの resident pump も同じ window 機構で回っていて
+10〜20 秒で外せているので、**ローカルの条件では成立しない**。残るのは本番
+固有の条件(isolate の寿命 / Loader id / DO の実配置)であり、S31 本文と
+同じクラスの本番限定現象として扱う。
+
+**したがって「ローカルで速いから直った」とは書かない。** 本番で再測定する
+までこの項目は未解決とし、推測に基づく修正は入れない。ホスト比較を
+再実行する手順だけプローブに残した。
+
+### 未検証
+
+- 本番での再測定(トレランス修正込みでのデプロイ後)。デプロイは指示待ち。
+- 上の「残る欠陥」1 の sched DW の Node キャッシュ鮮度。
+- 10 分より長いダウン(本番は 9.9 分)でのローカル挙動。90 秒 / 10 分の
+ 2 点しか測っていない。
+
+## S33: foreground 削除で RC が依存 Pod より先に消える件 — ローカル再現に失敗、apiserver 側にガードを入れた (2026-09-10、実測)
+
+必須 conformance の退行。GitHub Actions run 34373872717、ジョブ
+`e2e-conformance (host)`(ホスト kube-scheduler + ホスト kube-controller-manager、
+gc は dynamic worker)のステップ "Run garbage collector conformance tests
+(required)" で
+
+```
+[sig-api-machinery] Garbage collector should keep the rc around until all its pods are deleted if the deleteOptions says so [Serial] [Conformance]
+FAILED at test/e2e/apimachinery/garbage_collector.go:711
+```
+
+が落ちた。2026-07-11 に required 7/7 として昇格した 1 本。
+
+### 前提の訂正: 「約 5 秒」ではなく「1 秒以内」
+
+当初「RC が約 5 秒で消えた」と整理していたが、**これは誤り**だった(rule 4 に
+従い訂正を記録する)。upstream のポーリングは `1*time.Second` 間隔で、RC が
+まだ在るあいだ毎回 `%d pods remaining` を出す。CI ログにその行は **1 本も無い**。
+つまり RC は DELETE(16:38:36.849)の**最初のポーリング、約 1 秒後には既に
+NotFound** だった。
+
+この 1 秒という値が切り分けの決め手になる。ローカルで実 GC に 40 Pod を
+カスケードさせると 5〜15 秒かかる。1 秒未満で finalizer が外れるということは、
+GC が「依存ゼロのグラフ」を見て `blockingDependents()` が即座に空を返した、
+という形以外に説明が付かない。**一部を取りこぼした**のではなく、**そもそも
+Pod を 1 つも知らなかった**。
+
+### 実測で否定した仮説
+
+- **再 list が古い resourceVersion で古い状態を返す。** 否定。
+  `KineStorage.GetList` は `k.s.List(ctx, prefix, 0, 0)` と revision・limit を
+  ともに 0 で固定して呼ぶ。Go apiserver はクライアントの `resourceVersion` も
+  `limit` も storage 層に渡していないので、`storeList` の
+  `AND mkv.id <= ?4`(point-in-time)分岐も、all-namespaces fan-out の
+  continue トークン無し切り詰めも、**API 経由では到達不能**。一度この筋で
+  書きかけたが、コードを追って否定した。
+- **finalizer がそもそも付かない。** 否定。`upstreamregistry.go` は
+  `EnableGarbageCollection: true` を立てており、ローカル再現でも毎回
+  `finalizers=[foregroundDeletion]` が観測された。
+- **書き込みバーストで watch イベントが落ちる。** 否定。生きた watcher に
+  対して 40 Pod を同時 POST する試験を 3 回回して **40/40** が毎回届いた。
+
+### ローカル再現には失敗した
+
+`pkg/apiserver/gcprobe_test.go`(skip ゲート、S32 プローブと同じ形)を書いて
+以下をすべて試したが、**RC は毎回正しく全 Pod より後に消えた**:
+
+| 条件 | 結果 |
+|---|---|
+| kcm を DW に載せて 10 / 40 replicas | PASS(5 秒で 0 Pod) |
+| 手製 Pod(`BlockOwnerDeletion` + linger finalizer) | PASS |
+| Pod 生成後に 180 秒 settle | PASS |
+| **CI と同じホスト分割**(ホスト実 KCM、`SCHED_DISABLED`、TLS、40 replicas) | PASS(5.1 秒) |
+| 上記 + `PUMP_WINDOW_DROP_CLOSE=2` | PASS(5.1 秒) |
+| 上記 + ハートビートする Node を置いて 5 分ウォームアップしてから RC 作成 | PASS(15.3 秒、Pod → RC の順序も保持) |
+
+**再現できていない以上、真因は特定できていない。** 有力だが未確認の仮説は
+「CI では gc DW の Pod informer が空だった」。傍証として当該 run の
+`wrangler.log` には `Network connection lost` /
+`Cannot perform I/O on behalf of a different request` /
+`call to released function` が多数出ており、S31 と同じ I/O コンテキスト系の
+失敗で informer が餌をもらえていなかった形と整合する。ただし**グラフの中身を
+直接観測してはいない**ので、事実としては書かない。
+
+### 入れた修正(真因修正ではなく、apiserver 側のガード)
+
+実 garbagecollector は「**自分のグラフ**に blocking dependent が無い」ことを
+根拠に foregroundDeletion finalizer を外す。そのグラフは informer の鮮度以上に
+正しくなり得ず、resident DW では window 境界ごとに watch が切れる(S31)。
+そこで、finalize-delete の可否を**グラフではなくストレージ**で判定する:
+
+`pkg/apiserver/gracefuldelete.go` に `refuseForegroundFinalize` を追加し、
+`handler.go` の `finalizeDelete` の先頭で呼ぶ。対象オブジェクトが
+`deletionTimestamp` + `foregroundDeletion` を持つ状態で、その UID を
+`BlockOwnerDeletion: true` の ownerReference で指す namespaced オブジェクトが
+まだ 1 つでも残っていれば **Conflict を返して削除を完了させない**。GC は
+`retry.RetryOnConflict` → workqueue の指数バックオフで再試行し、カスケードが
+実際に終わってから完了する。
+
+隣にある `sweepOrphanStragglers`(orphan 側の同じ問題への対処)の foreground
+版であり、理由も同じ: ここでは GC の per-GVR watch にストリーム間の順序保証が
+無いので、**ストレージを直接読む apiserver が最終判断を持つ**。upstream に
+どちらのガードも無いのは、upstream の informer がここまで遅れないから。
+
+コスト: finalize-delete 時にしか走らず、`foregroundDeletion` を持たない
+オブジェクトは即 return する。ポーリングも alarm も増えない(不変条件 #3)。
+
+### 回帰テスト
+
+`pkg/apiserver/foregroundguard_test.go`。**kcm レーンではなく apiserver レーン**
+(`KCM_DISABLED`)に置いた — gc DW が生きていると依存 Pod が本当に消えてしまい、
+「早すぎる finalizer クリア」の窓がその回の GC のタイミング任せになるため。
+テスト自身が「グラフが古い GC」を演じる: RC を foreground 削除 → 依存 Pod を
+残したまま finalizer を空にする更新を投げ、**Conflict で拒否され RC が残る**
+ことを要求する。その後 Pod を消してから同じ更新を投げると、今度は RC が
+NotFound になることまで見る。
+
+修正前のバイナリでは
+`clearing foregroundDeletion with 2 blocking dependents alive = <nil>, want Conflict`
+で落ちる(実測)。`make wasm` を挟まないと Go の変更が DW に載らないので、
+このゲートを触るときは再ビルドを忘れないこと。
+
+### 未検証
+
+- **CI での確認**(push 禁止のため未実施)。この修正が当該 conformance を
+  実際に緑にするかは未確認。
+- **真因そのもの**。gc DW の Pod informer が CI で空だったのか、空だったなら
+  なぜかは未特定。上のガードは症状を止めるが原因は残っている。
+- `wrangler.log` の `Network connection lost` /
+  `Cannot perform I/O on behalf of a different request` /
+  `call to released function` の発生源。S31 の残課題と同じ系統に見えるが
+  切り分けていない。
+- 付随して見つかった別のバグ(未修正): `upstreamMarkForDeletion` は
+  `&metav1.DeleteOptions{PropagationPolicy: &policy}` を新規に組み立てており、
+  **リクエストの `Preconditions` を捨てている**。この conformance テストが渡す
+  UID precondition が効いておらず、UID 不一致の DELETE が 409 にならず通る。
+  今回の早期消失の原因ではない。
+
+## S34: host ジョブの wrangler.log に出ていた 3 種のエラーを全部ローカルで再現し、2 つを修正した (2026-09-10、実測)
+
+S33 が「未検証」として残した宿題 —— GitHub Actions run 34373872717 の
+`e2e-conformance (host)` の wrangler.log に出ていた
+
+```
+✘ [ERROR] Uncaught Error: Network connection lost.          (約 300 件)
+✘ [ERROR] call to released function                          (1 件)
+[wrangler:error] Error: Cannot perform I/O on behalf of a different request.
+    ... (I/O type: ReadableStreamSource)
+    at async apiserverFetch (packages/k8flare-worker/src/loader/apiserver.ts:101)   (5 件)
+```
+
+の発生源特定。**3 種とも `wrangler dev` でローカル再現に成功した**(S33 の
+「ローカルで再現しない」はホスト分割の再現だけを試していて、**並行書き込み
+負荷**と**途中で消える watch クライアント**を欠いていたのが理由)。
+
+再現ハーネスは `pkg/apiserver/ioctxprobe_test.go`(skip ゲート、
+`K8FLARE_IOCTX_PROBE=1`)。DW モード(kcm/gc/sched が resident DW、
+`PUMP_WINDOW_DROP_CLOSE=3`)で、ハートビートするノード + Deployment +
+**12 本の独立した client-go クライアントが PATCH pods と POST events を
+回し続ける**(2 分で約 1 万 PATCH)。途中で 8 本の watch を張って一斉に
+切り、最後に「その回ずっと 1 件もイベントが無かった GVR」(ConfigMap /
+Secret)を触る。
+
+### 1. `Cannot perform I/O on behalf of a different request` (ReadableStreamSource)
+
+**真因**: resident な Go インスタンスでは、**あるリクエストの goroutine が
+別のリクエストの JS コールバックの中で再開されうる**。Go/wasm は単一
+スレッドで、JS→Go の呼び出し(promise の `then`、`openPumpWindow`、
+setTimeout コールバック等)が入ると Go ランタイムは**その時点で runnable な
+goroutine を全部走らせてから** JS に戻る。したがってリクエスト A の
+コールバックの中でリクエスト B のハンドラが完走することがあり、そこで
+`handler_js.go` の `toJSResponse` が作る **`new Response(...)`(=
+ReadableStreamSource)は A の IoContext に属してしまう**。B の応答として
+それをシェルに返すと `ep.fetch` の await で上記例外になる。
+
+**goroutine を跨いで起こす犯人**は Go の同期プリミティブだった。
+`pkg/apiserver/cmd/apiserver-wasm/main.go` の `getTokens` が
+**`tokenCacheMu` を握ったままトークン vault 読み取り(storage fetch)を
+していた**ため、TTL 満了のたびに、待たされていた全リクエストの goroutine が
+**保持者のコールバックの中で一斉に**解放される。
+
+**フォールト注入による確定**(`tokenCacheTTL` を 60 秒 → 5 秒に変更して
+ビルドし、同じプローブを回す):
+
+| ビルド | `Cannot perform I/O` の件数 (120 秒負荷) |
+|---|---|
+| 修正前・TTL 60s | 7(1 バースト。同時 in-flight の 7 本が同時に 500) |
+| 修正前・TTL 5s | **78** |
+| 修正後・TTL 5s | **0** |
+
+**修正**: JS の I/O オブジェクトを Go 側で一切作らない。
+- `packages/k8flare-worker/src/loader/bootstrap.ts`: リクエスト本文を
+  **JS 側(そのリクエスト自身の fetch ハンドラ)で** `arrayBuffer()` し、
+  `{method, url, headers, body}` という**素の値だけ**を `handleRequest` に
+  渡す。戻り値も素のオブジェクトで受け、**`new Response(...)` は JS 側で
+  組み立てる**。
+- `pkg/cfruntime/handler_js.go`: `readBody`(JS の `arrayBuffer()` を await
+  していた)を削除。`requestFromJS` は Uint8Array をコピーするだけ。
+  `toJSResponse` は Response ではなく `{status, statusText, headers, body}`
+  を返す。ヘッダは `Headers` オブジェクトではなく `[[k,v],...]` の素の配列。
+  これで `handler_js.go` から JS の I/O オブジェクト生成が消え、使われなく
+  なった `awaitPromise` も削除した。
+
+**この修正だけで直ることを単独で確認した**: `getTokens` を**わざと元の
+ブロッキング実装に戻したまま**(TTL 5 秒)、bootstrap/handler_js の修正
+だけを入れたビルドで **0 件**。つまり `await binding.handleRequest(...)` の
+継続は、promise を解決したのが別 IoContext であっても**待っている側の
+リクエストの文脈で走る**ことが実測で分かった(事前には不明だった点)。
+
+**併せて入れた防御** (`getTokens` の single-flight 化): それでも
+「foreign な IoContext で再開された goroutine が、自分のリクエストの
+`env.STORAGE` で outbound fetch する」形は残る。`wrangler dev` はこの
+規則(捕捉済み env の使い回し)を強制しない(S31 E1)ので**ローカルでは
+観測できない**が、本番では S24 と同じ例外になるはず。そこで `tokenCacheMu`
+は**もう I/O を跨いで保持しない**(リフレッシュ中の並行呼び出しは直前の
+リストを返す)。TTL 60 秒のキャッシュなので、リフレッシュ中に 1 世代古い
+トークンを返すのは元々許容している鮮度の範囲内。
+
+**残っている同型の穴(未修正・記録のみ)**: `pkg/apiserver/bootstrap.go` の
+`bootstrapOnce` と `certmanager.go` の `CAManager.Initialize` は
+`sync.Once` / mutex を storage I/O を跨いで保持している。こちらは
+**isolate あたり 1 回(コールドスタート時)**なので同じバーストが起きるのは
+起動直後の 1 回だけで、上の Response 修正によって応答自体は安全になった。
+outbound 側の危険は残る。
+
+### 2. `call to released function`
+
+**真因**: S31 で入れた `cloudflare.AbandonFunc` / `reapAbandoned`。window が
+閉じたときに `fetch.go` の `awaitPromise` が then/catch の `js.Func` を
+手放し、**次の次の `ClosePumpWindow` で `Release()`** していた。ところが
+**放棄した promise はもっと後で settle しうる**(古い watch ストリームに
+次のイベントが届く、切れかけの fetch が最終的に "Network connection lost"
+で reject する)。released 済みの `js.Func` を JS が呼ぶと Go の
+`syscall/js` が `console.error("call to released function")` を出し、
+**その reaction は丸ごと捨てられる**。S31 のコメントは「1 window 遅らせれば
+安全」と書いていたが**それは誤り**だった(rule 4 に従い、消さずにここに
+記録する)。
+
+**発生頻度の実測**: 修正後のコードに一時計測を入れ、「放棄済みの待ちに
+あとから settle が届いた」回数を数えたところ **165 秒のプローブで 1 件**。
+CI の丸ごと 1 回の conformance run で 1 件だったのと桁が合う。稀なのは、
+dev では放棄された read が**次のイベント(=数ミリ秒後)で settle して
+しまい、reap の 2 window 前に消化される**ため。2 window(約 50 秒)何も
+来なかったストリームだけが踏む。
+
+**修正**: `js.Func` を**一切 release しない**設計に変える
+(`pkg/cfruntime/cloudflare/fetch/fetch.go`)。プロセス全体で 2 つだけの
+永続 `js.FuncOf`(resolve 用 / reject 用)を持ち、呼び出しごとに
+`Function.prototype.bind` で待ち受け id を焼いた JS 関数を作って
+`then`/`catch` に渡す。Go 側は id → チャンネルの登録簿を持ち、放棄は
+**登録簿からエントリを消すだけ**。あとから settle が来ても
+トランポリンは生きていて no-op になる。`AbandonFunc` / `reapAbandoned` は
+削除した。副次的に、旧実装が成功パスで `catch` を release し忘れていた
+リークも消えている。
+
+### 3. `Uncaught Error: Network connection lost.`
+
+**発生源は k3s の remotedialer トンネルではなく、こちらの watch ストリーム
+だった。** プローブで **watch クライアントを 8 本同時に切ると、ちょうど
+8 件**出る(切らない構成では 0 件)。1 本の中断された watch につき 1 件で、
+conformance 1 回ぶんの約 300 件はそのまま「途中で消えた watch の本数」。
+つまり**制御プレーンの故障ではなくノイズ**である。
+
+`packages/k8flare-worker/src/k8s/watch.ts` は `TransformStream` の writer に
+`writer.write(...)` を**投げっぱなし**(await も catch も無し)にしていて、
+クライアントが去った後の書き込みは reject する。さらにクライアントの離脱を
+知る手段が無いので、**WatchHub 側の WebSocket が閉じられない**まま残る
+(S31 追記が「dev で 11 分に 1306 本開いて 0 本閉じる」と記録した穴)。
+
+**修正**: `TransformStream` をやめ、`cancel()` コールバックを持つ
+`ReadableStream` を直接返す。`cancel()` はクライアント切断で発火するので、
+そこで DO 側の WebSocket を `close(1001)` する。書き込みは
+`controller.enqueue()` の同期 throw を捕捉して同じ経路に落とす。
+
+**結果は 8 件 → 3 件で、ゼロにはならなかった。** 残りは `cancel()` が走る
+前にソケットが死ぬレース分。ランタイムがストリーミング応答のポンプで
+出しているものまでは user code から抑えられていない。**プローブのゲートは
+この 1 種類だけ「情報として記録するが失敗にしない」**扱いにしてある
+(残り 2 種は 0 でなければ失敗)。
+
+**トンネルの 401 について(コードを読んだだけ、未実測)**: `/v1-k3s/connect`
+は `gateway/index.ts` の `isUnauthenticatedPath` に**入っていない**ので
+クラスタトークンの提示が要る。`verifyClusterToken` は Basic の
+パスワード部も受けるが、k3s の agent が remotedialer に載せるのは
+**ノードパスワード**でありクラスタトークンではないため、401 になるはず。
+当該 CI ログは `--log-level error` 相当で 401 のリクエスト行が残っておらず、
+**実際に 401 していたかは確認できていない**。上記のとおり
+`Network connection lost` の発生源はこちらではないので、今回は直していない。
+
+### 回帰ゲート
+
+`pkg/apiserver/ioctxprobe_test.go`(`K8FLARE_IOCTX_PROBE=1`)。既定の
+DW モードのほか `K8FLARE_IOCTX_MODE=host` で CI の host ジョブと同じ分割
+(TLS + ホスト実 KCM + `CM_DISABLED`/`SCHED_DISABLED`)も張れる。
+`K8FLARE_IOCTX_WORKERS` / `_SECONDS` / `_DROP_CLOSE` / `_LOG` で調整する。
+**常設レーンには入れていない**(1 回 3 分弱かかり、S32/S33 のプローブと
+同じ扱い)。修正を revert すると `Cannot perform I/O` で落ちる(実測、
+12 件)。
+
+### 未検証
+
+- **CI / 本番での確認**(push・デプロイ禁止のため未実施)。この 3 件が
+  実際に conformance の GC テストの非決定的失敗(S33)を消すかは未確認。
+  S33 のガードと合わせて 2 段構えになっている状態。
+- `Network connection lost` の残り 3 件を消す方法。ランタイム側で出て
+  いるのか、まだこちらに抑えられる余地があるのかを切り分けていない。
+- watch の WebSocket リーク(S31 追記の 1306 本)が `cancel()` 経路で
+  実際に閉じるようになったかの**本数の実測**。コード上は閉じるが数えて
+  いない。
+- `bootstrapOnce` / `CAManager.Initialize` が I/O を跨いで保持している件
+  (上記 1 の「残っている同型の穴」)。本番でしか出ない。
+- `/v1-k3s/connect` の 401(上記 3)。
+
+### S34 追記 (2026-09-09 20:58Z): CI と本番の確認結果
+
+- e2e-conformance run 34398403238(S34 修正込み、dbad2f9): **required の
+  `host` variant は baseline + GC 7 件すべて success**。1 つ前の run
+  34390383167(S33 ガードまで)でも host は success で、required は 2 回連続
+  green。`sched-dw` も 2 回連続 success。
+- `kcm-dw`(advisory)は GC の "should not delete dependents that have both
+  valid owner and owner that's waiting for dependents to be deleted" で失敗:
+  rc1 を Foreground 削除してから **90 秒間、rc1 が残ったまま 25 Pod に
+  deletionTimestamp が付かない**(`garbage_collector.go:795`)。host variant で
+  S33 が見た「RC が 1 秒で消える」とは逆向きで、gc DW が削除に**着手しない**
+  形。kcm DW と gc DW が同居する variant でのみ出ており、pump window
+  (60 秒)と reflector の再 watch の噛み合わせで gc の処理開始が 90 秒を
+  超えたと考えられる。未解決の advisory 項目として残す。
+- 本番(a203d30e、`LOADER_ID_SALT=s34a/`): Deployment を 1→3 にスケールして
+  40 秒以内に RS 3/3・Pod 3、`kubectl delete deploy` から約 100 秒で実 GC が
+  RS/Pod を全部回収。撤収後 20:06Z 以降 50 分間リクエスト 0 件(パーク)。
+
+---
+
+## S35: workerd の新モジュールレジストリ (`new_module_registry`) — 何が買えて何が買えないか (2026-09-10、実測)
+
+Cloudflare が workerd のモジュールレジストリを作り直した
+(blog 2026-09, <https://blog.cloudflare.com/workers-module-registry-nodejs/>)。
+この repo に効く変更は次の 5 点:
+
+1. オプトインの互換性フラグ `new_module_registry`
+2. specifier が URL として解決される
+3. `import.meta.url` / `import.meta.main` / `import.meta.resolve`
+4. WebAssembly の source-phase import (`import source x from './a.wasm'`,
+   `await import.source(...)`)
+5. **モジュールは最初に import された時点で遅延コンパイルされる**
+   (static / dynamic のどちらでも)
+
+同じアナウンスで **Worker のサイズ上限が全プラン 64 MiB になり、
+圧縮後 (gzip) バンドル上限は撤廃**された。
+
+### 採用したもの: `new_module_registry` (shell Worker のみ)
+
+`packages/k8flare-worker/wrangler.jsonc` の `compatibility_flags` に
+追加した。**同梱 workerd (wrangler 4.106.0) がこのフラグを受け付ける
+こと自体が対応の証明**になる —— 未知のフラグを渡すと workerd は起動を
+拒否する。3 レーンとも通過: test-apiserver ok 55.568s /
+test-kcm PASS 300.32s / test-clusterop PASS 70.02s。shell に static
+バンドルされた `import selectorWasmModule from "@wasm/selector.wasm"`
+も、Loader が供給する dynamic worker 側のモジュール
+(`loader/bootstrap.ts` の `import wasmModule from "./app.wasm"`) も
+そのまま動く。
+
+**ハーネスは全部 config から継承する** —— repo 内のどこにも
+`--compatibility-flags` を渡している箇所は無く、`wrangler dev` を自前で
+起動する全部が `-c packages/k8flare-worker/wrangler.jsonc` を指している
+(`pkg/apiserver/apiserver_test.go` / `kcmdw_test.go` / `clusterop_test.go` /
+`gcprobe_test.go` / `ioctxprobe_test.go` / `s32probe_test.go`、
+`.github/workflows/e2e-conformance.yml` / `cost-gate.yml` /
+`smoke-nodes.yml`、`package.json` の `dev`、`Makefile` の `dev`)。
+CLI フラグの追加は不要。
+
+**ただし dynamic worker には効いていない。** `WorkerCode` を組み立てて
+いる 3 箇所 (`loader/apiserver.ts` の `compatibilityDate: "2026-07-01"`、
+`controllers/index.ts` の同左、`storage/facets.ts` の
+`compatibilityDate: "2026-03-24"`) はどれも `compatibilityFlags` を
+渡していないので、Loader 側の ~30-64MB の WASM は従来どおりの扱いの
+まま。今回は shell の module graph だけが対象。
+
+### 実測 1: Loader の cap は変わっていない —— S29 の NO-GO は据え置き
+
+Worker 本体の上限が 64 MiB になっても、**Worker Loader の
+dynamic worker 1 つあたりの cap は 67,108,864 バイトのまま**。
+プローブ: 60MiB の loader モジュールはロードでき、64MiB 以上は
+
+```
+Dynamic Worker code size (67108919 bytes) exceeds the maximum allowed size of 67108864 bytes.
+```
+
+で失敗する。したがって S29 の「upstream の
+`k8s.io/apiserver/pkg/endpoints` レイヤーは載らない」という NO-GO は、
+2026-07 の測定だけでなく **2026-09 の再測定でも裏付けられた**。
+
+### 実測 2: gzip 上限の撤廃は「結論」ではなく「理由」を無効化する
+
+**訂正 (rule 4)。** S8 / S14 と `docs/cost-model.md` の該当箇所は、
+ASSETS+LOADER のコード供給チャンネルが存在する理由を
+「Workers の 10MiB gzip デプロイ上限を回避するため」と記録している。
+**この理由は 2026-09 時点で成立しない**(圧縮後上限は撤廃された)。
+歴史的記述としてそのまま残すが、現在の理由は別で、**チャンネル自体は
+依然として必須**:
+
+- 5 つのバイナリの opt 後の実サイズ合計が **227,309,657 バイト
+  (約 216.8 MiB)** —— apiserver 64,447,322 / kcm 44,215,888 /
+  gc 41,309,324 / sched 44,995,728 / clusterop 32,341,395。
+  64 MiB の Worker 1 つに同居させられない(apiserver 単体ですら
+  上限の 96%)。
+- Static Assets の 1 ファイル上限は 25MiB のままで、チャンクに割る
+  必要も変わらない。
+
+以下の各所に「gzip の数字は歴史的なもの」という 1 行ポインタを足した
+(歴史的記述そのものは編集していない): 本ファイル S5/S14 の一覧表・
+S2 の「Size」項・S14 本文・Phase 10 の scheduler 節・Phase 5 の
+client-go 測定節、`docs/cost-model.md` の route A 節。
+
+### 実測 3: selector.wasm を hot path から外した
+
+`packages/k8flare-worker/src/k8s/selector-wasm.ts` は 4,582,761 バイト
+(shell バンドルの 98%) の Go WASM を **トップレベル static import**
+していた。使うのは label/field selector 付きの watch だけなのに、
+素の kubectl CRUD リクエストまで全部これを払っていた。遅延コンパイル
+が入ったので dynamic `import()` の裏に移した:
+
+- `ensureSelectorsReady()` (async, memoize 済み・in-flight promise も
+  共有) が `wasm_exec` と `selector.wasm` を dynamic import して Go
+  ランタイムを立てる
+- `validateSelectors()` / `objectMatchesSelectors()` は **同期のまま**
+  (broadcast path で watcher ごと・イベントごとに走るため)
+- `watch.ts` は selector が実際に付いている時だけ、既存の
+  `validateSelectors()` 呼び出しの直前で 1 回 await する
+- ロードに失敗したら watch を 500 Status で落とす(黙って全一致に
+  しない)
+
+**バンドルの before/after** (`wrangler deploy --dry-run --outdir`):
+
+| | before | after |
+| --- | --- | --- |
+| Total Upload | 4679.36 KiB | 4682.85 KiB |
+| gzip | 1370.28 KiB | 1370.60 KiB |
+| `index.js` | 208,903 B | 212,474 B |
+| entry graph 内の参照 | `import selectorWasmModule from "./9fa9fad…-selector.wasm"` (static, 先頭) | `await import("./9fa9fad…-selector.wasm")` (dynamic, `boot()` 内) |
+
+**アップロード量はほぼ変わらない**(+3.49 KiB = 追加した TS の分)。
+wasm は before/after どちらも別ファイルとして出力されており、
+**買えたのはデプロイサイズではなく isolate 起動時のコンパイル**である。
+
+**遅延を証明した実験(決定的)**: `assets/wasm/selector.wasm` を同じ
+バイト数のランダムデータで置き換えて `wrangler dev` を起動した。
+
+- static import 版(変更前のコードを戻したもの): **workerd がそもそも
+  起動しない**。
+  `service core:user:k8flare: Uncaught CompileError: WasmModuleObject::Compile(): expected magic word 00 61 73 6d, found d1 22 62 0f @+0`
+  → `The Workers runtime failed to start.`。curl は `code=000`。
+- dynamic import 版(採用したもの): **起動する**。selector を使わない
+  `/clusters/probe` は 410 を返し、selector 付き watch を初めて叩いた
+  ときだけ
+  `{"kind":"Status",…,"message":"selector matching unavailable: CompileError: WasmModuleObject::Compile(): …","reason":"InternalError","code":500}`
+  になる。
+
+つまり **static import では isolate 起動時にコンパイルされていて、
+dynamic import では最初の import まで一切コンパイルされない**。
+実験後、実ファイル (sha256 `fb34e37a068a4e66095d26f4ed0f0f7d43646b33849cfd6a6aa59fc49b0640f2`)
+に戻してある。
+
+回帰ゲートとして `pkg/apiserver/apiserver_test.go` の
+`TestPodWatchLabelSelector` を追加した(apiserver レーン)。
+`boot()` を強制的に throw させると
+`Watch: selector matching unavailable: …` で落ちることを確認済み。
+
+### 採用しなかったもの: source-phase import
+
+`await import.source("@wasm/selector.wasm")` は **esbuild (wrangler) は
+通る** —— 出力に
+`await import.source("./9fa9fad…-selector.wasm")` と specifier を
+書き換えた形で残り、Total Upload 4682.84 KiB / gzip 1370.59 KiB で
+ビルドも成功する。しかし **TypeScript 6.0.2 が構文を知らない**:
+
+```
+error TS18061: 'source' is not a valid meta-property for keyword 'import'. Did you mean 'meta' or 'defer'?
+```
+
+`make check` / `npx tsc --noEmit` / CI の型チェックが落ちるので採用せず、
+素の dynamic `import()` にした(遅延は上記のとおりこれで達成できて
+いる)。tsc が対応したら乗り換えを検討する価値はある。
+
+### 未検証
+
+- **本番での確認**(デプロイ禁止のため未実施)。上の遅延コンパイルは
+  ローカル workerd (wrangler 4.106.0 同梱) での測定。
+- **isolate 起動時間の実数**。「4.58MB のコンパイルが消えて何 ms 速く
+  なったか」は測っていない。`wrangler dev` の初回リクエストは計測時点
+  で既にウォームで、5-28ms のレンジに埋もれて差が見えなかったため、
+  上の bad-wasm による二値実験に切り替えた。
+- selector 付き watch の**初回**レイテンシがどれだけ増えるか
+  (コンパイルがそこへ移動しただけなので、その watch は遅くなるはず)。
+- dynamic worker 側に `new_module_registry` を渡した場合に何が変わるか
+  (今回は渡していない)。
+- `import.meta.resolve` / URL specifier / `import.meta.main` は
+  この repo では未使用・未検証。
+
+### S35 追記 (2026-09-10): 全 3 variant が同時 green、本番も確認
+
+- e2e-conformance run 34440157442(`new_module_registry` + selector 遅延化込み、
+  88b21c9): **host / kcm-dw / sched-dw の 3 variant すべてで baseline と
+  garbage collector の required が success**。3 つ揃って green になったのは初。
+  `ci.yml` も success。
+- 本番(96de46d7、`LOADER_ID_SALT=s35a/`): 素の CRUD と、ラベル付き
+  ConfigMap への selector 付き watch(ADDED 配信)・非マッチ selector
+  (無配信)を確認。撤収後 05:15Z 以降 58 分間リクエスト 0 件でパーク。
+- **dw variant の required 昇格について**: kcm-dw は 2026-09-09 の 2 回の run で
+  GC が落ちており(S33 / S34 追記)、今回が初の green。不可侵ルール 5 の
+  観点から、昇格の前にもう数回 green を確認すること。

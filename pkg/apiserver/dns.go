@@ -180,7 +180,7 @@ func answerQuestion(ctx context.Context, ds *dnsStores, q dns.Question, clusterD
 
 // headlessEndpointIPs lists this Service's EndpointSlices (labeled
 // kubernetes.io/service-name, the standard EndpointSlice controller
-// convention -- packages/etcd/src/endpoints.ts sets this) and returns
+// convention -- the real endpointslice controller sets this) and returns
 // every ready address.
 func headlessEndpointIPs(ctx context.Context, ds *dnsStores, namespace, svcName string) []net.IP {
 	if ds.endpointSlices == nil {

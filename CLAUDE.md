@@ -53,7 +53,10 @@ packages/k8flare-worker(シェル: 認証一元化・watch ストリーミング
    ├──► apiserver DW(per-request。apidef テーブル駆動、
    │      pkg/apiserver/cmd/apiserver-wasm。kine への経路は STORAGE 自己バインディング
    │      (ClusterLoopback entrypoint)経由 — Loader env に DO namespace は渡せない、S2)
-   ├──► kcm DW(resident。実 kube-controller-manager の 7 ワークロードコントローラー、
+   ├──► kcm DW(resident。実 kube-controller-manager の 12 コントローラー
+   │      (ワークロード系 7 + endpoint/endpointslice/nodeipam/nodelifecycle/
+   │      tainteviction。後者 5 つは 2026-09-09 に pkg/apiserver の手書き代替を
+   │      置き換えて復帰 — docs/platform-verification.md S28)、
    │      pkg/controllers/cmd/kcm-wasm。poke = Cluster DO の pingControllers 直呼び /
    │      event-armed 安全網 alarm)
    ├──► gc DW(resident。実 garbagecollector、pkg/controllers/cmd/gc-wasm。

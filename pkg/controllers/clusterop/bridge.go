@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/k8flare/k8flare/pkg/cfruntime/cloudflare"
 	cffetch "github.com/k8flare/k8flare/pkg/cfruntime/cloudflare/fetch"
 )
 
@@ -33,8 +32,7 @@ type bridge struct {
 }
 
 func newBridge(bindingName, token string) *bridge {
-	binding := cloudflare.GetBinding(bindingName)
-	client := cffetch.NewClient(cffetch.WithBinding(binding))
+	client := cffetch.NewClient(cffetch.WithLiveBinding(bindingName))
 	return &bridge{
 		http:  client.HTTPClient(cffetch.RedirectModeFollow),
 		base:  "https://" + bindingName + ".k8flare.internal",

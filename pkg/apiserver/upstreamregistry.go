@@ -133,8 +133,7 @@ func NewUpstreamStore(
 		// hand-written store returned the deleted object, and this
 		// project's callers depend on that (DeleteCollection assembles a
 		// typed list from it, settleDeletedObject type-switches on
-		// *corev1.Service / *corev1.Node to release the ClusterIP and
-		// PodCIDR). Keeping the object makes the migration a no-op at the
+		// *corev1.Service to release the ClusterIP). Keeping the object makes the migration a no-op at the
 		// HTTP boundary; upstream sets this flag on its own stores
 		// wherever the deleted object matters.
 		ReturnDeletedObject: true,

@@ -54,22 +54,51 @@ async function instantiate(env, ctx) {
 }
 `;
 
-export function makeResidentBootstrapJS(pumpWindowMs: number): string {
+export function makeResidentBootstrapJS(pumpWindowMs: number, dropCloseEvery = 0): string {
   return `${COMMON}
 const PUMP_WINDOW_MS = ${pumpWindowMs};
+const DROP_CLOSE_EVERY = ${dropCloseEvery};
+let dispatchCount = 0;
 let bindingPromise = null;
 
 export default {
   async fetch(request, env, ctx) {
     if (!bindingPromise) bindingPromise = instantiate(env, ctx);
     const binding = await bindingPromise;
-    ctx.waitUntil(new Promise((resolve) => setTimeout(resolve, PUMP_WINDOW_MS)));
+    // Publish this request as an I/O anchor for the Go instance's
+    // background goroutines, and retire it when the window closes -- they
+    // outlive any single dispatch, but the platform only lets them perform
+    // I/O on behalf of a request that is still open (S31).
+    const pumpWindow = binding.openPumpWindow(env, PUMP_WINDOW_MS);
+    const dropClose = DROP_CLOSE_EVERY > 0 && ++dispatchCount % DROP_CLOSE_EVERY === 0;
+    ctx.waitUntil(
+      new Promise((resolve) =>
+        setTimeout(() => {
+          if (!dropClose) binding.closePumpWindow(pumpWindow);
+          resolve();
+        }, PUMP_WINDOW_MS),
+      ),
+    );
     // Forward THIS request's env so a resident Go instance resolves
     // request-scoped bindings from the current request instead of the one
     // that first instantiated the isolate (handler_js.go dispatch). The
     // env captured in instantiate() above is only used to run the Go
     // program; per-request I/O bindings must come from here.
-    return binding.handleRequest(request, env);
+    const raw = await request.arrayBuffer();
+    const out = await binding.handleRequest(
+      {
+        method: request.method,
+        url: request.url,
+        headers: [...request.headers],
+        body: raw.byteLength === 0 ? null : new Uint8Array(raw),
+      },
+      env,
+    );
+    return new Response(out.body, {
+      status: out.status,
+      statusText: out.statusText,
+      headers: out.headers,
+    });
   },
 };
 `;

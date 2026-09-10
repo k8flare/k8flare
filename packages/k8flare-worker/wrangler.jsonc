@@ -8,6 +8,7 @@
   "name": "k8flare",
   "main": "./src/index.ts",
   "compatibility_date": "2026-07-01",
+  "compatibility_flags": ["new_module_registry"],
   // /wasm/* (the KCM + apiserver chunk supply channel) must go through
   // the Worker (which 404s it publicly); so must /openapi/v2*, which is
   // the one asset needing content negotiation (JSON vs the protobuf

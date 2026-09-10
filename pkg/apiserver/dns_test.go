@@ -9,6 +9,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/miekg/dns"
@@ -144,8 +145,35 @@ func TestClusterDNS(t *testing.T) {
 			t.Fatalf("update pod status: %v", err)
 		}
 
-		// EndpointSlice synthesis (from the Pod status update above) is
-		// asynchronous, so poll rather than assuming it landed instantly.
+		// The EndpointSlice the real endpointslice controller would
+		// publish for this Service. Written by hand because this lane
+		// runs with the controllers disabled (KCM_DISABLED=1) and the
+		// subject here is DNS synthesis, not endpoint reconciliation --
+		// the controllers' own output is asserted in kcmdw_test.go.
+		port := int32(80)
+		protocol := corev1.ProtocolTCP
+		ready := true
+		if _, err := client.DiscoveryV1().EndpointSlices("default").Create(ctx, &discoveryv1.EndpointSlice{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   "dns-test-headless",
+				Labels: map[string]string{discoveryv1.LabelServiceName: "dns-test-headless"},
+			},
+			AddressType: discoveryv1.AddressTypeIPv4,
+			Ports:       []discoveryv1.EndpointPort{{Port: &port, Protocol: &protocol}},
+			Endpoints: []discoveryv1.Endpoint{{
+				Addresses:  []string{"10.42.0.123"},
+				Conditions: discoveryv1.EndpointConditions{Ready: &ready},
+				TargetRef: &corev1.ObjectReference{
+					Kind: "Pod", Namespace: "default", Name: created.Name, UID: created.UID,
+				},
+			}},
+		}, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("create endpointslice: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = client.DiscoveryV1().EndpointSlices("default").Delete(ctx, "dns-test-headless", metav1.DeleteOptions{})
+		})
+
 		var reply *dns.Msg
 		for i := 0; i < 10; i++ {
 			reply = dohQuery(t, "dns-test-headless.default.svc.cluster.local")

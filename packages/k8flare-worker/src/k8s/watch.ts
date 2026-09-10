@@ -2,7 +2,11 @@ import type { KineEvent, KineKV, WatchEvent } from "./types.ts";
 import { decodeKineValue } from "./helpers.ts";
 import { dwAuth } from "./auth.ts";
 import { urlToStoragePrefix, resourceKindForPath } from "./url-mapping.ts";
-import { validateSelectors, objectMatchesSelectors } from "./selector-wasm.ts";
+import {
+  ensureSelectorsReady,
+  validateSelectors,
+  objectMatchesSelectors,
+} from "./selector-wasm.ts";
 
 /** Decode a kine KV's JSON value into an object, stamping resourceVersion. */
 function decodeKineValueObject(kv: KineKV): Record<string, unknown> {
@@ -89,7 +93,19 @@ export async function handleWatch(
     );
   }
 
-  const resourceVersion = url.searchParams.get("resourceVersion") || "0";
+  // sendInitialEvents asks for the whole current state as synthetic ADDED
+  // events before the initial-events-end bookmark, with resourceVersion
+  // acting as a freshness floor rather than a replay cursor -- replaying
+  // from it instead hands a re-listing WatchList reflector a stream with
+  // no items, and Replace()ing an informer cache with that empties it.
+  // The controllers then act on the phantom deletions: measured
+  // 2026-09-09, the real nodelifecycle controller logged "Removing Node"
+  // for both healthy Nodes and dropped their health entries, so Lease
+  // staleness was never detected again (docs/platform-verification.md
+  // S31). Harmless before pump windows bounded the watch streams, because
+  // a reflector that never had to re-list only ever asked from 0.
+  const sendInitialEvents = url.searchParams.get("sendInitialEvents") === "true";
+  const resourceVersion = sendInitialEvents ? "0" : url.searchParams.get("resourceVersion") || "0";
   // Unknown resource = 404 Status, like upstream -- NOT an empty 200
   // stream. RESOURCE_KINDS behind resourceKindForPath is generated from
   // apidef.Table, so null here means the Go apiserver doesn't serve the
@@ -123,6 +139,21 @@ export async function handleWatch(
   const labelSelectorParam = url.searchParams.get("labelSelector") || "";
   const hasSelectors = fieldSelectorParam !== "" || labelSelectorParam !== "";
   if (hasSelectors) {
+    try {
+      await ensureSelectorsReady();
+    } catch (e) {
+      return new Response(
+        JSON.stringify({
+          kind: "Status",
+          apiVersion: "v1",
+          status: "Failure",
+          message: `selector matching unavailable: ${e}`,
+          reason: "InternalError",
+          code: 500,
+        }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
     const selErr = validateSelectors(labelSelectorParam, fieldSelectorParam);
     if (selErr !== "") {
       return new Response(
@@ -187,9 +218,42 @@ export async function handleWatch(
   ws.accept();
 
   // Stream kine events as Kubernetes WatchEvent JSON lines
-  const { readable, writable } = new TransformStream();
-  const writer = writable.getWriter();
   const encoder = new TextEncoder();
+
+  let clientGone = false;
+  let sink: ReadableStreamDefaultController<Uint8Array> | null = null;
+  const retire = (): void => {
+    clientGone = true;
+    try {
+      ws.close(1001, "watch client gone");
+    } catch {
+      // ignore
+    }
+  };
+  const readable = new ReadableStream<Uint8Array>({
+    start(controller) {
+      sink = controller;
+    },
+    cancel() {
+      retire();
+    },
+  });
+  const push = (chunk: Uint8Array): void => {
+    if (clientGone || sink === null) return;
+    try {
+      sink.enqueue(chunk);
+    } catch {
+      retire();
+    }
+  };
+  const closeWriter = (): void => {
+    if (clientGone) return;
+    try {
+      sink?.close();
+    } catch {
+      // ignore
+    }
+  };
 
   ws.addEventListener("message", (event: MessageEvent) => {
     try {
@@ -215,7 +279,7 @@ export async function handleWatch(
             },
           },
         };
-        writer.write(encoder.encode(JSON.stringify(bookmarkEvent) + "\n"));
+        push(encoder.encode(JSON.stringify(bookmarkEvent) + "\n"));
       }
       if (data.events) {
         for (const kineEvent of data.events) {
@@ -260,9 +324,7 @@ export async function handleWatch(
             }
           }
 
-          writer.write(
-            encoder.encode(JSON.stringify({ type: finalType, object: finalObject }) + "\n"),
-          );
+          push(encoder.encode(JSON.stringify({ type: finalType, object: finalObject }) + "\n"));
         }
       }
     } catch {
@@ -271,19 +333,11 @@ export async function handleWatch(
   });
 
   ws.addEventListener("close", () => {
-    try {
-      writer.close();
-    } catch {
-      // ignore
-    }
+    closeWriter();
   });
 
   ws.addEventListener("error", () => {
-    try {
-      writer.close();
-    } catch {
-      // ignore
-    }
+    closeWriter();
   });
 
   // Keep the Worker alive while the WebSocket is open. Without this, the

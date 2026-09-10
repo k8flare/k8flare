@@ -49,6 +49,69 @@ func TestApplyDefaults_Pod_HostUsers(t *testing.T) {
 	}
 }
 
+func tolerationFor(pod *corev1.Pod, key string) *corev1.Toleration {
+	for i := range pod.Spec.Tolerations {
+		if pod.Spec.Tolerations[i].Key == key {
+			return &pod.Spec.Tolerations[i]
+		}
+	}
+	return nil
+}
+
+func TestApplyDefaults_Pod_DefaultTolerationSeconds(t *testing.T) {
+	pod := &corev1.Pod{}
+	ApplyDefaults(pod)
+
+	for _, key := range []string{corev1.TaintNodeNotReady, corev1.TaintNodeUnreachable} {
+		tol := tolerationFor(pod, key)
+		if tol == nil {
+			t.Fatalf("no toleration for %s", key)
+		}
+		if tol.Operator != corev1.TolerationOpExists {
+			t.Errorf("%s Operator = %v, want %v", key, tol.Operator, corev1.TolerationOpExists)
+		}
+		if tol.Effect != corev1.TaintEffectNoExecute {
+			t.Errorf("%s Effect = %v, want %v", key, tol.Effect, corev1.TaintEffectNoExecute)
+		}
+		if tol.TolerationSeconds == nil || *tol.TolerationSeconds != 300 {
+			t.Errorf("%s TolerationSeconds = %v, want 300", key, tol.TolerationSeconds)
+		}
+	}
+}
+
+func TestApplyDefaults_Pod_DefaultTolerationSecondsRespectsExisting(t *testing.T) {
+	ten := int64(10)
+	pod := &corev1.Pod{Spec: corev1.PodSpec{Tolerations: []corev1.Toleration{{
+		Key:               corev1.TaintNodeUnreachable,
+		Operator:          corev1.TolerationOpExists,
+		Effect:            corev1.TaintEffectNoExecute,
+		TolerationSeconds: &ten,
+	}}}}
+	ApplyDefaults(pod)
+
+	tol := tolerationFor(pod, corev1.TaintNodeUnreachable)
+	if tol == nil || tol.TolerationSeconds == nil || *tol.TolerationSeconds != 10 {
+		t.Errorf("declared unreachable toleration overwritten: %+v", tol)
+	}
+	if tolerationFor(pod, corev1.TaintNodeNotReady) == nil {
+		t.Error("not-ready toleration should still be defaulted")
+	}
+	if len(pod.Spec.Tolerations) != 2 {
+		t.Errorf("Tolerations = %d, want 2", len(pod.Spec.Tolerations))
+	}
+}
+
+func TestApplyDefaults_Pod_DefaultTolerationSecondsWildcard(t *testing.T) {
+	pod := &corev1.Pod{Spec: corev1.PodSpec{Tolerations: []corev1.Toleration{{
+		Operator: corev1.TolerationOpExists,
+	}}}}
+	ApplyDefaults(pod)
+
+	if len(pod.Spec.Tolerations) != 1 {
+		t.Errorf("Tolerations = %d, want 1 (wildcard tolerates both taints)", len(pod.Spec.Tolerations))
+	}
+}
+
 func TestApplyDefaults_Pod_DNSPolicy(t *testing.T) {
 	pod := &corev1.Pod{}
 	ApplyDefaults(pod)
