@@ -5351,3 +5351,29 @@ error TS18061: 'source' is not a valid meta-property for keyword 'import'. Did y
 - **dw variant の required 昇格について**: kcm-dw は 2026-09-09 の 2 回の run で
   GC が落ちており(S33 / S34 追記)、今回が初の green。不可侵ルール 5 の
   観点から、昇格の前にもう数回 green を確認すること。
+
+### S35 追記 2 (2026-09-10): main へマージ、required は green、dw variant の GC は flaky
+
+`feat/reduce-custom-code` を main へマージ(2938804、49 ファイル +4,300/-2,002)。
+マージ後の main で e2e-conformance を回した結果(run 34445918793):
+
+| variant | 結果 |
+|---|---|
+| host(**required**) | baseline / garbage collector とも **success** |
+| kcm-dw(advisory) | GC 失敗: `failed to delete the rc: Delete "https://127.0.0.1:8787/...": read: connection reset by peer`(`garbage_collector.go:666`)。同時刻の wrangler ログは `kj/async-io-unix.c++:186: disconnected: ::write(...): Broken pipe` 1 件と `Uncaught Error: Network connection lost.` 102 件。OOM や自前コードの例外は無し |
+| sched-dw(advisory) | GC 失敗: `failed to delete rc simpletest-rc-to-be-deleted, err: context deadline exceeded`(`garbage_collector.go:795`、90 秒の待ちを超過) |
+
+直前の run 34440157442 では 3 variant とも green だったので、**dw variant の GC は
+flaky**(不可侵ルール 5 の対象)。症状は 2 種類に分かれる:
+
+1. **接続断系**(kcm-dw)。クライアント側 reset と workerd 側 broken pipe が同時刻。
+   3 つの巨大 WASM を 1 つの `wrangler dev` に同居させる S23 の既知の限界と同じ
+   場所だが、**同一視できる根拠はまだ無い**。`Network connection lost` 102 件は
+   S34 が「見捨てられた watch 1 本につき 1 件出るノイズ」と結論した種類だが、
+   S34 の修正後もこの数が出ている点は未説明。
+2. **foreground 削除が 90 秒に間に合わない**(sched-dw)。2026-09-09 の
+   run 34390383167 / 34398403238 の kcm-dw でも同じ `garbage_collector.go:795`
+   で落ちており(S34 追記)、**4 run 中 3 run で再発**している。gc DW が削除に
+   着手するまでの遅延が pump window と reflector の張り直しに律速されている
+   疑いが濃い。本番で `kubectl delete --cascade=foreground` が数分待たされうる
+   ことを意味するので、advisory とはいえ製品側の欠陥として追う。
