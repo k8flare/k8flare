@@ -61,6 +61,7 @@ const CONTROLLER_RELEVANT_PREFIXES = [
   "/registry/endpointslices/",
   "/registry/leases/",
   "/registry/replicasets/",
+  "/registry/replicationcontrollers/",
   "/registry/deployments/",
   "/registry/daemonsets/",
   "/registry/jobs/",

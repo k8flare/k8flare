@@ -531,6 +531,22 @@ export class Controllers {
     return { wakeMs, overdue: resp.overdue === true };
   }
 
+  /**
+   * Whether a graceful deletion is still in flight anywhere in this
+   * cluster. That is real outstanding work for the garbage collector and
+   * the workload probe below cannot see it: a foreground-deleted owner
+   * still matches its own spec, so nothing about its spec/status lags.
+   * Without this the alarm parks mid-cascade and `kubectl delete
+   * --cascade=foreground` never completes on a cluster with no other
+   * write traffic (docs/platform-verification.md S36). Same "a failed
+   * probe means stay awake" rule as the lists below.
+   */
+  private async pendingDeletions(): Promise<boolean> {
+    const resp = await this.apiGet("/internal/pending-deletions");
+    if (resp === null) return true;
+    return typeof resp.pending === "number" && resp.pending > 0;
+  }
+
   private async hasUnconvergedWork(): Promise<boolean> {
     interface WorkloadItem {
       metadata?: { generation?: number };
@@ -550,19 +566,23 @@ export class Controllers {
       this.apiGet("/apis/apps/v1/deployments"),
       this.apiGet("/apis/apps/v1/replicasets"),
       this.apiGet("/apis/batch/v1/jobs"),
+      this.apiGet("/api/v1/replicationcontrollers"),
     ]);
-    const [deploys, rss, jobs] = lists.map((l) => (l?.items as WorkloadItem[] | undefined) ?? []);
+    const [deploys, rss, jobs, rcs] = lists.map(
+      (l) => (l?.items as WorkloadItem[] | undefined) ?? [],
+    );
     const cron = await this.cronProbe();
     // A list call failing (null) counts as "work exists": staying awake
     // through an apiserver hiccup is cheap; parking on one is not.
     if (lists.some((l) => l === null)) return true;
+    if (await this.pendingDeletions()) return true;
     for (const d of deploys) {
       const spec = d.spec?.replicas ?? 1;
       const st = d.status ?? {};
       if ((st.observedGeneration ?? 0) < (d.metadata?.generation ?? 0)) return true;
       if ((st.replicas ?? 0) !== spec || (st.availableReplicas ?? 0) !== spec) return true;
     }
-    for (const r of rss) {
+    for (const r of [...rss, ...rcs]) {
       const spec = r.spec?.replicas ?? 1;
       if (((r.status ?? {}).replicas ?? 0) !== spec) return true;
     }
