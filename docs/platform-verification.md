@@ -5641,3 +5641,23 @@ kcm-dw run 34445918793 の `connection reset by peer` + workerd の
   実 GC 任せ(再帰させていない)。
 - 本作業のプローブ(`gcmultiowner_test.go`)は **常設レーンに入れていない**
   (1 実行 5〜17 分。S32/S33/S34 のプローブと同じ扱い)。
+
+### S36 追記 (2026-09-11): 修正後の main で 3 variant × 2 回連続 green
+
+`fix/gc-foreground-latency` を main へマージ(a01adbd)した後、main で
+e2e-conformance を 2 回続けて回した結果:
+
+| run | host(required) | kcm-dw | sched-dw |
+|---|---|---|---|
+| 34484825880 | baseline / GC とも success | 同 success | 同 success |
+| 34491769003 | 同 success | 同 success | 同 success |
+
+S35 追記 2 で記録した 2 つの flake(foreground 削除の 90 秒超過、および
+kcm-dw の接続断)は、この 2 サンプルでは再発していない。ただし S36 本文の
+とおりローカル計測では **5 回に 1 回はまだ 90 秒に近い**ので、
+「解消」ではなく「予算内に収まる頻度まで軽減」と理解すること。
+
+**dw variant の required 昇格について**: これで kcm-dw / sched-dw は
+2 回連続 green になったが、直前の 34445918793 では両方落ちている。
+不可侵ルール 5 の趣旨(原因不明の間欠失敗を required に入れない)から、
+昇格はもう数サンプル green を確認してからにする。
