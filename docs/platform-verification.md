@@ -5338,3 +5338,16 @@ error TS18061: 'source' is not a valid meta-property for keyword 'import'. Did y
   (今回は渡していない)。
 - `import.meta.resolve` / URL specifier / `import.meta.main` は
   この repo では未使用・未検証。
+
+### S35 追記 (2026-09-10): 全 3 variant が同時 green、本番も確認
+
+- e2e-conformance run 34440157442(`new_module_registry` + selector 遅延化込み、
+  88b21c9): **host / kcm-dw / sched-dw の 3 variant すべてで baseline と
+  garbage collector の required が success**。3 つ揃って green になったのは初。
+  `ci.yml` も success。
+- 本番(96de46d7、`LOADER_ID_SALT=s35a/`): 素の CRUD と、ラベル付き
+  ConfigMap への selector 付き watch(ADDED 配信)・非マッチ selector
+  (無配信)を確認。撤収後 05:15Z 以降 58 分間リクエスト 0 件でパーク。
+- **dw variant の required 昇格について**: kcm-dw は 2026-09-09 の 2 回の run で
+  GC が落ちており(S33 / S34 追記)、今回が初の green。不可侵ルール 5 の
+  観点から、昇格の前にもう数回 green を確認すること。
