@@ -1009,6 +1009,79 @@ func TestPodWatch(t *testing.T) {
 	waitFor(t, watch.Deleted, func(*corev1.Pod) bool { return true })
 }
 
+// TestPodWatchLabelSelector drives the selector wasm (selector-wasm.ts)
+// over a real watch stream: the module is loaded through a dynamic
+// import at watch-open (S35), so a broken load would show up here as a
+// 500 rather than as silently matching everything.
+func TestPodWatchLabelSelector(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+	ns := "default"
+	const match, other = "test-watch-sel-match", "test-watch-sel-other"
+
+	client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: ns},
+	}, metav1.CreateOptions{})
+	for _, n := range []string{match, other} {
+		_ = client.CoreV1().Pods(ns).Delete(ctx, n, metav1.DeleteOptions{})
+	}
+
+	if _, err := client.CoreV1().Pods(ns).Watch(ctx, metav1.ListOptions{
+		LabelSelector: "!!!not a selector",
+	}); err == nil {
+		t.Error("Watch with an unparseable labelSelector: want error, got none")
+	}
+
+	w, err := client.CoreV1().Pods(ns).Watch(ctx, metav1.ListOptions{
+		LabelSelector: "watch-sel in (yes)",
+	})
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	defer w.Stop()
+
+	mkPod := func(name string, labels map[string]string) {
+		t.Helper()
+		if _, err := client.CoreV1().Pods(ns).Create(ctx, &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: labels},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{Name: "nginx", Image: "nginx"}},
+			},
+		}, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("Create %s: %v", name, err)
+		}
+	}
+	mkPod(other, map[string]string{"watch-sel": "no"})
+	mkPod(match, map[string]string{"watch-sel": "yes"})
+	t.Cleanup(func() {
+		for _, n := range []string{match, other} {
+			_ = client.CoreV1().Pods(ns).Delete(context.Background(), n, metav1.DeleteOptions{})
+		}
+	})
+
+	deadline := time.After(20 * time.Second)
+	for {
+		select {
+		case event, ok := <-w.ResultChan():
+			if !ok {
+				t.Fatal("watch channel closed before the matching pod arrived")
+			}
+			pod, ok := event.Object.(*corev1.Pod)
+			if !ok {
+				continue
+			}
+			if pod.Name == other {
+				t.Fatalf("got %s event for the non-matching pod %q", event.Type, other)
+			}
+			if pod.Name == match && event.Type == watch.Added {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for ADDED on pod %q", match)
+		}
+	}
+}
+
 func TestNodeCRUD(t *testing.T) {
 	client := setupWranglerDev(t)
 	ctx := context.Background()
