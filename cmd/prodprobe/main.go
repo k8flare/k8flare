@@ -28,10 +28,11 @@ type config struct {
 	deleteTimeout  time.Duration
 	pollInterval   time.Duration
 
-	parking      bool
-	parkWait     time.Duration
-	quietWindow  time.Duration
-	analyticsLag time.Duration
+	parking          bool
+	parkWait         time.Duration
+	nodeDrainTimeout time.Duration
+	quietWindow      time.Duration
+	analyticsLag     time.Duration
 
 	accountID  string
 	apiToken   string
@@ -59,6 +60,7 @@ func parseFlags(args []string) (config, error) {
 	fs.DurationVar(&cfg.pollInterval, "poll-interval", 5*time.Second, "how often to poll while waiting for convergence")
 	fs.BoolVar(&cfg.parking, "parking", true, "assert the cluster parks: requires Cloudflare analytics credentials")
 	fs.DurationVar(&cfg.parkWait, "park-wait", 6*time.Minute, "how long the cluster is given to quiesce after the workload is gone")
+	fs.DurationVar(&cfg.nodeDrainTimeout, "node-drain-timeout", 10*time.Minute, "how long to wait for demand-started nodes to detach before the quiet window")
 	fs.DurationVar(&cfg.quietWindow, "quiet-window", 10*time.Minute, "length of the window that must contain zero Worker and Durable Object requests")
 	fs.DurationVar(&cfg.analyticsLag, "analytics-lag", 5*time.Minute, "how long to wait for the analytics datasets to catch up before querying")
 	fs.StringVar(&cfg.accountID, "account", os.Getenv("CLOUDFLARE_ACCOUNT_ID"), "Cloudflare account id (env CLOUDFLARE_ACCOUNT_ID)")
@@ -184,14 +186,41 @@ func checkReadyz(ctx context.Context, cfg config, out io.Writer) error {
 	return nil
 }
 
+// awaitNodesDrained polls until no node is attached, or the timeout expires.
+// Returns the nodes still attached, so the caller reports them rather than a
+// timeout error: a node that never leaves is a real finding, not a probe fault.
+func awaitNodesDrained(ctx context.Context, cfg config, cs kubernetes.Interface, step func(string, ...any)) ([]string, error) {
+	deadline := time.Now().Add(cfg.nodeDrainTimeout)
+	for {
+		nodes, err := countNodes(ctx, cs)
+		if err != nil {
+			return nil, fmt.Errorf("list nodes: %w", err)
+		}
+		if len(nodes) == 0 || time.Now().After(deadline) {
+			return nodes, nil
+		}
+		step("waiting for %d demand-started node(s) to detach (%s)", len(nodes), strings.Join(nodes, ", "))
+		select {
+		case <-ctx.Done():
+			return nodes, ctx.Err()
+		case <-time.After(15 * time.Second):
+		}
+	}
+}
+
 func assertParked(ctx context.Context, cfg config, cs kubernetes.Interface, activeStart, activeEnd time.Time, step func(string, ...any)) error {
-	nodes, err := countNodes(ctx, cs)
+	// A demand-started NodeVM outlives the workload that caused it: measured
+	// 2026-09-11 against production, the two nodes this probe's own pods ran
+	// on were still attached when the deployment was already gone, and had
+	// detached about two minutes later. Failing on that first reading blamed
+	// the control plane for the probe being early, so wait for them first.
+	nodes, err := awaitNodesDrained(ctx, cfg, cs, step)
 	if err != nil {
-		return fmt.Errorf("list nodes: %w", err)
+		return err
 	}
 	if len(nodes) > 0 {
-		return fmt.Errorf("cannot assert idle cost with %d node(s) attached (%s): a kubelet heartbeats every ~10s, so the control plane is never quiet. Detach the nodes, use -compute containers so the node is demand-started, or pass -parking=false and say so",
-			len(nodes), strings.Join(nodes, ", "))
+		return fmt.Errorf("cannot assert idle cost with %d node(s) still attached after %s (%s): a kubelet heartbeats every ~10s, so the control plane is never quiet. Detach the nodes, use -compute containers so the node is demand-started, or pass -parking=false and say so",
+			len(nodes), cfg.nodeDrainTimeout, strings.Join(nodes, ", "))
 	}
 
 	sleepStep(ctx, cfg.parkWait, "letting the cluster quiesce", step)
