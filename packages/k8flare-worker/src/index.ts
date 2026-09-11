@@ -26,4 +26,29 @@ export default {
     }
     return handleGateway(req, env, ctx);
   },
+
+  // Receives the trace events of the dynamic workers this same script
+  // loads, which controllers/index.ts attaches only while PUMP_TRACE is
+  // on. A Loader-spawned worker's console output does not otherwise
+  // reach this script's own tail in production, so the `observed`
+  // boundary -- the half of the measurement that lives in Go -- is
+  // invisible exactly where it matters (S45).
+  tail(events: TraceItem[]): void {
+    for (const event of events) {
+      for (const log of event.logs ?? []) {
+        // Only the measurement, not everything the controllers say. A
+        // single ReplicationController produced 1,545 relayed lines when
+        // this forwarded them all -- mostly reflector reconnect warnings,
+        // which are the pump-window model working as designed.
+        const line = log.message.join(" ");
+        if (line.startsWith("pumptrace ")) console.log(line);
+      }
+      // Exceptions are rare, and a dynamic worker throwing where nobody
+      // can see it is the shape of S30: six weeks of controllers doing
+      // nothing, with every local gate green.
+      for (const e of event.exceptions ?? []) {
+        console.error(`dw exception: ${e.name}: ${e.message}`);
+      }
+    }
+  },
 };
