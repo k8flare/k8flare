@@ -4,6 +4,7 @@ import {
   handleRemotedialConnect,
 } from "./proxy/index.ts";
 import { dwAuth, handleWatch } from "../k8s/index.ts";
+import { handleReadyz } from "./readyz.ts";
 import type { Env } from "../env.ts";
 import { apiserverFetch } from "../loader/apiserver.ts";
 import { handleNodes } from "../nodes/index.ts";
@@ -20,7 +21,7 @@ import { verifyClusterToken } from "../clusters/tokens.ts";
 function isUnauthenticatedPath(url: URL): boolean {
   const p = url.pathname;
   return (
-    isHealthPath(p) ||
+    isLivenessPath(p) ||
     p === "/version" ||
     p === "/cacerts" ||
     p === "/api" ||
@@ -30,7 +31,7 @@ function isUnauthenticatedPath(url: URL): boolean {
   );
 }
 
-// The health probes, which an uptime monitor must be able to reach without
+// The liveness probes, which an uptime monitor must be able to reach without
 // a cluster token. Answered here in the shell rather than passed through to
 // the Go apiserver's own /healthz (discovery.go): reaching that one costs a
 // dynamic-worker load of a 65MB module, and an unauthenticated path on a
@@ -39,10 +40,16 @@ function isUnauthenticatedPath(url: URL): boolean {
 //
 // Be precise about what a 200 here asserts: the Worker is routable and its
 // script loaded. It does NOT assert that storage is reachable, that the
-// cluster exists, or that any control-plane component is healthy -- those
-// need a token, because probing them costs real work.
-function isHealthPath(p: string): boolean {
-  return p === "/healthz" || p === "/livez" || p === "/readyz";
+// cluster exists, or that any control-plane component is healthy.
+//
+// Corrected 2026-09-11: this comment used to cover /readyz too, and ended
+// "those need a token, because probing them costs real work". The premise
+// was right and the conclusion was wrong -- what a token buys is the
+// ability to do the real work safely, not permission to skip it. /readyz
+// now runs the real checks (readyz.ts) behind the cluster token; only
+// /healthz and /livez stay zero-cost. TODO.md P0-2.
+function isLivenessPath(p: string): boolean {
+  return p === "/healthz" || p === "/livez";
 }
 
 // Watch streams are served in TS (Go WASM cannot stream), which means
@@ -272,12 +279,18 @@ export async function handleGateway(
     }
     return apiserverFetch(env, req);
   }
-  // Answered before any apiserver dispatch: see isHealthPath.
-  if (isHealthPath(url.pathname)) {
+  // Answered before any apiserver dispatch: see isLivenessPath.
+  if (isLivenessPath(url.pathname)) {
     return new Response("ok", {
       status: 200,
       headers: { "Content-Type": "text/plain; charset=utf-8" },
     });
+  }
+  if (url.pathname === "/readyz") {
+    if (!dwAuth(req, env)) {
+      return new Response("unauthorized", { status: 401 });
+    }
+    return handleReadyz(env);
   }
 
   // The wasm chunk supply channel (run_worker_first) is Loader-only.
