@@ -281,6 +281,51 @@ namespace、selector、表示形式（full/metadata）ごとにcursorを隔離�
 履歴保持の上限を決め、期限外は明示410→完全再同期。無制限retentionでidle storageを増やさない。
 compactionは仕事起因のbatchに同乗し、idle vacuumのcronを新設しない。
 
+### 5.1a Stage 0 が実測で持ち帰った、Stage 1 のレビューに渡す入力
+
+以下は 2026-09-12 に Stage 0(S44–S49)を本番で回して分かったことで、5.1 の
+契約を確定させる前にレビューが見るべき材料である。**本書を書いた時点では
+まだ分かっていなかった。**
+
+**(a) cut は「時刻」では表現できない。** commit を刻むのはシェル Worker、
+observed を刻むのは dynamic worker 内の Go で、Workers の `Date.now()` は
+直近の I/O 時点で止まる。本番で連続する 3 revision の commit→observed が
+揃って **-888ms** になった(S46)。つまり 5.1 の committed cut は、
+**storage が採番する単調値**でなければならず、いかなる wall clock の
+組み合わせでも代用できない。逆に、その単調値が watch の event に載って
+Go 側まで届けば、Stage 0 の `observed` 境界と突き合わせるだけで
+storage→controller の遅延が初めて測れるようになる。**Stage 1 の受入測定は
+この値の有無に依存する。**
+
+**(b) controller 側の区間はすでに測れている。** `issued`(Go の transport)
+と `observed`(Go の informer)は同一 isolate・同一時計なので引き算できる。
+本番実測でスケジューラの bind が KCM の informer に届くまで **82〜93ms**
+(S49)。Stage 1 の「境界起因 full snapshot 0 / 欠落 0」を測るとき、
+controller 側の遅延はこの既存の物差しで切り分けられる。新しい計測機構を
+Stage 1 で作る必要はない。
+
+**(c) 観測は resync と区別して数えること。** informer は同じ revision を
+約 25 秒おきに再配送する。revision ごとに**最初の観測だけ**を採らないと、
+25,858ms や 50,174ms といった偽の「遅延」が出る(S44)。Stage 1 の
+「1000 回以上の通常境界」を数えるときも同じ注意が要る。
+
+**(d) 本番の canary は暖機してから測ること。** デプロイ直後の制御プレーンは
+約 44MB の WASM をコンパイルし終わるまで何も reconcile せず、それが 8 分の
+予算を超えて prodprobe を落とした(S47)。`/readyz` は WASM アセットの存在
+しか見ないので**この状態を検出できない**。Stage 1 の canary 手順には明示の
+暖機段階を入れる。
+
+**(e) dynamic worker の中を本番で読むには中継が要る。** Loader が起動した
+worker の console 出力は、それを読み込んだスクリプトの `wrangler tail` には
+現れない(S45)。`WorkerLoaderWorkerCode.tails` に `env.SELF` を渡すと届く
+(S46 で本番検証済み)。Stage 1 の受入判定が controller 側の状態に依存する
+なら、`PUMP_TRACE=1` を付けた deploy でしか観測できない。
+
+**(f) 計装は常時コストを持ちうる。** `issued` 境界の有効判定を毎回
+`globalThis.context.env` から読んでいたため、tracing が無効な本番でも
+送信リクエストごとに `syscall/js` の境界を 3 回跨いでいた(S49 追記)。
+Stage 1 で cursor や世代を扱う計測を足すときは、同じ罠を踏まないこと。
+
 ### 5.2 実 upstream へのアダプター
 
 まず正常境界を decoded event 間で閉じることでupstreamの再watchを使えるか計測する。
@@ -361,7 +406,7 @@ compatibility dateを記録し、既存required focusを維持、WASM cap/CIを�
 
 | 段階 | 単独で出荷する成果 | 合否を決める測定 |
 |---|---|---|
-| 0: 観測と費用契約 | cost-modelへの見積もり追記、動作を変えないevent/epoch/cursor/error計測、外部prod probe。 | 本番のNode停止90秒/10分と復帰、55 Pod GC、完全idleを現行hashで基準測定。commit→informer→actionのどこに遅延があるか区別できる。probe用trafficと対象clusterの自然trafficを分離できる。 |
+| 0: 観測と費用契約 **(完了 2026-09-12、S44–S49)** | cost-modelへの見積もり追記、動作を変えないevent/epoch/cursor/error計測、外部prod probe。 | 本番のNode停止90秒/10分と復帰、55 Pod GC、完全idleを現行hashで基準測定。commit→informer→actionのどこに遅延があるか区別できる。probe用trafficと対象clusterの自然trafficを分離できる。 |
 | 1: storage watch契約 | snapshot/delta切替・commit cut・欠落検出を修正。従来controllerも利益を得る。 | 本番canaryでsnapshot中にwrite、push失敗、root/facet途中失敗、delete/recreate、selector変化を注入。受信履歴と権威logの差分0、phantom deletion0、無効cursorは410。未完facetは成功bookmarkにならない。 |
 | 2: 論理watch再開 | Cをまず1component、次に全componentへ。guard/既存pokeは維持。 | 本番で通常境界1000回以上、idleからwarm/cold再開。warm・履歴有効・初期同期済み条件で境界起因full snapshot0、欠落0。各GVR rows/readとreconnect費用を旧版比較。close欠落・JSON途中切断でもrecovery。孤立した遅延/410は正しく再初期化。 |
 | 3: durable変更通知 | Eのoutbox/世代ackと対象component dispatch。旧alarmをfallbackとして段階運用。 | 全served GVRの変更を、それ以外のheartbeatなしで起床させる。本番で通知/応答/ackを落としても再送で到達、重複副作用0、旧ackで新dirty消失0。batch毎metadata論理更新予算1+2C、実課金rowsも記録。 |
