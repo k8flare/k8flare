@@ -372,8 +372,16 @@ export class Controllers {
     // local check -- no cross-DO call on this hot path. Armed before the
     // dispatch so a still-loading component gets a completion poke even
     // if no further write ever arrives.
+    // Corrected 2026-09-11: this used to reset unconvergedTicks to 0 on every
+    // poke, reasoning that a fresh write deserves a fresh backoff. On a cluster
+    // whose work can never converge the controllers never stop writing, so the
+    // reset arrived before the backoff could ever grow -- S26b measured ~40s
+    // average intervals and ~65,000 alarms a month against a ceiling of 600s,
+    // and recorded the cause as unidentified. Pulling the alarm in still gives
+    // the new write prompt attention; the counter now measures how long the
+    // cluster has failed to converge, which is what the backoff is for. A
+    // cluster that does converge parks, and parking zeroes the counter.
     const current = await this.state.storage.getAlarm();
-    await this.state.storage.put("unconvergedTicks", 0); // fresh write: reset backoff
     if (current === null || current > Date.now() + SAFETY_NET_INTERVAL_MS) {
       this.state.storage.setAlarm(Date.now() + SAFETY_NET_INTERVAL_MS);
     }
