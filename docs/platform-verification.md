@@ -5965,3 +5965,37 @@ poke and resets the backoff"` が旧挙動を明示的に assert していた。
 
 **未検証**: 本番でのアラーム実数の変化。S26b の 65,000 回/月は本番の実測値
 なので、修正後に同じ条件で測り直すまでは「直った」とは言えない。
+
+## S41: gracefuldelete の 4 ガードのコストを実測した (2026-09-11、本番)
+
+`TODO.md` P2-1 が「rows-read のコストが未計測」と残していた分。
+`docs/known-issues.md` は 4 ガードを「動くが偶発的複雑性」と書いていたが、
+値が無いままでは撤去の優先度を判断できない。
+
+**測り方**: 本番のテナントクラスタで 10 Pod の ReplicationController を作り、
+`--cascade=foreground` で削除。その前後 100 秒を `wrangler tail` で全件取得し、
+Durable Object へのリクエストを URL 形状で分類した。
+
+**結果(削除 1 回あたり)**:
+
+| 指標 | 実測 |
+|---|---|
+| 捕捉イベント総数 | 1,225 |
+| DO への LIST | **440** |
+| DO への単一キー操作 | 345 |
+| LIST された異なるリソース種別 | **27**(名前空間付きリソースのほぼ全て) |
+
+内訳の上位は pods 31、jobs 22、persistentvolumeclaims 20、resourceclaims 20、
+services 19、replicasets 19、events 18、replicationcontrollers 18。
+**削除された Pod と何の関係も無いリソースが軒並み同じ回数だけ LIST されている**
+のが、`sweepOrphanStragglers` / `blockingDependent` /
+`CountPendingGracefulDeletions` が `namespacedStores` を総なめする実装の指紋である
+(`pkg/apiserver/gracefuldelete.go:121, 310`)。ストア数は 28。
+
+**意味**: 10 Pod を消すのに DO LIST 440 回は、upstream の garbage collector が
+自分のグラフで済ませる処理に対して不釣り合いに大きい。DO の LIST は
+rows-read として課金されるので、これは金額としても効く。ガード撤去
+(設計 Stage 5)の価値がこれで数値化された。
+
+**未計測**: ガードを外した場合の同条件の値。撤去自体が upstream GC
+conformance での確認を前提にしており、Actions の枠が尽きているため未実施。
