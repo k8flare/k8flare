@@ -89,6 +89,18 @@ jobs:
       - name: TypeScript check (packages/k8flare-worker, direct tsc)
         run: npx tsc --noEmit -p packages/k8flare-worker/tsconfig.json
 
+      # Both unit lanes run here, ahead of the WASM build and the three
+      # wrangler-dev lanes: they need nothing those steps produce, they
+      # finish in seconds, and what they cover (the pump-window registry,
+      # promise lifetimes at the JS boundary, and the DO poke/park policy)
+      # was previously observable only through a five-minute end-to-end
+      # lane that reports it as a timeout somewhere else.
+      - name: Unit tests (TypeScript glue)
+        run: make test-ts
+
+      - name: Unit tests (pkg/cfruntime, js/wasm under node)
+        run: make test-cfruntime
+
       # binaryen's wasm-opt is required by the Makefile's kcm.manifest.json
       # recipe (the KCM WASM only fits under the Worker Loader's hard
       # 64MiB cap after -Oz -- see the Makefile's comment there).

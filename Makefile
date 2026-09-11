@@ -26,7 +26,7 @@ CAP := 67108864 # the Worker Loader's 64MiB total-module-bytes cap (S14 Part 2)
 # Every wasm entrypoint links pkg/cfruntime (the JS dispatch shim); it was
 # missing from all four lists until 2026-07-21, silently leaving chunks
 # stale after cfruntime-only edits.
-CFRUNTIME_SRC := $(shell find pkg/cfruntime -name '*.go')
+CFRUNTIME_SRC := $(shell find pkg/cfruntime -name '*.go' -not -name '*_test.go')
 APISERVER_SRC := $(shell find pkg/apiserver -name '*.go') $(CFRUNTIME_SRC) go.wasm.mod
 # KCM_SRC excludes pkg/controllers/gc and its cmd/gc-wasm entrypoint: they
 # share the pkg/controllers/cmd parent directory but not a package with
@@ -47,12 +47,12 @@ CLUSTEROP_SRC := $(shell find pkg/controllers/clusterop pkg/controllers/restconf
 	$(shell find pkg/clientgo-lean-overlays pkg/k8s-js-overlays -type f)
 NODES_AGENT_SRC := $(shell find pkg/agent cmd/agent -name '*.go') go.mod go.sum
 
-.PHONY: all wasm wasm-apiserver wasm-kcm wasm-gc wasm-sched wasm-clusterop gen-mirrors gen check vet test test-kcm test-clusterop dev deploy clean-wasm nodes-agent setup-tunnel help
+.PHONY: all wasm wasm-apiserver wasm-kcm wasm-gc wasm-sched wasm-clusterop gen-mirrors gen check vet test test-unit test-cfruntime test-ts test-kcm test-clusterop dev deploy clean-wasm nodes-agent setup-tunnel help
 
 all: wasm
 
 help:
-	@echo "targets: wasm wasm-apiserver wasm-kcm wasm-gc wasm-sched wasm-clusterop gen check vet test test-kcm test-clusterop dev deploy clean-wasm nodes-agent setup-tunnel"
+	@echo "targets: wasm wasm-apiserver wasm-kcm wasm-gc wasm-sched wasm-clusterop gen check vet test test-unit test-cfruntime test-ts test-kcm test-clusterop dev deploy clean-wasm nodes-agent setup-tunnel"
 
 ## gen-mirrors: regenerate .build/{k8s-js,clientgo-lean,apiserver-js}-mirror,
 ## the local copies go.mod's k8s.io/kubernetes, k8s.io/client-go and
@@ -277,7 +277,40 @@ vet: | gen-mirrors
 ## the real KCM, GC, scheduler or cluster operator -- and nothing else
 ## covered them either, since cost-gate.yml is dispatch-only and a fork
 ## cannot trigger it. Use the individual targets below while iterating.
-test: test-apiserver test-kcm test-clusterop
+test: test-unit test-apiserver test-kcm test-clusterop
+
+## test-unit: the fast lane -- no wrangler dev, no WASM chunks, seconds
+## rather than minutes. Runs first in `test` because everything it covers
+## is glue the slow lanes can only fail at five minutes' remove.
+test-unit: test-cfruntime test-ts
+
+## test-cfruntime: pump windows, the JS boundary and promise lifetimes,
+## as a real js/wasm test binary under node (GOROOT's go_js_wasm_exec).
+## These are the only unit tests that can cover the S31/S34 fault shapes:
+## both are about what happens at the JS boundary when a request's
+## IoContext goes away, and the code only exists for GOOS=js.
+##
+## `env -i` is not optional: js/wasm caps argv+environment at 8KiB total,
+## and an ordinary developer shell exceeds that on its own ("total length
+## of command line and environment variables exceeds limit" from
+## wasm_exec.js, not from the test). Pass through only what the toolchain
+## needs, taken from `go env` so a custom GOPATH/GOCACHE still applies.
+GO_CMD = $(shell command -v go)
+NODE_CMD = $(shell command -v node)
+test-cfruntime:
+	env -i HOME="$(HOME)" \
+		PATH="$$(go env GOROOT)/lib/wasm:$(dir $(GO_CMD)):$(dir $(NODE_CMD)):/usr/bin:/bin" \
+		GOPATH="$$(go env GOPATH)" GOMODCACHE="$$(go env GOMODCACHE)" GOCACHE="$$(go env GOCACHE)" \
+		GOFLAGS=-modfile=go.wasm.mod GOOS=js GOARCH=wasm \
+		$(GO_CMD) test -count=1 ./pkg/cfruntime/...
+
+## test-ts: the TypeScript that carries logic rather than glue -- the
+## Controllers DO's poke/park policy, the Cluster DO's afterWrite
+## predicates and safety-net arming, and the watch stream's lifecycle.
+## vitest comes with vite-plus (already a devDependency), so this adds no
+## dependency of its own.
+test-ts:
+	pnpm exec vp test --run
 
 ## test-apiserver: apiserver, storage, admission, RBAC, tokens -- with the
 ## controllers disabled, since these tests assume nothing reconciles their
