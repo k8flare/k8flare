@@ -77,8 +77,26 @@ into your deployment unnoticed — accepting one is a separate, deliberate act
 The guard does not protect you if you invoke `wrangler deploy` directly; it
 is wired into the project's own deploy paths, not into wrangler.
 
-There is still no backup or restore mechanism. The guard prevents an
-accidental wipe; it does not let you recover from a deliberate one.
+**Take a backup anyway.** `cmd/k8flare-backup` dumps every object the
+cluster's discovery serves, in every namespace, and restores them into a
+cluster:
+
+```sh
+go run ./cmd/k8flare-backup dump    -file cluster.ndjson
+go run ./cmd/k8flare-backup restore -file cluster.ndjson
+```
+
+Verified 2026-09-11 against the real deployment: 21 objects dumped, the
+namespace deleted, then restored with its ConfigMap data, labels and
+Deployment replica count intact.
+
+What it does **not** cover, because the Kubernetes API deliberately does not
+serve it: the CA keypairs and the per-cluster token vault, which live in
+Durable Object facets. Restoring into a fresh deployment gives you your
+workloads back, not your cluster's identity -- nodes holding certificates
+signed by the old CA will not rejoin, and issued cluster tokens change. It
+also skips Endpoints, EndpointSlices and Events by default, because the
+controllers rebuild them from the objects that are restored.
 
 So before every upgrade:
 
