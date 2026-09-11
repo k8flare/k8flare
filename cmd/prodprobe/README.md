@@ -36,8 +36,12 @@ Convergence only, no analytics credentials needed (also what the local
 smoke uses):
 
 ```
-go run ./cmd/prodprobe -url http://127.0.0.1:8787 -token k8flare-dev-token -parking=false
+go run ./cmd/prodprobe -url http://127.0.0.1:8787 -token k8flare-dev-token \
+  -parking=false -compute ""
 ```
+
+(`-compute ""` because `wrangler dev` without Docker has no Containers
+backend; the pod then needs whatever nodes are attached.)
 
 ## Secrets a maintainer must set
 
