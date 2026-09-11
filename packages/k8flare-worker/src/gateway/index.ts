@@ -22,6 +22,7 @@ function isUnauthenticatedPath(url: URL): boolean {
   const p = url.pathname;
   return (
     isLivenessPath(p) ||
+    p === "/readyz" ||
     p === "/version" ||
     p === "/cacerts" ||
     p === "/api" ||
@@ -40,14 +41,16 @@ function isUnauthenticatedPath(url: URL): boolean {
 //
 // Be precise about what a 200 here asserts: the Worker is routable and its
 // script loaded. It does NOT assert that storage is reachable, that the
-// cluster exists, or that any control-plane component is healthy.
+// cluster exists, or that any control-plane component is healthy -- that is
+// /readyz (readyz.ts), also anonymous, whose cost is bounded by memoizing
+// the verdict rather than by asking for a token.
 //
-// Corrected 2026-09-11: this comment used to cover /readyz too, and ended
-// "those need a token, because probing them costs real work". The premise
-// was right and the conclusion was wrong -- what a token buys is the
-// ability to do the real work safely, not permission to skip it. /readyz
-// now runs the real checks (readyz.ts) behind the cluster token; only
-// /healthz and /livez stay zero-cost. TODO.md P0-2.
+// Corrected 2026-09-11, twice. The comment first covered /readyz too and
+// ended "those need a token, because probing them costs real work"; it was
+// then rewritten to say /readyz had moved behind the cluster token. Both
+// were wrong: a readiness endpoint an operator's uptime monitor cannot call
+// is not a readiness endpoint, and it is the cache, not authentication,
+// that keeps anonymous volume off the Cluster DO. TODO.md P0-2.
 function isLivenessPath(p: string): boolean {
   return p === "/healthz" || p === "/livez";
 }
@@ -286,11 +289,13 @@ export async function handleGateway(
       headers: { "Content-Type": "text/plain; charset=utf-8" },
     });
   }
+  // Anonymous, like /healthz. The per-component breakdown is the part
+  // that needs the token (upstream gates it on ?verbose alone; here a
+  // failed check's detail names internal paths and sizes); without one,
+  // ?verbose is simply ignored rather than refused, so a monitor that
+  // sets it still gets its answer.
   if (url.pathname === "/readyz") {
-    if (!dwAuth(req, env)) {
-      return new Response("unauthorized", { status: 401 });
-    }
-    return handleReadyz(env);
+    return handleReadyz(env, url.searchParams.has("verbose") && dwAuth(req, env));
   }
 
   // The wasm chunk supply channel (run_worker_first) is Loader-only.
