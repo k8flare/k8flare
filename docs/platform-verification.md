@@ -6059,3 +6059,61 @@ alarms: 2   DO lists: 238   pending-deletions probes: 4
 「28 LIST/tick を削った」という説明は誇張だった。foreground 削除の 440 LIST を
 実際に減らしたいなら、効くのはガードそのものの撤去(設計 Stage 5)であって
 呼び出し回数のキャッシュではない。
+
+## S42: conformance をローカルで回せるようにした — Actions を待たずに Definition of Done の一部を検証できる (2026-09-11)
+
+Fable のレビューが「conformance は maintainer のディスパッチ専用で、
+コントリビューターが Definition of Done に到達する経路が無い」と指摘した点と、
+Actions の枠が尽きて `e2e-conformance.yml` が一切走らなくなった状況の、
+両方に効く。
+
+**やったこと**: upstream の e2e.test を darwin/arm64 版で取得し
+(`https://dl.k8s.io/v1.36.3/kubernetes-test-darwin-arm64.tar.gz`、
+go.mod のピンと同じバージョン)、自己署名 TLS を終端する小さな node プロキシを
+`wrangler dev` の前に置き、k8flare-agent を特権 Docker コンテナで走らせて
+ノードを 1 台 join させた。macOS 上で追加のインフラは要らない。
+
+```
+Ran 6 of 7579 Specs in 180.329 seconds
+SUCCESS! -- 6 Passed | 0 Failed | 0 Pending | 7573 Skipped
+```
+
+required の GC フォーカス(`e2e-conformance.yml` の `GC_FOCUS` をそのまま使用)が
+**全件通る**。ノードが無い状態でも 7 件中 5 件は走り、残り 2 件は
+`there are currently no ready, schedulable nodes`(前提条件)で止まる。
+つまりノード無しでも大半は検証できる。
+
+Pod は実際には Running にならない(OrbStack 上のエミュレートされた amd64
+コンテナ内の入れ子 containerd で `seccomp is not supported`)。GC の
+conformance はオブジェクトのライフサイクルを見るので、これで支障は無い。
+
+### 設計 Stage 5(ガード撤去)への適用
+
+`FinishUnblockedForegroundOwners` を無効化して同じフォーカスを 3 回回した:
+
+| 回 | 結果 | 所要 |
+|---|---|---|
+| 1 | 6 Passed / 0 Failed | 101 秒 |
+| 2 | 6 Passed / 0 Failed | 127 秒 |
+| 3 | 6 Passed / 0 Failed | 186 秒 |
+
+ガード有りの基準は 180 秒。**このガードは upstream の GC conformance に
+関する限り不要である**ことが、初めて実測で示された。
+
+**ただし撤去しても S41 の 440 LIST は減らない**。ガード別に数えると:
+
+| ガード | List 呼び出し |
+|---|---|
+| `sweepOrphanStragglers` | 1(全ストア走査) |
+| `blockingDependent` | 1(全ストア走査) |
+| `CountPendingGracefulDeletions` | 1(全ストア走査) |
+| `RejectCreateWithTerminatingController` | 0 |
+| `FinishUnblockedForegroundOwners` | **0** |
+
+コストを減らしたいなら狙うべきは前の 3 つで、そちらは正しさに直接効いている
+(foreground 削除が依存を待つのはまさに `blockingDependent`)。
+`FinishUnblockedForegroundOwners` の撤去は複雑さの削減であって節約ではない。
+
+**この実験では撤去していない**。設計 Stage 5 は各シナリオ 30 回以上と本番での
+確認を求めており、3 回のローカル実行はそれを満たさない。撤去して良いという
+根拠が初めて手に入った、というのが正確な現状である。
