@@ -27,6 +27,10 @@ type ResourceStore struct {
 	namespaced  bool
 	newFunc     func() runtime.Object // creates a new empty object (e.g. &corev1.ConfigMap{})
 	newListFunc func() runtime.Object // creates a new empty list object (e.g. &corev1.ConfigMapList{})
+	// gvk is what this route serves, handed to the body decoder as the
+	// default for a request that omits apiVersion/kind -- see
+	// decodeDefaults.
+	gvk schema.GroupVersionKind
 	// upstream serves the single-object verbs: the real
 	// genericregistry.Store on top of KineStorage (see
 	// upstreamregistry.go). Every resource in apidef.Table goes through
@@ -54,8 +58,40 @@ func NewResourceStore(
 		namespaced:  namespaced,
 		newFunc:     newFunc,
 		newListFunc: newListFunc,
+		gvk:         routeGVK(gv, newFunc),
 		upstream:    NewUpstreamStore(storage, gv, resource, singular, namespaced, newFunc, newListFunc),
 	}
+}
+
+// routeGVK resolves the Kind this route's Go type is registered under in
+// gv. An unregistered type yields the zero value, which decodeDefaults
+// turns back into "no default".
+func routeGVK(gv schema.GroupVersion, newFunc func() runtime.Object) schema.GroupVersionKind {
+	gvks, _, err := Scheme.ObjectKinds(newFunc())
+	if err != nil {
+		return schema.GroupVersionKind{}
+	}
+	for _, gvk := range gvks {
+		if gvk.GroupVersion() == gv {
+			return gvk
+		}
+	}
+	return schema.GroupVersionKind{}
+}
+
+// decodeDefaults is the GroupVersionKind a request body decoded on this
+// route falls back to when it carries no apiVersion/kind of its own.
+// Upstream's create and update handlers pass their route's scope.Kind to
+// the decoder the same way, which is why a real kube-apiserver accepts
+// the TypeMeta-less Events the kube-controller-manager's event
+// broadcaster sends; without it those POSTs answered 400 "Object 'Kind'
+// is missing" and the events they carried were lost (S32).
+func (rs *ResourceStore) decodeDefaults() *schema.GroupVersionKind {
+	if rs.gvk.Empty() {
+		return nil
+	}
+	gvk := rs.gvk
+	return &gvk
 }
 
 // storagePrefix builds the storage prefix for listing resources.

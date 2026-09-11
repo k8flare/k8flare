@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/util/dryrun"
 )
 
@@ -47,7 +48,7 @@ func parseDeleteOptions(r *http.Request) (*metav1.DeleteOptions, error) {
 		// client-go client, not assumed: a bare json.Unmarshal failed to decode
 		// with "invalid character 'k' looking for beginning of value", the tell
 		// for feeding protobuf bytes to a JSON decoder).
-		obj, decodeErr := decodeBody(body)
+		obj, decodeErr := decodeBody(body, nil)
 		switch {
 		case decodeErr == nil:
 			typed, ok := obj.(*metav1.DeleteOptions)
@@ -87,8 +88,10 @@ func deletePropagation(opts *metav1.DeleteOptions) metav1.DeletionPropagation {
 
 // decodeBody decodes the request body as a Kubernetes runtime.Object.
 // Uses UniversalDeserializer which auto-detects JSON and protobuf formats.
-func decodeBody(body []byte) (runtime.Object, error) {
-	obj, _, err := Codecs.UniversalDeserializer().Decode(body, nil, nil)
+// defaults, when non-nil, supplies the apiVersion/kind for a body that
+// carries none (see ResourceStore.decodeDefaults).
+func decodeBody(body []byte, defaults *schema.GroupVersionKind) (runtime.Object, error) {
+	obj, _, err := Codecs.UniversalDeserializer().Decode(body, defaults, nil)
 	if err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
 	}
@@ -189,7 +192,7 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			return
 		}
 
-		rObj, warnings, err := decodeBodyWithFieldValidation(body, fieldValidation)
+		rObj, warnings, err := decodeBodyWithFieldValidation(body, fieldValidation, store.decodeDefaults())
 		if err != nil {
 			writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to decode request body: "+err.Error())
 			return
@@ -328,7 +331,7 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			return
 		}
 
-		rObj, warnings, err := decodeBodyWithFieldValidation(body, fieldValidation)
+		rObj, warnings, err := decodeBodyWithFieldValidation(body, fieldValidation, store.decodeDefaults())
 		if err != nil {
 			writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to decode request body: "+err.Error())
 			return

@@ -131,7 +131,7 @@ func handleStatusSubresource(w http.ResponseWriter, r *http.Request, store *Reso
 		}
 		defer r.Body.Close()
 
-		incoming, err := decodeBody(body)
+		incoming, err := decodeBody(body, nil)
 		if err != nil {
 			writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to decode request body: "+err.Error())
 			return
@@ -243,7 +243,7 @@ func handleBindingSubresource(w http.ResponseWriter, r *http.Request, store *Res
 	}
 	defer r.Body.Close()
 
-	bindingObj, err := decodeBody(body)
+	bindingObj, err := decodeBody(body, nil)
 	if err != nil {
 		writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to decode binding: "+err.Error())
 		return
@@ -359,7 +359,7 @@ func handleScaleSubresource(w http.ResponseWriter, r *http.Request, store *Resou
 		// JSON -- found by TestScaleSubresource against the real typed
 		// client, which a hand-rolled JSON-only fixture wouldn't have
 		// caught. decodeBody's UniversalDeserializer auto-detects either.
-		incomingObj, err := decodeBody(body)
+		incomingObj, err := decodeBody(body, nil)
 		if err != nil {
 			writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to decode request body: "+err.Error())
 			return
