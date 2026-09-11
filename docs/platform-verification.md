@@ -6554,3 +6554,38 @@ S41 が測った「foreground 削除 1 回で 27 resource kind に 440 LIST」�
 LIST の扇形が観測されたイベントより広いことを示唆するが、同じ量を測って
 いないので差を直接引き算してはいけない。P2-1 / Stage 5 で LIST 側も同じ窓で
 数える必要がある。
+
+#### S47 追記 (同日): デプロイ直後の probe は偽陽性で落ちる。直した
+
+上の conformance 確認のあと、本番を今日の main(`46bc9ab5`)にデプロイして
+prodprobe を回したところ **FAIL** した:
+
+```
+prodprobe: FAIL: the controllers did not produce 1 pod(s) within 8m0s
+  -- last seen: 0 live pod(s); deployment status.replicas=0 observedGeneration=0/1
+```
+
+回帰かと思ったが、9 分後に手で Deployment を作ると `observedGeneration: 1,
+replicas: 1` が 90 秒以内に付き、probe を回し直すと**収束 16 秒**——S44 の
+基準値と同じだった。10 分間の quiet window も revision 1614 のまま。
+**今日の変更に回帰はない。**
+
+原因は**デプロイ直後のコールドスタート**。resident controller の dynamic
+worker は約 44MB の WASM をコンパイルしてからでないと何も reconcile できず、
+それが probe の 8 分の収束予算を超えていた。`e2e-conformance.yml` が
+「up-to-28min control-plane warmup (wasm compile)」と書いているのと同じ現象で
+ある。
+
+**`/readyz` はこれを検出できない。** `checkComponent` は
+`wasm/<name>.manifest.json` というアセットの存在を見るだけで、dynamic worker
+が実際に読み込まれて動けるかは見ていない。つまり **readyz が 200 を返す
+状態でも制御プレーンはまだ何も reconcile できない**。readyz は匿名かつ
+キャッシュ付きなので、ここから DW をロードさせるのはコスト面で採れない
+(匿名エンドポイントが 44MB のコンパイルを起こせてしまう)。したがって
+readyz は現状のままとし、この限界を明記する。
+
+直したのは probe 側で、不可侵ルール #5(flaky は直すか revert)に従う:
+最初の収束に `-warmup-timeout`(既定 20 分)という**主張ではない**予算を与え、
+steady-state の主張は後続の scale と delete が担う。最初の収束が 1 分を
+超えたら「これは WASM コンパイルであってコントローラーの故障ではない」と
+probe 自身が言う。予算が 1 本に戻ったら落ちる単体テストも付けた。

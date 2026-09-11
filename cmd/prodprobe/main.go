@@ -25,6 +25,7 @@ type config struct {
 	compute string
 
 	runningTimeout time.Duration
+	warmupTimeout  time.Duration
 	deleteTimeout  time.Duration
 	pollInterval   time.Duration
 
@@ -57,6 +58,7 @@ func parseFlags(args []string) (config, error) {
 	fs.StringVar(&cfg.image, "image", "registry.k8s.io/pause:3.10", "image for the probe pod")
 	fs.StringVar(&cfg.compute, "compute", "containers", "value for the k8flare.com/compute pod annotation; empty runs on whatever nodes are attached")
 	fs.DurationVar(&cfg.runningTimeout, "running-timeout", 8*time.Minute, "how long to wait for a pod to reach Running")
+	fs.DurationVar(&cfg.warmupTimeout, "warmup-timeout", 20*time.Minute, "how long the FIRST convergence may take, which on a control plane that has not run since a deploy includes compiling ~44MB of controller WASM. Not an assertion about steady-state latency -- the scale and delete steps that follow carry that")
 	fs.DurationVar(&cfg.deleteTimeout, "delete-timeout", 5*time.Minute, "how long to wait for the pods to disappear after deletion")
 	fs.DurationVar(&cfg.pollInterval, "poll-interval", 5*time.Second, "how often to poll while waiting for convergence")
 	fs.BoolVar(&cfg.parking, "parking", true, "assert the cluster parks: requires Cloudflare analytics credentials")
@@ -139,12 +141,20 @@ func run(ctx context.Context, cfg config, out io.Writer) error {
 	if cfg.requireRunning {
 		pods, err = waitForRunningPods(ctx, cs, cfg.ns, selector, 1, cfg.runningTimeout, cfg.pollInterval)
 	} else {
-		pods, err = waitForScheduledPods(ctx, cs, cfg.ns, cfg.name, selector, 1, cfg.runningTimeout, cfg.pollInterval)
+		pods, err = waitForScheduledPods(ctx, cs, cfg.ns, cfg.name, selector, 1, cfg.warmupTimeout, cfg.pollInterval)
 	}
 	if err != nil {
 		return err
 	}
-	step("pod %s %s after %s", pods[0], convergedWord(cfg.requireRunning, 1), time.Since(activeStart).Round(time.Second))
+	firstConverge := time.Since(activeStart).Round(time.Second)
+	step("pod %s %s after %s", pods[0], convergedWord(cfg.requireRunning, 1), firstConverge)
+	// A cold control plane compiles ~44MB of controller WASM before it can
+	// reconcile anything, and that showed up once as an 8-minute probe
+	// failure that looked exactly like broken controllers (S47 の追記).
+	// Say so rather than letting a slow first convergence pass silently.
+	if firstConverge > time.Minute {
+		step("that first convergence was slow, which on a control plane that has not run since a deploy is WASM compilation, not a controller fault -- the scale and delete steps below are the steady-state measurement")
+	}
 
 	scaledAt := time.Now()
 	step("scaling %s/%s to 2", cfg.ns, cfg.name)
