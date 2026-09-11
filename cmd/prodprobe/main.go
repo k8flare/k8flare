@@ -172,7 +172,24 @@ func run(ctx context.Context, cfg config, out io.Writer) error {
 	step("workload gone after %s total", activeEnd.Sub(activeStart).Round(time.Second))
 
 	if !cfg.parking {
-		step("PARKING ASSERTION DISABLED (-parking=false): convergence passed, idle cost unverified")
+		// Without the analytics credential the full assertion is out of reach,
+		// but "did anything write?" is not: it needs only the cluster token.
+		// Leaving the idle-cost invariant entirely unchecked was how S26b's
+		// alarm storm survived from July to September.
+		nodes, err := awaitNodesDrained(ctx, cfg, cs, step)
+		if err != nil {
+			return err
+		}
+		if len(nodes) > 0 {
+			step("skipping the quiet check: %d node(s) still attached (%s), and a kubelet heartbeats every ~10s", len(nodes), strings.Join(nodes, ", "))
+			step("PARKING ASSERTION DISABLED (-parking=false): convergence passed, idle cost unverified")
+			return nil
+		}
+		sleepStep(ctx, cfg.parkWait, "letting the cluster quiesce", step)
+		if err := assertQuiet(ctx, cfg, cs, step); err != nil {
+			return err
+		}
+		step("PARKING PARTIALLY ASSERTED: nothing wrote, but request and alarm counts need -parking with analytics credentials")
 		return nil
 	}
 	return assertParked(ctx, cfg, cs, activeStart, activeEnd, step)
@@ -217,6 +234,43 @@ func awaitNodesDrained(ctx context.Context, cfg config, cs kubernetes.Interface,
 		case <-time.After(15 * time.Second):
 		}
 	}
+}
+
+// clusterRevision reads the cluster's own resourceVersion, which the kine log
+// advances on every accepted write. It needs nothing but the cluster token, so
+// it is the half of the idle-cost assertion that works without the Cloudflare
+// analytics credential a maintainer has to provision.
+func clusterRevision(ctx context.Context, cs kubernetes.Interface) (string, error) {
+	list, err := cs.CoreV1().Namespaces().List(ctx, metav1.ListOptions{Limit: 1})
+	if err != nil {
+		return "", fmt.Errorf("read cluster revision: %w", err)
+	}
+	return list.ResourceVersion, nil
+}
+
+// assertQuiet is the credential-free parking check. It is a PROXY, and a
+// deliberately weak one: it proves nothing wrote during the quiet window, not
+// that nothing ran. An alarm chain that wakes and does no work is invisible to
+// it, which is exactly the shape S26b measured. It does catch the two failures
+// that have actually bitten in production -- a control plane that never stops
+// writing (S26's no-op write storm) and one that keeps reconciling after the
+// workload is gone -- and it costs one list call at each end of the window.
+func assertQuiet(ctx context.Context, cfg config, cs kubernetes.Interface, step func(string, ...any)) error {
+	before, err := clusterRevision(ctx, cs)
+	if err != nil {
+		return err
+	}
+	step("quiet window: cluster revision %s", before)
+	sleepStep(ctx, cfg.quietWindow, "measuring the quiet window (writes only; see -parking for the full assertion)", step)
+	after, err := clusterRevision(ctx, cs)
+	if err != nil {
+		return err
+	}
+	if before != after {
+		return fmt.Errorf("the cluster wrote during a %s quiet window with no workload and no nodes: revision %s -> %s. Something is reconciling that should have parked", cfg.quietWindow, before, after)
+	}
+	step("quiet window passed: revision still %s after %s, so nothing wrote", after, cfg.quietWindow)
+	return nil
 }
 
 func assertParked(ctx context.Context, cfg config, cs kubernetes.Interface, activeStart, activeEnd time.Time, step func(string, ...any)) error {
