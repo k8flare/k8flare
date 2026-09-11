@@ -87,7 +87,15 @@ rebuilds an upstream options struct by hand for the same class of bug.
 the correct UID succeeds. Plus an audit note listing the other options structs
 checked.
 
-### P0-4 `[ ]` Resident controllers are discontinuous across pump windows
+### P0-4 `[~]` Resident controllers are discontinuous across pump windows
+
+**Design proposed, awaiting review:** `docs/pump-window-design.md` (2026-09-11).
+It recommends keeping bounded WASM execution and separating physical
+connection lifetime from logical watch continuity — resourceVersion-resumable
+watches first, then durable change notification from storage — and explicitly
+refuses to promise that resumable watches alone retire the four
+`gracefuldelete.go` guards. Seven stages, each independently shippable, each
+with the production measurement that decides it.
 
 **Problem.** The deepest issue and the reason the other symptoms keep
 reappearing. kcm/gc/sched run as resident WASM pumped in bounded windows;
