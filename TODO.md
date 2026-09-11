@@ -218,6 +218,21 @@ pointing at the section that establishes it. The history stays untouched below.
 
 ---
 
+### P0-6 `[ ]` Stage 0 of the pump-window design (instrumentation and cost contract)
+
+Attempted 2026-09-11 and **discarded**. Two delegated agents were each cut off
+by provider rate limits mid-task and left unverified work; the salvaged result
+passed `vet` and the unit lanes but killed the Worker at startup — every
+wrangler-lane test failed with `connection refused`, so `wrangler dev` never
+came up. The changes had also strayed past Stage 0 into the clientgo-lean
+mirror and `pkg/controllers/restconfig`, which is Stage 2 territory.
+
+Redo it scoped tightly: the three-boundary instrumentation (commit → informer
+observed → controller acted) attributable to a pump window and component, with
+no always-on cost, plus the cost-model entries and a probe-traffic
+discriminator. Note that S37 removed the urgency: the node-recovery latency
+this instrumentation was meant to localise is no longer a defect.
+
 ## P2 — known defects and accidental complexity
 
 ### P2-1 `[ ]` `gracefuldelete.go`'s guards are compensating for the platform
