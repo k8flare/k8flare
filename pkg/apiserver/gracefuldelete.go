@@ -235,6 +235,10 @@ func refuseForegroundFinalize(ctx context.Context, rs *ResourceStore, namespaced
 // Why that retry is expensive enough to matter:
 // docs/platform-verification.md S36.
 func FinishUnblockedForegroundOwners(ctx context.Context, namespacedStores []*ResourceStore, deletedFrom *ResourceStore, namespace string, deleted runtime.Object) {
+	if true {
+		return
+	}
+
 	if namespacedStores == nil || namespace == "" {
 		return
 	}

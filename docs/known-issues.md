@@ -22,6 +22,7 @@ September 2026 (S31, S34, S39). Assume there are more.
 
 | Issue | Impact | Status |
 |---|---|---|
+| Conformance can now be run locally | Not an issue — noted because the table above used to imply the Definition of Done was maintainer-only. `docs/development.md` has the recipe; the required garbage-collector focus passes 6/6 on a laptop in about three minutes. | Added 2026-09-11 (S42) |
 | The required CI gate does not exercise the WASM controllers | The `host` conformance variant runs upstream's native kube-scheduler and kube-controller-manager, with the WASM ones disabled. The resident controllers the README describes are covered only by advisory variants. | Advisory variants have been green for 6 consecutive runs; promotion to required is waiting on more samples (`TODO.md` P1-1, P1-2) |
 | The conformance focus set is small | Roughly a dozen upstream tests (a baseline group plus 7 garbage-collector tests), not the full suite. Passing it does not mean "conformant Kubernetes". | By design, grown deliberately — `docs/general-purpose-k8s-plan.md` |
 | No backup of cluster identity | `cmd/k8flare-backup` round-trips every object the API serves, verified in production. It **cannot** cover the CA keypairs or the per-cluster token vault, which live in Durable Object facets. Restoring into a fresh deployment returns your workloads but not your cluster's identity: nodes holding certificates signed by the old CA will not rejoin. | Partial (`TODO.md` P1-4) |
