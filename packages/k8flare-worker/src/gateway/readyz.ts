@@ -136,7 +136,9 @@ function cachedVerdict(env: Env): Promise<Verdict> {
 // withheld, which is all an anonymous caller gets here too.
 function terseBody(v: Verdict): string {
   if (v.ok) return "ok";
-  const lines = v.checks.map((c) => (c.ok ? `[+]${c.name} ok` : `[-]${c.name} failed: reason withheld`));
+  const lines = v.checks.map((c) =>
+    c.ok ? `[+]${c.name} ok` : `[-]${c.name} failed: reason withheld`,
+  );
   lines.push("readyz check failed");
   return lines.join("\n") + "\n";
 }
