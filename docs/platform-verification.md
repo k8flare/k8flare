@@ -1,4 +1,28 @@
-# Platform verification spikes (S1–S8)
+# Platform verification spikes (S1–S37)
+
+> **現状サマリ (2026-09-11 時点)。まずここを読むこと。**
+>
+> 以下は append-only の記録で、古い節には**後から誤りと分かった記述がそのまま
+> 残っている**(不可侵ルール 4: 訂正は追記し、歴史を書き換えない)。ある節を
+> 単独で読んで現在の事実と受け取らないこと。今どうなっているかはこの表で判断する。
+>
+> | 項目 | 現状 | 根拠 |
+> |---|---|---|
+> | 制御プレーンの構成 | シェル Worker 1 つ + dynamic worker 5 つ(apiserver / kcm / gc / sched / clusterop)+ Cluster/WatchHub/NodeVM DO | CLAUDE.md、S19 |
+> | ワークロードコントローラー | 実 kube-controller-manager の 12 個。手書き代替は削除済み | S28 |
+> | conformance(required = `host` variant) | baseline + GC が green | run 34561595250 |
+> | conformance(`kcm-dw` / `sched-dw`、advisory) | 3 回連続 green。**required ではない**ので README の看板機能は必須ゲートを通っていない | run 34484825880 / 34491769003 / 34561595250、TODO.md P1-1 |
+> | アイドル時のパーク | 撤収後 10〜58 分でリクエスト 0 件を本番で 4 回確認 | S35 追記 2、S37 |
+> | node 停止の検出 | 56 秒で Ready=Unknown + taint | S37 |
+> | node 復帰 | Ready=True から taint 消滅まで 3〜15 秒。**S31 追記 2 の「5〜6 分」は現行ビルドでは再現しない** | S37 |
+> | 55 Pod の foreground GC | 本番でオーナー消滅 22 秒(予算 90 秒)。ローカルでは 5 回に 1 回が予算近辺 | S37、S36 |
+> | Worker Loader の cap | 67,108,864 バイト。変更なし。apiserver チャンクの余裕は約 2.5MB | S35 |
+> | upstream `endpoints` 層への置換 | 測定済み NO-GO(+3.5MB 対 余裕 2.5MB) | S29、S35 |
+> | 本番の継続監視 | `cmd/prodprobe` を実装。**まだ定期実行していない** | TODO.md P0-1 |
+> | 既知の未解決 | 収束しないワークロードで月 6.5 万回のアラーム(不変条件 #3 抵触)、`/v1-k3s/connect` の 401 ループ、scheduler が tainted node へ一時バインド、`gracefuldelete.go` の 4 ガード | TODO.md、S26b、S32 |
+>
+> 未着手・進行中の作業は [TODO.md](../TODO.md) が一次情報。
+
 
 The k8flare v2 rewrite (`feat/v2-rearchitecture`) is designed around
 2026-era Cloudflare features: Dynamic Workers, DO Facets, Cloudflare
