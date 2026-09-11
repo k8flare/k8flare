@@ -4,6 +4,7 @@
 // single wrangler.jsonc can bind them all locally.
 import type { Env } from "./env.ts";
 import { handleGateway } from "./gateway/index.ts";
+import { pumpTrace, pumpTraceEnabled } from "./trace.ts";
 
 export { Cluster, WatchHub } from "./storage/index.ts";
 export { Controllers } from "./controllers/index.ts";
@@ -14,6 +15,15 @@ export { ClusterLoopback } from "./entrypoints.ts";
 
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    // Guarded rather than left to pumpTrace: building the fields parses a
+    // URL, and a boundary nobody asked to measure must cost nothing.
+    if (pumpTraceEnabled(env)) {
+      pumpTrace(env, "request", "gateway", {
+        o: new URL(req.url).pathname,
+        ua: req.headers.get("User-Agent") ?? "",
+        m: req.method,
+      });
+    }
     return handleGateway(req, env, ctx);
   },
 };

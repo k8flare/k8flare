@@ -291,6 +291,7 @@ export class Controllers {
           CLUSTER_BASE_PATH: this.clusterBasePath(),
         };
         if (token) dynamicEnv.K3S_TOKEN = token;
+        if (this.env.PUMP_TRACE) dynamicEnv.PUMP_TRACE = this.env.PUMP_TRACE;
         return {
           compatibilityDate: "2026-07-01",
           mainModule: "index.js",

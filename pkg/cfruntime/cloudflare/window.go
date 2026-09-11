@@ -45,6 +45,7 @@ var ErrPumpWindowClosed = errors.New("cloudflare: pump window closed")
 // will ever close, which is S31's original symptom by another route
 // (measured 2026-09-09, S31 addendum).
 type Window struct {
+	id      int
 	env     js.Value
 	done    chan struct{}
 	expires time.Time
@@ -54,6 +55,22 @@ type Window struct {
 // Env returns the request env this window carries: the source of every
 // binding used for outbound I/O while the window is open.
 func (w *Window) Env() js.Value { return w.env }
+
+// ID is the window's registry id, the same value OpenPumpWindow returned
+// to JS. It names the window a trace observation happened inside.
+func (w *Window) ID() int { return w.id }
+
+// CurrentWindowID reports the newest live window's id, or 0 when no
+// window is open. It never blocks: a caller that is only labelling an
+// observation must not wait for a window that may never come.
+func CurrentWindowID() int {
+	windowsMu.Lock()
+	defer windowsMu.Unlock()
+	if w := newestLive(); w != nil {
+		return w.id
+	}
+	return 0
+}
 
 // Done is closed when this window closes.
 func (w *Window) Done() <-chan struct{} { return w.done }
@@ -82,7 +99,7 @@ func OpenPumpWindow(env js.Value, lifetimeMs int) int {
 	windowsMu.Lock()
 	windowID++
 	id := windowID
-	w := &Window{env: env, done: make(chan struct{}), expires: time.Now().Add(lifetime)}
+	w := &Window{id: id, env: env, done: make(chan struct{}), expires: time.Now().Add(lifetime)}
 	byID[id] = w
 	windows = append(windows, w)
 	notify := openedCh
