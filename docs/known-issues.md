@@ -36,7 +36,7 @@ September 2026 (S31, S34, S39). Assume there are more.
 | No release tag | There is no tagged version. Pin a commit. | Open |
 | The repository clones at 45 MiB | Two compiled binaries were committed by accident and remain in history. They are untracked and ignored now. History was deliberately **not** rewritten: it would save 33 MiB but invalidate the 24 commit SHAs the verification log cites. | Decided, not a defect (`TODO.md` P1-9) |
 | CI cannot run at all | Every job on the repository fails in about 4 seconds having run zero steps: *"The job was not started because recent account payments have failed or your spending limit needs to be increased."* Nothing has been through the required conformance gate since 2026-09-09. A maintainer has to fix Billing & plans on the `k8flare` org. | Open, blocking (`TODO.md` P1-8) |
-| A k3s patch bump is unmerged | `deps/k3s-v1.36.4-k3s1` moves the pin from v1.36.3 to v1.36.4. Every local gate passes with current `main` merged in, including the required garbage-collector conformance focus 7/7, but the conformance gate itself cannot be dispatched (row above). | Ready, blocked on CI billing (`TODO.md` P1-8) |
+| A k3s patch bump is unmerged | `deps/k3s-v1.36.4-k3s1` moves the pin from v1.36.3 to v1.36.4. Every local gate passes with current `main` merged in, and it now passes the required garbage-collector focus 7/7 in the **required `host` variant**, with a baseline result identical to `main`. The conformance gate itself still cannot be dispatched (row above). | Ready, blocked on CI billing (`TODO.md` P1-8) |
 
 ## Fixed recently, worth knowing about
 

@@ -553,6 +553,25 @@ Neither version got through the focus. The baseline focus is therefore **not a
 usable local signal on this harness**, exactly as the decision rule anticipated,
 and it says nothing for or against v1.36.4.
 
+**Re-verified 2026-09-12 in the REQUIRED configuration.** The earlier run used
+the harness's default, which reproduces the advisory `sched-dw` variant. S48
+showed the required `host` variant can be reproduced locally too, so the bump
+was put through it: host `kube-scheduler` and `kube-controller-manager` built
+from the v1.36.4 tree, `wrangler dev` with `SCHED_DISABLED:1 CM_DISABLED:1`,
+apiserver reporting `v1.36.4+k8flare`.
+
+| focus | k3s v1.36.4 | current `main` (v1.36.3) |
+|---|---|---|
+| required GC, host variant | **7 Passed / 0 Failed, 101s** | 7 Passed / 0 Failed, 91s |
+| baseline, host variant | 8 Passed / 3 Failed, 583s | 8 Passed / 3 Failed, 583s |
+
+The three baseline failures are the same three `SchedulerPredicates` specs on
+both versions, for the same reason, which is not the control plane: on Docker
+Desktop the containerised node cannot create a pod sandbox (`seccomp is not
+supported`, S48), so any spec needing a pod to actually run cannot pass here.
+**The bump changes nothing the local harness can measure.** Chunks rebuilt and
+all five under cap (apiserver has the least headroom at 2388 KiB).
+
 **Still not merged, and the blocker is not technical.** Inviolable rule #1
 makes conformance CI the Definition of Done, and it cannot run: every job on
 the repository fails in 4 seconds with zero steps. The annotation says why —
