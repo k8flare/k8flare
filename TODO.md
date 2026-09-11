@@ -327,12 +327,27 @@ stub's doc comment always claimed. Measured in production: 401 retries 0,
 Worker rather than a hibernating Durable Object. The tunnel is unused, so the
 right answer is for the agent not to dial at all; k3s has no switch for that.
 
-### P2-5 `[ ]` `PUMP_WINDOW_DROP_CLOSE` is a test knob in production code
+### P2-5 `[x]` `PUMP_WINDOW_DROP_CLOSE` is a test knob in production code
 
 Added so `wrangler dev` could reproduce a production-only fault
 (`packages/k8flare-worker/src/controllers/index.ts`). Keep it only if it is the
 cheapest way to hold that regression; if so, document it as a test seam and
 make sure it cannot be enabled in a real deployment by accident.
+
+**Kept, and fenced.** It is the cheapest seam: the fault is that production
+tears a poke's IoContext down before `ctx.waitUntil`'s timer runs, and
+`wrangler dev` never does that (S31 E1), so three regression tests
+(`gcmultiowner_test.go`, `kcmdw_test.go`, `ioctxprobe_test.go`) can only reach
+the wedge by dropping the close deliberately. Each passes it per invocation as
+`wrangler dev --var`, so nothing about it lives in a deployment.
+
+What was missing was the guard. `packages/wasm-build/src/check-test-vars.ts`
+now refuses to deploy if `wrangler.jsonc` declares any fault-injection var
+(`PUMP_WINDOW_DROP_CLOSE`, `KCM_DISABLED`), wired into `npm run deploy`,
+`make deploy` and `ci.yml` alongside the migrations check. Verified both ways:
+it passes on `main` and fails with the var added. It does not — and cannot —
+catch a deliberate `wrangler secret put` of the same name; the accident it is
+built for is a test invocation's `--var` being copied into a config.
 
 ### P2-6 `[~]` `deps-k3s-update` is failing on `main`
 

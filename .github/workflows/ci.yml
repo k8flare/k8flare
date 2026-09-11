@@ -86,6 +86,9 @@ jobs:
       - name: Check the DO migrations block is unchanged
         run: npm run check:migrations
 
+      - name: Check no test-only vars are declared for deployment
+        run: npm run check:test-vars
+
       # The former workers/nodes was found (2026-07-03) to be invisible to
       # `vp check`'s type-check pass (root cause in its internal "tsgolint"
       # project discovery, never fully chased). A direct `tsc --noEmit`
