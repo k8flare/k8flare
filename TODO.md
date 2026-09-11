@@ -276,10 +276,20 @@ Added so `wrangler dev` could reproduce a production-only fault
 cheapest way to hold that regression; if so, document it as a test seam and
 make sure it cannot be enabled in a real deployment by accident.
 
-### P2-6 `[ ]` `deps-k3s-update` is failing on `main`
+### P2-6 `[~]` `deps-k3s-update` is failing on `main`
 
-The weekly dependency workflow is red. Unrelated to the current work, but a red
-scheduled workflow trains people to ignore red.
+Diagnosed 2026-09-11 (run 34169780304): the bump job pushes the branch fine —
+`deps/k3s-v1.36.4-k3s1` is on the remote — and then `gh pr create` fails,
+because the repository has "Allow GitHub Actions to create and approve pull
+requests" off (`can_approve_pull_request_reviews: false`) and no
+`DEPS_UPDATE_TOKEN` secret is set. The step now says exactly that instead of
+failing opaquely.
+
+**Needs a human decision**: either enable that repository setting (which also
+permits Actions to approve PRs — a security consideration), or create a
+`DEPS_UPDATE_TOKEN` with `pull-requests: write`. Until then the workflow will
+keep going red weekly, correctly. There is also a real pending k3s patch bump
+sitting unmerged on that branch.
 
 ---
 
