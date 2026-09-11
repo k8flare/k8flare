@@ -6142,3 +6142,37 @@ both valid owner and owner that's waiting for dependents to be deleted`。
 
 ガード撤去の 30 回反復も 6 spec の焦点で回し始めていたため、破棄して
 7 spec でやり直した。
+
+### S43 (2026-09-11): 実験用のガード無効化が main に漏れた — 経緯と影響範囲
+
+P2-1(gracefuldelete の手書きガードを撤去できるか)を測るため、
+`FinishUnblockedForegroundOwners` の先頭に `if true { return }` を注入して
+ローカル conformance を反復していた。この注入を**メインの作業ツリーで行い**、
+そのまま `git add -A` したため、`2d36bb3 "docs: show how to run upstream
+conformance without CI"` という docs コミットに 4 行が紛れて main に入り、
+push された。commit の stat を見るまで気づかなかった。
+
+`f0ab022` で revert 済み。
+
+**本番には届いていない。** 二通りで確認した:
+
+1. 時系列。最後の deploy は 11:27:16Z。`gracefuldelete.go` は 11:39:47Z の
+   コミット `cc5dc6e` の時点ではまだ無傷で(同コミットは当該ファイルを含まない)、
+   注入はその後・12:02:52Z のコミットまでの間に行われた。deploy はそれより
+   少なくとも 12 分早い。
+2. 実挙動。本番クラスタで ReplicationController(replicas=2)を
+   `--cascade=foreground` で削除したところ **5 秒**で完了し、Pod も RC も
+   残らなかった。ガードが無効なら S36 の GC リトライ待ちになる。
+
+**手順上の原因と対策。** 同種の事故(サブエージェントがメインのツリーで
+作業し、別ブランチのマージに紛れ込む)はこのセッションで 2 度目。ソースを
+書き換える実験は必ず `git worktree` で隔離する。docs/development.md に
+明記した。
+
+**run 6 の失敗が示唆すること(未確証)。** 7 spec 版の反復は 5 回成功したあと
+run 6 で BeforeSuite が 900 秒のタイムアウトに掛かった。所要時間は
+253s → 585s → 899s と単調に悪化しており、実行終了の 48 分後になっても
+`wrangler dev` のログには削除済み Pod への GET 404 が流れ続けていた。
+ガードの doc comment が言う「GC が拒否された finalizer パッチをリトライする
+コスト」(S36)がそのまま出た形に見えるが、同じラップトップで `make vet` や
+wasm ビルドを並行させていたので交絡がある。隔離ツリーで測り直す。
