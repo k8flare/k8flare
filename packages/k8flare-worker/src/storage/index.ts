@@ -226,8 +226,7 @@ export class Cluster {
    * The alarm redelivery closes that hole while staying event-armed:
    * the flag exists only after a relevant write, and the alarm parks
    * again once delivery succeeds. */
-  private async afterWrite(key: string, revision: number): Promise<void> {
-    pumpTrace(this.env, "commit", "storage", { o: key, rv: revision });
+  private async afterWrite(key: string): Promise<void> {
     if (needsNodeLifecycleAttention(key)) await this.armSafetyNetSoon();
     if (needsControllersPing(key)) {
       await this.ctx.storage.put("pendingPing:controllers", true);
@@ -416,8 +415,9 @@ export class Cluster {
         value,
         null,
       );
+      pumpTrace(this.env, "commit", "storage", { o: key, rv: id });
       await broadcastEvent(this.host, this.sql, key, id);
-      await this.afterWrite(key, id);
+      await this.afterWrite(key);
       return jsonResponse({ revision: id }, 201);
     } else {
       const { rev, event } = await storeGetCurrent(this.sql, this.host, key, false);
@@ -444,8 +444,9 @@ export class Cluster {
         value: body.value,
         lease,
       };
+      pumpTrace(this.env, "commit", "storage", { o: key, rv: id });
       await broadcastEvent(this.host, this.sql, key, id);
-      await this.afterWrite(key, id);
+      await this.afterWrite(key);
       return jsonResponse({ revision: id, kv, updated: true });
     }
   }
@@ -469,8 +470,9 @@ export class Cluster {
       oldValue,
       oldValue,
     );
+    pumpTrace(this.env, "commit", "storage", { o: key, rv: id });
     await broadcastEvent(this.host, this.sql, key, id);
-    await this.afterWrite(key, id);
+    await this.afterWrite(key);
 
     // Namespace deletion does NOT call ctx.facets.delete() here, despite the
     // original plan calling for it as a GC nicety. Empirically reproduced

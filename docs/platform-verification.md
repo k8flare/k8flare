@@ -6207,3 +6207,78 @@ P0-4(pump window の再設計)が入るまで撤去できない。** 撤去し�
 有無で説明できない。(b) CI で落ちていたのは `garbage_collector.go:795` の
 90 秒予算超過で、これはタイミング依存。ローカルの 5/30 成功は「ローカルでは
 成り立つ」であって CI で通る証明ではない。
+
+### S44 (2026-09-12): P0-4 Stage 0 — 現行ハッシュの基準測定と三境界の計装
+
+Stage 0 の目的は「commit → informer が観測 → controller が動いた」のどこに
+遅延があるかを**区別できるようにする**ことと、計装を入れる前の本番を測って
+おくこと。前回の Stage 0 は Stage 2 の領域(clientgo-lean ミラーと
+restconfig)まで侵食して壊れたので、今回は触ってよいファイルを先に決めた。
+
+#### 基準測定(計装を入れる前・deploy version 46f38ea9、2026-09-11T11:27:16Z)
+
+| 測定 | 結果 |
+|---|---|
+| 収束(Deployment 作成 → scale → 削除 → 消滅) | **16 秒** |
+| 55 Pod の foreground GC: owner 消滅 | **9 秒** |
+| 55 Pod の foreground GC: 全 Pod 消滅 | **12 秒** |
+| アイドル 10 分間の書き込み | **0**(cluster revision 782 のまま) |
+
+設計文書の Stage 5 が要求する「GC owner 消滅 max < 90 秒」に対し、55 Pod で
+9 秒。Node 停止 90 秒/10 分の測定は**未実施**: ユーザーの VM 上の agent を
+止める必要があり、S37 で緊急性が消えているため日中の枠に回す。
+
+#### 計装(`PUMP_TRACE=1` のときだけ)
+
+| 境界 | どこ | 出る行 |
+|---|---|---|
+| request | Worker の唯一の fetch(`src/index.ts`) | `{"b":"request","c":"gateway","o":<path>,"ua":<User-Agent>,"m":<method>}` |
+| commit | Cluster DO、revision が確定した直後 | `{"b":"commit","c":"storage","o":<key>,"rv":<revision>}` |
+| observed | KCM の Pod informer が配送したイベント | `{"b":"observed.add\|update\|delete","c":"kcm","w":<pump window id>,"o":<ns/name>,"rv":<rv>}` |
+
+「controller が動いた」は request 行の User-Agent で識別する。upstream が
+`kube-controller-manager` / `kube-scheduler` を付けるので、追加の配線は要らない。
+
+**常時コストなし。** var が未設定なら TS 側は文字列比較 1 回、Go 側は
+`globalThis.context.env` の参照 1 回で、何も出力しない。informer の
+event handler は**そもそも登録しない** — 早期 return するハンドラでも
+オブジェクトごと・イベントごとの呼び出しコストは掛かるため。全テストレーン
+(54 TS + 全 Go レーン)を var 未設定で通したとき `pumptrace` の行は **0 件**。
+
+**実機で確認した。** `wrangler dev --var PUMP_TRACE:1` に対して
+Namespace と replicas=2 の ReplicationController を作ると、三境界すべてが
+出た(request 161 / commit 38 / observed 6)。
+
+#### 計器そのものの誤りを 1 件見つけて直した
+
+最初の実装では commit 行を `afterWrite` に置いていたが、そこは
+`broadcastEvent` の**後**だった。その結果 commit → observed が **-3ms 〜 -1ms**
+と負になった。informer が watch で受け取るほうが、commit のログ行より先に
+起きていた。revision が確定する `storeInsert` の直後・broadcast の前へ移した
+ところ、**4〜29ms** という物理的に妥当な値になった。
+
+| Pod | rv | 境界 | window | commit → observed |
+|---|---|---|---|---|
+| tracecheck/tr-864mf | 16 | observed.add | 5 | 29 ms |
+| tracecheck/tr-864mf | 19 | observed.update | 7 | 10 ms |
+| tracecheck/tr-975ql | 21 | observed.add | 8 | 4 ms |
+| tracecheck/tr-975ql | 24 | observed.update | 9 | 4 ms |
+
+**解析上の注意**: rv だけで突き合わせると、informer の定期 resync が同じ rv を
+再配送した行(約 25 秒おき)を最初の配送と混同する。revision ごとに**最初の
+観測だけ**を採ること。混同したままだと 25,858ms や 50,174ms という「遅延」が
+出る。
+
+#### probe traffic の識別子
+
+`cmd/prodprobe` の全リクエストが `k8flare-prodprobe/<GITHUB_RUN_ID か unix 秒>`
+を User-Agent として送る。コスト不変条件 #1 は「誰も使っていないクラスタが
+何をしているか」で判定するが、probe だけは常にそのクラスタを使っている
+——識別子がないと、消えていることを証明したい traffic と probe 自身の
+traffic が見分けられない。実 HTTP 往復で server 側に届くことを test で確認済み。
+
+#### まだ Stage 0 に足りていないもの
+
+- informer 境界は KCM の Pod だけ。gc / sched / clusterop は未配線。
+- Node 停止 90 秒/10 分と復帰の基準測定。
+- 完全 idle の request/alarm 件数(Cloudflare Analytics token 待ち)。
