@@ -112,6 +112,13 @@ func handlePodOnlySubresource(w http.ResponseWriter, r *http.Request, store *Res
 //   - PATCH applies the patch to the whole object, same as the top-level
 //     PATCH handler (already generic; only .Status is expected to differ).
 func handleStatusSubresource(w http.ResponseWriter, r *http.Request, store *ResourceStore, namespace, name string) {
+	dryRunOpts, err := parseDryRun(r)
+	if err != nil {
+		writeStatusError(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+	updateOpts := &metav1.UpdateOptions{DryRun: dryRunOpts}
+
 	ctx := r.Context()
 
 	switch r.Method {
@@ -148,7 +155,7 @@ func handleStatusSubresource(w http.ResponseWriter, r *http.Request, store *Reso
 			return
 		}
 
-		obj, err := store.Update(ctx, namespace, name, current, nil)
+		obj, err := store.Update(ctx, namespace, name, current, updateOpts)
 		if err != nil {
 			writeResourceError(w, err, store.resource, name)
 			return
@@ -176,7 +183,7 @@ func handleStatusSubresource(w http.ResponseWriter, r *http.Request, store *Reso
 			return
 		}
 
-		obj, err := store.Update(ctx, namespace, name, patchedObj, nil)
+		obj, err := store.Update(ctx, namespace, name, patchedObj, updateOpts)
 		if err != nil {
 			writeResourceError(w, err, store.resource, name)
 			return
@@ -229,6 +236,13 @@ func copyStatus(dst, src runtime.Object) error {
 // Pod manifest POSTed to .../binding by mistake) is squarely
 // attacker/caller-controlled input, not just an internal invariant.
 func handleBindingSubresource(w http.ResponseWriter, r *http.Request, store *ResourceStore, namespace, name string) {
+	dryRunOpts, err := parseDryRun(r)
+	if err != nil {
+		writeStatusError(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+	updateOpts := &metav1.UpdateOptions{DryRun: dryRunOpts}
+
 	if r.Method != http.MethodPost {
 		writeStatusError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method "+r.Method+" is not supported for "+store.resource+"/binding")
 		return
@@ -267,7 +281,7 @@ func handleBindingSubresource(w http.ResponseWriter, r *http.Request, store *Res
 
 	pod.Spec.NodeName = binding.Target.Name
 
-	_, err = store.Update(ctx, namespace, name, pod, nil)
+	_, err = store.Update(ctx, namespace, name, pod, updateOpts)
 	if err != nil {
 		writeResourceError(w, err, store.resource, name)
 		return
@@ -329,6 +343,13 @@ func applyPatch(currentObj runtime.Object, patchBytes []byte, contentType string
 // ScaleREST per resource, the same generalization copyStatus already applies
 // to /status above.
 func handleScaleSubresource(w http.ResponseWriter, r *http.Request, store *ResourceStore, namespace, name string) {
+	dryRunOpts, err := parseDryRun(r)
+	if err != nil {
+		writeStatusError(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+	updateOpts := &metav1.UpdateOptions{DryRun: dryRunOpts}
+
 	ctx := r.Context()
 
 	switch r.Method {
@@ -380,7 +401,7 @@ func handleScaleSubresource(w http.ResponseWriter, r *http.Request, store *Resou
 			return
 		}
 
-		updated, err := store.Update(ctx, namespace, name, current, nil)
+		updated, err := store.Update(ctx, namespace, name, current, updateOpts)
 		if err != nil {
 			writeResourceError(w, err, store.resource, name)
 			return
@@ -452,7 +473,7 @@ func handleScaleSubresource(w http.ResponseWriter, r *http.Request, store *Resou
 			return
 		}
 
-		updated, err := store.Update(ctx, namespace, name, current, nil)
+		updated, err := store.Update(ctx, namespace, name, current, updateOpts)
 		if err != nil {
 			writeResourceError(w, err, store.resource, name)
 			return

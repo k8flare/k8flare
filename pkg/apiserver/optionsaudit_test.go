@@ -121,3 +121,50 @@ func TestServerSideDryRunWritesDoNotPersist(t *testing.T) {
 		}
 	})
 }
+
+// TestServerSideDryRunOnSubresources covers what the create/update/patch fix
+// missed: subresource.go parsed dryRun nowhere, so `--dry-run=server` against
+// pods/status (and scale, and binding) wrote for real.
+func TestServerSideDryRunOnSubresources(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+	const ns = "dryrunsub"
+
+	if _, err := client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: ns},
+	}, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("create namespace: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = client.CoreV1().Namespaces().Delete(context.Background(), ns, metav1.DeleteOptions{})
+	})
+
+	pod, err := client.CoreV1().Pods(ns).Create(ctx, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "dryrun-sub"},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "c", Image: "registry.k8s.io/pause:3.10"}},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create pod: %v", err)
+	}
+
+	pod.Status.Phase = corev1.PodRunning
+	pod.Status.PodIP = "10.42.9.9"
+	if _, err := client.CoreV1().Pods(ns).UpdateStatus(ctx, pod, metav1.UpdateOptions{
+		DryRun: []string{metav1.DryRunAll},
+	}); err != nil {
+		t.Fatalf("dry-run status update: %v", err)
+	}
+
+	got, err := client.CoreV1().Pods(ns).Get(ctx, "dryrun-sub", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	if got.Status.PodIP == "10.42.9.9" {
+		t.Errorf("dry-run status update persisted: podIP = %q", got.Status.PodIP)
+	}
+	if got.Status.Phase == corev1.PodRunning {
+		t.Errorf("dry-run status update persisted: phase = %q", got.Status.Phase)
+	}
+}
