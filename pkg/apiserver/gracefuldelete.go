@@ -288,7 +288,7 @@ func clearForegroundFinalizer(ctx context.Context, rs *ResourceStore, namespace,
 			kept = nil
 		}
 		m.Finalizers = kept
-		written, err := rs.Update(ctx, namespace, name, obj)
+		written, err := rs.Update(ctx, namespace, name, obj, nil)
 		if isStatusReason(err, metav1.StatusReasonConflict) {
 			continue
 		}
@@ -357,7 +357,7 @@ func stripOwnerRef(ctx context.Context, rs *ResourceStore, namespace, name, owne
 			kept = nil
 		}
 		m.OwnerReferences = kept
-		_, err = rs.Update(ctx, namespace, name, obj)
+		_, err = rs.Update(ctx, namespace, name, obj, nil)
 		switch {
 		case err == nil:
 			return nil

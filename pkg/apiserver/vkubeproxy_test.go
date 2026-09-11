@@ -20,7 +20,7 @@ func podsResourceStore(storage *Storage) *ResourceStore {
 
 func mustCreatePod(t *testing.T, storage *Storage, ns string, pod *corev1.Pod) *corev1.Pod {
 	t.Helper()
-	obj, err := podsResourceStore(storage).Create(context.Background(), ns, pod)
+	obj, err := podsResourceStore(storage).Create(context.Background(), ns, pod, nil)
 	if err != nil {
 		t.Fatalf("create pod %s: %v", pod.Name, err)
 	}
@@ -29,7 +29,7 @@ func mustCreatePod(t *testing.T, storage *Storage, ns string, pod *corev1.Pod) *
 
 func mustCreateService(t *testing.T, storage *Storage, ns string, svc *corev1.Service) *corev1.Service {
 	t.Helper()
-	obj, err := servicesResourceStore(storage).Create(context.Background(), ns, svc)
+	obj, err := servicesResourceStore(storage).Create(context.Background(), ns, svc, nil)
 	if err != nil {
 		t.Fatalf("create service %s: %v", svc.Name, err)
 	}
@@ -69,7 +69,7 @@ func mustCreateEndpointSlice(t *testing.T, storage *Storage, ns, svcName, portNa
 				UID:       pod.UID,
 			},
 		}},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("create endpointslice %s: %v", svcName, err)
 	}

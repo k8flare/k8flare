@@ -148,7 +148,7 @@ func handleStatusSubresource(w http.ResponseWriter, r *http.Request, store *Reso
 			return
 		}
 
-		obj, err := store.Update(ctx, namespace, name, current)
+		obj, err := store.Update(ctx, namespace, name, current, nil)
 		if err != nil {
 			writeResourceError(w, err, store.resource, name)
 			return
@@ -176,7 +176,7 @@ func handleStatusSubresource(w http.ResponseWriter, r *http.Request, store *Reso
 			return
 		}
 
-		obj, err := store.Update(ctx, namespace, name, patchedObj)
+		obj, err := store.Update(ctx, namespace, name, patchedObj, nil)
 		if err != nil {
 			writeResourceError(w, err, store.resource, name)
 			return
@@ -267,7 +267,7 @@ func handleBindingSubresource(w http.ResponseWriter, r *http.Request, store *Res
 
 	pod.Spec.NodeName = binding.Target.Name
 
-	_, err = store.Update(ctx, namespace, name, pod)
+	_, err = store.Update(ctx, namespace, name, pod, nil)
 	if err != nil {
 		writeResourceError(w, err, store.resource, name)
 		return
@@ -380,7 +380,7 @@ func handleScaleSubresource(w http.ResponseWriter, r *http.Request, store *Resou
 			return
 		}
 
-		updated, err := store.Update(ctx, namespace, name, current)
+		updated, err := store.Update(ctx, namespace, name, current, nil)
 		if err != nil {
 			writeResourceError(w, err, store.resource, name)
 			return
@@ -452,7 +452,7 @@ func handleScaleSubresource(w http.ResponseWriter, r *http.Request, store *Resou
 			return
 		}
 
-		updated, err := store.Update(ctx, namespace, name, current)
+		updated, err := store.Update(ctx, namespace, name, current, nil)
 		if err != nil {
 			writeResourceError(w, err, store.resource, name)
 			return

@@ -14,8 +14,10 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1validation "k8s.io/apimachinery/pkg/apis/meta/v1/validation"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apiserver/pkg/util/dryrun"
 )
 
@@ -84,6 +86,22 @@ func deletePropagation(opts *metav1.DeleteOptions) metav1.DeletionPropagation {
 		return metav1.DeletePropagationBackground
 	}
 	return *opts.PropagationPolicy
+}
+
+// parseDryRun reads the `?dryRun=` query parameter, which is how
+// CreateOptions/UpdateOptions/PatchOptions travel (unlike DeleteOptions,
+// which client-go sends as a request body). Validated with upstream's own
+// ValidateDryRun, so an unsupported value is a client error rather than a
+// silently real write. Empty means not a dry run.
+func parseDryRun(r *http.Request) ([]string, error) {
+	values := r.URL.Query()["dryRun"]
+	if len(values) == 0 {
+		return nil, nil
+	}
+	if errs := metav1validation.ValidateDryRun(field.NewPath("dryRun"), values); len(errs) > 0 {
+		return nil, errs.ToAggregate()
+	}
+	return values, nil
 }
 
 // decodeBody decodes the request body as a Kubernetes runtime.Object.
@@ -185,6 +203,13 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			return
 		}
 		defer r.Body.Close()
+
+		dryRunOpts, err := parseDryRun(r)
+		if err != nil {
+			writeStatusError(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		dryRun := dryrun.IsDryRun(dryRunOpts)
 
 		fieldValidation, err := parseFieldValidation(r)
 		if err != nil {
@@ -294,21 +319,27 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		}
 
 		// Services that don't specify a ClusterIP get one allocated here,
-		// synchronously, before the first write -- see clusterip.go.
-		if svc, ok := rObj.(*corev1.Service); ok {
+		// synchronously, before the first write -- see clusterip.go. Not
+		// under dry-run: the allocation is a real persisted write and
+		// there is nothing to release it afterwards, so a dry-run
+		// Service create leaks an address per call. The reply then
+		// carries no ClusterIP, which upstream's would.
+		if svc, ok := rObj.(*corev1.Service); ok && !dryRun {
 			if err := AssignClusterIP(ctx, store.storage, svc); err != nil {
 				writeInternalError(w, fmt.Errorf("allocate ClusterIP: %w", err))
 				return
 			}
 		}
 
-		obj, err := store.Create(ctx, namespace, rObj)
+		obj, err := store.Create(ctx, namespace, rObj, &metav1.CreateOptions{DryRun: dryRunOpts})
 		if err != nil {
 			writeResourceError(w, err, resource, name)
 			return
 		}
 
-		ApplyPostCreateEffects(ctx, stores, obj)
+		if !dryRun {
+			ApplyPostCreateEffects(ctx, stores, obj)
+		}
 
 		writeRuntimeObject(w, http.StatusCreated, obj)
 
@@ -324,6 +355,12 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			return
 		}
 		defer r.Body.Close()
+
+		dryRunOpts, err := parseDryRun(r)
+		if err != nil {
+			writeStatusError(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
 
 		fieldValidation, err := parseFieldValidation(r)
 		if err != nil {
@@ -342,8 +379,11 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		// completes its deletion instead of persisting (upstream
 		// semantics; see gracefuldelete.go). This is how the real GC's
 		// finalizer-clearing patch/update actually removes an owner it
-		// finished orphaning or foreground-cascading.
-		if shouldFinalizeDelete(rObj) {
+		// finished orphaning or foreground-cascading. Under dry-run the
+		// plain Update below is the right path instead: upstream's own
+		// delete-during-update is dry-run aware, while the sweeps and
+		// settles finalizeDelete wraps it in are not.
+		if shouldFinalizeDelete(rObj) && !dryrun.IsDryRun(dryRunOpts) {
 			obj, err := finalizeDelete(ctx, store, namespacedStores, namespace, name, rObj)
 			if err != nil {
 				writeResourceError(w, err, resource, name)
@@ -353,7 +393,7 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			return
 		}
 
-		obj, err := store.Update(ctx, namespace, name, rObj)
+		obj, err := store.Update(ctx, namespace, name, rObj, &metav1.UpdateOptions{DryRun: dryRunOpts})
 		if err != nil {
 			writeResourceError(w, err, resource, name)
 			return
@@ -539,6 +579,12 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		}
 		defer r.Body.Close()
 
+		dryRunOpts, err := parseDryRun(r)
+		if err != nil {
+			writeStatusError(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+
 		ct := r.Header.Get("Content-Type")
 		// Get -> apply -> conditional-update, retried on conflict: a
 		// patch expresses intent against WHATEVER the current object is
@@ -565,7 +611,7 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 
 			// Same finalizer-completion rule as the PUT path above (see
 			// gracefuldelete.go) -- the GC clears finalizers via PATCH.
-			if shouldFinalizeDelete(patchedObj) {
+			if shouldFinalizeDelete(patchedObj) && !dryrun.IsDryRun(dryRunOpts) {
 				obj, err := finalizeDelete(ctx, store, namespacedStores, namespace, name, patchedObj)
 				if err != nil {
 					writeResourceError(w, err, resource, name)
@@ -575,7 +621,7 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 				return
 			}
 
-			obj, err := store.Update(ctx, namespace, name, patchedObj)
+			obj, err := store.Update(ctx, namespace, name, patchedObj, &metav1.UpdateOptions{DryRun: dryRunOpts})
 			if err == nil {
 				writeRuntimeObject(w, http.StatusOK, obj)
 				return
@@ -623,7 +669,7 @@ func finalizeDelete(ctx context.Context, store *ResourceStore, namespacedStores 
 	// it (ShouldDeleteDuringUpdate), returning the object it deleted. A
 	// plain Delete would NOT do it -- upstream treats a delete of an
 	// already-terminating object as a no-op that just reports the object.
-	obj, err := store.Update(ctx, namespace, name, write)
+	obj, err := store.Update(ctx, namespace, name, write, nil)
 	if err != nil {
 		return nil, err
 	}

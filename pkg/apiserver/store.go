@@ -285,15 +285,17 @@ func selectableFieldsFor(obj runtime.Object) fields.Set {
 // Create persists a new object via the upstream registry (UID/
 // creationTimestamp/generation stamping, generateName, AlreadyExists --
 // all rest.BeforeCreate + genericStrategy).
-func (rs *ResourceStore) Create(ctx context.Context, namespace string, obj runtime.Object) (runtime.Object, error) {
-	return rs.upstreamCreate(ctx, namespace, obj)
+// opts is the caller's own metav1.CreateOptions (dryRun); nil means none.
+func (rs *ResourceStore) Create(ctx context.Context, namespace string, obj runtime.Object, opts *metav1.CreateOptions) (runtime.Object, error) {
+	return rs.upstreamCreate(ctx, namespace, obj, opts)
 }
 
 // Update persists changes via the upstream registry (immutable-field
 // preservation, UID preconditions, generation bump, finalizer-aware
 // deletion completion -- rest.BeforeUpdate + genericStrategy).
-func (rs *ResourceStore) Update(ctx context.Context, namespace, name string, obj runtime.Object) (runtime.Object, error) {
-	return rs.upstreamUpdate(ctx, namespace, name, obj)
+// opts is the caller's own metav1.UpdateOptions (dryRun); nil means none.
+func (rs *ResourceStore) Update(ctx context.Context, namespace, name string, obj runtime.Object, opts *metav1.UpdateOptions) (runtime.Object, error) {
+	return rs.upstreamUpdate(ctx, namespace, name, obj, opts)
 }
 
 // Delete removes one object via the upstream registry and returns the

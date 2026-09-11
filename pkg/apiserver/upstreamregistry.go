@@ -235,16 +235,26 @@ func (rs *ResourceStore) upstreamList(ctx context.Context, namespace, fieldSelec
 	return rs.upstream.List(rs.upstreamCtx(ctx, namespace), opts)
 }
 
-func (rs *ResourceStore) upstreamCreate(ctx context.Context, namespace string, obj runtime.Object) (runtime.Object, error) {
-	return rs.upstream.Create(rs.upstreamCtx(ctx, namespace), obj, rest.ValidateAllObjectFunc, &metav1.CreateOptions{})
+// upstreamCreate and upstreamUpdate pass the CALLER'S options through,
+// same as upstreamDelete below and for the same reason. Unlike
+// Store.Delete, Store.Create/Update dereference options unconditionally,
+// so a nil (no options) caller gets an empty struct rather than a panic.
+func (rs *ResourceStore) upstreamCreate(ctx context.Context, namespace string, obj runtime.Object, opts *metav1.CreateOptions) (runtime.Object, error) {
+	if opts == nil {
+		opts = &metav1.CreateOptions{}
+	}
+	return rs.upstream.Create(rs.upstreamCtx(ctx, namespace), obj, rest.ValidateAllObjectFunc, opts)
 }
 
-func (rs *ResourceStore) upstreamUpdate(ctx context.Context, namespace, name string, obj runtime.Object) (runtime.Object, error) {
+func (rs *ResourceStore) upstreamUpdate(ctx context.Context, namespace, name string, obj runtime.Object, opts *metav1.UpdateOptions) (runtime.Object, error) {
+	if opts == nil {
+		opts = &metav1.UpdateOptions{}
+	}
 	out, _, err := rs.upstream.Update(rs.upstreamCtx(ctx, namespace), name,
 		rest.DefaultUpdatedObjectInfo(obj),
 		rest.ValidateAllObjectFunc,
 		rest.ValidateAllObjectUpdateFunc,
-		false, &metav1.UpdateOptions{})
+		false, opts)
 	return out, err
 }
 

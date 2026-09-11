@@ -28,7 +28,7 @@ func BootstrapCluster(ctx context.Context, stores map[string]*ResourceStore) {
 				// Same stamp ApplyDefaults gives API-created namespaces
 				// (this path bypasses the handler, so set it directly).
 				Status: corev1.NamespaceStatus{Phase: corev1.NamespaceActive},
-			})
+			}, nil)
 
 			// Create default ServiceAccount in each namespace
 			ensureDefaultServiceAccount(ctx, saStore, ns)
@@ -52,6 +52,6 @@ func BootstrapCluster(ctx context.Context, stores map[string]*ResourceStore) {
 					{Name: "https", Port: 443, TargetPort: intstr.FromInt32(443), Protocol: corev1.ProtocolTCP},
 				},
 			},
-		})
+		}, nil)
 	})
 }
