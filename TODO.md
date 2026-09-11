@@ -307,16 +307,22 @@ S44). Done:
 
 Not done, so this stays `[~]`:
 
-- **The `observed` boundary is invisible in production** and the fix is
-  unverified there. A Loader-spawned worker's console output does not reach the
-  loading script's `wrangler tail` (S45), so the half of the measurement that
-  lives in Go cannot be read where it matters. The platform's own answer is
-  `WorkerLoaderWorkerCode.tails`, now wired behind `PUMP_TRACE` and working
-  under `wrangler dev` — but three verification deploys failed on a local
-  network fault (`UND_ERR_CONNECT_TIMEOUT`), so production still runs 46f38ea9
-  and the relay has never run there. Deploy and confirm `observed` lines appear
-  in `wrangler tail` before treating Stage 0's three boundaries as three in
-  production.
+- ~~The `observed` boundary is invisible in production~~ — **fixed and verified
+  there** (S46). A Loader-spawned worker's console output does not reach the
+  loading script's `wrangler tail` (S45); `WorkerLoaderWorkerCode.tails` with
+  `env.SELF` does deliver it. Measured in production: `request` 262, `commit`
+  50, `observed` kcm 20 / sched 5 / gc per-GVR 13. With the knob off: zero
+  trace lines, zero relay lines, **zero tail-handler invocations**, so nothing
+  is billed for a cluster nobody is measuring.
+- **Duration between boundaries is still not measurable in production** (S46).
+  `commit` is timestamped by the shell Worker and `observed` by Go inside the
+  dynamic worker; Workers' `Date.now()` freezes at the last I/O, so the two
+  clocks disagree — three consecutive revisions all came out at **-888 ms**, a
+  systematic offset rather than noise. S44's 4–29 ms was a `wrangler dev`
+  number, where one process means one clock, and is **not** a production
+  figure. Ordering, attribution (window / component / revision) and
+  same-clock deltas do work. Carrying a monotonic commit marker through the
+  watch to the Go side is Stage 1's job, not Stage 0's.
 - The node-stop 90s/10min baseline — it means stopping the agent on the
   maintainer's VM, deferred to a daytime window rather than done at 03:00.
 - Idle request and alarm counts still need the Cloudflare Analytics token.
