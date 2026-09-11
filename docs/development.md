@@ -176,10 +176,16 @@ a test lane.
 ## Running upstream conformance locally
 
 The Definition of Done is `e2e-conformance.yml`, which only a maintainer can
-dispatch — and which cannot run at all when the repository's Actions capacity
-is exhausted. The same upstream binary runs on a laptop. Verified on macOS
-(arm64) 2026-09-11; the garbage-collector focus the required gate uses passes
-6/6 in about three minutes (`docs/platform-verification.md` S42).
+dispatch — and which, as of 2026-09-12, cannot run at all: every job on the
+repository fails in four seconds because the organisation's GitHub billing
+needs attention. The same upstream binary runs on a laptop. Verified on macOS
+(arm64); the garbage-collector focus the required gate uses passes **7/7 in
+90–170 seconds**, in the required `host` variant
+(`docs/platform-verification.md` S48).
+
+(An earlier revision of this line said "6/6". That was the focus-extraction
+bug in S42 — the shell escaping described below dropped one spec, and the one
+it dropped was the spec CI had actually been failing.)
 
 ```sh
 # 1. The upstream e2e binary, at the version go.mod pins.

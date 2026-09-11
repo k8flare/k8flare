@@ -6410,6 +6410,10 @@ observed 行 3 件、ノイズ 0 件。
 シェル Worker の tail に現れることを確認するまで、S44 の三境界計装は
 **本番では二境界**である。
 
+> **後日解決 (同日、S46)**: 本番で確認し、三境界すべてが出るようになった。
+> ただしそこに至るまでにフィルタの誤りが 1 件あった。上の段落は解決前の
+> 状態の記録として残す。
+
 #### 障害クラスとしては既知
 
 S31 / S34 / S39 と同じで、**`wrangler dev` は本番を再現しない**。これまでは
@@ -6510,6 +6514,11 @@ SUCCESS! -- 7 Passed | 0 Failed
 **これは CI の代わりにはならない**(ローカルハーネスは host バリアントを
 再現できない。docs/development.md)。それでも、今日の変更が required focus set
 を壊していないことは示せる。
+
+> **訂正 (同日、S48)**: この括弧内は誤り。ローカルハーネスは host バリアントを
+> **再現できる**。CI のワークフローを読み直したら必要なものは全部リポジトリに
+> あった。「CI の代わりにはならない」という結論自体は変わらない(CI そのもの
+> ではないので)が、理由が違う。
 
 #### S44 で「踏んでいない」と書いたケースを測った
 
@@ -6658,3 +6667,112 @@ seccomp ビルドタグ無しでビルドしているので、埋め込み conta
   検証していない。
 - 依然として CI そのものではない。conformance CI が Definition of Done で
   あることは変わらない(不可侵ルール #1)。
+
+### S49 (2026-09-12): 本番で所要時間が測れるようになった。時計を跨がない形で
+
+S46 で「境界間の所要時間は本番では引き算で測れない」と書き、単調な commit
+マーカーを watch 経由で運ぶのは Stage 1 の仕事だと結論した。**その結論は
+必要以上に諦めていた。** 測りたい区間のうち、コントローラー側は同一 isolate
+に閉じた形で測れる。
+
+#### 足したもの: `issued` 境界
+
+書き込みが Go 側を出る瞬間を、`pkg/cfruntime/cloudflare/fetch` の
+`RoundTrip` で記録する。POST / PUT / PATCH / DELETE のみ——読み取りと watch は
+コントローラーの通信量の大半を占めるが、どれも「動いた」ではない。
+
+component は client-go が付ける User-Agent から取る。**ここでも一度間違えた**:
+最初は先頭の区切りまでを取ったので全部 `js` になった(wasm では
+`os.Args[0]` が `js`)。`restclient.AddUserAgent` は
+`DefaultKubernetesUserAgent() + "/" + name` を作るので、名前は**末尾**である。
+実装を読んで直し、実際の UA の形をそのまま単体テストに入れた。
+
+`issued` と `observed` は**どちらも dynamic worker の中の Go の時計**なので、
+S46 のクロックずれを受けない。
+
+#### 本番での実測(deploy `743a4a94`、`PUMP_TRACE=1`)
+
+パスにオブジェクト名が入る書き込みだけを、同じオブジェクトの最初の観測と
+突き合わせた:
+
+| 発行元 | 境界 | 観測した側 | オブジェクト | 差 |
+|---|---|---|---|---|
+| kube-scheduler | issued.patch | kcm | lp-…-tkp2p | **93 ms** |
+| kube-scheduler | issued.patch | kcm | lp-…-r8c2v | **82 ms** |
+| kube-scheduler | issued.patch | gc/pods | lp-…-f4nwh | 0 ms |
+| kube-controller-manager | issued.put | gc/deployments | lp | 27 ms |
+| kube-controller-manager | issued.put | gc/deployments | lp | 1,456 ms |
+| kube-controller-manager | issued.put | gc/replicasets | lp-58b4586974 | 36,909 ms |
+
+**スケジューラが Pod を bind してから KCM の informer がそれを見るまで
+82〜93 ms**、これが本番のコントローラーループの実測値である。
+
+大きい値(1.4 秒、36 秒)は informer の定期 resync による再配送で、S44 で
+書いた注意点と同じ。分布の下端が求める量で、各ペアの値は上限として読む。
+
+#### ここでも突き合わせを一度間違えた
+
+最初は namespace で紐付けたので、**-33,875ms** という負の値が出た。POST で
+Pod を作るときパスに名前が入らない(サーバ生成)ため、別の Pod の観測と
+組み合わせてしまっていた。パスにオブジェクト名が入る書き込みだけに限ると
+物理的に妥当になる。**名前がパスに無い作成は、この方法では測れない。**
+
+#### Stage 0 として何が測れるようになったか
+
+- **測れる**: コントローラーが書いてから、どのコンポーネントの informer が
+  それを見るまで(本番、同一時計)。境界の順序と帰属(window / component /
+  revision)。
+- **依然として測れない**: シェル Worker の commit から Go の observed まで。
+  時計が違う。これは変わらず Stage 1 の仕事。
+- 名前がパスに現れない作成リクエストのループ。
+
+#### S49 追記: ホットパスに計装のコストが残っていた
+
+セッション末に自分の差分を見直して見つけた。`PumpTraceEnabled()` は
+`globalThis.context.env.PUMP_TRACE` を毎回読む実装で、`syscall/js` の境界を
+1 回につき 3 回跨ぐ。S49 で足した `issued` 境界はそれを
+`fetch.RoundTrip`——**全 resident controller の全送信リクエスト**——から呼んで
+いたので、tracing が無効な本番でも恒常的にコストを払っていた。
+
+S44 に「未設定なら文字列比較 1 回」と書いたのは TS 側だけの話で、Go 側には
+当てはまっていなかった。var はデプロイ時に決まり isolate の生存中は変わらない
+ので `sync.Once` でキャッシュした。キャッシュを外すと落ちるテストを付け、
+有効時の出力が変わらないこと(request 202 / commit 38 / issued 41 /
+observed 20)も実機で確認した。
+
+### S50 (2026-09-12): デプロイ後に最初に使うワークロードは 20〜24 分待つ
+
+S47 で「デプロイ直後の probe はコールドスタートで偽陽性になる」と書き、
+`-warmup-timeout` を 20 分にした。**20 分でも足りなかった。**
+
+#### 測定
+
+- 21:40Z 頃に `ce7d64e6` をデプロイ。以後クラスタはアイドル。
+- 22:33:49Z に prodprobe が Deployment を作成。**20 分後の 22:53:49Z に
+  `observedGeneration=0/1` のまま失敗。**
+- 22:56Z 頃に手で Deployment を作ると **120 秒以内**に `observedGeneration 1/1`。
+- 22:58Z の probe 再実行は **11 秒**で収束。
+
+つまり **デプロイ後に最初に制御プレーンを使った時点から、実際に reconcile が
+始まるまで 20〜24 分**。`e2e-conformance.yml` のコメントが言う
+「up-to-28min control-plane warmup (wasm compile)」と一致する。
+
+#### スラッシングではない
+
+疑ったのは dynamic worker のロード合戦だった。tail で
+`controllers: <c> load queued/starting` と `<c> dynamic worker up` の間隔を
+測ると **1.1〜3.3 秒**で、82 秒の窓に 30 イベント。DO が退避されるたびに
+再ロードされるが、Loader 側にキャッシュがあるので安い。高いのは
+**デプロイ後の最初の 1 回だけ**——約 44MB の WASM を本当にコンパイルする回。
+
+#### 直したこと
+
+`-warmup-timeout` の既定を 35 分にした(実測 20〜24 分、ワークフローの記述は
+最大 28 分)。30 分を下回ると落ちる単体テストを付けた。
+
+#### 採用検討者にとっての意味
+
+これは probe の設定値の話ではない。**デプロイした直後にワークロードを出す
+利用者は、最初の 1 個が動き出すまで 20 分以上待たされる。** 2 個目以降は
+11 秒である。`/readyz` はこの状態を 200 で返す(S47)。docs/known-issues.md に
+書いた。

@@ -287,7 +287,11 @@ S44). Done:
   Worker, not just unit-tested: request 161 / commit 38 / observed 6 lines for
   one Namespace plus a 2-replica ReplicationController.
 - Attribution works: each `observed` line names the pump window it arrived in.
-  Measured commit → informer observed at **4–29 ms**.
+  Measured commit → informer observed at 4–29 ms **under `wrangler dev` only**.
+  That figure does not hold in production: the two boundaries are stamped in
+  different isolates and Workers' clocks disagree (S46). The production figure
+  that does hold is `issued` → `observed`, both on the Go clock: **82–93 ms**
+  (S49).
 - All four resident components emit observations, not just KCM: `kcm`, `sched`,
   `clusterop`, and `gc/<resource>` split per GVR, which shows exactly which
   resource kinds the real garbage collector walks (the 27 kinds S41 measured).
@@ -314,7 +318,14 @@ Not done, so this stays `[~]`:
   50, `observed` kcm 20 / sched 5 / gc per-GVR 13. With the knob off: zero
   trace lines, zero relay lines, **zero tail-handler invocations**, so nothing
   is billed for a cluster nobody is measuring.
-- **Duration between boundaries is still not measurable in production** (S46).
+- **Duration IS measurable in production for the controller-side loop** (S49).
+  An `issued` boundary in the Go transport shares a clock with `observed`, so
+  the two can be subtracted: measured in production, a scheduler bind reaches
+  the controller manager's informer in **82–93 ms**. Read the low end of the
+  distribution — informer resync re-delivers the same revision seconds later.
+  Writes whose object is not named in the path (a create with a generated
+  name) cannot be paired this way.
+- **Duration across the shell/Go boundary is still not measurable** (S46).
   `commit` is timestamped by the shell Worker and `observed` by Go inside the
   dynamic worker; Workers' `Date.now()` freezes at the last I/O, so the two
   clocks disagree — three consecutive revisions all came out at **-888 ms**, a
@@ -553,6 +564,25 @@ Neither version got through the focus. The baseline focus is therefore **not a
 usable local signal on this harness**, exactly as the decision rule anticipated,
 and it says nothing for or against v1.36.4.
 
+**Re-verified 2026-09-12 in the REQUIRED configuration.** The earlier run used
+the harness's default, which reproduces the advisory `sched-dw` variant. S48
+showed the required `host` variant can be reproduced locally too, so the bump
+was put through it: host `kube-scheduler` and `kube-controller-manager` built
+from the v1.36.4 tree, `wrangler dev` with `SCHED_DISABLED:1 CM_DISABLED:1`,
+apiserver reporting `v1.36.4+k8flare`.
+
+| focus | k3s v1.36.4 | current `main` (v1.36.3) |
+|---|---|---|
+| required GC, host variant | **7 Passed / 0 Failed, 101s** | 7 Passed / 0 Failed, 91s |
+| baseline, host variant | 8 Passed / 3 Failed, 583s | 8 Passed / 3 Failed, 583s |
+
+The three baseline failures are the same three `SchedulerPredicates` specs on
+both versions, for the same reason, which is not the control plane: on Docker
+Desktop the containerised node cannot create a pod sandbox (`seccomp is not
+supported`, S48), so any spec needing a pod to actually run cannot pass here.
+**The bump changes nothing the local harness can measure.** Chunks rebuilt and
+all five under cap (apiserver has the least headroom at 2388 KiB).
+
 **Still not merged, and the blocker is not technical.** Inviolable rule #1
 makes conformance CI the Definition of Done, and it cannot run: every job on
 the repository fails in 4 seconds with zero steps. The annotation says why —
@@ -583,6 +613,30 @@ repository that nobody has cloned yet. That trade is not worth it.
 Revisit only if the repository grows another accidental blob — at which point
 one rewrite can clear them all, and should be done *before* the docs accumulate
 more references, not after.
+
+### P1-10 `[ ]` デプロイ後の暖機を運用者の手作業にしない (提案・要承認)
+
+**Problem.** S50 で実測: デプロイ後に最初に来たワークロードは reconcile が
+始まるまで **20〜24 分**待つ。約 44MB のコントローラー WASM を、最初に使われた
+時点で初めてコンパイルするため。2 個目以降は 11 秒。`/readyz` はこの間も 200 を
+返す(S47)ので、ロードバランサや運用スクリプトからは区別できない。
+
+現状の緩和は docs/admin-guide.md に書いた手順書きで、デプロイした人が自分で
+Deployment を 1 個作って消す。**運用者が忘れたら利用者が 20 分待つ。**
+
+**Proposal, not implemented — needs a decision.** `npm run deploy` の最後に
+暖機を自動で起こす。候補:
+
+- `/internal/warm` のような新しい認証付きルートを足し、Controllers DO に
+  コンポーネントをロードさせる。書き込みを伴わないので revision を汚さない。
+  代償は**新しい本番エンドポイント 1 本**で、クラスタトークン保持者なら誰でも
+  44MB のコンパイルを起こせる(ただしトークン保持者は書き込みでも同じことが
+  できるので、権限としては新規ではない)。
+- deploy スクリプトが ConfigMap を 1 個作って消す。新しいエンドポイントは
+  不要だが、deploy にクラスタトークンが必要になり、revision が 2 進む。
+
+どちらも本番の挙動を変えるので、実装前に承認を得る。S50 を測っただけの現状
+では**利用者が 20 分待つ既定のまま**であることを明記しておく。
 
 ## Out of scope / deliberately not doing
 
