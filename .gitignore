@@ -28,3 +28,13 @@ spikes/s2-loader/parent/goscript-klog-test/
 spikes/s15-containers-node/worker/k8flare-agent
 packages/k8flare-worker/images/node/k8flare-agent
 .DS_Store
+
+# Compiled command binaries. `go build ./cmd/<name>` drops these at the repo
+# root by default, and two of them (35MB and 36MB) were committed by accident
+# on 2026-09-11 before this rule existed.
+/k8flare-backup
+/prodprobe
+/k8flare-gen
+/agent
+/scheduler
+/controller-manager
