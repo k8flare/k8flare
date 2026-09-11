@@ -24,7 +24,7 @@ commit) · `[!]` blocked or deliberately deferred (say why).
 
 ## P0 — blocks "a team can run this"
 
-### P0-1 `[~]` Observe production, not just `wrangler dev`
+### P0-1 `[x]` Observe production, not just `wrangler dev`
 
 **Problem.** There is no signal that the deployed control plane works. S30 sat
 undetected for six weeks: DO-origin Loader calls failed, dynamic workers
@@ -47,6 +47,17 @@ real deployment, not in `wrangler dev`.
 defect reintroduced (verify by deploying a version with the fix reverted, or by
 an equivalent fault injection), and passes against current `main`. Failure
 reaches a human without anyone watching a dashboard.
+
+**Done 2026-09-11**, except the scheduled half. Run end to end against the real
+deployment: readyz passed with every component reported by size and sha256 and
+the verdict cache visibly bounding the cost; a Pod reached Running in 5m13s on
+a demand-started NodeVM; the scale to two converged in 2m47s; the workload was
+gone 8m05s in. It then refused to assert idle cost because its own
+demand-started nodes were still attached -- correct behaviour, wrong timing,
+now fixed by waiting for them to detach (they took about two minutes).
+**Still open**: `prod-probe.yml` has never run on a schedule, because that
+needs a maintainer to set the secrets it documents. Until then nothing watches
+production between manual runs.
 
 ### P0-2 `[x]` `/healthz` reports nothing about health
 
@@ -170,7 +181,7 @@ lifecycle).
 **Acceptance.** The S31 and S34 fault shapes are each covered by a unit test
 that fails when the fix is reverted. TS tests run in `ci.yml`.
 
-### P1-4 `[ ]` Destructive DO migrations replay on deploy
+### P1-4 `[x]` Destructive DO migrations replay on deploy
 
 **Problem.** `packages/k8flare-worker/wrangler.jsonc` carries `migrations`
 including delete+recreate cycles, `wrangler deploy` applies whatever is in the
@@ -183,11 +194,19 @@ behind an explicit opt-in, or move already-applied migrations somewhere they
 cannot be re-run, or provide an export/import path so state loss is
 recoverable. Document the recovery story.
 
+**Done 2026-09-11** for the first half. `npm run check:migrations` hashes the
+block against `migrations.sha256`, runs in CI and ahead of `make deploy` /
+`npm run deploy`, and refuses when it changed. Verified both directions: adding
+a `deleted_classes` tag exits 1 with the recorded and actual hashes, the
+override env var passes it, reverting passes again. It does not cover a direct
+`wrangler deploy`, which is documented. **Still open**: there is no backup or
+restore path, so the guard prevents an accident but cannot undo one.
+
 **Acceptance.** An operator who pulls and deploys cannot lose cluster state
 without an explicit, separate action. A documented way to export and restore a
 cluster's DO state.
 
-### P1-5 `[ ]` User-facing docs describe intent, verification docs describe reality
+### P1-5 `[x]` User-facing docs describe intent, verification docs describe reality
 
 **Problem.** `docs/admin-guide.md` §1 says nothing runs when idle — false in
 production for six weeks. §5 documents ~65k alarms/month on an unconverged
@@ -204,7 +223,7 @@ two minutes.
 `docs/platform-verification.md`. A known-issues page exists and is linked from
 the README.
 
-### P1-6 `[ ]` `platform-verification.md` has trustworthy history and an unusable present
+### P1-6 `[x]` `platform-verification.md` has trustworthy history and an unusable present
 
 **Problem.** 5,663 append-only lines, no current-state index. Rule 4 (never
 rewrite a correction away) is right and should stay, but a newcomer cannot
@@ -293,7 +312,7 @@ sitting unmerged on that branch.
 
 ---
 
-### P0-5 `[ ]` `?dryRun=` was ignored entirely
+### P0-5 `[x]` `?dryRun=` was ignored entirely
 
 Found by the P0-3 audit and fixed in the same pass: the apiserver parsed
 `dryRun` nowhere, so a server-side dry run created the object, allocated its
