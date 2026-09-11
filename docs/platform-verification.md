@@ -6658,3 +6658,61 @@ seccomp ビルドタグ無しでビルドしているので、埋め込み conta
   検証していない。
 - 依然として CI そのものではない。conformance CI が Definition of Done で
   あることは変わらない(不可侵ルール #1)。
+
+### S49 (2026-09-12): 本番で所要時間が測れるようになった。時計を跨がない形で
+
+S46 で「境界間の所要時間は本番では引き算で測れない」と書き、単調な commit
+マーカーを watch 経由で運ぶのは Stage 1 の仕事だと結論した。**その結論は
+必要以上に諦めていた。** 測りたい区間のうち、コントローラー側は同一 isolate
+に閉じた形で測れる。
+
+#### 足したもの: `issued` 境界
+
+書き込みが Go 側を出る瞬間を、`pkg/cfruntime/cloudflare/fetch` の
+`RoundTrip` で記録する。POST / PUT / PATCH / DELETE のみ——読み取りと watch は
+コントローラーの通信量の大半を占めるが、どれも「動いた」ではない。
+
+component は client-go が付ける User-Agent から取る。**ここでも一度間違えた**:
+最初は先頭の区切りまでを取ったので全部 `js` になった(wasm では
+`os.Args[0]` が `js`)。`restclient.AddUserAgent` は
+`DefaultKubernetesUserAgent() + "/" + name` を作るので、名前は**末尾**である。
+実装を読んで直し、実際の UA の形をそのまま単体テストに入れた。
+
+`issued` と `observed` は**どちらも dynamic worker の中の Go の時計**なので、
+S46 のクロックずれを受けない。
+
+#### 本番での実測(deploy `743a4a94`、`PUMP_TRACE=1`)
+
+パスにオブジェクト名が入る書き込みだけを、同じオブジェクトの最初の観測と
+突き合わせた:
+
+| 発行元 | 境界 | 観測した側 | オブジェクト | 差 |
+|---|---|---|---|---|
+| kube-scheduler | issued.patch | kcm | lp-…-tkp2p | **93 ms** |
+| kube-scheduler | issued.patch | kcm | lp-…-r8c2v | **82 ms** |
+| kube-scheduler | issued.patch | gc/pods | lp-…-f4nwh | 0 ms |
+| kube-controller-manager | issued.put | gc/deployments | lp | 27 ms |
+| kube-controller-manager | issued.put | gc/deployments | lp | 1,456 ms |
+| kube-controller-manager | issued.put | gc/replicasets | lp-58b4586974 | 36,909 ms |
+
+**スケジューラが Pod を bind してから KCM の informer がそれを見るまで
+82〜93 ms**、これが本番のコントローラーループの実測値である。
+
+大きい値(1.4 秒、36 秒)は informer の定期 resync による再配送で、S44 で
+書いた注意点と同じ。分布の下端が求める量で、各ペアの値は上限として読む。
+
+#### ここでも突き合わせを一度間違えた
+
+最初は namespace で紐付けたので、**-33,875ms** という負の値が出た。POST で
+Pod を作るときパスに名前が入らない(サーバ生成)ため、別の Pod の観測と
+組み合わせてしまっていた。パスにオブジェクト名が入る書き込みだけに限ると
+物理的に妥当になる。**名前がパスに無い作成は、この方法では測れない。**
+
+#### Stage 0 として何が測れるようになったか
+
+- **測れる**: コントローラーが書いてから、どのコンポーネントの informer が
+  それを見るまで(本番、同一時計)。境界の順序と帰属(window / component /
+  revision)。
+- **依然として測れない**: シェル Worker の commit から Go の observed まで。
+  時計が違う。これは変わらず Stage 1 の仕事。
+- 名前がパスに現れない作成リクエストのループ。
