@@ -16,6 +16,7 @@ interface ControllersInternals {
   hasUnconvergedWork(): Promise<boolean>;
   alarm(): Promise<void>;
   fetch(request: Request): Promise<Response>;
+  loadComponent(name: string): Promise<unknown>;
 }
 
 /** What the gateway answers for each path apiGet asks about. */
@@ -109,6 +110,57 @@ function newControllers(
   ) as unknown as ControllersInternals;
   return { controllers, storage, apiCalls };
 }
+
+// The dynamic workers' trace relay is a cost-sensitive binding (invariant
+// #8): attaching `tails` makes every dynamic-worker invocation also invoke
+// this script's tail handler, which is billed. It must appear only when an
+// operator asked to measure.
+function loaderProbe() {
+  const codes: Promise<Record<string, unknown>>[] = [];
+  const manifest = { size: 0, sha256: "0".repeat(64), parts: [] as string[] };
+  const assets = {
+    fetch: (url: string) =>
+      Promise.resolve(
+        new URL(url).pathname.endsWith(".manifest.json")
+          ? Response.json(manifest)
+          : new Response("// wasm_exec"),
+      ),
+  };
+  // The real WorkerLoader.get is synchronous and runs the factory lazily,
+  // so this must not be async or the caller gets a Promise where it
+  // expects a stub.
+  const loader = {
+    get: (_id: string, factory: () => Promise<Record<string, unknown>>) => {
+      codes.push(factory());
+      return { getEntrypoint: () => ({ fetch: () => Promise.resolve(new Response("{}")) }) };
+    },
+  };
+  return { codes, assets, loader };
+}
+
+async function loadedWorkerCode(env: Record<string, unknown>) {
+  const { codes, assets, loader } = loaderProbe();
+  const { controllers } = newControllers({}, { ASSETS: assets, LOADER: loader, ...env });
+  await controllers.loadComponent("kcm");
+  return await codes[0];
+}
+
+describe("the dynamic workers' trace relay", () => {
+  it("attaches no tail consumer unless tracing was asked for", async () => {
+    const code = await loadedWorkerCode({});
+    expect(code.tails).toBeUndefined();
+  });
+
+  it("attaches this script as the tail consumer when tracing is on", async () => {
+    const code = await loadedWorkerCode({ PUMP_TRACE: "1" });
+    expect(code.tails).toHaveLength(1);
+  });
+
+  it("forwards the knob into the dynamic worker, or the Go side stays silent", async () => {
+    expect((await loadedWorkerCode({})).env).not.toHaveProperty("PUMP_TRACE");
+    expect((await loadedWorkerCode({ PUMP_TRACE: "1" })).env).toHaveProperty("PUMP_TRACE", "1");
+  });
+});
 
 describe("hasUnconvergedWork", () => {
   it("is false on a converged cluster", async () => {

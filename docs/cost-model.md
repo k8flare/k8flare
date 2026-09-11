@@ -1421,5 +1421,12 @@ fetch を試みたがタイムアウト)。したがって「何回の収束ま�
 request も来ないので行数は 0。つまり有効化しても不変条件 #1 は壊れない
 ——壊れるとしたらログ側の料金だけで、それも traffic がある間に限る。
 
-**未実測**: 本番での CPU 時間増分と、Workers Logs の実課金。informer 境界を
-gc / sched / clusterop へ広げたときの行数(現在は KCM の Pod のみ)。
+**tail 中継の分**(S45/S46)。`PUMP_TRACE=1` のときだけ dynamic worker に
+`tails: [SELF]` を付ける。tail consumer の起動はリクエストとして課金されるので、
+**有効時は dynamic worker の呼び出し 1 回につきシェル Worker の tail ハンドラが
+1 回増える**。本番実測では 4 分間・pod churn ありで 119 回、knob を外した
+70 秒の観測では **0 回**。この「off なら 0 回」はコスト不変条件そのものなので、
+`controllers/index.test.ts` に単体テストを置いた——`tails` を無条件に付ける
+変更と、`PUMP_TRACE` の転送をやめる変更の両方で落ちることを確認済み。
+
+**未実測**: 本番での CPU 時間増分と、Workers Logs の実課金。
