@@ -15,7 +15,13 @@ One run, against the deployment you point it at:
    the first list and then ignored `kubectl scale` for 3+ minutes, which
    a probe that only ever creates one Deployment would call healthy.
 4. Delete it; the pods must disappear.
-5. The account's analytics must show **zero** Worker and Durable Object
+5. Any node the probe's own pods demand-started must detach first. A
+   NodeVM outlives the workload that caused it -- measured 2026-09-11
+   against production, two nodes were still attached the moment the
+   deployment was gone and had detached about two minutes later. Waiting
+   is bounded by `-node-drain-timeout` (default 10m); a node that never
+   leaves is reported as a failure, because that is a real finding.
+6. The account's analytics must show **zero** Worker and Durable Object
    requests over a quiet window afterwards — cost invariants #1/#3.
 
 ## Run it
