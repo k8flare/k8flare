@@ -13,6 +13,8 @@ package sched
 import (
 	"context"
 	"fmt"
+	"github.com/k8flare/k8flare/pkg/cfruntime/cloudflare"
+	"github.com/k8flare/k8flare/pkg/pumptrace"
 	"runtime/debug"
 
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
@@ -91,6 +93,10 @@ func RunScheduler(ctx context.Context, restCfg *restclient.Config) (err error) {
 	}
 
 	factory := scheduler.NewInformerFactory(client, 0)
+
+	if cloudflare.PumpTraceEnabled() {
+		pumptrace.Observations(factory.Core().V1().Pods().Informer(), "sched")
+	}
 
 	cfg, err := latest.Default()
 	if err != nil {

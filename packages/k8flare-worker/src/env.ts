@@ -110,6 +110,13 @@ export interface Env {
   // controllers/index.ts and loader/bootstrap.ts. Never set in
   // production.
   PUMP_WINDOW_DROP_CLOSE?: string;
+  // Operator knob, NOT a harness switch: "1" makes every pump-window
+  // boundary (a commit, an informer observing it, a controller acting on
+  // it) emit one `pumptrace` log line so the three can be told apart in
+  // production. Unset costs one string comparison per boundary and emits
+  // nothing -- a cluster nobody is measuring must cost what it always did.
+  // Forwarded into the resident dynamic workers by controllers/index.ts.
+  PUMP_TRACE?: string;
   // Multi-cluster: the public URL path prefix ("/c/<id>", "" for
   // default) the supervisor advertises to joining agents.
   CLUSTER_BASE_PATH?: string;

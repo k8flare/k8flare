@@ -29,6 +29,7 @@
 // GATEWAY cross-Worker service binding is now SELF (the same script's
 // public fetch handler).
 import type { Env } from "./env.ts";
+import { pumpTraceEnabled } from "../trace.ts";
 import { clusterSecrets } from "../clusters/tokens.ts";
 import { makeResidentBootstrapJS } from "../loader/bootstrap.ts";
 import { assembleWasm, fetchWasmAsset, fetchWasmManifest } from "../loader/chunks.ts";
@@ -291,7 +292,10 @@ export class Controllers {
           CLUSTER_BASE_PATH: this.clusterBasePath(),
         };
         if (token) dynamicEnv.K3S_TOKEN = token;
+        if (this.env.PUMP_TRACE) dynamicEnv.PUMP_TRACE = this.env.PUMP_TRACE;
+        const tails = pumpTraceEnabled(this.env) ? [this.env.SELF] : undefined;
         return {
+          tails,
           compatibilityDate: "2026-07-01",
           mainModule: "index.js",
           modules: {

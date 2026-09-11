@@ -4,6 +4,7 @@
 // single wrangler.jsonc can bind them all locally.
 import type { Env } from "./env.ts";
 import { handleGateway } from "./gateway/index.ts";
+import { pumpTrace, pumpTraceEnabled } from "./trace.ts";
 
 export { Cluster, WatchHub } from "./storage/index.ts";
 export { Controllers } from "./controllers/index.ts";
@@ -14,6 +15,60 @@ export { ClusterLoopback } from "./entrypoints.ts";
 
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    // Guarded rather than left to pumpTrace: building the fields parses a
+    // URL, and a boundary nobody asked to measure must cost nothing.
+    if (pumpTraceEnabled(env)) {
+      pumpTrace(env, "request", "gateway", {
+        o: new URL(req.url).pathname,
+        ua: req.headers.get("User-Agent") ?? "",
+        m: req.method,
+      });
+    }
     return handleGateway(req, env, ctx);
+  },
+
+  // Receives the trace events of the dynamic workers this same script
+  // loads, which controllers/index.ts attaches only while PUMP_TRACE is
+  // on. A Loader-spawned worker's console output does not otherwise
+  // reach this script's own tail in production, so the `observed`
+  // boundary -- the half of the measurement that lives in Go -- is
+  // invisible exactly where it matters (S45).
+  tail(events: TraceItem[]): void {
+    for (const event of events) {
+      // Only the measurement, not everything the controllers say. A single
+      // ReplicationController produced 1,545 relayed lines when this
+      // forwarded them all -- mostly reflector reconnect warnings, which
+      // are the pump-window model working as designed.
+      let relayed = 0;
+      let firstDropped = "";
+      for (const log of event.logs ?? []) {
+        const line = log.message.join(" ");
+        // Not startsWith: Go's log.Printf puts its own "2026/09/11 19:58:37"
+        // in front of every line, so anchoring at the start matched nothing
+        // in production while a substring grep made the local check pass
+        // anyway (S45). Slicing from the marker also drops the duplicate
+        // timestamp -- the trace line carries its own.
+        const at = line.indexOf("pumptrace {");
+        if (at >= 0) {
+          console.log(line.slice(at));
+          relayed++;
+        } else if (!firstDropped) {
+          firstDropped = line.slice(0, 120);
+        }
+      }
+      // Without this, "the relay is alive but the worker said nothing we
+      // want" and "the relay is delivering nothing at all" look identical
+      // from the outside -- which is exactly the ambiguity that cost a
+      // production measurement window (S45).
+      const dropped = (event.logs?.length ?? 0) - relayed;
+      if (dropped > 0)
+        console.log(`dw dropped=${dropped} relayed=${relayed} first=${firstDropped}`);
+      // Exceptions are rare, and a dynamic worker throwing where nobody
+      // can see it is the shape of S30: six weeks of controllers doing
+      // nothing, with every local gate green.
+      for (const e of event.exceptions ?? []) {
+        console.error(`dw exception: ${e.name}: ${e.message}`);
+      }
+    }
   },
 };

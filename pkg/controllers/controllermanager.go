@@ -12,8 +12,10 @@ import (
 
 	"k8s.io/client-go/util/flowcontrol"
 
+	"github.com/k8flare/k8flare/pkg/cfruntime/cloudflare"
 	leanclientset "github.com/k8flare/k8flare/pkg/leanclient/clientset"
 	leaninformers "github.com/k8flare/k8flare/pkg/leanclient/informers"
+	"github.com/k8flare/k8flare/pkg/pumptrace"
 	"k8s.io/kubernetes/pkg/controller/cronjob"
 	"k8s.io/kubernetes/pkg/controller/daemon"
 	"k8s.io/kubernetes/pkg/controller/deployment"
@@ -114,6 +116,10 @@ func RunControllerManager(ctx context.Context, restCfg *restclient.Config) (err 
 	}
 
 	factory := leaninformers.New(client, minResyncPeriod)
+
+	if cloudflare.PumpTraceEnabled() {
+		pumptrace.Observations(factory.Pods().Informer(), "kcm")
+	}
 
 	rcc := replication.NewReplicationManager(
 		ctx,

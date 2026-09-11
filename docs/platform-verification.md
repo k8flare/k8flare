@@ -6207,3 +6207,454 @@ P0-4(pump window の再設計)が入るまで撤去できない。** 撤去し�
 有無で説明できない。(b) CI で落ちていたのは `garbage_collector.go:795` の
 90 秒予算超過で、これはタイミング依存。ローカルの 5/30 成功は「ローカルでは
 成り立つ」であって CI で通る証明ではない。
+
+### S44 (2026-09-12): P0-4 Stage 0 — 現行ハッシュの基準測定と三境界の計装
+
+Stage 0 の目的は「commit → informer が観測 → controller が動いた」のどこに
+遅延があるかを**区別できるようにする**ことと、計装を入れる前の本番を測って
+おくこと。前回の Stage 0 は Stage 2 の領域(clientgo-lean ミラーと
+restconfig)まで侵食して壊れたので、今回は触ってよいファイルを先に決めた。
+
+#### 基準測定(計装を入れる前・deploy version 46f38ea9、2026-09-11T11:27:16Z)
+
+| 測定 | 結果 |
+|---|---|
+| 収束(Deployment 作成 → scale → 削除 → 消滅) | **16 秒** |
+| 55 Pod の foreground GC: owner 消滅 | **9 秒** |
+| 55 Pod の foreground GC: 全 Pod 消滅 | **12 秒** |
+| アイドル 10 分間の書き込み | **0**(cluster revision 782 のまま) |
+
+**この 9 秒を Stage 5 の合格と読んではならない。** 設計文書の Stage 5 が
+要求する「GC owner 消滅 max < 90 秒」は multi-owner / grace 条件のことで、
+S36 で落ちていたのは「dependents を待っている owner をさらに owner に持つ」
+ケースである。ここで測った 55 Pod は single-owner、finalizer なし、
+`terminationGracePeriodSeconds: 1`、しかも prodprobe クラスタにノードが無い
+ので一度も起動していない。単純経路の基準値としては有効だが、guard が存在する
+理由になっているケースは踏んでいない。
+
+Node 停止 90 秒/10 分の測定は**未実施**: ユーザーの VM 上の agent を
+止める必要があり、S37 で緊急性が消えているため日中の枠に回す。
+
+#### 計装(`PUMP_TRACE=1` のときだけ)
+
+| 境界 | どこ | 出る行 |
+|---|---|---|
+| request | Worker の唯一の fetch(`src/index.ts`) | `{"b":"request","c":"gateway","o":<path>,"ua":<User-Agent>,"m":<method>}` |
+| commit | Cluster DO、revision が確定した直後 | `{"b":"commit","c":"storage","o":<key>,"rv":<revision>}` |
+| observed | KCM の Pod informer が配送したイベント | `{"b":"observed.add\|update\|delete","c":"kcm","w":<pump window id>,"o":<ns/name>,"rv":<rv>}` |
+
+`w` が意味を持つのは Go 側の observed 行だけで、TS 側(request / commit)は
+常に `w:0` を出す。シェル Worker には pump window が無いためで、`w>0` で
+絞ると Go の観測だけが残る。
+
+「controller が動いた」は request 行の User-Agent で識別する。upstream が
+`kube-controller-manager` / `kube-scheduler` を付けるので、追加の配線は要らない。
+
+**常時コストなし。** var が未設定なら TS 側は文字列比較 1 回、Go 側は
+`globalThis.context.env` の参照 1 回で、何も出力しない。informer の
+event handler は**そもそも登録しない** — 早期 return するハンドラでも
+オブジェクトごと・イベントごとの呼び出しコストは掛かるため。全テストレーン
+(54 TS + 全 Go レーン)を var 未設定で通したとき `pumptrace` の行は **0 件**。
+
+**実機で確認した。** `wrangler dev --var PUMP_TRACE:1` に対して
+Namespace と replicas=2 の ReplicationController を作ると、三境界すべてが
+出た(request 161 / commit 38 / observed 6)。
+
+#### 計器そのものの誤りを 1 件見つけて直した
+
+最初の実装では commit 行を `afterWrite` に置いていたが、そこは
+`broadcastEvent` の**後**だった。その結果 commit → observed が **-3ms 〜 -1ms**
+と負になった。informer が watch で受け取るほうが、commit のログ行より先に
+起きていた。revision が確定する `storeInsert` の直後・broadcast の前へ移した
+ところ、**4〜29ms** という物理的に妥当な値になった。
+
+| Pod | rv | 境界 | window | commit → observed |
+|---|---|---|---|---|
+| tracecheck/tr-864mf | 16 | observed.add | 5 | 29 ms |
+| tracecheck/tr-864mf | 19 | observed.update | 7 | 10 ms |
+| tracecheck/tr-975ql | 21 | observed.add | 8 | 4 ms |
+| tracecheck/tr-975ql | 24 | observed.update | 9 | 4 ms |
+
+**解析上の注意**: rv だけで突き合わせると、informer の定期 resync が同じ rv を
+再配送した行(約 25 秒おき)を最初の配送と混同する。revision ごとに**最初の
+観測だけ**を採ること。混同したままだと 25,858ms や 50,174ms という「遅延」が
+出る。
+
+#### probe traffic の識別子
+
+`cmd/prodprobe` の全リクエストが `k8flare-prodprobe/<GITHUB_RUN_ID か unix 秒>`
+を User-Agent として送る。コスト不変条件 #1 は「誰も使っていないクラスタが
+何をしているか」で判定するが、probe だけは常にそのクラスタを使っている
+——識別子がないと、消えていることを証明したい traffic と probe 自身の
+traffic が見分けられない。実 HTTP 往復で server 側に届くことを test で確認済み。
+
+#### 四コンポーネント全部に広げた (2026-09-12 追記)
+
+ヘルパーを `pkg/pumptrace` という葉パッケージへ出して、四つのエントリポイント
+すべてから使えるようにした。`pkg/controllers` に置いたままだと gc / sched /
+clusterop がそれを import した時点で controller-manager 一式までリンクされる
+(CLAUDE.md のエントリポイント分離の注記、kcm 実測 +4.15MB)。
+
+`wrangler dev --var PUMP_TRACE:1` に Namespace と replicas=2 の
+ReplicationController を与えたときの観測数:
+
+| component | 観測 |
+|---|---|
+| `gc/serviceaccounts` | 10 |
+| `gc/namespaces` | 10 |
+| `sched` | 6 |
+| `kcm` | 6 |
+| `gc/pods` | 6 |
+| `gc/replicationcontrollers` | 4 |
+| `gc/clusters` | 4 |
+| `clusterop` | 4 |
+| `gc/services` / `gc/configmaps` | 2 / 2 |
+
+GC は GVR ごとに `gc/<resource>` として分かれる。実 garbagecollector が
+どの resource を watch しているかがそのまま出るので、S41 で測った
+「foreground 削除 1 回で 27 resource kind に 440 LIST」が、どの kind の
+どの瞬間なのかまで追えるようになる。
+
+チャンクの増分は kcm +3,731 / gc +13,940 / sched +12,596 /
+clusterop +10,577 バイト。cap への余裕は最小の apiserver でも 2,565KiB。
+
+#### まだ Stage 0 に足りていないもの
+- **Loader が起動した dynamic worker の console 出力が本番の Workers Logs /
+  `wrangler tail` に届くかは未確認。** 確認したのは `wrangler dev` だけで、
+  肝心の `observed` 行はまさにその dynamic worker から出る。これは S31 /
+  S34 / S39 と同じ「wrangler dev は本番を再現しない」障害クラスの、promise
+  ではなくログ版である。上の「実機で確認した」は `wrangler dev` の話であって
+  本番の話ではない。
+- Node 停止 90 秒/10 分と復帰の基準測定。
+- 完全 idle の request/alarm 件数(Cloudflare Analytics token 待ち)。
+
+### S45 (2026-09-12): 本番のシェル Worker の tail に dynamic worker のログは現れない
+
+S44 で「Loader が起動した dynamic worker の console 出力が本番の Workers Logs
+に届くかは未確認」と書いた。確かめたところ、**シェル Worker の
+`wrangler tail` には現れない**。
+
+**測っていない範囲を先に書く**: 確認したのは `wrangler tail` という 1 経路
+だけである。Workers Logs のダッシュボード / Observability API は
+Cloudflare API トークンが要るため確認していない(このトークンは prodprobe の
+parking 判定に要るものと同じで、未発行)。したがって以下は「親の tail に
+現れない」であって「どこにも記録されていない」ではない。
+
+#### 測り方
+
+本番(`wrangler tail --format json`)を 80 秒開けたまま、prodprobe クラスタに
+Namespace と Deployment を作って resident controller を起こした。638 イベント、
+40 ログメッセージを取得。
+
+| 出どころ | 本番 tail | ローカル `wrangler dev` |
+|---|---|---|
+| シェル Worker (TS) の `controllers: <c> dynamic worker up` | **6 件** | 16〜20 件 |
+| dynamic worker 内の Go `log.Printf`(`<label>: run starting`) | **0 件** | 4〜12 件 |
+
+`wrangler dev` では Go 側の行が確かに出る(`clusterOperator: run starting`、
+`garbageCollector: run starting`)。本番では 1 件も無い。
+
+補強として、tail の生 JSON 全体に Go の `log.Printf` が付ける
+`YYYY/MM/DD HH:MM:SS` 形式のタイムスタンプが **0 件**。さらに `scriptName` は
+`k8flare` だけ、`executionModel` は `durableObject` と `stateless` だけで、
+dynamic worker のイベントそのものが 1 件も現れない。取りこぼしではなく、
+**シェル Worker の tail は dynamic worker の実行を含まない**。
+
+#### なぜ重大か
+
+1. **S44 の計装の肝が本番で見えない。** 三境界のうち `observed`(informer が
+   commit を観測した瞬間)は Go 側、つまり dynamic worker の中から出る。
+   `request` と `commit` はシェル側なので見える。測りたかった区別
+   ——「commit が controller に届くのが遅いのか、届いてから動くのが遅いのか」
+   ——の後半が、本番でだけ欠ける。
+2. **計装以前に、resident controller のログが本番で読めない。** kcm / gc /
+   sched / clusterop が何をしていても、また何をしていなくても、外からは同じに
+   見える。S30(デプロイされた制御プレーンが自分の dynamic worker に到達でき
+   ず、6 週間コントローラーが何もしていなかった)が長く見過ごされたのは、
+   おそらくこれが理由である。
+
+#### 直し方はプラットフォーム側にある
+
+`@cloudflare/workers-types` の `WorkerLoaderWorkerCode` は
+`tails?: Fetcher[]` と `streamingTails?: Fetcher[]` を受け取る。dynamic worker
+の trace イベント(console 出力を含む)を任意の Fetcher へ送る仕組みで、
+`env.SELF` を渡せばシェル Worker 自身の `tail()` ハンドラに届き、そこで
+`console.log` すれば親の tail / Workers Logs に載る。手製の中継路を作る必要は
+ない(不可侵ルール #3)。
+
+ただし tail worker の起動はリクエストとして課金されるため、常時付けるのは
+コスト不変条件に反する。`PUMP_TRACE=1` のときだけ付ける。
+
+#### 実装した。ただし**本番では未検証**
+
+`controllers/index.ts` が `PUMP_TRACE=1` のときだけ `tails: [this.env.SELF]` を
+付け、`src/index.ts` に `tail()` ハンドラを足した。ハンドラは `pumptrace ` で
+始まる行と exception だけを中継する——無加工で流したら
+ReplicationController 1 個の作成で **1,545 行**になり、大半は pump window が
+閉じるたびの reflector 再接続警告(設計どおりの挙動)だった。絞った後は
+observed 行 3 件、ノイズ 0 件。
+
+`wrangler dev` では中継経路が動くことを確認済み(無加工版で
+`dw ? log: ... clusterOperator: run starting` が出た。これはネイティブ出力には
+無い接頭辞なので、中継されたものだと判別できる)。
+
+**本番では確認できていない。** 2026-09-12 04:00 JST に検証デプロイを 3 回
+試みたが、いずれもアセットアップロードが `UND_ERR_CONNECT_TIMEOUT` で失敗した
+(5 回のリトライを使い切り、`workers.cloudflare.com` への curl も接続
+タイムアウト、`api.cloudflare.com` への connect が通常 0.1 秒のところ 5.0 秒)。
+ローカル側のネットワーク障害で、アカウントやコードの問題ではない。本番は
+デプロイされておらず無傷(version 46f38ea9 のまま、readyz 200)。
+
+**したがってこの節の結論は S45 自身が指摘した誤りを繰り返さないよう明示する**:
+中継の実装は `wrangler dev` でしか確かめていない。本番で実際に `observed` 行が
+シェル Worker の tail に現れることを確認するまで、S44 の三境界計装は
+**本番では二境界**である。
+
+#### 障害クラスとしては既知
+
+S31 / S34 / S39 と同じで、**`wrangler dev` は本番を再現しない**。これまでは
+promise の寿命と I/O コンテキストで現れたが、今回はログである。S44 の
+「実機で確認した」は `wrangler dev` の話であって本番の話ではなかった——
+その限定は S44 に書いてあるが、確認した結果としてここで確定させる。
+
+#### 派生して観測したもの(defect ではない)
+
+同じ tail で、resident controller の watch リクエスト
+(`?allowWatchBookmarks=...`)が 54 秒で `canceled` になり
+`waitUntil() tasks did not complete within the allowed time after invocation
+end and have been cancelled` を伴うのを 28 件観測した。638 イベント中 226 件が
+`canceled`。これは pump window が閉じるときに watch が切れる設計どおりの挙動
+(S31 の「pump window closed」と同じ)で、informer は resourceVersion 付きで
+張り直す。例外は 0 件。新しい障害としては扱わない。
+
+### S46 (2026-09-12): S45 の中継を本番で検証した。ついでに二つ目の計器の誤りも出た
+
+S45 の `tails` 中継を本番にデプロイして検証した。結論から書く:
+
+- **中継は本番で動く。** dynamic worker の trace 行がシェル Worker の
+  `tail()` に届き、`wrangler tail` に載る。
+- **ただし最初のデプロイでは 1 行も出なかった。** 原因は私のフィルタで、
+  ローカル検証の測り方が甘くて見逃していた。
+- **さらに、境界間の「所要時間」は本番では引き算で測れない。** isolate を
+  跨ぐタイムスタンプが比較できないため。
+
+#### 中継が動くまで
+
+| デプロイ | 結果 |
+|---|---|
+| `13bc5803` | `request` 70 / `commit` 18 / **`observed` 0**。tail ハンドラは 28 回呼ばれ `scriptName: null`(= dynamic worker)のイベントを消費していた |
+| 4 分間・pod を churn させて再測定 | tail 呼び出し 119 回、やはり `observed` 0 |
+| `740aed9b`(中継が「何を捨てたか」を言うようにした) | 判明: `first=2026/09/11 19:58:37 pumptrace {"b":"observed.update","c":"sched",...}` |
+| `87aba2e7`(フィルタ修正) | **`observed` kcm 20 / sched 5 / gc/* 13**、`request` 262 / `commit` 50 |
+
+**二つ目の計器の誤り**: Go の `log.Printf` は全行の先頭に
+`2026/09/11 19:58:37` を付ける。中継のフィルタは
+`line.startsWith("pumptrace ")` だったので、本番では 1 行もマッチしなかった。
+**ローカルでは `grep -o 'pumptrace {...}'` という部分一致で確認していたため、
+フィルタの欠陥を検出できていなかった** —— 検証の側が実装より緩いと、
+実装の穴は見えない。`indexOf("pumptrace {")` に直し、Go のタイムスタンプが
+前置された行を使う単体テストを足した。
+
+この二回目がなければ「本番では中継が効かない」と誤って結論していた。中継が
+「生きているが何も通していない」のか「そもそも届いていない」のかを区別できる
+ようにした `dw dropped=N relayed=M first=...` の 1 行が決め手だった。
+
+#### 三つ目の発見: isolate を跨ぐ時刻は引き算できない
+
+同じ本番測定で commit → observed を計算すると:
+
+| component | object | rv | commit → observed |
+|---|---|---|---|
+| kcm | tc-…-hqmb7 | 1314 | **-887 ms** |
+| kcm | tc-…-289rc | 1315 | **-888 ms** |
+| kcm | tc-…-cfckg | 1316 | **-888 ms** |
+| kcm | tc-…-vp94b | 1350 | 8,425 ms |
+| sched | tc-…-2s2tp | 1360 | 38,561 ms |
+
+連続する 3 revision が揃って -888ms になるのはノイズではなく**系統的なずれ**で
+ある。`commit` の時刻はシェル Worker の `Date.now()`、`observed` は dynamic
+worker 内の Go の `time.Now()`。Workers の `Date.now()` は直近の I/O 時点で
+止まる仕様なので、別 isolate の二つの時刻は数百 ms 単位でずれる。
+
+ローカル(S44)で 4〜29ms という妥当な値が出ていたのは、`wrangler dev` が
+全部を 1 プロセスで動かしていて時計が 1 つだったからにすぎない。**S44 の
+4〜29ms は本番の値ではない。**
+
+したがって Stage 0 の計装で本番で測れるのは:
+
+- **測れる**: どの境界がどの順で起きたか、どの pump window・どの component・
+  どの revision に属するか。同一時計内(Go 側どうし、TS 側どうし)の差分。
+- **測れない**: commit → observed の所要時間を引き算で。これには時刻ではなく
+  「commit が持つ単調な値」を watch 経由で Go 側まで運ぶ必要があり、
+  Stage 1(storage watch 契約)の仕事である。
+
+#### コスト契約は本番で成立した
+
+knob を外して再デプロイ(`46bc9ab5`)し、Namespace と Deployment を作って
+70 秒観測した結果: **pumptrace 行 0、中継行 0、tail ハンドラ呼び出し 0**。
+`tails` が付かないので tail worker の課金も発生しない。604 イベントは通常の
+制御プレーン動作のみ。
+
+### S47 (2026-09-12): 現 main を required GC フォーカスに通し、計装付きで multi-owner を測った
+
+CI が請求で止まっているため、今日 main に入った変更(ガード復元・S44 の計装・
+四コンポーネントへの展開・S45/S46 の tail 中継)は一度も conformance を
+通っていなかった。ローカルハーネス(S42)で required の GC フォーカスを回した。
+
+```
+Will run 7 of 7579 specs
+Ran 7 of 7579 Specs in 133.359 seconds
+SUCCESS! -- 7 Passed | 0 Failed
+```
+
+**これは CI の代わりにはならない**(ローカルハーネスは host バリアントを
+再現できない。docs/development.md)。それでも、今日の変更が required focus set
+を壊していないことは示せる。
+
+#### S44 で「踏んでいない」と書いたケースを測った
+
+S44 の 55 Pod 基準測定は single-owner・finalizer なし・未起動 Pod で、
+Stage 5 が要求する multi-owner / grace 条件を踏んでいないと明記した。その
+本命のケース——CI で 2 回落ちた
+`should not delete dependents that have both valid owner and owner that's
+waiting for dependents to be deleted`——を `PUMP_TRACE=1` で単独実行した:
+
+```
+Ran 1 of 7579 Specs in 15.514 seconds
+SUCCESS! -- 1 Passed | 0 Failed
+```
+
+**15.5 秒**。Stage 5 の「GC owner 消滅 max < 90 秒」に対して十分内側だが、
+n=1 かつラップトップである。CI で落ちたのは `garbage_collector.go:795` の
+90 秒予算超過というタイミング依存の失敗なので、**これは「速いマシンでは
+成り立つ」以上のことを主張しない**(P2-1 と同じ限定)。
+
+#### 計装が捉えたもの(trace 行 2,503)
+
+| 境界 | 件数 |
+|---|---|
+| `request` gateway | 934 |
+| `commit` storage | 515 |
+| `observed` kcm | 486 |
+| `observed` gc/pods | 243 |
+| `observed` sched | 243 |
+| `observed` gc/replicationcontrollers | 59 |
+| `observed` gc/namespaces・gc/serviceaccounts | 6・6 |
+| `observed` gc/leases・nodes・configmaps・clusters・csinodes・services | 3・2・2・1・1・1 |
+| `observed` clusterop | 1 |
+
+GC のイベントが出た resource kind は **10 種**(clusters, configmaps,
+csinodes, leases, namespaces, nodes, pods, replicationcontrollers,
+serviceaccounts, services)。
+
+**これを「GC が 10 種類しか watch していない」と読んではならない。** 計装が
+数えているのは informer がイベントを配送した kind であって、informer を
+張った kind ではない。この窓で動きが無かった kind は 0 件として現れない。
+S41 が測った「foreground 削除 1 回で 27 resource kind に 440 LIST」との差は、
+LIST の扇形が観測されたイベントより広いことを示唆するが、同じ量を測って
+いないので差を直接引き算してはいけない。P2-1 / Stage 5 で LIST 側も同じ窓で
+数える必要がある。
+
+#### S47 追記 (同日): デプロイ直後の probe は偽陽性で落ちる。直した
+
+上の conformance 確認のあと、本番を今日の main(`46bc9ab5`)にデプロイして
+prodprobe を回したところ **FAIL** した:
+
+```
+prodprobe: FAIL: the controllers did not produce 1 pod(s) within 8m0s
+  -- last seen: 0 live pod(s); deployment status.replicas=0 observedGeneration=0/1
+```
+
+回帰かと思ったが、9 分後に手で Deployment を作ると `observedGeneration: 1,
+replicas: 1` が 90 秒以内に付き、probe を回し直すと**収束 16 秒**——S44 の
+基準値と同じだった。10 分間の quiet window も revision 1614 のまま。
+**今日の変更に回帰はない。**
+
+原因は**デプロイ直後のコールドスタート**。resident controller の dynamic
+worker は約 44MB の WASM をコンパイルしてからでないと何も reconcile できず、
+それが probe の 8 分の収束予算を超えていた。`e2e-conformance.yml` が
+「up-to-28min control-plane warmup (wasm compile)」と書いているのと同じ現象で
+ある。
+
+**`/readyz` はこれを検出できない。** `checkComponent` は
+`wasm/<name>.manifest.json` というアセットの存在を見るだけで、dynamic worker
+が実際に読み込まれて動けるかは見ていない。つまり **readyz が 200 を返す
+状態でも制御プレーンはまだ何も reconcile できない**。readyz は匿名かつ
+キャッシュ付きなので、ここから DW をロードさせるのはコスト面で採れない
+(匿名エンドポイントが 44MB のコンパイルを起こせてしまう)。したがって
+readyz は現状のままとし、この限界を明記する。
+
+直したのは probe 側で、不可侵ルール #5(flaky は直すか revert)に従う:
+最初の収束に `-warmup-timeout`(既定 20 分)という**主張ではない**予算を与え、
+steady-state の主張は後続の scale と delete が担う。最初の収束が 1 分を
+超えたら「これは WASM コンパイルであってコントローラーの故障ではない」と
+probe 自身が言う。予算が 1 本に戻ったら落ちる単体テストも付けた。
+
+### S48 (2026-09-12): ローカルで required の host バリアントを再現した
+
+「ローカルハーネスは host バリアント(required ゲート)を再現できない」と
+docs/development.md に書いたが、**再現できる**。CI のワークフローを読み直した
+ところ、必要なものは全部リポジトリにあった。
+
+#### レシピ
+
+CI と同じ構成:
+
+1. `go build -o k8flare-scheduler ./cmd/scheduler` と
+   `go build -o k8flare-controller-manager ./cmd/controller-manager`
+2. `wrangler dev` を `--var SCHED_DISABLED:1 --var CM_DISABLED:1 --local`
+   で起動。**`--local-protocol https --https-key-path/--https-cert-path` で
+   wrangler 自身に TLS を終端させられるので、S42 で書いた node の TLS
+   プロキシは不要**だった
+3. 両バイナリを `--server=https://127.0.0.1:8443 --token=... --insecure-skip-tls-verify`
+   で起動
+4. ノードを繋いで `e2e.test` を回す
+
+#### 結果
+
+| フォーカス | 結果 |
+|---|---|
+| required GC(7 spec) | **7 Passed / 0 Failed、91 秒** |
+| baseline(11 spec) | 8 Passed / 3 Failed、583 秒 |
+
+以前 sched-dw 構成で回したときは baseline が**完走すらしなかった**
+(1 時間の suite timeout で 4 spec)。host スケジューラにすると 11 spec
+全部が走り、Watchers も LimitRange も通る。
+
+#### 残る 3 件はノードの問題で、制御プレーンの欠陥ではない
+
+落ちるのは `SchedulerPredicates` の 3 件だけで、いずれも **Pod が実際に起動
+すること**を要求する(filler pod で残容量を埋める、hostPort を取る、
+NodeSelector 先で動かす)。kubelet のイベントはこうだった:
+
+```
+FailedCreatePodSandBox: failed to generate seccomp spec opts: seccomp is not supported
+```
+
+**最初に立てた仮説は外れた。** `make nodes-agent` が `CGO_ENABLED=0` かつ
+seccomp ビルドタグ無しでビルドしているので、埋め込み containerd が seccomp を
+無効化してしまい「どのノードでも Pod が起動しない」本番級の欠陥ではないか、
+と考えた。**違った**: k3s-io/containerd v2 の `pkg/seccomp` にビルドタグは
+無く、実行時に
+`prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, 0, 0, 0) != EINVAL` を見ている。
+ビルド方法とは無関係である。
+
+実際には macOS の Docker Desktop 上のコンテナノード固有の現象で、CI は
+ランナー上でエージェントをネイティブに動かしており、そこでは baseline の
+これらの spec が通っている——つまり通常のノードでは Pod は起動する。
+
+ここに至る前に、同じノードで CNI も壊れていた
+(`failed to load flannel 'subnet.env'`)。原因はコンテナ起動時の
+`-with-node-id=false` で、flannel が自分の Node を引けず PodCIDR を読めずに
+起動しなかった。このフラグは per-Pod microVM ノード用で、BYO 相当の e2e
+ノードには不要。外したら `subnet.env` は出るようになった。
+
+#### つまりローカルハーネスは今こう位置づけられる
+
+- **required の GC フォーカスは完全に再現できる**(host バリアント、7/7)。
+  CI が請求で止まっている間の代替として、これは使える。
+- **baseline のうち Pod の起動を要する 3 spec は再現できない。** Docker
+  Desktop の seccomp。Linux ホストや CI ランナーでは通るはずだが、ここでは
+  検証していない。
+- 依然として CI そのものではない。conformance CI が Definition of Done で
+  あることは変わらない(不可侵ルール #1)。

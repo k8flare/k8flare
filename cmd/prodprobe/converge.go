@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,10 +20,25 @@ import (
 
 const computeClassAnnotation = "k8flare.com/compute"
 
+// ProbeUserAgent is what every request this probe makes identifies itself
+// as. Cost invariant #1 is asserted by looking at what a cluster does when
+// nothing is using it, and the probe is the one thing that is always using
+// it -- without a discriminator its own traffic is indistinguishable from
+// the traffic it is trying to prove absent. The run id makes two
+// concurrent probes separable too.
+func ProbeUserAgent() string {
+	run := os.Getenv("GITHUB_RUN_ID")
+	if run == "" {
+		run = strconv.FormatInt(time.Now().UTC().Unix(), 10)
+	}
+	return "k8flare-prodprobe/" + run
+}
+
 func newClientset(url, token string) (kubernetes.Interface, error) {
 	return kubernetes.NewForConfig(&rest.Config{
 		Host:        url,
 		BearerToken: token,
+		UserAgent:   ProbeUserAgent(),
 		Timeout:     60 * time.Second,
 	})
 }

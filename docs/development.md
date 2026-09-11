@@ -207,6 +207,27 @@ docker run -d --name e2e-node --privileged --cgroupns=private \
   --ginkgo.focus="$(the GC_FOCUS or BASELINE_FOCUS value in e2e-conformance.yml)"
 ```
 
+**What this harness can and cannot stand in for.** As written above it runs the
+resident WASM controllers, which reproduces the `sched-dw` and `kcm-dw`
+variants — **advisory** in CI, not the `host` variant that is the required
+gate. To reproduce the required variant instead, build `./cmd/scheduler` and
+`./cmd/controller-manager`, start `wrangler dev` with
+`--var SCHED_DISABLED:1 --var CM_DISABLED:1 --local` (and
+`--local-protocol https --https-key-path/--https-cert-path`, which removes the
+need for the TLS proxy above), then point both binaries at it with
+`--server=https://127.0.0.1:8443 --token=... --insecure-skip-tls-verify`. That
+passes the required garbage-collector focus 7/7 in about 90 seconds
+(`docs/platform-verification.md` S48). Three of the eleven baseline specs still
+fail there, but for a reason outside the control plane: on Docker Desktop the
+containerised node cannot create a pod sandbox (`seccomp is not supported`), so
+any spec that needs a pod to actually run cannot pass. For the garbage-collector focus the distinction does not
+matter: the gc dynamic worker runs in every variant, because the host has no
+garbage collector. For anything sig-scheduling it matters a lot — the
+`SchedulerPredicates` specs in `BASELINE_FOCUS` are scheduling-sensitive and a
+single small container node is not the runner CI uses. Treat a local baseline
+failure as "unattributed" until you have run the same focus against `main`
+with the same harness.
+
 **Copying the focus out of the workflow has a trap.** `GC_FOCUS` is a
 single-quoted shell string, so the apostrophe in one spec name is written
 `'\''` — the shell's escape, not part of the pattern. Paste it verbatim into a

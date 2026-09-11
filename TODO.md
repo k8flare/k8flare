@@ -164,7 +164,7 @@ batch or schedule rather than hand-dispatching.
 
 **Acceptance.** ~10 consecutive green dw runs, or a root cause for each red.
 
-### P1-3 `[~]` The most platform-fragile code has no unit tests
+### P1-3 `[x]` The most platform-fragile code has no unit tests
 
 **Problem.** Every `_test.go` lives in `pkg/apiserver` and drives a real
 `wrangler dev`. `pkg/cfruntime` — pump windows, the JS boundary, promise
@@ -180,6 +180,24 @@ lifecycle).
 
 **Acceptance.** The S31 and S34 fault shapes are each covered by a unit test
 that fails when the fix is reverted. TS tests run in `ci.yml`.
+
+**Done 2026-09-12, and the acceptance criterion was checked by actually
+reverting each fix** in a throwaway worktree rather than by reading the tests:
+
+| Fix reverted | Tests that failed |
+|---|---|
+| S31 — `EnvFromContext`'s fallback to the open pump window (`pkg/cfruntime/cloudflare/env.go`) | `TestEnvFromContextFallsBackToTheOpenWindow`, `TestBindingFromContextResolvesOnTheOpenWindow` |
+| S34 first shape — `toJSResponse` returning plain values instead of a `Response` | `TestToJSResponseReturnsPlainValuesNotAResponse` |
+| S34 second shape — no body on the Fetch spec's null-body statuses | `TestToJSResponseSendsNoBodyForBodilessStatuses` |
+
+Each mutation failed only its own tests, so they discriminate rather than
+tripping on any change. Coverage now stands at 17 Go unit tests across
+`pkg/cfruntime` (3), `pkg/cfruntime/cloudflare` window registry (9) and env
+resolution (5), plus 50 TypeScript tests; `make test-ts` runs in `ci.yml`
+(line 109). One of those TS tests was itself flaky and was fixed the same day
+— it compared an alarm interval against the 600s ceiling using a timestamp
+sampled before the call, so it failed by exactly 1ms whenever the call was
+slow enough.
 
 ### P1-4 `[x]` Destructive DO migrations replay on deploy
 
@@ -244,7 +262,7 @@ pointing at the section that establishes it. The history stays untouched below.
 
 ---
 
-### P0-6 `[ ]` Stage 0 of the pump-window design (instrumentation and cost contract)
+### P0-6 `[~]` Stage 0 of the pump-window design (instrumentation and cost contract)
 
 Attempted 2026-09-11 and **discarded**. Two delegated agents were each cut off
 by provider rate limits mid-task and left unverified work; the salvaged result
@@ -258,6 +276,56 @@ observed → controller acted) attributable to a pump window and component, with
 no always-on cost, plus the cost-model entries and a probe-traffic
 discriminator. Note that S37 removed the urgency: the node-recovery latency
 this instrumentation was meant to localise is no longer a defect.
+
+**Redone 2026-09-12, scoped as written above** (`docs/platform-verification.md`
+S44). Done:
+
+- Baseline at the deployed hash **before** instrumenting: convergence 16s,
+  55-pod foreground GC owner gone in 9s / all pods in 12s, ten idle minutes
+  with zero writes.
+- All three boundaries emit under `PUMP_TRACE=1` and were driven in a real
+  Worker, not just unit-tested: request 161 / commit 38 / observed 6 lines for
+  one Namespace plus a 2-replica ReplicationController.
+- Attribution works: each `observed` line names the pump window it arrived in.
+  Measured commit → informer observed at **4–29 ms**.
+- All four resident components emit observations, not just KCM: `kcm`, `sched`,
+  `clusterop`, and `gc/<resource>` split per GVR, which shows exactly which
+  resource kinds the real garbage collector walks (the 27 kinds S41 measured).
+  The helper lives in the leaf package `pkg/pumptrace` so importing it does not
+  drag the controller-manager into the gc, sched and clusterop chunks.
+- Zero always-on cost, asserted both ways: one string comparison when unset,
+  no informer handler registered at all, and 0 `pumptrace` lines across every
+  test lane with the var unset.
+- Cost-model entry with the per-boundary line counts and the Workers Logs
+  budget that follows from them.
+- Probe-traffic discriminator: `cmd/prodprobe` now sends
+  `k8flare-prodprobe/<run>` as its User-Agent, verified over a real HTTP round
+  trip.
+- **An error in the instrument itself, found and fixed**: the commit timestamp
+  was taken after `broadcastEvent`, so commit → observed came out *negative*
+  (-3 to -1 ms). Moved to immediately after the revision is assigned.
+
+Not done, so this stays `[~]`:
+
+- ~~The `observed` boundary is invisible in production~~ — **fixed and verified
+  there** (S46). A Loader-spawned worker's console output does not reach the
+  loading script's `wrangler tail` (S45); `WorkerLoaderWorkerCode.tails` with
+  `env.SELF` does deliver it. Measured in production: `request` 262, `commit`
+  50, `observed` kcm 20 / sched 5 / gc per-GVR 13. With the knob off: zero
+  trace lines, zero relay lines, **zero tail-handler invocations**, so nothing
+  is billed for a cluster nobody is measuring.
+- **Duration between boundaries is still not measurable in production** (S46).
+  `commit` is timestamped by the shell Worker and `observed` by Go inside the
+  dynamic worker; Workers' `Date.now()` freezes at the last I/O, so the two
+  clocks disagree — three consecutive revisions all came out at **-888 ms**, a
+  systematic offset rather than noise. S44's 4–29 ms was a `wrangler dev`
+  number, where one process means one clock, and is **not** a production
+  figure. Ordering, attribution (window / component / revision) and
+  same-clock deltas do work. Carrying a monotonic commit marker through the
+  watch to the Go side is Stage 1's job, not Stage 0's.
+- The node-stop 90s/10min baseline — it means stopping the agent on the
+  maintainer's VM, deferred to a daytime window rather than done at 03:00.
+- Idle request and alarm counts still need the Cloudflare Analytics token.
 
 ## P2 — known defects and accidental complexity
 
@@ -444,6 +512,59 @@ no drift; all five WASM chunks under the Loader cap (apiserver headroom
 **Not merged**: the Definition of Done is conformance, and Actions capacity is
 exhausted (see below). Merge once `e2e-conformance.yml` has run green against
 this branch.
+
+**Local verification 2026-09-12** (GitHub Actions capacity is still exhausted,
+so this is the substitute for the conformance gate):
+
+- Current `main` merged in; `make check`, `make vet` clean.
+- `make clean-wasm wasm` reproduced every chunk byte-identical to the branch's
+  existing build, and all five are under the 64MiB Loader cap — apiserver has
+  the least headroom at 2389 KiB.
+- `make test` green: apiserver 69.9s, `TestKCMDynamicWorkerControlPlane`
+  414.3s, `TestClusterOperatorLifecycle` 70.1s, 50 TypeScript tests.
+- The **required** garbage-collector focus: `Will run 7 of 7579`, then
+  **7 Passed / 0 Failed in 141s**.
+- The baseline focus fails locally — but see the rule below before reading
+  anything into that.
+
+**Decision rule, written before the comparison came back.** The local harness
+cannot run the `host` variant that gates baseline in CI (no host scheduler or
+controller-manager process; `docs/development.md`), so a local baseline
+failure is unattributed on its own. Running the same focus against `main`:
+
+- main fails the same specs → environmental, merge on the strength of the GC
+  focus and `make test`, and say plainly that the host baseline was not
+  locally reproducible.
+- main passes them → a real regression in the bump; do not merge.
+- main fails one and passes the other → not an average. Inviolable rule #5
+  applies: take a second sample of each before concluding anything.
+
+**The comparison came back: environmental.** Same harness, same node, same
+focus, `main` at k3s v1.36.3:
+
+| | specs completed | passed | failed | ended by |
+|---|---|---|---|---|
+| deps/k3s-136-4 (v1.36.4) | 6 in 2400s | 3 | 3 | a 40-minute tool timeout, not the suite |
+| main (v1.36.3) | 4 in 3600s | 2 | 2 | ginkgo's own one-hour suite timeout |
+
+`main` is not better — it completed fewer specs in more time, and it failed
+`SchedulerPredicates` at `predicates.go:1041`, which the bump failed too.
+Neither version got through the focus. The baseline focus is therefore **not a
+usable local signal on this harness**, exactly as the decision rule anticipated,
+and it says nothing for or against v1.36.4.
+
+**Still not merged, and the blocker is not technical.** Inviolable rule #1
+makes conformance CI the Definition of Done, and it cannot run: every job on
+the repository fails in 4 seconds with zero steps. The annotation says why —
+*"The job was not started because recent account payments have failed or your
+spending limit needs to be increased."* This is a **Billing & plans setting on
+the `k8flare` org that a maintainer has to fix**; it is not capacity that
+recovers on its own, and the earlier note in this file that called it
+"exhausted Actions capacity" was wrong about the cause.
+
+The branch is ready: rebased on current `main`, every local gate green, the
+required GC focus 7/7. Merge it as soon as a conformance run can be
+dispatched.
 
 ### P1-9 `[x]` Two compiled binaries were committed by accident
 
