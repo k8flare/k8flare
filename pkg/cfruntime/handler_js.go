@@ -15,8 +15,24 @@ import (
 
 var httpHandler http.Handler
 
-func init() {
-	binding := js.Global().Get("context").Get("binding")
+func init() { registerBinding() }
+
+// registerBinding installs the Go entry points on the JS side. Split out of
+// init() and made a no-op when globalThis.context.binding is absent so the
+// package can be unit-tested at all: before this, merely adding a _test.go
+// file to this package panicked at program start with
+// "syscall/js: call of Value.Get on undefined", because init() ran before any
+// test could set the global up. The real runtime always has the object, so
+// the guard costs one type check per program.
+func registerBinding() bool {
+	context := js.Global().Get("context")
+	if context.Type() != js.TypeObject {
+		return false
+	}
+	binding := context.Get("binding")
+	if binding.Type() != js.TypeObject {
+		return false
+	}
 	var handleRequestFn js.Func
 	handleRequestFn = js.FuncOf(func(this js.Value, args []js.Value) any {
 		reqObj := args[0]
@@ -80,6 +96,7 @@ func init() {
 		cloudflare.ClosePumpWindow(args[0].Int())
 		return js.Undefined()
 	}))
+	return true
 }
 
 // yieldToEventLoop blocks the calling goroutine until a fresh JS
