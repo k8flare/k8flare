@@ -29,7 +29,15 @@ One run, against the deployment you point it at:
    deployment was gone and had detached about two minutes later. Waiting
    is bounded by `-node-drain-timeout` (default 10m); a node that never
    leaves is reported as a failure, because that is a real finding.
-6. The account's analytics must show **zero** Worker and Durable Object
+6. Without `-parking`, a weaker check still runs: the cluster's own
+   resourceVersion must not move across the quiet window. It needs only the
+   cluster token, so it works with no Cloudflare credential. It is a **proxy**
+   — it proves nothing *wrote*, not that nothing *ran*, so an alarm chain that
+   wakes and does no work is invisible to it. It does catch the two shapes that
+   have actually bitten: a control plane that never stops writing (S26's no-op
+   write storm) and one that keeps reconciling after the workload is gone.
+   Measured in production 2026-09-11: revision 188 unchanged over 2 minutes.
+7. With `-parking`, the account's analytics must show **zero** Worker and Durable Object
    requests over a quiet window afterwards — cost invariants #1/#3.
 
 ## Run it
