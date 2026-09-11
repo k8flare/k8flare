@@ -1353,3 +1353,27 @@ docs/platform-verification.md S36 の修正で、Controllers DO の park 判定
 ごとに張り、成功時に `Stop()` する(不変条件 #3 — ポーリングではない)。
 
 **未実測**: 上の 2 リストが cost-gate の rows read にどれだけ乗るか。
+## 匿名 `/readyz`(actual, 2026-09-11 — 不変条件 #5)
+
+`/readyz` はトークン不要(外形監視が叩けなければ readiness の意味が無い)
+なので、コストを押さえるのは認証ではなくキャッシュである。実チェックは
+cluster ごと・isolate ごとに ready なら 30 秒、not-ready なら 5 秒に 1 回まで。
+冷えた判定に同時に到着した呼び出しは同じ実行を待ち合わせる。
+
+| 項目 | 単価 | 実測(`wrangler dev`) |
+|---|---|---|
+| 実チェックを走らせた呼び出し | Cluster DO `GET /revision` 1 回(sqlite 読み 1 行、書き込み 0)+ apiserver DW への Loader ディスパッチ 1 回(`GET /readyz`、storage には触らない)+ ASSETS の manifest 読み 4 本 | 約 5ms(warm) |
+| キャッシュから返した呼び出し | Worker リクエスト 1 件のみ | 約 1.7ms(`/healthz` と同じ) |
+
+匿名 150 リクエスト(逐次 50 + 同時 50 + TTL 満了後に同時 50)を約 35 秒で
+投げて、実チェックの実行は 2 回。つまりリクエスト量では増幅しない。
+
+**アイドルとのトレードオフ**: 上限は isolate 単位なので、全体量はリクエスト
+数ではなく生存 isolate 数に比例する。また 30 秒間隔でポーリングされ続ける
+クラスタは Cluster DO と apiserver isolate が起き続けるため不変条件 #1 の
+「アイドル」ではなくなる。これは k8flare 側の常駐ではなく運用者が選ぶ
+ポーリング間隔の問題なので、docs/admin-guide.md と
+docs/adopter-quickstart.md にトレードオフとして書いた。
+
+**未実測**: 本番(`workers.dev`)での isolate 数あたりの実効レートと、
+cost-gate の rows read への寄与。
