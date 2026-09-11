@@ -79,6 +79,13 @@ jobs:
       - name: TypeScript check
         run: vp check
 
+      # A changed Durable Object migrations block can destroy every cluster's
+      # state on the next deploy, and `wrangler deploy` applies it without
+      # prompting. Fail here so the change is reviewed rather than noticed
+      # afterwards (packages/wasm-build/src/check-migrations.ts).
+      - name: Check the DO migrations block is unchanged
+        run: npm run check:migrations
+
       # The former workers/nodes was found (2026-07-03) to be invisible to
       # `vp check`'s type-check pass (root cause in its internal "tsgolint"
       # project discovery, never fully chased). A direct `tsc --noEmit`
@@ -88,6 +95,18 @@ jobs:
       # `DurableObjectNamespace` return type erasing RPC method types).
       - name: TypeScript check (packages/k8flare-worker, direct tsc)
         run: npx tsc --noEmit -p packages/k8flare-worker/tsconfig.json
+
+      # Both unit lanes run here, ahead of the WASM build and the three
+      # wrangler-dev lanes: they need nothing those steps produce, they
+      # finish in seconds, and what they cover (the pump-window registry,
+      # promise lifetimes at the JS boundary, and the DO poke/park policy)
+      # was previously observable only through a five-minute end-to-end
+      # lane that reports it as a timeout somewhere else.
+      - name: Unit tests (TypeScript glue)
+        run: make test-ts
+
+      - name: Unit tests (pkg/cfruntime, js/wasm under node)
+        run: make test-cfruntime
 
       # binaryen's wasm-opt is required by the Makefile's kcm.manifest.json
       # recipe (the KCM WASM only fits under the Worker Loader's hard

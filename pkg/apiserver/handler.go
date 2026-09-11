@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 
@@ -15,69 +14,102 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1validation "k8s.io/apimachinery/pkg/apis/meta/v1/validation"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/apiserver/pkg/util/dryrun"
 )
 
-// parseDeletePropagationPolicy extracts spec.propagationPolicy from a DELETE
-// request. Real clients (client-go's Delete/DeleteCollection) send it as a
-// JSON-encoded metav1.DeleteOptions request body; the query parameter form
-// (?propagationPolicy=Foreground) some direct callers use instead is also
-// accepted, matching upstream kube-apiserver's dual acceptance. Restores
-// r.Body after reading it so later code in the same request (there is none
-// today, but this must not be a trap for a future caller) still sees it.
-// An absent/empty policy defaults to Background, matching this project's
-// registered resources' upstream default (none opt into Orphan-by-default).
-func parseDeletePropagationPolicy(r *http.Request) (metav1.DeletionPropagation, error) {
-	if q := r.URL.Query().Get("propagationPolicy"); q != "" {
-		return metav1.DeletionPropagation(q), nil
-	}
+// parseDeleteOptions decodes the caller's whole metav1.DeleteOptions from
+// a DELETE request. Real clients (client-go's Delete/DeleteCollection)
+// send them as a JSON- or protobuf-encoded request body; the query
+// parameter form (?propagationPolicy=Foreground) some direct callers use
+// for the policy is also accepted, matching upstream kube-apiserver's dual
+// acceptance. Restores r.Body after reading it so later code in the same
+// request (there is none today, but this must not be a trap for a future
+// caller) still sees it.
+//
+// PropagationPolicy stays nil when the caller sent none: deletePropagation
+// below defaults the handler's own branching to Background, but the
+// upstream store reads an absent policy off the object's existing
+// finalizers, and substituting Background there would strip a
+// foreground/orphan finalizer the caller never mentioned.
+func parseDeleteOptions(r *http.Request) (*metav1.DeleteOptions, error) {
+	opts := &metav1.DeleteOptions{}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		return "", fmt.Errorf("read request body: %w", err)
+		return nil, fmt.Errorf("read request body: %w", err)
 	}
 	r.Body.Close()
 	r.Body = io.NopCloser(bytes.NewReader(body))
-	if len(body) == 0 {
-		return metav1.DeletePropagationBackground, nil
-	}
-	// client-go's default negotiated content type is protobuf, not JSON --
-	// same reason decodeBody below needs Codecs.UniversalDeserializer rather
-	// than plain encoding/json (found by running this against a real
-	// client-go client, not assumed: a bare json.Unmarshal failed to decode
-	// with "invalid character 'k' looking for beginning of value", the tell
-	// for feeding protobuf bytes to a JSON decoder).
-	obj, err := decodeBody(body)
-	if err != nil {
-		// Real kubectl sends its DeleteOptions body WITHOUT TypeMeta
-		// (`{"propagationPolicy":"Background"}`), which the universal
-		// deserializer rejects with "Object 'Kind' is missing" -- the
-		// upstream apiserver decodes options leniently for exactly this
-		// reason. Fall back to a plain JSON unmarshal before failing;
-		// found live when `kubectl delete deployment` 400'd against
-		// production while curl (with TypeMeta) worked.
-		var jsonOpts metav1.DeleteOptions
-		if jsonErr := json.Unmarshal(body, &jsonOpts); jsonErr == nil {
-			if jsonOpts.PropagationPolicy == nil {
-				return metav1.DeletePropagationBackground, nil
+	if len(body) > 0 {
+		// client-go's default negotiated content type is protobuf, not JSON --
+		// same reason decodeBody below needs Codecs.UniversalDeserializer rather
+		// than plain encoding/json (found by running this against a real
+		// client-go client, not assumed: a bare json.Unmarshal failed to decode
+		// with "invalid character 'k' looking for beginning of value", the tell
+		// for feeding protobuf bytes to a JSON decoder).
+		obj, decodeErr := decodeBody(body, nil)
+		switch {
+		case decodeErr == nil:
+			typed, ok := obj.(*metav1.DeleteOptions)
+			if !ok {
+				return nil, fmt.Errorf("decode delete options: unexpected type %T", obj)
 			}
-			return *jsonOpts.PropagationPolicy, nil
+			opts = typed
+		default:
+			// Real kubectl sends its DeleteOptions body WITHOUT TypeMeta
+			// (`{"propagationPolicy":"Background"}`), which the universal
+			// deserializer rejects with "Object 'Kind' is missing" -- the
+			// upstream apiserver decodes options leniently for exactly this
+			// reason. Fall back to a plain JSON unmarshal before failing;
+			// found live when `kubectl delete deployment` 400'd against
+			// production while curl (with TypeMeta) worked.
+			if jsonErr := json.Unmarshal(body, opts); jsonErr != nil {
+				return nil, fmt.Errorf("decode delete options: %w", decodeErr)
+			}
 		}
-		return "", fmt.Errorf("decode delete options: %w", err)
 	}
-	opts, ok := obj.(*metav1.DeleteOptions)
-	if !ok {
-		return "", fmt.Errorf("decode delete options: unexpected type %T", obj)
+	if q := r.URL.Query().Get("propagationPolicy"); q != "" {
+		policy := metav1.DeletionPropagation(q)
+		opts.PropagationPolicy = &policy
 	}
+	return opts, nil
+}
+
+// deletePropagation is the policy the DELETE handler branches on. An
+// absent policy is Background, matching this project's registered
+// resources' upstream default (none opt into Orphan-by-default).
+func deletePropagation(opts *metav1.DeleteOptions) metav1.DeletionPropagation {
 	if opts.PropagationPolicy == nil {
-		return metav1.DeletePropagationBackground, nil
+		return metav1.DeletePropagationBackground
 	}
-	return *opts.PropagationPolicy, nil
+	return *opts.PropagationPolicy
+}
+
+// parseDryRun reads the `?dryRun=` query parameter, which is how
+// CreateOptions/UpdateOptions/PatchOptions travel (unlike DeleteOptions,
+// which client-go sends as a request body). Validated with upstream's own
+// ValidateDryRun, so an unsupported value is a client error rather than a
+// silently real write. Empty means not a dry run.
+func parseDryRun(r *http.Request) ([]string, error) {
+	values := r.URL.Query()["dryRun"]
+	if len(values) == 0 {
+		return nil, nil
+	}
+	if errs := metav1validation.ValidateDryRun(field.NewPath("dryRun"), values); len(errs) > 0 {
+		return nil, errs.ToAggregate()
+	}
+	return values, nil
 }
 
 // decodeBody decodes the request body as a Kubernetes runtime.Object.
 // Uses UniversalDeserializer which auto-detects JSON and protobuf formats.
-func decodeBody(body []byte) (runtime.Object, error) {
-	obj, _, err := Codecs.UniversalDeserializer().Decode(body, nil, nil)
+// defaults, when non-nil, supplies the apiVersion/kind for a body that
+// carries none (see ResourceStore.decodeDefaults).
+func decodeBody(body []byte, defaults *schema.GroupVersionKind) (runtime.Object, error) {
+	obj, _, err := Codecs.UniversalDeserializer().Decode(body, defaults, nil)
 	if err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
 	}
@@ -172,13 +204,20 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		}
 		defer r.Body.Close()
 
+		dryRunOpts, err := parseDryRun(r)
+		if err != nil {
+			writeStatusError(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		dryRun := dryrun.IsDryRun(dryRunOpts)
+
 		fieldValidation, err := parseFieldValidation(r)
 		if err != nil {
 			writeStatusError(w, http.StatusBadRequest, "BadRequest", err.Error())
 			return
 		}
 
-		rObj, warnings, err := decodeBodyWithFieldValidation(body, fieldValidation)
+		rObj, warnings, err := decodeBodyWithFieldValidation(body, fieldValidation, store.decodeDefaults())
 		if err != nil {
 			writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to decode request body: "+err.Error())
 			return
@@ -280,31 +319,27 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		}
 
 		// Services that don't specify a ClusterIP get one allocated here,
-		// synchronously, before the first write -- see clusterip.go.
-		if svc, ok := rObj.(*corev1.Service); ok {
+		// synchronously, before the first write -- see clusterip.go. Not
+		// under dry-run: the allocation is a real persisted write and
+		// there is nothing to release it afterwards, so a dry-run
+		// Service create leaks an address per call. The reply then
+		// carries no ClusterIP, which upstream's would.
+		if svc, ok := rObj.(*corev1.Service); ok && !dryRun {
 			if err := AssignClusterIP(ctx, store.storage, svc); err != nil {
 				writeInternalError(w, fmt.Errorf("allocate ClusterIP: %w", err))
 				return
 			}
 		}
 
-		// Nodes that don't specify a PodCIDR get one allocated here,
-		// synchronously, before the first write -- see nodecidr.go.
-		if node, ok := rObj.(*corev1.Node); ok {
-			if err := AssignPodCIDR(ctx, store.storage, node); err != nil {
-				writeInternalError(w, fmt.Errorf("allocate PodCIDR: %w", err))
-				return
-			}
-		}
-
-		obj, err := store.Create(ctx, namespace, rObj)
+		obj, err := store.Create(ctx, namespace, rObj, &metav1.CreateOptions{DryRun: dryRunOpts})
 		if err != nil {
 			writeResourceError(w, err, resource, name)
 			return
 		}
 
-		ApplyPostCreateEffects(ctx, stores, obj)
-		TriggerEndpointsReconcile(ctx, store.storage, namespace, obj)
+		if !dryRun {
+			ApplyPostCreateEffects(ctx, stores, obj)
+		}
 
 		writeRuntimeObject(w, http.StatusCreated, obj)
 
@@ -321,13 +356,19 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		}
 		defer r.Body.Close()
 
+		dryRunOpts, err := parseDryRun(r)
+		if err != nil {
+			writeStatusError(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+
 		fieldValidation, err := parseFieldValidation(r)
 		if err != nil {
 			writeStatusError(w, http.StatusBadRequest, "BadRequest", err.Error())
 			return
 		}
 
-		rObj, warnings, err := decodeBodyWithFieldValidation(body, fieldValidation)
+		rObj, warnings, err := decodeBodyWithFieldValidation(body, fieldValidation, store.decodeDefaults())
 		if err != nil {
 			writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to decode request body: "+err.Error())
 			return
@@ -338,8 +379,11 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 		// completes its deletion instead of persisting (upstream
 		// semantics; see gracefuldelete.go). This is how the real GC's
 		// finalizer-clearing patch/update actually removes an owner it
-		// finished orphaning or foreground-cascading.
-		if shouldFinalizeDelete(rObj) {
+		// finished orphaning or foreground-cascading. Under dry-run the
+		// plain Update below is the right path instead: upstream's own
+		// delete-during-update is dry-run aware, while the sweeps and
+		// settles finalizeDelete wraps it in are not.
+		if shouldFinalizeDelete(rObj) && !dryrun.IsDryRun(dryRunOpts) {
 			obj, err := finalizeDelete(ctx, store, namespacedStores, namespace, name, rObj)
 			if err != nil {
 				writeResourceError(w, err, resource, name)
@@ -349,12 +393,11 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			return
 		}
 
-		obj, err := store.Update(ctx, namespace, name, rObj)
+		obj, err := store.Update(ctx, namespace, name, rObj, &metav1.UpdateOptions{DryRun: dryRunOpts})
 		if err != nil {
 			writeResourceError(w, err, resource, name)
 			return
 		}
-		TriggerEndpointsReconcile(ctx, store.storage, namespace, obj)
 		writeRuntimeObject(w, http.StatusOK, obj)
 
 	case http.MethodDelete:
@@ -364,16 +407,21 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			return
 		}
 
-		policy, err := parseDeletePropagationPolicy(r)
+		deleteOpts, err := parseDeleteOptions(r)
 		if err != nil {
 			writeStatusError(w, http.StatusBadRequest, "BadRequest", err.Error())
 			return
 		}
+		policy := deletePropagation(deleteOpts)
+		// Everything the upstream store does is dry-run aware; the
+		// cascades, sweeps and ClusterIP releases this handler runs
+		// around it are not, so they are skipped instead.
+		dryRun := dryrun.IsDryRun(deleteOpts.DryRun)
 
 		if name == "" {
 			labelSelector := r.URL.Query().Get("labelSelector")
 
-			if resource == "namespaces" && namespacedStores != nil {
+			if resource == "namespaces" && namespacedStores != nil && !dryRun {
 				// A collection-delete of Namespaces needs the same
 				// dependents sweep as a single named delete below, or
 				// DELETE /api/v1/namespaces would silently orphan every
@@ -427,7 +475,7 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 					if m == nil {
 						continue
 					}
-					marked, err := markForDeletion(ctx, store, m.Namespace, m.Name, policy)
+					marked, err := markForDeletion(ctx, store, m.Namespace, m.Name, deleteOpts.DeepCopy())
 					if isStatusReason(err, metav1.StatusReasonNotFound) {
 						continue // vanished between the list and the mark
 					}
@@ -446,29 +494,14 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 				return
 			}
 			obj, err := store.DeleteCollection(ctx, namespace, labelSelector,
-				ProtectedClusterCollectionKeep(prefix, resource))
+				ProtectedClusterCollectionKeep(prefix, resource), deleteOpts)
 			if err != nil {
 				writeInternalError(w, err)
 				return
 			}
-			if svcList, ok := obj.(*corev1.ServiceList); ok {
+			if svcList, ok := obj.(*corev1.ServiceList); ok && !dryRun {
 				for i := range svcList.Items {
 					ReleaseClusterIP(ctx, store.storage, &svcList.Items[i])
-					DeleteServiceEndpoints(ctx, store.storage, namespace, svcList.Items[i].Name)
-				}
-			}
-			if nodeList, ok := obj.(*corev1.NodeList); ok {
-				for i := range nodeList.Items {
-					ReleasePodCIDR(ctx, store.storage, &nodeList.Items[i])
-				}
-			}
-			if _, ok := obj.(*corev1.PodList); ok {
-				// Every matching Pod in this namespace is gone -- one
-				// reconcile pass recomputes every affected Service's
-				// Endpoints/EndpointSlice, same as a single Pod delete
-				// below, without needing to iterate per-Pod.
-				if err := ReconcileNamespaceEndpoints(ctx, store.storage, namespace); err != nil {
-					log.Printf("endpoints reconciliation error for namespace %s: %v", namespace, err)
 				}
 			}
 			writeRuntimeObject(w, http.StatusOK, obj)
@@ -487,9 +520,11 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			// fails partway, the Namespace stays visible/gettable, so a
 			// client retry of the same DELETE is the correct recovery path
 			// (every step is idempotent).
-			if err := DeleteNamespaceDependents(ctx, namespacedStores, name); err != nil {
-				writeInternalError(w, err)
-				return
+			if !dryRun {
+				if err := DeleteNamespaceDependents(ctx, namespacedStores, name); err != nil {
+					writeInternalError(w, err)
+					return
+				}
 			}
 		}
 
@@ -503,7 +538,7 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			// shouldFinalizeDelete in the write paths. See
 			// gracefuldelete.go for why the earlier synchronous
 			// alternatives all raced the live controllers.
-			terminating, err := markForDeletion(ctx, store, namespace, name, policy)
+			terminating, err := markForDeletion(ctx, store, namespace, name, deleteOpts)
 			if err != nil {
 				writeResourceError(w, err, resource, name)
 				return
@@ -511,9 +546,13 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			writeRuntimeObject(w, http.StatusOK, terminating)
 			return
 		}
-		obj, err := store.Delete(ctx, namespace, name)
+		obj, err := store.Delete(ctx, namespace, name, deleteOpts)
 		if err != nil {
 			writeResourceError(w, err, resource, name)
+			return
+		}
+		if dryRun {
+			writeRuntimeObject(w, http.StatusOK, obj)
 			return
 		}
 		if resource == "namespaces" && namespacedStores != nil {
@@ -522,7 +561,10 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 				return
 			}
 		}
-		settleDeletedObject(ctx, store.storage, namespace, obj)
+		settleDeletedObject(ctx, store.storage, obj)
+		if store.namespaced {
+			FinishUnblockedForegroundOwners(ctx, namespacedStores, store, namespace, obj)
+		}
 		writeRuntimeObject(w, http.StatusOK, obj)
 
 	case http.MethodPatch:
@@ -536,6 +578,12 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			return
 		}
 		defer r.Body.Close()
+
+		dryRunOpts, err := parseDryRun(r)
+		if err != nil {
+			writeStatusError(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
 
 		ct := r.Header.Get("Content-Type")
 		// Get -> apply -> conditional-update, retried on conflict: a
@@ -563,7 +611,7 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 
 			// Same finalizer-completion rule as the PUT path above (see
 			// gracefuldelete.go) -- the GC clears finalizers via PATCH.
-			if shouldFinalizeDelete(patchedObj) {
+			if shouldFinalizeDelete(patchedObj) && !dryrun.IsDryRun(dryRunOpts) {
 				obj, err := finalizeDelete(ctx, store, namespacedStores, namespace, name, patchedObj)
 				if err != nil {
 					writeResourceError(w, err, resource, name)
@@ -573,9 +621,8 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 				return
 			}
 
-			obj, err := store.Update(ctx, namespace, name, patchedObj)
+			obj, err := store.Update(ctx, namespace, name, patchedObj, &metav1.UpdateOptions{DryRun: dryRunOpts})
 			if err == nil {
-				TriggerEndpointsReconcile(ctx, store.storage, namespace, obj)
 				writeRuntimeObject(w, http.StatusOK, obj)
 				return
 			}
@@ -594,21 +641,15 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 }
 
 // settleDeletedObject runs the per-resource effects every COMPLETED
-// deletion needs: ClusterIP release + Endpoints removal for Services,
-// PodCIDR release for Nodes, and the endpoints reconcile trigger. Shared
+// deletion needs: ClusterIP release for Services. Shared
 // by the DELETE path and finalizeDelete -- before 2026-07-25 the
-// finalizer-completion deletes (PUT/PATCH) skipped the Service/Node
+// finalizer-completion deletes (PUT/PATCH) skipped the Service
 // effects, leaking the ClusterIP of any Service that finished deleting
 // via a cleared finalizer (found by review).
-func settleDeletedObject(ctx context.Context, storage *Storage, namespace string, obj runtime.Object) {
+func settleDeletedObject(ctx context.Context, storage *Storage, obj runtime.Object) {
 	if svc, ok := obj.(*corev1.Service); ok {
 		ReleaseClusterIP(ctx, storage, svc)
-		DeleteServiceEndpoints(ctx, storage, namespace, svc.Name)
 	}
-	if node, ok := obj.(*corev1.Node); ok {
-		ReleasePodCIDR(ctx, storage, node)
-	}
-	TriggerEndpointsReconcile(ctx, storage, namespace, obj)
 }
 
 // finalizeDelete completes the deletion of an object whose last
@@ -616,6 +657,9 @@ func settleDeletedObject(ctx context.Context, storage *Storage, namespace string
 // sweep, storage delete, per-resource settle. Shared by the PUT and
 // PATCH finalizer-completion paths.
 func finalizeDelete(ctx context.Context, store *ResourceStore, namespacedStores []*ResourceStore, namespace, name string, write runtime.Object) (runtime.Object, error) {
+	if err := refuseForegroundFinalize(ctx, store, namespacedStores, namespace, name); err != nil {
+		return nil, err
+	}
 	if err := finalizeDeleteWithOrphanSweep(ctx, store, namespacedStores, namespace, name); err != nil {
 		return nil, err
 	}
@@ -625,11 +669,14 @@ func finalizeDelete(ctx context.Context, store *ResourceStore, namespacedStores 
 	// it (ShouldDeleteDuringUpdate), returning the object it deleted. A
 	// plain Delete would NOT do it -- upstream treats a delete of an
 	// already-terminating object as a no-op that just reports the object.
-	obj, err := store.Update(ctx, namespace, name, write)
+	obj, err := store.Update(ctx, namespace, name, write, nil)
 	if err != nil {
 		return nil, err
 	}
-	settleDeletedObject(ctx, store.storage, namespace, obj)
+	settleDeletedObject(ctx, store.storage, obj)
+	if store.namespaced {
+		FinishUnblockedForegroundOwners(ctx, namespacedStores, store, namespace, obj)
+	}
 	return obj, nil
 }
 

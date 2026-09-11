@@ -173,7 +173,9 @@ chain over a Cloudflare service binding. This validates route A's cost
 _shape_ (informers idle on I/O, billing should track actual reconcile
 work) qualitatively, but **the compiled `app.wasm` for all ten
 controllers together is ~19MiB gzip — Cloudflare Workers' 10MiB gzip
-limit blocks deployment before any cost measurement against production
+limit (historical: removed 2026-09, see platform-verification.md S35 —
+the ASSETS+LOADER channel is still required, on the 64 MiB raw limit)
+blocks deployment before any cost measurement against production
 billing can even be attempted** (S8(b)'s CPU-ms/hour methodology, proven
 against a minimal toy binary, could not be re-run against the real
 controllers binary this phase — there is nothing to `wrangler deploy` yet).
@@ -239,10 +241,10 @@ Containers, zero new alarm polling beyond what already existed.
 
 | Feature                                                | Mechanism                                                                                                                  | Real upstream reuse                                                                                                                                                                             | Measured incremental gzip cost                                          |
 | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| Node PodCIDR allocation                                | Synchronous, apiserver's Node-create path (`pkg/apiserver/nodecidr.go`)                                                    | `k8s.io/kubernetes/pkg/controller/nodeipam/ipam/cidrset.CidrSet` (leaf package, no client-go)                                                                                                   | +11KB (isolated); +35KB (real feature, incl. CAS persistence glue)      |
-| Endpoints/EndpointSlice                                | Synchronous, on every Service/Pod write incl. the `/status` subresource (`pkg/apiserver/endpoints.go`)                     | `k8s.io/endpointslice/util` (`IsPodReady`/`ShouldSetHostname`, separate lightweight package); `labels.SelectorFromValidatedSet`; small hand-ported functions where the real ones are unexported | +34KB (isolated util import); +97KB (real feature)                      |
-| Node lifecycle (Lease staleness → Unknown+taint+evict) | Cluster DO's existing event-armed safety-net alarm pings a new internal apiserver route (`pkg/apiserver/nodelifecycle.go`) | Real grace-period defaults (`nodelifecycle/config/v1alpha1`), real taint ops (`pkg/util/taints`), real toleration matching (`corev1.Toleration.ToleratesTaint`)                                 | +53KB (full feature, incl. the two lightweight upstream packages above) |
-| **All three combined**                                 | —                                                                                                                          | —                                                                                                                                                                                               | **+150,104 bytes (146.6KB), 7,699,133 → 7,849,237 bytes gzip**          |
+| Node PodCIDR allocation _(superseded 2026-09-09, see the note below)_  | Synchronous, apiserver's Node-create path (`pkg/apiserver/nodecidr.go`)                                                    | `k8s.io/kubernetes/pkg/controller/nodeipam/ipam/cidrset.CidrSet` (leaf package, no client-go)                                                                                                   | +11KB (isolated); +35KB (real feature, incl. CAS persistence glue)      |
+| Endpoints/EndpointSlice _(superseded 2026-09-09, see the note below)_  | Synchronous, on every Service/Pod write incl. the `/status` subresource (`pkg/apiserver/endpoints.go`)                     | `k8s.io/endpointslice/util` (`IsPodReady`/`ShouldSetHostname`, separate lightweight package); `labels.SelectorFromValidatedSet`; small hand-ported functions where the real ones are unexported | +34KB (isolated util import); +97KB (real feature)                      |
+| Node lifecycle (Lease staleness → Unknown+taint+evict) _(superseded 2026-09-09, see the note below)_ | Cluster DO's existing event-armed safety-net alarm pings a new internal apiserver route (`pkg/apiserver/nodelifecycle.go`) | Real grace-period defaults (`nodelifecycle/config/v1alpha1`), real taint ops (`pkg/util/taints`), real toleration matching (`corev1.Toleration.ToleratesTaint`)                                 | +53KB (full feature, incl. the two lightweight upstream packages above) |
+| **All three combined** _(all superseded 2026-09-09; kept per rule 4, deleted from the code)_ | —                                                                                                                          | —                                                                                                                                                                                               | **+150,104 bytes (146.6KB), 7,699,133 → 7,849,237 bytes gzip**          |
 
 **What was _not_ reusable, and why (the negative-space finding this phase
 adds)**: `k8s.io/endpointslice`'s root package exports exactly the one
@@ -273,6 +275,33 @@ neither exists — verified against real `wrangler dev`, not asserted (see
 the commit implementing this for the exact repro: Node create → taint
 applied within ~2s via a real end-to-end DO-alarm→service-binding→
 apiserver round trip, not a direct call).
+
+**Superseded (2026-09-09)**: all three rows in the table above were
+deleted and handed back to the real kube-controller-manager controllers
+in the kcm dynamic worker (`endpoint`/`endpointslice`/`nodeipam`/
+`nodelifecycle`/`tainteviction`), which cost +1.87MiB on the kcm chunk and
+left it 21.8MiB under the Loader cap — the size argument that forced the
+synchronous apiserver-side versions no longer holds for kcm (it still
+holds for the apiserver chunk, which has 2.57MiB of headroom). Numbers,
+what was verified, and what was NOT (production 128MiB isolate memory) are
+in docs/platform-verification.md's S28.
+
+**Alarm accounting (corrected the same day)**: this note first claimed the
+accounting above was "unchanged". It is not, and the first attempt at it
+was a cost regression. What holds now: while at least one Node is live,
+each 60s safety-net tick costs one Cluster DO alarm plus **one kcm pump**
+— the tick sends the Controllers DO a dedicated alarm-origin poke
+(`/safety-net/node-lifecycle`) that only ensures and pumps the kcm
+component, with `armWarmup:false`. It deliberately does NOT reuse the
+write-path poke (`pingControllers`), which arms a 3-minute warmup window,
+resets the unconverged backoff, and re-arms the Controllers DO's own 60s
+alarm: doing that on every tick revives exactly the "an idle BYO node kept
+a pointless 60s chain alive" regression `controllers/index.ts`'s `alarm()`
+comment records (cost invariants #1/#3). So the steady state with Nodes is
+one alarm + one pump per minute and **no Controllers DO alarm chain**, and
+everything parks once the last Node is gone. Measured against real
+`wrangler dev` rather than asserted (60.9s between consecutive pokes with
+one Node, zero pokes in the 150s after deleting it) — S28 has the numbers.
 
 ### Route B: Containers (demand-start/idle-stop) — superseded (kept for the record, user decision 2026-07-02)
 
@@ -1146,6 +1175,10 @@ ids -- one ~26ms Go-runtime instantiation per gateway isolate at first
 selector use, ~0ms per synchronous match call afterwards (execution
 model verified in docs/platform-verification.md S22). Bundle impact:
 +1.3MB gzip against the Worker script's 10MiB deploy budget.
+(2026-09-10: that gzip budget no longer exists, and the module moved
+behind a dynamic import so it is no longer compiled at isolate startup
+-- only a watch that actually carries a selector pays for it. Upload
+size is unchanged; see platform-verification.md S35.)
 Functional gains measured live: set-based operators (`in`, `!key`)
 now work, and invalid selectors 400 at watch open like upstream
 (previously silently mis-applied).
@@ -1294,3 +1327,53 @@ COMPONENTS)`)。cron の発火に必要なのは kcm だけなので、絞れば
 あたりのロードは約 1/4 になる。未着手 — このアラーム経路は過去 2 回
 壊しているため(94-alarms インシデントと d1a9503)、実測を伴わない変更を
 避けた。
+
+## 進行中の削除をアラームの仕事に数える (actual + estimate, 2026-09-10 — 不変条件 #5)
+
+docs/platform-verification.md S36 の修正で、Controllers DO の park 判定
+(`hasUnconvergedWork()`)に 2 つの読み取りを足した。どちらもアラームが
+既に鳴っているときだけ走る = アイドルでは 0 件。
+
+| 追加 | 単価 | アイドル時 |
+|---|---|---|
+| `GET /api/v1/replicationcontrollers` | 1 tick あたり list 1 回 | 0(パーク中は tick が無い) |
+| `GET /internal/pending-deletions` | 1 tick あたりリクエスト 1 回。サーバー側で namespaced リソースを走査するので、1 リクエストで済むのが要点(DO から 30 本の HTTP を張るのではない) | 同上 |
+
+**アラームの寿命への影響**: foreground/orphan 削除が飛んでいる間、park 判定が
+「仕事あり」を返すのでアラームが 15 秒 → 10 分の既存バックオフで鳴り続ける。
+削除が完了すれば `pending` が 0 に戻り、次の tick でパークする。**新しい
+固定間隔ポーリングは入れていない**(不変条件 #3)。修正前はカスケードの
+途中でパークしていたので、これは「アイドル時のコスト増」ではなく「これまで
+落としていた仕事のぶんだけ起きている時間が伸びる」変化である。
+
+**outbound 再送(`windowHandoffAttempts`)**: 放棄された呼び出しを最大 2 回に
+限って再発行する。待ちはチャンネル受信でタイマー無し(不変条件 #2 — I/O 待ちは
+無課金)。最悪ケースは同じリクエストが 2 回サーバーに届くことで、subrequest
+1 件ぶんの増分。**応答ヘッダの 10 秒上限**は one-shot タイマー 1 本を呼び出し
+ごとに張り、成功時に `Stop()` する(不変条件 #3 — ポーリングではない)。
+
+**未実測**: 上の 2 リストが cost-gate の rows read にどれだけ乗るか。
+## 匿名 `/readyz`(actual, 2026-09-11 — 不変条件 #5)
+
+`/readyz` はトークン不要(外形監視が叩けなければ readiness の意味が無い)
+なので、コストを押さえるのは認証ではなくキャッシュである。実チェックは
+cluster ごと・isolate ごとに ready なら 30 秒、not-ready なら 5 秒に 1 回まで。
+冷えた判定に同時に到着した呼び出しは同じ実行を待ち合わせる。
+
+| 項目 | 単価 | 実測(`wrangler dev`) |
+|---|---|---|
+| 実チェックを走らせた呼び出し | Cluster DO `GET /revision` 1 回(sqlite 読み 1 行、書き込み 0)+ apiserver DW への Loader ディスパッチ 1 回(`GET /readyz`、storage には触らない)+ ASSETS の manifest 読み 4 本 | 約 5ms(warm) |
+| キャッシュから返した呼び出し | Worker リクエスト 1 件のみ | 約 1.7ms(`/healthz` と同じ) |
+
+匿名 150 リクエスト(逐次 50 + 同時 50 + TTL 満了後に同時 50)を約 35 秒で
+投げて、実チェックの実行は 2 回。つまりリクエスト量では増幅しない。
+
+**アイドルとのトレードオフ**: 上限は isolate 単位なので、全体量はリクエスト
+数ではなく生存 isolate 数に比例する。また 30 秒間隔でポーリングされ続ける
+クラスタは Cluster DO と apiserver isolate が起き続けるため不変条件 #1 の
+「アイドル」ではなくなる。これは k8flare 側の常駐ではなく運用者が選ぶ
+ポーリング間隔の問題なので、docs/admin-guide.md と
+docs/adopter-quickstart.md にトレードオフとして書いた。
+
+**未実測**: 本番(`workers.dev`)での isolate 数あたりの実効レートと、
+cost-gate の rows read への寄与。

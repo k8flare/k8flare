@@ -248,7 +248,13 @@ jobs:
           # one despite the workflow-level concurrency group).
           git fetch origin "$BRANCH" 2>/dev/null || true
           git push --force-with-lease -u origin "$BRANCH"
-          gh pr create \
+          # The branch is pushed by now, so a failure below costs nothing but
+          # the PR itself -- say exactly which of the two remedies is missing
+          # instead of leaving a weekly red run with an opaque log. Observed
+          # 2026-09-07 (run 34169780304): push succeeded, `gh pr create` did
+          # not, with the repository's "Allow GitHub Actions to create and
+          # approve pull requests" setting off and no DEPS_UPDATE_TOKEN set.
+          if ! gh pr create \
             --repo "$GITHUB_REPOSITORY" \
             --head "$BRANCH" \
             --title "chore: sync deps to k3s $TAG" \
@@ -268,6 +274,10 @@ jobs:
           - [ ] If this PR shows no ci.yml checks, it was pushed with the default Actions token (see the workflow's header comment); push an empty commit or configure \`DEPS_UPDATE_TOKEN\` to get them
           EOF
           )"
+          then
+            echo "::error::Pushed $BRANCH but could not open the PR. Either enable the repository setting 'Allow GitHub Actions to create and approve pull requests' (Settings > Actions > General > Workflow permissions), or set the DEPS_UPDATE_TOKEN secret to a token with pull-requests:write. The branch is on the remote, so a human can open the PR by hand in the meantime."
+            exit 1
+          fi
 
   # Scheduled workflows that fail silently rot: surface failures as an
   # issue so a human sees them without watching the Actions tab.

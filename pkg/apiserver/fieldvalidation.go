@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 // parseFieldValidation extracts and validates the `?fieldValidation=` query
@@ -54,13 +55,13 @@ func isJSONBody(body []byte) bool {
 //   - Warn: unknown/duplicate fields are returned as warnings, but the
 //     object still decodes and is accepted -- caller is expected to surface
 //     them as response Warning headers (see writeFieldValidationWarnings).
-func decodeBodyWithFieldValidation(body []byte, fieldValidation string) (obj runtime.Object, warnings []error, err error) {
+func decodeBodyWithFieldValidation(body []byte, fieldValidation string, defaults *schema.GroupVersionKind) (obj runtime.Object, warnings []error, err error) {
 	if fieldValidation == "Ignore" || !isJSONBody(body) {
-		obj, err = decodeBody(body)
+		obj, err = decodeBody(body, defaults)
 		return obj, nil, err
 	}
 
-	obj, strictErrs, err := DecodeStrict(body, nil)
+	obj, strictErrs, err := DecodeStrict(body, defaults)
 	if err != nil {
 		return nil, nil, err
 	}

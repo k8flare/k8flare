@@ -67,6 +67,60 @@ func applyPodOverrides(spec *corev1.PodSpec) {
 		policy := corev1.PreemptLowerPriority
 		spec.PreemptionPolicy = &policy
 	}
+	applyDefaultTolerationSeconds(spec)
+}
+
+// defaultTolerationSeconds mirrors the value of
+// defaultNotReadyTolerationSeconds / defaultUnreachableTolerationSeconds in
+// k8s.io/kubernetes/plugin/pkg/admission/defaulttolerationseconds, which are
+// package-private there (settable only through that plugin's
+// --default-not-ready-toleration-seconds / --default-unreachable-toleration-seconds
+// flags, which this apiserver has no flag surface for). The plugin itself
+// cannot be linked here: it admits internal api.Pod objects and drags
+// k8s.io/kubernetes/pkg/apis/core, apiserver/pkg/admission,
+// component-base/featuregate and spf13/pflag into a binary that has to stay
+// under the Worker Loader's 64MiB cap.
+const defaultTolerationSeconds = int64(300)
+
+// applyDefaultTolerationSeconds is the versioned-type equivalent of that
+// plugin's Admit: without it every Pod tolerates neither
+// node.kubernetes.io/not-ready:NoExecute nor
+// node.kubernetes.io/unreachable:NoExecute, so the real
+// taint-eviction-controller deletes each Pod on an unreachable Node the
+// instant nodelifecycle taints it. The replicaset controller then recreates
+// the Pod, the scheduler binds it, taint eviction deletes it again: measured
+// at ~2 Pods/second of create/bind/delete churn for as long as the Node was
+// down, and with it ~230 deployment-status and ~110 replicaset-status writes
+// per minute (docs/platform-verification.md S32).
+func applyDefaultTolerationSeconds(spec *corev1.PodSpec) {
+	toleratesNotReady, toleratesUnreachable := false, false
+	for _, t := range spec.Tolerations {
+		if t.Effect != corev1.TaintEffectNoExecute && t.Effect != "" {
+			continue
+		}
+		if t.Key == corev1.TaintNodeNotReady || t.Key == "" {
+			toleratesNotReady = true
+		}
+		if t.Key == corev1.TaintNodeUnreachable || t.Key == "" {
+			toleratesUnreachable = true
+		}
+	}
+	if !toleratesNotReady {
+		spec.Tolerations = append(spec.Tolerations, defaultToleration(corev1.TaintNodeNotReady))
+	}
+	if !toleratesUnreachable {
+		spec.Tolerations = append(spec.Tolerations, defaultToleration(corev1.TaintNodeUnreachable))
+	}
+}
+
+func defaultToleration(key string) corev1.Toleration {
+	seconds := defaultTolerationSeconds
+	return corev1.Toleration{
+		Key:               key,
+		Operator:          corev1.TolerationOpExists,
+		Effect:            corev1.TaintEffectNoExecute,
+		TolerationSeconds: &seconds,
+	}
 }
 
 // ValidateLimitRange checks a pod's container resource requests/limits

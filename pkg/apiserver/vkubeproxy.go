@@ -9,7 +9,22 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
+
+func servicesResourceStore(storage *Storage) *ResourceStore {
+	return NewResourceStore(storage, corev1.SchemeGroupVersion, "services", "service", true,
+		func() runtime.Object { return &corev1.Service{} },
+		func() runtime.Object { return &corev1.ServiceList{} },
+	)
+}
+
+func endpointSlicesResourceStore(storage *Storage) *ResourceStore {
+	return NewResourceStore(storage, discoveryv1.SchemeGroupVersion, "endpointslices", "endpointslice", true,
+		func() runtime.Object { return &discoveryv1.EndpointSlice{} },
+		func() runtime.Object { return &discoveryv1.EndpointSliceList{} },
+	)
+}
 
 // ResolveVKubeProxyTarget resolves a ClusterIP:port pair -- the original
 // destination pkg/agent/vkubeproxy.go's node-side TUN interception
@@ -17,8 +32,8 @@ import (
 // container port) pair a ready backing Pod-on-Containers Pod should
 // receive the request on. This is the resolution half of nodes/
 // podproxy.ts's handleVKubeProxy (ClusterIP -> Service -> EndpointSlice,
-// same lookups pkg/apiserver/endpoints.go's buildEndpointSlice already
-// performs the write side of), moved here to run in-process against
+// the read side of what the real endpointslice controller in the kcm
+// dynamic worker writes), moved here to run in-process against
 // this apiserver's own ResourceStore rather than as two separate HTTP
 // round trips through client.ts's getServiceByClusterIP and
 // listEndpointSlicesForService.
@@ -56,11 +71,9 @@ func ResolveVKubeProxyTarget(ctx context.Context, storage *Storage, clusterIP st
 	}
 
 	epStore := endpointSlicesResourceStore(storage)
-	// The standard EndpointSlice-to-Service label (endpoints.go's
-	// buildEndpointSlice sets it); this project builds exactly one
-	// combined slice per Service, so at most one item is ever returned
-	// in practice, but the loop below still handles a list for forward
-	// compatibility, same as podproxy.ts's handleVKubeProxy did.
+	// The standard EndpointSlice-to-Service label (the real
+	// endpointslice controller sets it); the loop below handles a list,
+	// same as podproxy.ts's handleVKubeProxy did.
 	labelSelector := fmt.Sprintf("kubernetes.io/service-name=%s", svc.Name)
 	epObj, err := epStore.List(ctx, svc.Namespace, "", labelSelector)
 	if err != nil {

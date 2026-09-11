@@ -125,7 +125,7 @@ func TestDeleteNamespaceDependents_ReleasesServiceClusterIPs(t *testing.T) {
 	if svc.Spec.ClusterIP == "" {
 		t.Fatal("expected AssignClusterIP to set a ClusterIP")
 	}
-	if _, err := svcStore.Create(ctx, ns, svc); err != nil {
+	if _, err := svcStore.Create(ctx, ns, svc, nil); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 

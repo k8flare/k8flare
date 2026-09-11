@@ -1,5 +1,8 @@
 # Adopter quickstart
 
+> Read [known-issues.md](known-issues.md) first — it is the two-minute list of
+> what is broken or unproven today.
+
 Read this before deciding to run k8flare. It answers the questions the
 rest of the docs assume you already know, and states the limits plainly.
 
@@ -67,6 +70,37 @@ fresh deployment replays them harmlessly because there is nothing to
 lose. An existing deployment pulling a *future* destructive tag would
 lose everything, and there is no backup mechanism.
 
+**Guarded since 2026-09-11.** `npm run check:migrations` hashes that block
+and compares it against `packages/k8flare-worker/migrations.sha256`. It runs
+in CI, and `make deploy` / `npm run deploy` run it first and refuse to deploy
+if the block changed. So a `git pull` can no longer carry a destructive tag
+into your deployment unnoticed — accepting one is a separate, deliberate act
+(`npm run check:migrations -- --record` and commit, or
+`K8FLARE_ALLOW_MIGRATION_CHANGE=1` for a single deploy you have reviewed).
+The guard does not protect you if you invoke `wrangler deploy` directly; it
+is wired into the project's own deploy paths, not into wrangler.
+
+**Take a backup anyway.** `cmd/k8flare-backup` dumps every object the
+cluster's discovery serves, in every namespace, and restores them into a
+cluster:
+
+```sh
+go run ./cmd/k8flare-backup dump    -file cluster.ndjson
+go run ./cmd/k8flare-backup restore -file cluster.ndjson
+```
+
+Verified 2026-09-11 against the real deployment: 21 objects dumped, the
+namespace deleted, then restored with its ConfigMap data, labels and
+Deployment replica count intact.
+
+What it does **not** cover, because the Kubernetes API deliberately does not
+serve it: the CA keypairs and the per-cluster token vault, which live in
+Durable Object facets. Restoring into a fresh deployment gives you your
+workloads back, not your cluster's identity -- nodes holding certificates
+signed by the old CA will not rejoin, and issued cluster tokens change. It
+also skips Endpoints, EndpointSlices and Events by default, because the
+controllers rebuild them from the objects that are restored.
+
 So before every upgrade:
 
 ```sh
@@ -78,19 +112,57 @@ to be yours rather than the upstream branch's, pin a commit or fork.
 
 ## Monitoring
 
-`/healthz`, `/livez` and `/readyz` answer `200 ok` **without a token**, so
-an external uptime monitor can reach them.
+`/healthz`, `/livez` and `/readyz` all answer **without a token**, so an
+external uptime monitor can reach them. They assert different things.
 
-Be clear on what that asserts: the Worker is routable and its script
-loaded. It is answered in the Worker shell and deliberately does *not*
-touch storage or load any control-plane component — an unauthenticated
-path that spun up a 65MB WASM module per request would be a cost
-amplifier on a public URL. For "is the API actually serving", probe a
-real endpoint with a token:
+`/healthz` and `/livez` always answer `200 ok`, from the Worker shell.
+That asserts the Worker is routable and its script loaded — nothing
+more. They touch no storage and load no component, so they cost what any
+Worker request costs.
+
+`/readyz` answers `200 ok` when the control plane is actually serving and
+`503` when it is not, which is the endpoint to point an uptime monitor
+at. The checks behind it are a Cluster DO read of the kine revision, a
+Loader dispatch to the apiserver (its own `/readyz`), and the presence of
+each resident component's WASM manifest. A failing answer names the
+checks the way upstream kube-apiserver does, with the reasons withheld:
+
+```
+[+]storage ok
+[-]apiserver failed: reason withheld
+readyz check failed
+```
+
+**Cost.** Those checks run at most once every 30 s per isolate while the
+answer is ready, and once every 5 s while it is not; every other caller
+in that window is served the memoized verdict. Measured on `wrangler
+dev`: ~5 ms for a call that runs the checks, ~1.7 ms for one served from
+the cache — the same as `/healthz`. So an anonymous flood cannot amplify
+Durable Object reads beyond that rate. The bound is per isolate, which is
+the only state a Worker holds for free, so global volume scales with the
+number of live isolates rather than with the number of requests.
+
+The flip side: `/readyz` is not free the way `/healthz` is. Polling it
+keeps the Cluster DO and the apiserver isolate warm, so a monitor hitting
+it every 30 s is a cluster that is never fully idle. If you care about
+scale-to-zero more than about fast detection, poll it every few minutes,
+or poll `/healthz` and let [prodprobe](../cmd/prodprobe/README.md) cover
+readiness on its own schedule.
+
+With the cluster token, `?verbose=true` gives the per-component
+breakdown, including the failing check's actual reason:
 
 ```sh
-curl -sf -H "Authorization: Bearer $TOKEN" https://<your-worker>/api/v1/namespaces
+curl -s -H "Authorization: Bearer $TOKEN" https://<your-worker>/readyz?verbose=true
 ```
+
+Without the token `?verbose` is ignored rather than refused, so a monitor
+that sets it still gets its answer.
+
+Corrected 2026-09-11: for part of this branch's history `/readyz`
+required a token, contradicting the paragraph above. That was wrong on
+both counts — an endpoint an operator's monitoring cannot call is not a
+readiness endpoint, and authentication was never what bounded the cost.
 
 ## Security posture (read this before trusting it with anything)
 

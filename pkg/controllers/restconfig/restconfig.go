@@ -44,7 +44,6 @@ package restconfig
 import (
 	restclient "k8s.io/client-go/rest"
 
-	"github.com/k8flare/k8flare/pkg/cfruntime/cloudflare"
 	cffetch "github.com/k8flare/k8flare/pkg/cfruntime/cloudflare/fetch"
 )
 
@@ -67,8 +66,7 @@ import (
 // produces must carry it so the single consolidated Worker's cluster
 // resolver routes the traffic to the right Cluster DO tree.
 func RestConfig(bindingName, token, basePath string) *restclient.Config {
-	binding := cloudflare.GetBinding(bindingName)
-	client := cffetch.NewClient(cffetch.WithBinding(binding))
+	client := cffetch.NewClient(cffetch.WithLiveBinding(bindingName))
 	return &restclient.Config{
 		Host:        "https://" + bindingName + ".k8flare.internal" + basePath + "/",
 		BearerToken: token,

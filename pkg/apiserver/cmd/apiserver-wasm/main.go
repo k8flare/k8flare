@@ -76,20 +76,30 @@ func storageDo(req *http.Request) (*http.Response, error) {
 const tokenCacheTTL = 60 * time.Second
 
 var (
-	tokenCacheMu      sync.Mutex
-	tokenCacheValue   []string
-	tokenCacheExpires time.Time
+	tokenCacheMu         sync.Mutex
+	tokenCacheValue      []string
+	tokenCacheExpires    time.Time
+	tokenCacheLoaded     bool
+	tokenCacheRefreshing bool
 )
 
 func getTokens() []string {
 	tokenCacheMu.Lock()
-	defer tokenCacheMu.Unlock()
-	if time.Now().Before(tokenCacheExpires) {
-		return tokenCacheValue
+	value, loaded, refreshing := tokenCacheValue, tokenCacheLoaded, tokenCacheRefreshing
+	if loaded && (time.Now().Before(tokenCacheExpires) || refreshing) {
+		tokenCacheMu.Unlock()
+		return value
 	}
-	tokenCacheValue = readTokens()
-	tokenCacheExpires = time.Now().Add(tokenCacheTTL)
-	return tokenCacheValue
+	tokenCacheRefreshing = true
+	tokenCacheMu.Unlock()
+
+	fresh := readTokens()
+
+	tokenCacheMu.Lock()
+	tokenCacheValue, tokenCacheExpires, tokenCacheLoaded, tokenCacheRefreshing =
+		fresh, time.Now().Add(tokenCacheTTL), true, false
+	tokenCacheMu.Unlock()
+	return fresh
 }
 
 func readTokens() []string {

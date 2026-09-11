@@ -70,6 +70,19 @@ npx wrangler dev -c packages/k8flare-worker/wrangler.jsonc --local \
 The Go test harness (`pkg/apiserver/apiserver_test.go`) passes the same two
 flags, plus `--var KCM_DISABLED:1`.
 
+## `new_module_registry`
+
+`wrangler.jsonc` sets `"compatibility_flags": ["new_module_registry"]`.
+Every harness that starts its own `wrangler dev` points at that one config,
+so nothing has to pass it on the command line — but if you run workerd or
+wrangler some other way, carry the flag over. Without it, modules compile
+eagerly at isolate startup, which puts the 4.58MB `selector.wasm`
+(`src/k8s/selector-wasm.ts`, loaded through a dynamic `import()`) back on
+every request's startup path. Adopters on an older wrangler whose bundled
+workerd does not know the flag will see the runtime refuse to start; see
+`docs/platform-verification.md` S35 for what the flag does and does not
+buy here.
+
 ## Durable Object state
 
 Local DO state lives in `.wrangler/state` at the **repo root**

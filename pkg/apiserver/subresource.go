@@ -112,6 +112,13 @@ func handlePodOnlySubresource(w http.ResponseWriter, r *http.Request, store *Res
 //   - PATCH applies the patch to the whole object, same as the top-level
 //     PATCH handler (already generic; only .Status is expected to differ).
 func handleStatusSubresource(w http.ResponseWriter, r *http.Request, store *ResourceStore, namespace, name string) {
+	dryRunOpts, err := parseDryRun(r)
+	if err != nil {
+		writeStatusError(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+	updateOpts := &metav1.UpdateOptions{DryRun: dryRunOpts}
+
 	ctx := r.Context()
 
 	switch r.Method {
@@ -131,7 +138,7 @@ func handleStatusSubresource(w http.ResponseWriter, r *http.Request, store *Reso
 		}
 		defer r.Body.Close()
 
-		incoming, err := decodeBody(body)
+		incoming, err := decodeBody(body, nil)
 		if err != nil {
 			writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to decode request body: "+err.Error())
 			return
@@ -148,15 +155,11 @@ func handleStatusSubresource(w http.ResponseWriter, r *http.Request, store *Reso
 			return
 		}
 
-		obj, err := store.Update(ctx, namespace, name, current)
+		obj, err := store.Update(ctx, namespace, name, current, updateOpts)
 		if err != nil {
 			writeResourceError(w, err, store.resource, name)
 			return
 		}
-		// A Pod's status is the real trigger for most Endpoints/EndpointSlice
-		// changes (podIP/readiness populate here, via kubelet's UpdateStatus
-		// call) -- see endpoints.go's TriggerEndpointsReconcile.
-		TriggerEndpointsReconcile(ctx, store.storage, namespace, obj)
 		writeRuntimeObject(w, http.StatusOK, obj)
 
 	case http.MethodPatch:
@@ -180,12 +183,11 @@ func handleStatusSubresource(w http.ResponseWriter, r *http.Request, store *Reso
 			return
 		}
 
-		obj, err := store.Update(ctx, namespace, name, patchedObj)
+		obj, err := store.Update(ctx, namespace, name, patchedObj, updateOpts)
 		if err != nil {
 			writeResourceError(w, err, store.resource, name)
 			return
 		}
-		TriggerEndpointsReconcile(ctx, store.storage, namespace, obj)
 		writeRuntimeObject(w, http.StatusOK, obj)
 
 	default:
@@ -234,6 +236,13 @@ func copyStatus(dst, src runtime.Object) error {
 // Pod manifest POSTed to .../binding by mistake) is squarely
 // attacker/caller-controlled input, not just an internal invariant.
 func handleBindingSubresource(w http.ResponseWriter, r *http.Request, store *ResourceStore, namespace, name string) {
+	dryRunOpts, err := parseDryRun(r)
+	if err != nil {
+		writeStatusError(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+	updateOpts := &metav1.UpdateOptions{DryRun: dryRunOpts}
+
 	if r.Method != http.MethodPost {
 		writeStatusError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method "+r.Method+" is not supported for "+store.resource+"/binding")
 		return
@@ -248,7 +257,7 @@ func handleBindingSubresource(w http.ResponseWriter, r *http.Request, store *Res
 	}
 	defer r.Body.Close()
 
-	bindingObj, err := decodeBody(body)
+	bindingObj, err := decodeBody(body, nil)
 	if err != nil {
 		writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to decode binding: "+err.Error())
 		return
@@ -272,7 +281,7 @@ func handleBindingSubresource(w http.ResponseWriter, r *http.Request, store *Res
 
 	pod.Spec.NodeName = binding.Target.Name
 
-	_, err = store.Update(ctx, namespace, name, pod)
+	_, err = store.Update(ctx, namespace, name, pod, updateOpts)
 	if err != nil {
 		writeResourceError(w, err, store.resource, name)
 		return
@@ -334,6 +343,13 @@ func applyPatch(currentObj runtime.Object, patchBytes []byte, contentType string
 // ScaleREST per resource, the same generalization copyStatus already applies
 // to /status above.
 func handleScaleSubresource(w http.ResponseWriter, r *http.Request, store *ResourceStore, namespace, name string) {
+	dryRunOpts, err := parseDryRun(r)
+	if err != nil {
+		writeStatusError(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+	updateOpts := &metav1.UpdateOptions{DryRun: dryRunOpts}
+
 	ctx := r.Context()
 
 	switch r.Method {
@@ -364,7 +380,7 @@ func handleScaleSubresource(w http.ResponseWriter, r *http.Request, store *Resou
 		// JSON -- found by TestScaleSubresource against the real typed
 		// client, which a hand-rolled JSON-only fixture wouldn't have
 		// caught. decodeBody's UniversalDeserializer auto-detects either.
-		incomingObj, err := decodeBody(body)
+		incomingObj, err := decodeBody(body, nil)
 		if err != nil {
 			writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to decode request body: "+err.Error())
 			return
@@ -385,7 +401,7 @@ func handleScaleSubresource(w http.ResponseWriter, r *http.Request, store *Resou
 			return
 		}
 
-		updated, err := store.Update(ctx, namespace, name, current)
+		updated, err := store.Update(ctx, namespace, name, current, updateOpts)
 		if err != nil {
 			writeResourceError(w, err, store.resource, name)
 			return
@@ -457,7 +473,7 @@ func handleScaleSubresource(w http.ResponseWriter, r *http.Request, store *Resou
 			return
 		}
 
-		updated, err := store.Update(ctx, namespace, name, current)
+		updated, err := store.Update(ctx, namespace, name, current, updateOpts)
 		if err != nil {
 			writeResourceError(w, err, store.resource, name)
 			return

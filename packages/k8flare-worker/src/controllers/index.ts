@@ -268,8 +268,14 @@ export class Controllers {
     // id carries a token fingerprint: rotation = new id = fresh isolate,
     // and the stale one is simply never addressed again.
     const tokenTag = await this.tokenTag();
+    // Fault injection (see Env.PUMP_WINDOW_DROP_CLOSE): production can
+    // tear a poke's IoContext down before its ctx.waitUntil timer runs,
+    // which leaves a pump window open forever on the Go side. `wrangler
+    // dev` never does that (S31 E1), so the only way to cover the
+    // resulting wedge locally is to drop the close deliberately.
+    const dropCloseEvery = Number(this.env.PUMP_WINDOW_DROP_CLOSE ?? 0) || 0;
     const worker = this.env.LOADER.get(
-      `${name}:${doName}@${manifest.sha256}#${tokenTag}`,
+      `${this.env.LOADER_ID_SALT ?? ""}${name}:${doName}@${manifest.sha256}#${tokenTag}${dropCloseEvery ? `!${dropCloseEvery}` : ""}`,
       async () => {
         const wasm = await assembleWasm(this.env.ASSETS, manifest);
         const wasmExec = await fetchWasmAsset(this.env.ASSETS, "wasm_exec.js").then((r) =>
@@ -289,7 +295,7 @@ export class Controllers {
           compatibilityDate: "2026-07-01",
           mainModule: "index.js",
           modules: {
-            "index.js": makeResidentBootstrapJS(PUMP_WINDOW_MS),
+            "index.js": makeResidentBootstrapJS(PUMP_WINDOW_MS, dropCloseEvery),
             "wasm_exec.js": wasmExec,
             "app.wasm": { wasm: wasm.buffer as ArrayBuffer },
           },
@@ -311,12 +317,16 @@ export class Controllers {
   // retrying) its detached load, whose completion delivers the first
   // dispatch. Never awaited from fetch() -- see the components field's
   // doc comment.
-  private poke(name: ComponentName, request?: Request): Promise<Response> | null {
+  private poke(
+    name: ComponentName,
+    request?: Request,
+    opts?: { armWarmup?: boolean },
+  ): Promise<Response> | null {
     const c = this.components[name];
     if (c.entrypoint) {
       return c.entrypoint.fetch(request ?? "http://controllers.internal/healthz");
     }
-    void this.ensure(name)
+    void this.ensure(name, opts)
       .then((f) => f && f.fetch("http://controllers.internal/healthz"))
       .catch(() => {}); // already logged in ensure()
     return null;
@@ -339,6 +349,22 @@ export class Controllers {
     if (this.env.KCM_DISABLED === "1") {
       return Response.json({ controllerManager: "disabled (KCM_DISABLED=1)" });
     }
+    // The Cluster DO's node-lifecycle safety net (storage/index.ts) --
+    // ALARM-origin, so it deliberately skips everything the write path
+    // below does: no warmup window (an alarm-triggered load must not arm
+    // one, see ensure()), no backoff reset, and no alarm of this DO's
+    // own. Doing any of those on a 60s tick would revive exactly the
+    // "idle BYO node kept a pointless 60s chain alive" regression
+    // alarm()'s comment describes (cost invariants #1/#3). All it owes
+    // the nodelifecycle controller is one kcm pump window.
+    if (new URL(request.url).pathname === "/safety-net/node-lifecycle") {
+      await this.dropRotatedComponents();
+      const kcm = this.poke("kcm", undefined, { armWarmup: false });
+      const status = kcm
+        ? await kcm.then(() => "pumped").catch((err) => `dispatch failed: ${err}`)
+        : "loading";
+      return Response.json({ nodeLifecycle: status });
+    }
     // Arm the safety net if it isn't already, so a redeploy/panic/
     // eviction that resets the dynamic workers still gets noticed and
     // restarted even if no further relevant write happens to re-trigger
@@ -346,8 +372,16 @@ export class Controllers {
     // local check -- no cross-DO call on this hot path. Armed before the
     // dispatch so a still-loading component gets a completion poke even
     // if no further write ever arrives.
+    // Corrected 2026-09-11: this used to reset unconvergedTicks to 0 on every
+    // poke, reasoning that a fresh write deserves a fresh backoff. On a cluster
+    // whose work can never converge the controllers never stop writing, so the
+    // reset arrived before the backoff could ever grow -- S26b measured ~40s
+    // average intervals and ~65,000 alarms a month against a ceiling of 600s,
+    // and recorded the cause as unidentified. Pulling the alarm in still gives
+    // the new write prompt attention; the counter now measures how long the
+    // cluster has failed to converge, which is what the backoff is for. A
+    // cluster that does converge parks, and parking zeroes the counter.
     const current = await this.state.storage.getAlarm();
-    await this.state.storage.put("unconvergedTicks", 0); // fresh write: reset backoff
     if (current === null || current > Date.now() + SAFETY_NET_INTERVAL_MS) {
       this.state.storage.setAlarm(Date.now() + SAFETY_NET_INTERVAL_MS);
     }
@@ -391,7 +425,7 @@ export class Controllers {
   async alarm(): Promise<void> {
     if (this.env.KCM_DISABLED === "1") return; // test kill switch; do not re-arm
     // Park check FIRST, before touching any dynamic worker: an alarm
-    // firing on an idle cluster used to ensure()+load all three ~40MB
+    // firing on an idle cluster used to ensure()+load all four ~40MB
     // components just to then decide to park -- and on a hibernated DO
     // that load re-armed the warmup window, chaining the alarm forever
     // (see ensure()'s warmup comment; measured live 2026-07-26). The
@@ -440,10 +474,14 @@ export class Controllers {
     // only makes progress inside pump windows, and nothing else opens
     // them once storage's per-write pokes stop coming); conversely a
     // cluster with an idle BYO node kept a pointless 60s chain alive.
-    // "Work exists" for the slimmed KCM (five workload controllers) is
-    // exactly workload convergence: any Deployment/ReplicaSet/Job whose
-    // status lags its spec. Checked via the same gateway API the KCM
-    // itself uses; 2-3 cheap list calls per tick, and only while ticking.
+    // "Work exists" for the KCM's twelve controllers is exactly workload
+    // convergence: any Deployment/ReplicaSet/Job whose status lags its
+    // spec. Checked via the same gateway API the KCM itself uses; 2-3
+    // cheap list calls per tick, and only while ticking.
+    // Node lifecycle is deliberately OUTSIDE this predicate -- Lease
+    // staleness has no spec/status gap to observe, so the Cluster DO's
+    // safety net pumps it instead (see the /safety-net/node-lifecycle
+    // path in fetch() and storage/index.ts's alarm()).
     if (warmupActive) {
       await this.state.storage.put("unconvergedTicks", 0);
       this.state.storage.setAlarm(Date.now() + 15_000);
@@ -501,6 +539,22 @@ export class Controllers {
     return { wakeMs, overdue: resp.overdue === true };
   }
 
+  /**
+   * Whether a graceful deletion is still in flight anywhere in this
+   * cluster. That is real outstanding work for the garbage collector and
+   * the workload probe below cannot see it: a foreground-deleted owner
+   * still matches its own spec, so nothing about its spec/status lags.
+   * Without this the alarm parks mid-cascade and `kubectl delete
+   * --cascade=foreground` never completes on a cluster with no other
+   * write traffic (docs/platform-verification.md S36). Same "a failed
+   * probe means stay awake" rule as the lists below.
+   */
+  private async pendingDeletions(): Promise<boolean> {
+    const resp = await this.apiGet("/internal/pending-deletions");
+    if (resp === null) return true;
+    return typeof resp.pending === "number" && resp.pending > 0;
+  }
+
   private async hasUnconvergedWork(): Promise<boolean> {
     interface WorkloadItem {
       metadata?: { generation?: number };
@@ -520,19 +574,23 @@ export class Controllers {
       this.apiGet("/apis/apps/v1/deployments"),
       this.apiGet("/apis/apps/v1/replicasets"),
       this.apiGet("/apis/batch/v1/jobs"),
+      this.apiGet("/api/v1/replicationcontrollers"),
     ]);
-    const [deploys, rss, jobs] = lists.map((l) => (l?.items as WorkloadItem[] | undefined) ?? []);
+    const [deploys, rss, jobs, rcs] = lists.map(
+      (l) => (l?.items as WorkloadItem[] | undefined) ?? [],
+    );
     const cron = await this.cronProbe();
     // A list call failing (null) counts as "work exists": staying awake
     // through an apiserver hiccup is cheap; parking on one is not.
     if (lists.some((l) => l === null)) return true;
+    if (await this.pendingDeletions()) return true;
     for (const d of deploys) {
       const spec = d.spec?.replicas ?? 1;
       const st = d.status ?? {};
       if ((st.observedGeneration ?? 0) < (d.metadata?.generation ?? 0)) return true;
       if ((st.replicas ?? 0) !== spec || (st.availableReplicas ?? 0) !== spec) return true;
     }
-    for (const r of rss) {
+    for (const r of [...rss, ...rcs]) {
       const spec = r.spec?.replicas ?? 1;
       if (((r.status ?? {}).replicas ?? 0) !== spec) return true;
     }

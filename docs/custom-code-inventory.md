@@ -17,7 +17,7 @@
 
 | 区分 | 行数 |
 |---|---|
-| Go 手書き (A+B) | 約 13,900 |
+| Go 手書き (A+B) | 約 12,900 (2026-09-09: S28 で約 1,000 行削減、7-25 時点は約 13,900) |
 | Go 生成 (C) | 2,109 |
 | Go オーバーレイ (D) | 約 1,300 |
 | Go テスト | 5,818 (全て [pkg/apiserver](../pkg/apiserver)) |
@@ -33,9 +33,9 @@
 
 | path | 行数 | 分類 | 配線する upstream / 備考 |
 |---|---|---|---|
-| [pkg/apiserver](../pkg/apiserver) | 7,910 | A/B | 最大の手書き領域。§2 参照 |
+| [pkg/apiserver](../pkg/apiserver) | 7,574 | A/B | 最大の手書き領域。§2 参照(2026-09-09: 3 ファイル 1,006 行を実 KCM へ差し戻して削除) |
 | [pkg/apiserver/apidef](../pkg/apiserver/apidef) | 738 | A | リソーステーブル(discovery/table/restmapper を駆動) |
-| [pkg/controllers/controllermanager.go](../pkg/controllers/controllermanager.go) | 231 | B | **実 kube-controller-manager**(ワークロード系 6 コントローラー) |
+| [pkg/controllers/controllermanager.go](../pkg/controllers/controllermanager.go) | 300 | B | **実 kube-controller-manager**(ワークロード系 7 + endpoint/endpointslice/nodeipam/nodelifecycle/tainteviction の計 12 コントローラー) |
 | [pkg/controllers/gc](../pkg/controllers/gc) | 319 | B | **実 garbagecollector**(無改変。リンク閉包分離のため別 pkg) |
 | [pkg/controllers/sched](../pkg/controllers/sched) | 176 | B | **実 kube-scheduler** |
 | [pkg/controllers/restconfig](../pkg/controllers/restconfig) | 100 | B | resident WASM コントローラー用 rest.Config |
@@ -62,22 +62,29 @@ doc comment を確認した結果、多くは「upstream の実物を配線す�
 | [store.go](../pkg/apiserver/store.go) | 405 | **B** (2026-07-26〜): CRUD は upstream genericregistry.Store に委譲。残りはキー構築とコレクション生パス |
 | [subresource.go](../pkg/apiserver/subresource.go) | 555 | **A**: status/binding/scale サブリソースルーティング |
 | [certmanager.go](../pkg/apiserver/certmanager.go) | 467 | **A**: CA 2 系統 + kubelet 証明書署名 (crypto/x509、DO 永続化) |
-| [endpoints.go](../pkg/apiserver/endpoints.go) | 456 | A: Endpoints/EndpointSlice reconcile。upstream の定数を手コピー(import 不可の internal) |
 | [supervisor.go](../pkg/apiserver/supervisor.go) | 347 | A: k3s supervisor プロトコル互換面 |
 | [storage.go](../pkg/apiserver/storage.go) | 344 | **A**: Cluster DO への kine 風 k/v トランスポート (プラットフォーム固有) |
 | [table.go](../pkg/apiserver/table.go) | 376 | A: kubectl 用 Table 変換。upstream printers/tableconvertor 相当 |
 | [gracefuldelete.go](../pkg/apiserver/gracefuldelete.go) | 289 | B: スタンプ自体も upstream Store.Delete に委任 (2026-07-26)。カスケードは**実 GC に委任**。残りは orphan straggler sweep 等の k8flare 固有分 |
 | [clusterip.go](../pkg/apiserver/clusterip.go) | 328 | B: IP↔offset 計算は **upstream ServiceIPAllocator**、DO 永続化のみ独自 |
-| [nodelifecycle.go](../pkg/apiserver/nodelifecycle.go) | 312 | A: node-lifecycle-controller のサブセット |
 | [serviceaccounttoken.go](../pkg/apiserver/serviceaccounttoken.go) | 261 | B: **実 upstream JWT authenticator/token generator** |
 | [rbac.go](../pkg/apiserver/rbac.go) | 259 | B: **実 upstream RBACAuthorizer** をローカル getter で配線 |
-| [nodecidr.go](../pkg/apiserver/nodecidr.go) | 234 | B: **upstream CIDRSet** のビット割当、永続化のみ独自 |
 | [computeclass.go](../pkg/apiserver/computeclass.go) | 222 | A: Pod-on-Containers 用 admission(k8flare 固有機能) |
 | [discovery.go](../pkg/apiserver/discovery.go) | 216 | A: apidef.Table から discovery 文書を計算 |
 | [scheme.go](../pkg/apiserver/scheme.go) | 214 | B: 実型登録 + upstream defaulters/codec の設定 |
 | [defaults.go](../pkg/apiserver/defaults.go) | 172 | B: **実 upstream versioned defaulters** の適用 + 少数の上書き |
 | [server.go](../pkg/apiserver/server.go) | 146 | B: サーバー組み立て |
 | その他 15 ファイル | ≈1,300 | A/B 混在: auth/vkubeproxy/ssar/priority/fieldvalidation/sa/tokenreview/namespacedelete/nodepassword/bootstrap/tokenvault/stores/casretry/watch |
+
+### 追記 (2026-09-09): endpoints.go / nodelifecycle.go / nodecidr.go を削除
+
+上の表にあった 3 行(`endpoints.go` 456 行 / `nodelifecycle.go` 316 行 /
+`nodecidr.go` 234 行、テスト込み 1,734 行)は削除した。実 KCM の
+`endpoint` / `endpointslice` / `nodeipam` / `nodelifecycle` /
+`tainteviction` を kcm dynamic worker で走らせる形に戻したため
+(§7 の縮小候補 2・3 の消化。サイズ実測と未検証事項は
+docs/platform-verification.md の S28)。apiserver 側に残った関連コードは
+`vkubeproxy.go` の ClusterIP→Pod 解決(EndpointSlice の読み手)だけ。
 
 ## 3. TypeScript ([packages/k8flare-worker/src](../packages/k8flare-worker/src)) — 全て手書きプラットフォームグルー(設計上 TS にビジネスロジックを置かない)
 
@@ -170,6 +177,21 @@ upstream プラグとの既知の差分 (未実装、必要になったら追加
   (10s) がどのみち走るため実害は小さいが、Lease 期限からの
   deadline-armed 化が正しい形 — 縮小候補として記録。
 
+### 追記 (2026-09-09): 既知の先行問題 — CONTROLLERS 未バインド時に alarm が止まらない
+
+[storage/index.ts](../packages/k8flare-worker/src/storage/index.ts) の
+`afterWrite` は `CONTROLLERS` バインディングの有無に関わらず
+`pendingPing:controllers` を立てるのに、`pingControllers` はバインドが無い
+ケース(`if (!controllers) return;`)でそのフラグを消さない。結果、
+CONTROLLERS を持たない構成では未配送フラグが残り続け、安全網 alarm が
+60 秒毎に再武装し続ける(コスト不変条件 #1/#3 に触れる)。同じ状況で
+`pingNodes` は `SCHEDULER` 未バインド時にフラグを削除しており、非対称。
+
+2026-09-09 の S28 レビューで指摘されたが、**このブランチで入ったもの
+ではなく先行して存在する**問題であり、実配置の `wrangler.jsonc` では
+常にバインドされているため観測された実害は無い。修正するなら
+`pingNodes` に合わせてフラグを削除する形が素直 — ここでは記録に留める。
+
 ## 6. ホストバイナリの退役方針 (2026-07-25 ユーザー決定)
 
 `cmd/scheduler` / `cmd/controller-manager` は WASM 版 (sched/kcm 動的ワーカー) を
@@ -181,6 +203,10 @@ conformance CI の required に昇格させた上で段階的に退役する方�
 
 ## 7. 縮小候補 (今後 upstream 置換を検討する価値がある順)
 
+(2026-09-09 追記: handler/subresource/table/discovery/watch を upstream
+`k8s.io/apiserver/pkg/endpoints` に置き換える案は実測で cap 超過(+3.5MB
+に対し余裕 2.2MB)のため NO-GO — docs/platform-verification.md S29。)
+
 (2026-07-26 追記: 本丸の generic registry 置換はフェーズ 0 スパイクで
 **GO 判定** — js リンク可・wasm-opt 後 64.99MB で cap 内。実測と
 オーバーレイの詳細は docs/platform-verification.md S25。)
@@ -188,7 +214,9 @@ conformance CI の required に昇格させた上で段階的に退役する方�
 1. [table.go](../pkg/apiserver/table.go) (376 行) — upstream の
    `printers/internalversion` テーブルジェネレーターは internal 型前提だが、
    `k8s.io/apiserver` の tableconvertor (external 型対応) は載る可能性がある。
-2. [nodelifecycle.go](../pkg/apiserver/nodelifecycle.go) (312 行) — 実 KCM の
-   node-lifecycle-controller を kcm-wasm に追加リンクできれば削除できる(リンクサイズ要計測)。
-3. [endpoints.go](../pkg/apiserver/endpoints.go) (456 行) — 実 KCM の
-   endpoints/endpointslice コントローラーへの委任 (同上)。
+2. ~~nodelifecycle.go (312 行)~~ — **2026-09-09 完了**。実 KCM の
+   nodelifecycle + tainteviction を kcm-wasm にリンクして削除した
+   (kcm チャンク +1.87MiB、cap まで 21.8MiB。S28)。
+3. ~~endpoints.go (456 行)~~ — **2026-09-09 完了**。実 KCM の
+   endpoint/endpointslice コントローラーへ委任(同上)。同じ計測で
+   nodecidr.go (234 行) も実 nodeipam へ委任して削除した。

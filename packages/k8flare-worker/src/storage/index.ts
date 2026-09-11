@@ -1,5 +1,4 @@
 import { SCHEMA, LIST_SQL } from "./schema.ts";
-import { apiserverFetch } from "../loader/apiserver.ts";
 import { prefixEnd, base64ToArrayBuffer, jsonResponse } from "./helpers.ts";
 import { currentRevision, type SqlExec } from "./queries.ts";
 import { handleReplay, broadcastEvent, type WatchHost } from "./watch.ts";
@@ -11,20 +10,19 @@ export { WatchHub } from "./watchhub.ts";
 // Service+Pod), and nodelifecycle.ts (Lease-staleness -> Unknown+taint+evict)
 // -- on the premise that the real kube-controller-manager's
 // nodeipam/endpoint/endpointslice/nodelifecycle/taint-eviction-controller
-// controllers, WASM-resident in workers/controllers, would replace them.
-// docs/platform-verification.md's Phase 5 findings later established that
-// premise was wrong: kube-scheduler can't compile for GOOS=js/wasm at all,
-// and KCM's real controller packages -- even without scheduler -- blow this
-// project's WASM size budget by far more than the available margin (any one
-// real controller costs +6MiB+ beyond an already-near-budget client-go
-// base). Both remain host-process/BYO-VM-only; workers/controllers cannot
-// currently host either for a deployed (non-BYO-VM) cluster.
+// controllers, WASM-resident in the kcm dynamic worker, would replace them.
+// docs/platform-verification.md's Phase 5 findings then measured that
+// premise as wrong on size and the three passes came back as synchronous
+// Go reconciles in pkg/apiserver (endpoints.go, nodecidr.go,
+// nodelifecycle.go). As of 2026-09-09 the original premise holds after
+// all: all five real controllers run in the kcm dynamic worker
+// (pkg/controllers/controllermanager.go) at +1.87MiB, and the three Go
+// stand-ins are deleted -- see docs/platform-verification.md S28.
 //
-// PodCIDR allocation (pkg/apiserver/nodecidr.go), Endpoints/EndpointSlice
-// (pkg/apiserver/endpoints.go), and ClusterIP allocation
-// (pkg/apiserver/clusterip.go) were all restored as synchronous reconciles
-// inside apiserver's Go WASM binary instead, so this alarm loop doesn't
-// gain any new work for them. ClusterIP allocation used to also carry a
+// ClusterIP allocation (pkg/apiserver/clusterip.go) is the one that stays
+// synchronous inside apiserver's Go WASM binary -- real kube-apiserver
+// allocates it in its own registry, so there is no controller to hand it
+// to -- and this alarm loop gains no work for it. It used to also carry a
 // TS-side backstop here (serviceip.ts, ridden on this same alarm) for the
 // case where a Service's ClusterIP was somehow never assigned
 // synchronously; deleted 2026-07-10 as a v3-design cleanup once it was
@@ -32,14 +30,14 @@ export { WatchHub } from "./watchhub.ts";
 // allocates synchronously) -- see git history for serviceip.ts if this
 // ever needs resurrecting.
 //
-// Node lifecycle (Lease staleness -> Unknown+taint+evict,
-// pkg/apiserver/nodelifecycle.go) could not move the same way: staleness is
-// detected by the ABSENCE of an expected Lease renewal, so there's no write
-// to hook a synchronous call to. It runs from this alarm instead, via a
-// fire-and-forget ping to apiserver's
-// POST /internal/reconcile-node-lifecycle (see reconcileNodeLifecycle
-// below) -- an event-armed safety net (armed by any Node write, see
-// needsNodeLifecycleAttention), not a fixed polling loop.
+// Node lifecycle is the one controller input with no write to hook a poke
+// to: staleness is detected by the ABSENCE of an expected Lease renewal.
+// So while a Node is live, every safety-net tick sends the Controllers DO
+// its own alarm-origin poke (see alarm() below), giving the real
+// nodelifecycle controller a pump window in which to notice -- an
+// event-armed safety net (armed by any Node write, see
+// needsNodeLifecycleAttention; parked once no Node is left), not a fixed
+// polling loop.
 const SAFETY_NET_INTERVAL_MS = 60_000;
 // How long to wait after a write that needs node-lifecycle attention
 // before waking the alarm, so a burst of writes coalesces into a single
@@ -63,6 +61,7 @@ const CONTROLLER_RELEVANT_PREFIXES = [
   "/registry/endpointslices/",
   "/registry/leases/",
   "/registry/replicasets/",
+  "/registry/replicationcontrollers/",
   "/registry/deployments/",
   "/registry/daemonsets/",
   "/registry/jobs/",
@@ -93,14 +92,14 @@ function needsNodesPing(key: string): boolean {
 
 /**
  * Whether writing this key means the node-lifecycle safety net (see
- * reconcileNodeLifecycle) should be pulled in to run soon (see
- * armSafetyNetSoon). Coarse (any write under nodes/, not just a
- * brand-new Node): a freshly-registered Node
- * won't be stale for at least pkg/apiserver/nodelifecycle.go's
- * nodeMonitorGracePeriod, so in practice this mostly just guarantees the
- * safety net is armed at all once a cluster has its first Node -- without
- * this, a cluster's freshly created first Node would stay parked forever
- * and never notice that Node's Lease going stale later.
+ * alarm()) should be pulled in to run soon (see armSafetyNetSoon).
+ * Coarse (any write under nodes/, not just a brand-new Node): a
+ * freshly-registered Node won't be stale for at least
+ * pkg/controllers/controllermanager.go's nodeMonitorGracePeriod, so in
+ * practice this mostly just guarantees the safety net is armed at all
+ * once a cluster has its first Node -- without this, a cluster's freshly
+ * created first Node would stay parked forever and never notice that
+ * Node's Lease going stale later.
  */
 function needsNodeLifecycleAttention(key: string): boolean {
   return key.startsWith("/registry/nodes/");
@@ -116,12 +115,12 @@ function hasLiveKeyUnderPrefix(sql: SqlExec, prefix: string): boolean {
 }
 
 /**
- * Whether the safety-net alarm should stay armed: pkg/apiserver/
- * nodelifecycle.go's Lease-staleness reconcile needs a live Node to ever
- * have anything to check (see reconcileNodeLifecycle below -- it has no
- * event to wake it otherwise, so it rides this same alarm). A cluster with
- * no Nodes has nothing left for the safety net to do -- it parks (cost
- * invariants #1/#3: no alarm chain on an idle cluster).
+ * Whether the safety-net alarm should stay armed: the real nodelifecycle
+ * controller's Lease-staleness check needs a live Node to ever have
+ * anything to look at (see alarm() below -- it has no event to wake it
+ * otherwise, so it rides this same alarm). A cluster with no Nodes has
+ * nothing left for the safety net to do -- it parks (cost invariants
+ * #1/#3: no alarm chain on an idle cluster).
  */
 function hasPendingSafetyNetWork(sql: SqlExec): boolean {
   return hasLiveKeyUnderPrefix(sql, "/registry/nodes/");
@@ -259,7 +258,15 @@ export class Cluster {
 
   private async pingControllers(): Promise<void> {
     const controllers = this.env.CONTROLLERS; // local DO binding post-consolidation
-    if (!controllers) return; // not bound in some dev/test configs
+    if (!controllers) {
+      // Not bound in some dev/test configs. Clear the flag rather than
+      // leave it pending like a failed delivery would: there is nothing
+      // for a later tick to retry, so keeping it re-arms the safety-net
+      // alarm every 60s forever on an otherwise idle cluster (cost
+      // invariants #1/#3). pingNodes does the same for SCHEDULER.
+      await this.ctx.storage.delete("pendingPing:controllers");
+      return;
+    }
     if (this.env.KCM_DISABLED === "1") {
       await this.ctx.storage.delete("pendingPing:controllers"); // test kill switch
       return;
@@ -270,6 +277,22 @@ export class Cluster {
       await this.ctx.storage.delete("pendingPing:controllers");
     } catch {
       // best-effort here; the pending flag keeps the alarm redelivering
+    }
+  }
+
+  /** Alarm-origin sibling of pingControllers, for the node-lifecycle
+   * safety net only: it opens a kcm pump window and nothing else. No
+   * pending-ping flag either -- the next tick is 60s away for as long as
+   * a Node is live, which is the retry. */
+  private async pokeNodeLifecycle(): Promise<void> {
+    const controllers = this.env.CONTROLLERS;
+    if (!controllers) return; // not bound in some dev/test configs
+    if (this.env.KCM_DISABLED === "1") return; // test kill switch
+    try {
+      const stub = controllers.get(controllers.idFromName(this.selfName()));
+      await stub.fetch("http://controllers.internal/safety-net/node-lifecycle");
+    } catch {
+      // best-effort; the next safety-net tick retries
     }
   }
 
@@ -487,8 +510,19 @@ export class Cluster {
 
   async alarm(): Promise<void> {
     this.initialize();
+    // Lease staleness has no write to arm a poke from (see this file's
+    // header comment), so while a Node is live every tick opens one kcm
+    // pump window: the real nodelifecycle controller in the kcm dynamic
+    // worker only makes progress inside such a window. Deliberately NOT
+    // the write path's pending-ping/pingControllers route -- that one is
+    // a write-origin poke, and the Controllers DO answers it by arming
+    // its own warmup window and 60s alarm chain, which an idle BYO node
+    // must not do (see the /safety-net/node-lifecycle path in
+    // controllers/index.ts and its alarm()'s comment on that regression).
+    if (hasPendingSafetyNetWork(this.sql)) {
+      await this.pokeNodeLifecycle();
+    }
     const undelivered = await this.deliverPendingPings();
-    await this.reconcileNodeLifecycle();
     // Re-arm the safety net if there's still a live Node that needs
     // ongoing Lease-staleness monitoring, or an undelivered ping to
     // retry; otherwise park (no alarm chain on an idle cluster -- cost
@@ -496,38 +530,6 @@ export class Cluster {
     // safety-net tick pulls this in via armSafetyNetSoon.
     if (undelivered || hasPendingSafetyNetWork(this.sql)) {
       this.ctx.storage.setAlarm(Date.now() + SAFETY_NET_INTERVAL_MS);
-    }
-  }
-
-  /**
-   * Fire-and-forget ping to apiserver's
-   * POST /internal/reconcile-node-lifecycle (pkg/apiserver/
-   * nodelifecycle.go's RegisterInternalHandlers), which detects Nodes whose
-   * Lease has gone stale, marks them Unknown + taints them unreachable, and
-   * evicts their Pods once stale for long enough. Runs on every safety-net
-   * tick rather than being event-triggered: staleness is detected by the
-   * ABSENCE of an expected Lease renewal, so there is no write to arm this
-   * from the way needsNodeLifecycleAttention arms other node writes.
-   * Best-effort, same reasoning as pingControllers:
-   * a failure here must not fail whatever write happened to trigger this
-   * alarm tick, and the next tick (while hasPendingSafetyNetWork stays
-   * true) retries.
-   */
-  private async reconcileNodeLifecycle(): Promise<void> {
-    // Post-consolidation: straight to the apiserver dynamic worker
-    // (loader/apiserver.ts) -- a DO-origin LOADER.get shares the same
-    // loaded isolate (S19 G3). Requires LOADER/ASSETS/STORAGE on this
-    // DO's env, absent in some dev/test configs.
-    if (!this.env.LOADER || !this.env.ASSETS || !this.env.STORAGE) return;
-    try {
-      await apiserverFetch(
-        this.env,
-        new Request("http://apiserver.internal/internal/reconcile-node-lifecycle", {
-          method: "POST",
-        }),
-      );
-    } catch {
-      // best-effort; see doc comment above
     }
   }
 }

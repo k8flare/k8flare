@@ -133,8 +133,7 @@ func NewUpstreamStore(
 		// hand-written store returned the deleted object, and this
 		// project's callers depend on that (DeleteCollection assembles a
 		// typed list from it, settleDeletedObject type-switches on
-		// *corev1.Service / *corev1.Node to release the ClusterIP and
-		// PodCIDR). Keeping the object makes the migration a no-op at the
+		// *corev1.Service to release the ClusterIP). Keeping the object makes the migration a no-op at the
 		// HTTP boundary; upstream sets this flag on its own stores
 		// wherever the deleted object matters.
 		ReturnDeletedObject: true,
@@ -236,33 +235,42 @@ func (rs *ResourceStore) upstreamList(ctx context.Context, namespace, fieldSelec
 	return rs.upstream.List(rs.upstreamCtx(ctx, namespace), opts)
 }
 
-func (rs *ResourceStore) upstreamCreate(ctx context.Context, namespace string, obj runtime.Object) (runtime.Object, error) {
-	return rs.upstream.Create(rs.upstreamCtx(ctx, namespace), obj, rest.ValidateAllObjectFunc, &metav1.CreateOptions{})
+// upstreamCreate and upstreamUpdate pass the CALLER'S options through,
+// same as upstreamDelete below and for the same reason. Unlike
+// Store.Delete, Store.Create/Update dereference options unconditionally,
+// so a nil (no options) caller gets an empty struct rather than a panic.
+func (rs *ResourceStore) upstreamCreate(ctx context.Context, namespace string, obj runtime.Object, opts *metav1.CreateOptions) (runtime.Object, error) {
+	if opts == nil {
+		opts = &metav1.CreateOptions{}
+	}
+	return rs.upstream.Create(rs.upstreamCtx(ctx, namespace), obj, rest.ValidateAllObjectFunc, opts)
 }
 
-func (rs *ResourceStore) upstreamUpdate(ctx context.Context, namespace, name string, obj runtime.Object) (runtime.Object, error) {
+func (rs *ResourceStore) upstreamUpdate(ctx context.Context, namespace, name string, obj runtime.Object, opts *metav1.UpdateOptions) (runtime.Object, error) {
+	if opts == nil {
+		opts = &metav1.UpdateOptions{}
+	}
 	out, _, err := rs.upstream.Update(rs.upstreamCtx(ctx, namespace), name,
 		rest.DefaultUpdatedObjectInfo(obj),
 		rest.ValidateAllObjectFunc,
 		rest.ValidateAllObjectUpdateFunc,
-		false, &metav1.UpdateOptions{})
+		false, opts)
 	return out, err
 }
 
-func (rs *ResourceStore) upstreamDelete(ctx context.Context, namespace, name string) (runtime.Object, error) {
-	out, _, err := rs.upstream.Delete(rs.upstreamCtx(ctx, namespace), name, rest.ValidateAllObjectFunc, &metav1.DeleteOptions{})
-	return out, err
-}
-
-// upstreamMarkForDeletion is the graceful-deletion half of DELETE for a
-// migrated resource: handing the propagation policy to Store.Delete makes
-// upstream stamp deletionTimestamp + the policy's finalizer and return the
-// still-visible terminating object, which is exactly what
-// markForDeletion (gracefuldelete.go) does by hand for the resources still
-// on the old path. Idempotent for the same reason: a second DELETE finds
-// the object already deleting and returns it unchanged.
-func (rs *ResourceStore) upstreamMarkForDeletion(ctx context.Context, namespace, name string, policy metav1.DeletionPropagation) (runtime.Object, error) {
-	out, _, err := rs.upstream.Delete(rs.upstreamCtx(ctx, namespace), name, rest.ValidateAllObjectFunc,
-		&metav1.DeleteOptions{PropagationPolicy: &policy})
+// upstreamDelete is the single DELETE path for a migrated resource: both
+// the outright removal and the graceful-deletion half (propagationPolicy
+// Orphan/Foreground, where upstream stamps deletionTimestamp + the
+// policy's finalizer and returns the still-visible terminating object)
+// are the same Store.Delete call, told apart only by what opts carries.
+//
+// opts is the CALLER'S options, unaltered. A hand-built substitute used
+// to stand in here and it silently dropped the caller's Preconditions --
+// a UID-guarded DELETE, which is how a client avoids deleting a recreated
+// object of the same name and what upstream's own garbage collector
+// sends, deleted the wrong object instead of conflicting (TODO.md P0-3).
+// Grace period and dryRun rode the same path.
+func (rs *ResourceStore) upstreamDelete(ctx context.Context, namespace, name string, opts *metav1.DeleteOptions) (runtime.Object, error) {
+	out, _, err := rs.upstream.Delete(rs.upstreamCtx(ctx, namespace), name, rest.ValidateAllObjectFunc, opts)
 	return out, err
 }

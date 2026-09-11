@@ -14,8 +14,8 @@ var errRetriesExhausted = errors.New("too many concurrent conflicts")
 
 // casRetry runs attempt up to maxRetries times, retrying only when it
 // returns ErrConflict or ErrKeyExists (a losing race against a concurrent
-// writer) -- the shared retry shape behind ClusterIPAllocator and
-// PodCIDRAllocator's AllocateNext/Release (clusterip.go, nodecidr.go).
+// writer) -- the retry shape behind ClusterIPAllocator's
+// AllocateNext/Release (clusterip.go).
 // Each attempt does its own load-mutate-save cycle against Storage's CAS
 // primitives; casRetry doesn't know or care which step inside attempt
 // produced an error -- anything other than ErrConflict/ErrKeyExists is
