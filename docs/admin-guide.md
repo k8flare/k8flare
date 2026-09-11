@@ -253,12 +253,19 @@ npx wrangler deploy -c packages/k8flare-worker/wrangler.jsonc
 デプロイは無停止です(進行中のリクエストは旧バージョンで完走)。k8s
 バージョン自体の更新は [k8s-version-bump.md](k8s-version-bump.md) 参照。
 
-### デプロイ後は必ず暖機する
+### Go を変えたデプロイの後は暖機する
 
-**デプロイ直後に最初に来たワークロードは 20 分以上待たされます。** 制御
-プレーンは約 44MB のコントローラー WASM を、最初に使われた時点で初めて
-コンパイルするためです。2 個目以降は 11 秒で収束します
-(実測: [platform-verification.md](platform-verification.md) S50)。
+**コントローラーの WASM が変わったデプロイでは、最初に来たワークロードが
+20 分以上待たされます。** 制御プレーンは約 44MB を、最初に使われた時点で
+初めてコンパイルするためです。2 個目以降は 11 秒で収束します。
+
+**WASM が変わらないデプロイ(TypeScript や設定だけ)では 23 秒**で、暖機は
+要りません。コンパイル結果は wasm の内容で keyed され、Worker のバージョン
+変更を跨いで再利用されます(実測:
+[platform-verification.md](platform-verification.md) S50)。
+
+変わったかどうかは `packages/k8flare-worker/assets/wasm/*.manifest.json` の
+`sha256` をデプロイ前後で比べれば分かります。
 
 `/readyz` はこの間も 200 を返すので、readyz では判断できません(S47)。
 
