@@ -1,6 +1,6 @@
 //go:build js && wasm
 
-package controllers
+package pumptrace
 
 import (
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -9,7 +9,7 @@ import (
 	"github.com/k8flare/k8flare/pkg/cfruntime/cloudflare"
 )
 
-// TraceInformerObservations makes every event informer delivers emit one
+// Observations makes every event informer delivers emit one
 // boundary observation attributed to component and to the pump window it
 // arrived in. It is what separates "the commit was slow to reach the
 // controller" from "the controller was slow to act on it" -- the two are
@@ -20,7 +20,7 @@ import (
 // registering one that returns early: a handler costs a call per event
 // per object even when it does nothing, and an unmeasured cluster must
 // cost what it always did.
-func TraceInformerObservations(informer cache.SharedIndexInformer, component string) {
+func Observations(informer cache.SharedIndexInformer, component string) {
 	if !cloudflare.PumpTraceEnabled() {
 		return
 	}

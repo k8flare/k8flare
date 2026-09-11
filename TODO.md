@@ -288,6 +288,11 @@ S44). Done:
   one Namespace plus a 2-replica ReplicationController.
 - Attribution works: each `observed` line names the pump window it arrived in.
   Measured commit → informer observed at **4–29 ms**.
+- All four resident components emit observations, not just KCM: `kcm`, `sched`,
+  `clusterop`, and `gc/<resource>` split per GVR, which shows exactly which
+  resource kinds the real garbage collector walks (the 27 kinds S41 measured).
+  The helper lives in the leaf package `pkg/pumptrace` so importing it does not
+  drag the controller-manager into the gc, sched and clusterop chunks.
 - Zero always-on cost, asserted both ways: one string comparison when unset,
   no informer handler registered at all, and 0 `pumptrace` lines across every
   test lane with the var unset.
@@ -302,8 +307,6 @@ S44). Done:
 
 Not done, so this stays `[~]`:
 
-- The informer boundary is wired for KCM's Pod informer only; gc, sched and
-  clusterop are not.
 - **The `observed` boundary is invisible in production** and the fix is
   unverified there. A Loader-spawned worker's console output does not reach the
   loading script's `wrangler tail` (S45), so the half of the measurement that

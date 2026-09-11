@@ -25,6 +25,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"github.com/k8flare/k8flare/pkg/cfruntime/cloudflare"
+	"github.com/k8flare/k8flare/pkg/pumptrace"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -198,6 +200,9 @@ func Run(ctx context.Context, restCfg *restclient.Config, bindingName, token str
 		0, // no resync: watch events drive this, like every other controller here
 		cache.Indexers{},
 	)
+	if cloudflare.PumpTraceEnabled() {
+		pumptrace.Observations(c.informer, "clusterop")
+	}
 	if _, err := c.informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    func(obj interface{}) { c.enqueue(obj) },
 		UpdateFunc: func(_, obj interface{}) { c.enqueue(obj) },
