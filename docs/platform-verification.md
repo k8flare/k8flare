@@ -6494,3 +6494,63 @@ knob を外して再デプロイ(`46bc9ab5`)し、Namespace と Deployment を�
 70 秒観測した結果: **pumptrace 行 0、中継行 0、tail ハンドラ呼び出し 0**。
 `tails` が付かないので tail worker の課金も発生しない。604 イベントは通常の
 制御プレーン動作のみ。
+
+### S47 (2026-09-12): 現 main を required GC フォーカスに通し、計装付きで multi-owner を測った
+
+CI が請求で止まっているため、今日 main に入った変更(ガード復元・S44 の計装・
+四コンポーネントへの展開・S45/S46 の tail 中継)は一度も conformance を
+通っていなかった。ローカルハーネス(S42)で required の GC フォーカスを回した。
+
+```
+Will run 7 of 7579 specs
+Ran 7 of 7579 Specs in 133.359 seconds
+SUCCESS! -- 7 Passed | 0 Failed
+```
+
+**これは CI の代わりにはならない**(ローカルハーネスは host バリアントを
+再現できない。docs/development.md)。それでも、今日の変更が required focus set
+を壊していないことは示せる。
+
+#### S44 で「踏んでいない」と書いたケースを測った
+
+S44 の 55 Pod 基準測定は single-owner・finalizer なし・未起動 Pod で、
+Stage 5 が要求する multi-owner / grace 条件を踏んでいないと明記した。その
+本命のケース——CI で 2 回落ちた
+`should not delete dependents that have both valid owner and owner that's
+waiting for dependents to be deleted`——を `PUMP_TRACE=1` で単独実行した:
+
+```
+Ran 1 of 7579 Specs in 15.514 seconds
+SUCCESS! -- 1 Passed | 0 Failed
+```
+
+**15.5 秒**。Stage 5 の「GC owner 消滅 max < 90 秒」に対して十分内側だが、
+n=1 かつラップトップである。CI で落ちたのは `garbage_collector.go:795` の
+90 秒予算超過というタイミング依存の失敗なので、**これは「速いマシンでは
+成り立つ」以上のことを主張しない**(P2-1 と同じ限定)。
+
+#### 計装が捉えたもの(trace 行 2,503)
+
+| 境界 | 件数 |
+|---|---|
+| `request` gateway | 934 |
+| `commit` storage | 515 |
+| `observed` kcm | 486 |
+| `observed` gc/pods | 243 |
+| `observed` sched | 243 |
+| `observed` gc/replicationcontrollers | 59 |
+| `observed` gc/namespaces・gc/serviceaccounts | 6・6 |
+| `observed` gc/leases・nodes・configmaps・clusters・csinodes・services | 3・2・2・1・1・1 |
+| `observed` clusterop | 1 |
+
+GC のイベントが出た resource kind は **10 種**(clusters, configmaps,
+csinodes, leases, namespaces, nodes, pods, replicationcontrollers,
+serviceaccounts, services)。
+
+**これを「GC が 10 種類しか watch していない」と読んではならない。** 計装が
+数えているのは informer がイベントを配送した kind であって、informer を
+張った kind ではない。この窓で動きが無かった kind は 0 件として現れない。
+S41 が測った「foreground 削除 1 回で 27 resource kind に 440 LIST」との差は、
+LIST の扇形が観測されたイベントより広いことを示唆するが、同じ量を測って
+いないので差を直接引き算してはいけない。P2-1 / Stage 5 で LIST 側も同じ窓で
+数える必要がある。
