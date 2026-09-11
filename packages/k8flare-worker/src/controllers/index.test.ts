@@ -274,12 +274,16 @@ describe("the alarm", () => {
 });
 
 describe("pokes", () => {
-  it("arms the safety net on a write-origin poke and resets the backoff", async () => {
+  // Was "and resets the backoff" until 2026-09-11. Resetting here is what kept
+  // S26b's ~65,000 alarms a month alive: on a cluster that cannot converge the
+  // controllers never stop writing, so the counter never survived long enough
+  // for the backoff to grow. Pulling the alarm in is the half that was right.
+  it("arms the safety net on a write-origin poke, without discarding the backoff", async () => {
     const { controllers, storage } = newControllers();
     storage.kv.set("unconvergedTicks", 7);
     await controllers.fetch(new Request("http://controllers.internal/"));
 
-    expect(storage.kv.get("unconvergedTicks")).toBe(0);
+    expect(storage.kv.get("unconvergedTicks")).toBe(7);
     expect(storage.alarmSets).toHaveLength(1);
     expect(storage.alarmSets[0]).toBeLessThanOrEqual(Date.now() + SAFETY_NET_INTERVAL_MS);
   });
@@ -319,5 +323,46 @@ describe("pokes", () => {
     expect(await resp.json()).toEqual({ destroyed: true });
     expect(storage.kv.size).toBe(0);
     expect(storage.alarm).toBeNull();
+  });
+});
+
+// docs/platform-verification.md S26b measured ~65,000 alarms a month on a
+// cluster whose work can never converge: the exponential backoff is supposed
+// to reach its 600s ceiling, but the observed average interval was ~40s, and
+// the cause was recorded as unidentified. That is a standing violation of cost
+// invariant #3. These tests pin what the backoff must do; if the ceiling is
+// never reached the first one fails with the interval it actually chose.
+describe("alarm backoff on a cluster that never converges", () => {
+  const unconverged = {
+    deployments: [
+      { metadata: { generation: 2 }, spec: { replicas: 1 }, status: { observedGeneration: 1 } },
+    ],
+  };
+
+  it("reaches the 600s ceiling instead of re-arming every few seconds", async () => {
+    const { controllers, storage } = newControllers(unconverged, { KCM_DISABLED: "0" });
+    for (let i = 0; i < 20; i++) {
+      await controllers.alarm();
+    }
+    const intervals = storage.alarmSets.map((at) => at - Date.now());
+    const last = intervals[intervals.length - 1];
+    expect(last).toBeGreaterThanOrEqual(600_000 - 5_000);
+  });
+
+  it("does not let a write-path poke reset the backoff it has already earned", async () => {
+    const { controllers, storage } = newControllers(unconverged, { KCM_DISABLED: "0" });
+    for (let i = 0; i < 20; i++) {
+      await controllers.alarm();
+    }
+    const settled = storage.alarmSets[storage.alarmSets.length - 1] - Date.now();
+
+    // A controller writing status pokes this DO through storage's afterWrite.
+    // On a cluster that cannot converge those writes never stop, so if a poke
+    // resets the backoff the alarm chain never slows down.
+    await controllers.fetch(new Request("http://controllers.internal/"));
+    await controllers.alarm();
+
+    const after = storage.alarmSets[storage.alarmSets.length - 1] - Date.now();
+    expect(after).toBeGreaterThanOrEqual(settled - 5_000);
   });
 });
