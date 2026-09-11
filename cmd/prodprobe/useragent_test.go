@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -59,6 +60,9 @@ func TestWarmupBudgetIsSeparateFromTheSteadyStateBudget(t *testing.T) {
 	cfg, err := parseFlags([]string{"-url", "https://x.example", "-token", "t", "-parking=false"})
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
+	}
+	if cfg.warmupTimeout < 30*time.Minute {
+		t.Errorf("warmupTimeout=%s is below the 20-24 minutes a first compile was measured to take in production (S50); a shorter budget fails the probe on a cold control plane that is merely slow", cfg.warmupTimeout)
 	}
 	if cfg.warmupTimeout <= cfg.runningTimeout {
 		t.Errorf("warmupTimeout=%s must exceed runningTimeout=%s: the first convergence after a deploy waits for ~44MB of controller WASM to compile, and giving it the steady-state budget made the probe fail for 8 minutes on a control plane that was merely cold",

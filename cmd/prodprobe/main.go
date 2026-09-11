@@ -58,7 +58,7 @@ func parseFlags(args []string) (config, error) {
 	fs.StringVar(&cfg.image, "image", "registry.k8s.io/pause:3.10", "image for the probe pod")
 	fs.StringVar(&cfg.compute, "compute", "containers", "value for the k8flare.com/compute pod annotation; empty runs on whatever nodes are attached")
 	fs.DurationVar(&cfg.runningTimeout, "running-timeout", 8*time.Minute, "how long to wait for a pod to reach Running")
-	fs.DurationVar(&cfg.warmupTimeout, "warmup-timeout", 20*time.Minute, "how long the FIRST convergence may take, which on a control plane that has not run since a deploy includes compiling ~44MB of controller WASM. Not an assertion about steady-state latency -- the scale and delete steps that follow carry that")
+	fs.DurationVar(&cfg.warmupTimeout, "warmup-timeout", 35*time.Minute, "how long the FIRST convergence may take, which on a control plane that has not run since a deploy includes compiling ~44MB of controller WASM. Measured at 20-24 minutes in production (docs/platform-verification.md S50); the workflow comment in e2e-conformance.yml says up to 28. Not an assertion about steady-state latency -- the scale and delete steps that follow carry that")
 	fs.DurationVar(&cfg.deleteTimeout, "delete-timeout", 5*time.Minute, "how long to wait for the pods to disappear after deletion")
 	fs.DurationVar(&cfg.pollInterval, "poll-interval", 5*time.Second, "how often to poll while waiting for convergence")
 	fs.BoolVar(&cfg.parking, "parking", true, "assert the cluster parks: requires Cloudflare analytics credentials")
