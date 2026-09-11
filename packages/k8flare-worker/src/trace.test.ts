@@ -34,6 +34,27 @@ describe("pump-window tracing", () => {
     }
   });
 
+  it("is recognisable after Go's logger has prefixed it with a timestamp", () => {
+    // The production relay reads lines a Go dynamic worker emitted, and
+    // log.Printf prepends its own date. Anchoring the match at the start
+    // of the line silently relayed nothing (S45).
+    const emitted = formatPumpTrace(
+      "observed.add",
+      "kcm",
+      { w: 5, o: "ns/p", rv: 7 },
+      1757600000000,
+    );
+    const asGoLogsIt = `2026/09/11 19:58:37 ${emitted}`;
+    const at = asGoLogsIt.indexOf("pumptrace {");
+    expect(at).toBeGreaterThan(0);
+    expect(asGoLogsIt.startsWith("pumptrace ")).toBe(false);
+    expect(JSON.parse(asGoLogsIt.slice(at + "pumptrace ".length))).toMatchObject({
+      b: "observed.add",
+      c: "kcm",
+      w: 5,
+    });
+  });
+
   it("lets a field override the placeholder window id", () => {
     const line = formatPumpTrace("observed", "kcm", { w: 12, rv: 747 }, 1757600000000);
     expect(JSON.parse(line.slice("pumptrace ".length))).toMatchObject({ w: 12, t: 1757600000000 });
