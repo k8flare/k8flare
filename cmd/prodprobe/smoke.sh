@@ -67,17 +67,24 @@ fail() {
   exit 1
 }
 
-echo "== /readyz reports every component on a healthy deployment"
-body="$(curl -s -w '\n%{http_code}' -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:$PORT/readyz")"
+echo "== /readyz?verbose=true reports every component on a healthy deployment"
+body="$(curl -s -w '\n%{http_code}' -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:$PORT/readyz?verbose=true")"
 code="$(printf '%s' "$body" | tail -n1)"
 printf '%s\n' "$body" | sed '$d'
 [ "$code" = "200" ] || fail "/readyz returned $code on a healthy deployment"
 printf '%s' "$body" | grep -q '^\[+\]apiserver ok' || fail "/readyz did not report the apiserver check"
 printf '%s' "$body" | grep -q '^\[+\]storage ok' || fail "/readyz did not report the storage check"
 
-echo "== /readyz refuses an unauthenticated caller"
-code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/readyz")"
-[ "$code" = "401" ] || fail "unauthenticated /readyz returned $code, want 401"
+echo "== /readyz answers an anonymous uptime monitor"
+body="$(curl -s -w '\n%{http_code}' "http://127.0.0.1:$PORT/readyz")"
+code="$(printf '%s' "$body" | tail -n1)"
+[ "$code" = "200" ] || fail "anonymous /readyz returned $code on a healthy deployment, want 200"
+[ "$(printf '%s' "$body" | sed '$d')" = "ok" ] || fail "anonymous /readyz answered more than 'ok'"
+
+echo "== ?verbose=true without a token does not leak the breakdown"
+body="$(curl -s "http://127.0.0.1:$PORT/readyz?verbose=true")"
+printf '%s' "$body" | grep -q 'kine revision' && fail "anonymous ?verbose leaked the per-component detail"
+[ "$body" = "ok" ] || fail "anonymous ?verbose answered '$body', want 'ok'"
 
 echo "== the probe itself, against dev (convergence phases only)"
 K8FLARE_PROBE_SMOKE=1 \
@@ -87,15 +94,21 @@ K8FLARE_PROBE_SMOKE=1 \
 
 echo "== with the Loader path broken, liveness stays cheap and readiness goes 503"
 mv "$ROOT/$MANIFEST" "$WORK/apiserver.manifest.json"
-sleep 5
+echo "   (waiting out the 30s ready-verdict cache so the checks are rerun)"
+sleep 35
 live="$(curl -s -o /dev/null -w '%{http_code} %{time_total}s' "http://127.0.0.1:$PORT/healthz")"
 echo "/healthz: $live"
 case "$live" in 200\ *) ;; *) fail "/healthz returned '$live' with the Loader path broken" ;; esac
-body="$(curl -s -w '\n%{http_code}' -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:$PORT/readyz")"
+body="$(curl -s -w '\n%{http_code}' "http://127.0.0.1:$PORT/readyz")"
 code="$(printf '%s' "$body" | tail -n1)"
 printf '%s\n' "$body" | sed '$d'
-[ "$code" = "503" ] || fail "/readyz returned $code with the Loader path broken, want 503"
-printf '%s' "$body" | grep -q '^\[-\]apiserver failed' || fail "/readyz did not name the apiserver check as failed"
+[ "$code" = "503" ] || fail "anonymous /readyz returned $code with the Loader path broken, want 503"
+printf '%s' "$body" | grep -q '^\[-\]apiserver failed: reason withheld' ||
+  fail "anonymous /readyz did not name the apiserver check as failed"
+body="$(curl -s -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:$PORT/readyz?verbose=true")"
+printf '%s\n' "$body"
+printf '%s' "$body" | grep -q '^\[-\]apiserver failed: apiserver.manifest.json' ||
+  fail "/readyz?verbose=true did not give the reason to a token-bearing caller"
 mv -f "$WORK/apiserver.manifest.json" "$ROOT/$MANIFEST"
 
 echo "SMOKE PASS"

@@ -166,7 +166,7 @@ func run(ctx context.Context, cfg config, out io.Writer) error {
 }
 
 func checkReadyz(ctx context.Context, cfg config, out io.Writer) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.url+"/readyz", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.url+"/readyz?verbose=true", nil)
 	if err != nil {
 		return err
 	}

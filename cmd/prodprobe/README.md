@@ -8,7 +8,7 @@ broke (`docs/platform-verification.md` S30/S31).
 
 One run, against the deployment you point it at:
 
-1. `GET /readyz` must report every component ready.
+1. `GET /readyz?verbose=true` must report every component ready.
 2. Create a Deployment; a pod must reach `Running`.
 3. Scale it to 2; the second pod must reach `Running` too. This step is
    not redundant: S30's measured symptom was a control plane that served
@@ -102,8 +102,9 @@ bash cmd/prodprobe/smoke.sh
 ```
 
 Starts its own `wrangler dev` (needs `make wasm` first), then checks that
-`/readyz` reports every component, refuses an unauthenticated caller,
-goes 503 while `/healthz` stays cheap when the Loader path is broken, and
-that the probe both passes against a converging cluster and fails against
-one where nothing can schedule. It is a test of this tooling, **not** of
+`/readyz?verbose=true` reports every component, that an anonymous caller
+gets a bare `ok` and no breakdown, that readiness goes 503 while
+`/healthz` stays cheap when the Loader path is broken, and that the probe
+both passes against a converging cluster and fails against one where
+nothing can schedule. It is a test of this tooling, **not** of
 production.
