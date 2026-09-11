@@ -30,6 +30,7 @@ type config struct {
 
 	parking          bool
 	parkWait         time.Duration
+	requireRunning   bool
 	nodeDrainTimeout time.Duration
 	quietWindow      time.Duration
 	analyticsLag     time.Duration
@@ -59,6 +60,7 @@ func parseFlags(args []string) (config, error) {
 	fs.DurationVar(&cfg.deleteTimeout, "delete-timeout", 5*time.Minute, "how long to wait for the pods to disappear after deletion")
 	fs.DurationVar(&cfg.pollInterval, "poll-interval", 5*time.Second, "how often to poll while waiting for convergence")
 	fs.BoolVar(&cfg.parking, "parking", true, "assert the cluster parks: requires Cloudflare analytics credentials")
+	fs.BoolVar(&cfg.requireRunning, "require-running", false, "require the pods to reach Running, which needs real compute; off asserts only that the controllers converged")
 	fs.DurationVar(&cfg.parkWait, "park-wait", 6*time.Minute, "how long the cluster is given to quiesce after the workload is gone")
 	fs.DurationVar(&cfg.nodeDrainTimeout, "node-drain-timeout", 10*time.Minute, "how long to wait for demand-started nodes to detach before the quiet window")
 	fs.DurationVar(&cfg.quietWindow, "quiet-window", 10*time.Minute, "length of the window that must contain zero Worker and Durable Object requests")
@@ -133,22 +135,31 @@ func run(ctx context.Context, cfg config, out io.Writer) error {
 		}
 	}()
 
-	pods, err := waitForRunningPods(ctx, cs, cfg.ns, selector, 1, cfg.runningTimeout, cfg.pollInterval)
+	var pods []string
+	if cfg.requireRunning {
+		pods, err = waitForRunningPods(ctx, cs, cfg.ns, selector, 1, cfg.runningTimeout, cfg.pollInterval)
+	} else {
+		pods, err = waitForScheduledPods(ctx, cs, cfg.ns, cfg.name, selector, 1, cfg.runningTimeout, cfg.pollInterval)
+	}
 	if err != nil {
 		return err
 	}
-	step("pod %s reached Running after %s", pods[0], time.Since(activeStart).Round(time.Second))
+	step("pod %s %s after %s", pods[0], convergedWord(cfg.requireRunning, 1), time.Since(activeStart).Round(time.Second))
 
 	scaledAt := time.Now()
 	step("scaling %s/%s to 2", cfg.ns, cfg.name)
 	if err := scaleDeployment(ctx, cs, cfg.ns, cfg.name, 2); err != nil {
 		return fmt.Errorf("scale deployment: %w", err)
 	}
-	pods, err = waitForRunningPods(ctx, cs, cfg.ns, selector, 2, cfg.runningTimeout, cfg.pollInterval)
+	if cfg.requireRunning {
+		pods, err = waitForRunningPods(ctx, cs, cfg.ns, selector, 2, cfg.runningTimeout, cfg.pollInterval)
+	} else {
+		pods, err = waitForScheduledPods(ctx, cs, cfg.ns, cfg.name, selector, 2, cfg.runningTimeout, cfg.pollInterval)
+	}
 	if err != nil {
 		return fmt.Errorf("a scale-up after the first convergence was not acted on: %w", err)
 	}
-	step("both pods Running %s after the scale (%s)", time.Since(scaledAt).Round(time.Second), strings.Join(pods, ", "))
+	step("both pods %s %s after the scale (%s)", convergedWord(cfg.requireRunning, 2), time.Since(scaledAt).Round(time.Second), strings.Join(pods, ", "))
 
 	step("deleting deployment %s/%s", cfg.ns, cfg.name)
 	if err := deleteDeployment(ctx, cs, cfg.ns, cfg.name); err != nil {
@@ -281,4 +292,14 @@ func sleepStep(ctx context.Context, d time.Duration, what string, step func(stri
 			step("  %s remaining", r.Round(time.Second))
 		}
 	}
+}
+
+func convergedWord(requireRunning bool, n int) string {
+	if requireRunning {
+		return "reached Running"
+	}
+	if n == 1 {
+		return "exists and the Deployment status caught up"
+	}
+	return "exist and the Deployment status caught up"
 }

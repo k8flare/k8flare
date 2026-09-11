@@ -98,7 +98,7 @@ jobs:
           K8FLARE_PROBE_SCRIPT: ${{ vars.K8FLARE_PROBE_SCRIPT || 'k8flare' }}
         run: |
           set -o pipefail
-          go run ./cmd/prodprobe -parking="${{ steps.creds.outputs.parking }}" 2>&1 | tee "$RUNNER_TEMP/probe.log"
+          go run ./cmd/prodprobe -parking="${{ steps.creds.outputs.parking }}" -compute "" 2>&1 | tee "$RUNNER_TEMP/probe.log"
 
       # The alert. A scheduled workflow that only goes red in a tab nobody
       # opens is not an alert, so a failure files (or comments on) an

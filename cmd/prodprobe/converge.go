@@ -71,6 +71,49 @@ func podSummary(pods []corev1.Pod) string {
 	return strings.Join(parts, ", ")
 }
 
+// waitForScheduledPods is the compute-free half of waitForRunningPods. It
+// asserts what S30 actually broke -- the controllers acting on a write -- by
+// requiring the Pod objects to exist and the Deployment's own status to catch
+// up, without requiring anything to execute them. A cluster with no nodes
+// still passes, which is the point: the probe must not fail because a separate
+// capability (Pod-on-Containers, broken in production as of S39's correction)
+// cannot provide compute.
+func waitForScheduledPods(ctx context.Context, cs kubernetes.Interface, ns, name, selector string, want int, timeout, interval time.Duration) ([]string, error) {
+	deadline := time.Now().Add(timeout)
+	state := "no pods exist yet"
+	for {
+		pods, err := cs.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: selector})
+		if err != nil {
+			state = "list pods: " + err.Error()
+		} else if dep, derr := cs.AppsV1().Deployments(ns).Get(ctx, name, metav1.GetOptions{}); derr != nil {
+			state = "get deployment: " + derr.Error()
+		} else {
+			live := []string{}
+			for _, p := range pods.Items {
+				if p.DeletionTimestamp == nil {
+					live = append(live, p.Name)
+				}
+			}
+			observed := dep.Status.ObservedGeneration >= dep.Generation
+			replicas := int(dep.Status.Replicas)
+			if len(live) >= want && observed && replicas >= want {
+				sort.Strings(live)
+				return live, nil
+			}
+			state = fmt.Sprintf("%d live pod(s); deployment status.replicas=%d observedGeneration=%d/%d [%s]",
+				len(live), replicas, dep.Status.ObservedGeneration, dep.Generation, podSummary(pods.Items))
+		}
+		if !time.Now().Before(deadline) {
+			return nil, fmt.Errorf("the controllers did not produce %d pod(s) of %q within %s -- last seen: %s", want, selector, timeout, state)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+}
+
 func waitForRunningPods(ctx context.Context, cs kubernetes.Interface, ns, selector string, want int, timeout, interval time.Duration) ([]string, error) {
 	deadline := time.Now().Add(timeout)
 	state := "no pods exist yet"
