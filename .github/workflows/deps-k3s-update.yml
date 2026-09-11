@@ -279,7 +279,6 @@ jobs:
             exit 1
           fi
 
-
   # Scheduled workflows that fail silently rot: surface failures as an
   # issue so a human sees them without watching the Actions tab.
   notify-failure:

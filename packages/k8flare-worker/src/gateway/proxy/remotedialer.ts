@@ -12,6 +12,11 @@
  * a stub endpoint (we use Workers VPC, not remotedialer, for kubelet
  * communication), skipping auth is safe. The agent already authenticated
  * with the cluster token during bootstrap (/v1-k3s/config, cert signing).
+ *
+ * Corrected 2026-09-11: that was the intent, but the gateway's door-level
+ * auth ran first and 401'd every attempt, so the agent never got here and
+ * retried every 3 seconds for as long as it was attached. The path is now
+ * on isUnauthenticatedPath, which is what makes the paragraph above true.
  */
 export async function handleRemotedialConnect(req: Request, _env: any): Promise<Response> {
   // Must be a WebSocket upgrade request
