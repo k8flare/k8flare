@@ -314,7 +314,14 @@ Not done, so this stays `[~]`:
   50, `observed` kcm 20 / sched 5 / gc per-GVR 13. With the knob off: zero
   trace lines, zero relay lines, **zero tail-handler invocations**, so nothing
   is billed for a cluster nobody is measuring.
-- **Duration between boundaries is still not measurable in production** (S46).
+- **Duration IS measurable in production for the controller-side loop** (S49).
+  An `issued` boundary in the Go transport shares a clock with `observed`, so
+  the two can be subtracted: measured in production, a scheduler bind reaches
+  the controller manager's informer in **82–93 ms**. Read the low end of the
+  distribution — informer resync re-delivers the same revision seconds later.
+  Writes whose object is not named in the path (a create with a generated
+  name) cannot be paired this way.
+- **Duration across the shell/Go boundary is still not measurable** (S46).
   `commit` is timestamped by the shell Worker and `observed` by Go inside the
   dynamic worker; Workers' `Date.now()` freezes at the last I/O, so the two
   clocks disagree — three consecutive revisions all came out at **-888 ms**, a
