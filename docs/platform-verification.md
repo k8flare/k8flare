@@ -6426,3 +6426,71 @@ end and have been cancelled` を伴うのを 28 件観測した。638 イベン�
 `canceled`。これは pump window が閉じるときに watch が切れる設計どおりの挙動
 (S31 の「pump window closed」と同じ)で、informer は resourceVersion 付きで
 張り直す。例外は 0 件。新しい障害としては扱わない。
+
+### S46 (2026-09-12): S45 の中継を本番で検証した。ついでに二つ目の計器の誤りも出た
+
+S45 の `tails` 中継を本番にデプロイして検証した。結論から書く:
+
+- **中継は本番で動く。** dynamic worker の trace 行がシェル Worker の
+  `tail()` に届き、`wrangler tail` に載る。
+- **ただし最初のデプロイでは 1 行も出なかった。** 原因は私のフィルタで、
+  ローカル検証の測り方が甘くて見逃していた。
+- **さらに、境界間の「所要時間」は本番では引き算で測れない。** isolate を
+  跨ぐタイムスタンプが比較できないため。
+
+#### 中継が動くまで
+
+| デプロイ | 結果 |
+|---|---|
+| `13bc5803` | `request` 70 / `commit` 18 / **`observed` 0**。tail ハンドラは 28 回呼ばれ `scriptName: null`(= dynamic worker)のイベントを消費していた |
+| 4 分間・pod を churn させて再測定 | tail 呼び出し 119 回、やはり `observed` 0 |
+| `740aed9b`(中継が「何を捨てたか」を言うようにした) | 判明: `first=2026/09/11 19:58:37 pumptrace {"b":"observed.update","c":"sched",...}` |
+| `87aba2e7`(フィルタ修正) | **`observed` kcm 20 / sched 5 / gc/* 13**、`request` 262 / `commit` 50 |
+
+**二つ目の計器の誤り**: Go の `log.Printf` は全行の先頭に
+`2026/09/11 19:58:37` を付ける。中継のフィルタは
+`line.startsWith("pumptrace ")` だったので、本番では 1 行もマッチしなかった。
+**ローカルでは `grep -o 'pumptrace {...}'` という部分一致で確認していたため、
+フィルタの欠陥を検出できていなかった** —— 検証の側が実装より緩いと、
+実装の穴は見えない。`indexOf("pumptrace {")` に直し、Go のタイムスタンプが
+前置された行を使う単体テストを足した。
+
+この二回目がなければ「本番では中継が効かない」と誤って結論していた。中継が
+「生きているが何も通していない」のか「そもそも届いていない」のかを区別できる
+ようにした `dw dropped=N relayed=M first=...` の 1 行が決め手だった。
+
+#### 三つ目の発見: isolate を跨ぐ時刻は引き算できない
+
+同じ本番測定で commit → observed を計算すると:
+
+| component | object | rv | commit → observed |
+|---|---|---|---|
+| kcm | tc-…-hqmb7 | 1314 | **-887 ms** |
+| kcm | tc-…-289rc | 1315 | **-888 ms** |
+| kcm | tc-…-cfckg | 1316 | **-888 ms** |
+| kcm | tc-…-vp94b | 1350 | 8,425 ms |
+| sched | tc-…-2s2tp | 1360 | 38,561 ms |
+
+連続する 3 revision が揃って -888ms になるのはノイズではなく**系統的なずれ**で
+ある。`commit` の時刻はシェル Worker の `Date.now()`、`observed` は dynamic
+worker 内の Go の `time.Now()`。Workers の `Date.now()` は直近の I/O 時点で
+止まる仕様なので、別 isolate の二つの時刻は数百 ms 単位でずれる。
+
+ローカル(S44)で 4〜29ms という妥当な値が出ていたのは、`wrangler dev` が
+全部を 1 プロセスで動かしていて時計が 1 つだったからにすぎない。**S44 の
+4〜29ms は本番の値ではない。**
+
+したがって Stage 0 の計装で本番で測れるのは:
+
+- **測れる**: どの境界がどの順で起きたか、どの pump window・どの component・
+  どの revision に属するか。同一時計内(Go 側どうし、TS 側どうし)の差分。
+- **測れない**: commit → observed の所要時間を引き算で。これには時刻ではなく
+  「commit が持つ単調な値」を watch 経由で Go 側まで運ぶ必要があり、
+  Stage 1(storage watch 契約)の仕事である。
+
+#### コスト契約は本番で成立した
+
+knob を外して再デプロイ(`46bc9ab5`)し、Namespace と Deployment を作って
+70 秒観測した結果: **pumptrace 行 0、中継行 0、tail ハンドラ呼び出し 0**。
+`tails` が付かないので tail worker の課金も発生しない。604 イベントは通常の
+制御プレーン動作のみ。
