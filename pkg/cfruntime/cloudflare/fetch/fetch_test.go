@@ -323,7 +323,17 @@ func TestAbandonedPromiseSettlingAfterItsWindowClosedIsHarmless(t *testing.T) {
 		t.Fatalf("expected 2 abandoned promises, got %d", len(abandoned))
 	}
 
-	// Two windows later, the runtime finally settles them.
+	// Three further dispatches carrying no calls of their own. This is
+	// what made the defect rare rather than constant: the release was
+	// deferred by a window, so only a stream that stayed quiet across
+	// several windows (~50s) reached it -- measured as one occurrence per
+	// 165-second probe, and one per whole conformance run.
+	for i := 0; i < 3; i++ {
+		cloudflare.ClosePumpWindow(cloudflare.OpenPumpWindow(envWith("STORAGE", binding), 60_000))
+		settle()
+	}
+
+	// Only now does the runtime settle them.
 	abandoned[0].resolve.Invoke(jsResponse(http.StatusOK, nil, bodyOnce("late")))
 	abandoned[1].reject.Invoke(js.Global().Get("Error").New("Network connection lost."))
 	settle()
