@@ -4,6 +4,7 @@ import {
   handleRemotedialConnect,
 } from "./proxy/index.ts";
 import { dwAuth, handleWatch } from "../k8s/index.ts";
+import { handleReadyz } from "./readyz.ts";
 import type { Env } from "../env.ts";
 import { apiserverFetch } from "../loader/apiserver.ts";
 import { handleNodes } from "../nodes/index.ts";
@@ -20,7 +21,8 @@ import { verifyClusterToken } from "../clusters/tokens.ts";
 function isUnauthenticatedPath(url: URL): boolean {
   const p = url.pathname;
   return (
-    isHealthPath(p) ||
+    isLivenessPath(p) ||
+    p === "/readyz" ||
     p === "/version" ||
     p === "/cacerts" ||
     p === "/api" ||
@@ -30,7 +32,7 @@ function isUnauthenticatedPath(url: URL): boolean {
   );
 }
 
-// The health probes, which an uptime monitor must be able to reach without
+// The liveness probes, which an uptime monitor must be able to reach without
 // a cluster token. Answered here in the shell rather than passed through to
 // the Go apiserver's own /healthz (discovery.go): reaching that one costs a
 // dynamic-worker load of a 65MB module, and an unauthenticated path on a
@@ -39,10 +41,18 @@ function isUnauthenticatedPath(url: URL): boolean {
 //
 // Be precise about what a 200 here asserts: the Worker is routable and its
 // script loaded. It does NOT assert that storage is reachable, that the
-// cluster exists, or that any control-plane component is healthy -- those
-// need a token, because probing them costs real work.
-function isHealthPath(p: string): boolean {
-  return p === "/healthz" || p === "/livez" || p === "/readyz";
+// cluster exists, or that any control-plane component is healthy -- that is
+// /readyz (readyz.ts), also anonymous, whose cost is bounded by memoizing
+// the verdict rather than by asking for a token.
+//
+// Corrected 2026-09-11, twice. The comment first covered /readyz too and
+// ended "those need a token, because probing them costs real work"; it was
+// then rewritten to say /readyz had moved behind the cluster token. Both
+// were wrong: a readiness endpoint an operator's uptime monitor cannot call
+// is not a readiness endpoint, and it is the cache, not authentication,
+// that keeps anonymous volume off the Cluster DO. TODO.md P0-2.
+function isLivenessPath(p: string): boolean {
+  return p === "/healthz" || p === "/livez";
 }
 
 // Watch streams are served in TS (Go WASM cannot stream), which means
@@ -272,12 +282,20 @@ export async function handleGateway(
     }
     return apiserverFetch(env, req);
   }
-  // Answered before any apiserver dispatch: see isHealthPath.
-  if (isHealthPath(url.pathname)) {
+  // Answered before any apiserver dispatch: see isLivenessPath.
+  if (isLivenessPath(url.pathname)) {
     return new Response("ok", {
       status: 200,
       headers: { "Content-Type": "text/plain; charset=utf-8" },
     });
+  }
+  // Anonymous, like /healthz. The per-component breakdown is the part
+  // that needs the token (upstream gates it on ?verbose alone; here a
+  // failed check's detail names internal paths and sizes); without one,
+  // ?verbose is simply ignored rather than refused, so a monitor that
+  // sets it still gets its answer.
+  if (url.pathname === "/readyz") {
+    return handleReadyz(env, url.searchParams.has("verbose") && dwAuth(req, env));
   }
 
   // The wasm chunk supply channel (run_worker_first) is Loader-only.

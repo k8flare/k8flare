@@ -78,19 +78,57 @@ to be yours rather than the upstream branch's, pin a commit or fork.
 
 ## Monitoring
 
-`/healthz`, `/livez` and `/readyz` answer `200 ok` **without a token**, so
-an external uptime monitor can reach them.
+`/healthz`, `/livez` and `/readyz` all answer **without a token**, so an
+external uptime monitor can reach them. They assert different things.
 
-Be clear on what that asserts: the Worker is routable and its script
-loaded. It is answered in the Worker shell and deliberately does *not*
-touch storage or load any control-plane component — an unauthenticated
-path that spun up a 65MB WASM module per request would be a cost
-amplifier on a public URL. For "is the API actually serving", probe a
-real endpoint with a token:
+`/healthz` and `/livez` always answer `200 ok`, from the Worker shell.
+That asserts the Worker is routable and its script loaded — nothing
+more. They touch no storage and load no component, so they cost what any
+Worker request costs.
+
+`/readyz` answers `200 ok` when the control plane is actually serving and
+`503` when it is not, which is the endpoint to point an uptime monitor
+at. The checks behind it are a Cluster DO read of the kine revision, a
+Loader dispatch to the apiserver (its own `/readyz`), and the presence of
+each resident component's WASM manifest. A failing answer names the
+checks the way upstream kube-apiserver does, with the reasons withheld:
+
+```
+[+]storage ok
+[-]apiserver failed: reason withheld
+readyz check failed
+```
+
+**Cost.** Those checks run at most once every 30 s per isolate while the
+answer is ready, and once every 5 s while it is not; every other caller
+in that window is served the memoized verdict. Measured on `wrangler
+dev`: ~5 ms for a call that runs the checks, ~1.7 ms for one served from
+the cache — the same as `/healthz`. So an anonymous flood cannot amplify
+Durable Object reads beyond that rate. The bound is per isolate, which is
+the only state a Worker holds for free, so global volume scales with the
+number of live isolates rather than with the number of requests.
+
+The flip side: `/readyz` is not free the way `/healthz` is. Polling it
+keeps the Cluster DO and the apiserver isolate warm, so a monitor hitting
+it every 30 s is a cluster that is never fully idle. If you care about
+scale-to-zero more than about fast detection, poll it every few minutes,
+or poll `/healthz` and let [prodprobe](../cmd/prodprobe/README.md) cover
+readiness on its own schedule.
+
+With the cluster token, `?verbose=true` gives the per-component
+breakdown, including the failing check's actual reason:
 
 ```sh
-curl -sf -H "Authorization: Bearer $TOKEN" https://<your-worker>/api/v1/namespaces
+curl -s -H "Authorization: Bearer $TOKEN" https://<your-worker>/readyz?verbose=true
 ```
+
+Without the token `?verbose` is ignored rather than refused, so a monitor
+that sets it still gets its answer.
+
+Corrected 2026-09-11: for part of this branch's history `/readyz`
+required a token, contradicting the paragraph above. That was wrong on
+both counts — an endpoint an operator's monitoring cannot call is not a
+readiness endpoint, and authentication was never what bounded the cost.
 
 ## Security posture (read this before trusting it with anything)
 

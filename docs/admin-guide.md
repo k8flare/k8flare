@@ -192,6 +192,24 @@ wireguard を使います([cloudflare-mesh-networking.md](cloudflare-mesh-networ
 
 - **観測**: `npx wrangler tail k8flare` でライブログ。observability は
   有効化済み(サンプリング 100%)なのでダッシュボードでも追えます。
+- **死活監視**: 外形監視は **`/readyz`** に向けてください。トークン不要で、
+  制御プレーンが実際に応答できるとき `200 ok`、できないとき `503` を返します
+  (`/healthz` `/livez` は「Worker が到達可能でスクリプトがロードできた」
+  だけを表す 200 固定なので、制御プレーンが刺さっていても 200 のままです)。
+  `/readyz` の中身は Cluster DO の kine リビジョン読み取り 1 回、apiserver
+  への Loader ディスパッチ 1 回(apiserver 自身の `/readyz`)、常駐コンポー
+  ネント各々の wasm マニフェストの存在確認です。
+  **コスト**: 実チェックは isolate ごとに ready なら 30 秒に 1 回、not-ready
+  なら 5 秒に 1 回までで、その間の他の呼び出しにはメモ化した判定を返します。
+  `wrangler dev` 実測で、実チェックを走らせた呼び出しが約 5ms、キャッシュか
+  ら返した呼び出しが約 1.7ms(`/healthz` と同じ)。匿名の大量アクセスでも
+  Durable Object の読み取りはこのレートを超えません。
+  ただし**アイドルコストとはトレードオフ**です: 30 秒間隔でポーリングすると
+  Cluster DO と apiserver の isolate が起き続けるため、そのクラスタは完全な
+  アイドルにはなりません。scale-to-zero を優先するなら数分間隔にするか、
+  `/healthz` を監視して収束の検証は `cmd/prodprobe` に任せてください。
+  内訳を見るにはトークン付きで `GET /readyz?verbose=true`(トークンなしの
+  `?verbose` は無視され、コンポーネント別の詳細は返しません)。
 - **アイドル確認**: **オブジェクトが何も無い**クラスタは tail に何も
   流れないのが正常です。alarm が定期的に出続けていたらバグなので報告して
   ください(判定基準は cost-model.md の実測記録)。
@@ -231,6 +249,7 @@ npx wrangler deploy -c packages/k8flare-worker/wrangler.jsonc
 | 症状 | まず見るもの |
 |---|---|
 | kubectl が 401 | トークンが正しいか。トークンのローテーション直後は伝播に最大 1 分 |
+| `/readyz` が 503 | `curl -H "Authorization: Bearer $TOKEN" .../readyz?verbose=true` で失敗したチェック名と理由。判定は最大 5 秒キャッシュされるので直った直後は数秒待つ |
 | Deployment を作っても Pod が生えない | `wrangler tail` で controllers のロードログ。書き込みが 1 件でもあれば KCM が起きます |
 | Pod が Pending のまま | ノードが居るか (`kubectl get nodes`)。ノードなしなら正常な Pending です |
 | 削除したはずのオブジェクトが残る | GC は非同期(実 k8s と同じ eventually-consistent)。数十秒待つ |
