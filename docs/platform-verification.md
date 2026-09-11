@@ -5869,3 +5869,51 @@ BYO VM を用意せずにノードを得る手段として便利だったから�
    それを見るのに Pod が Running になる必要はない。Deployment →
    ReplicaSet → Pod オブジェクト生成と observedGeneration の追従まで見れば、
    計算資源を持たないクラスタでも同じ欠陥を検出できる。
+
+### S39 続報 (2026-09-11): 真因は「poke が失った boot を誰も再発行しない」
+
+S39 訂正が残した「`NodeVMSmall` のリクエストが `canceled` で終わる」の真因を
+特定した。`CFContainersScheduler.reconcile()` が **`stub.up()` を poke の
+detached コンテキストから 1 回だけ発行し、二度と再試行しなかった**。
+
+機構: `fetch()` は `void this.reconcile()` で即座に返る(storage の
+`pingNodes` 由来の poke)。`reconcile()` は VM を起こす前に claim を DO
+ストレージへ書き(2026-07-08 の mesh connector 二重生成レースの対策として
+意図的にその順序)、次のパスからは `if (tracked[uid]) continue` で読み飛ばす。
+したがってその 1 回の `up()` が放棄されると —— **放棄された promise は
+解決も棄却もされない**(S31 の実測 E2)ので例外もログも出ない ——
+`NODE_READY_TIMEOUT_MS`(5 分)が claim を刈るまで誰も起動し直さない。
+
+これは**退行ではない**。`packages/k8flare-worker/src/nodes/` は 2026-07-27
+以降変更が無く、当日のコミット群も触れていない。同日 06:30Z の実行が
+「動いた」のは、おそらくこの 5 分の刈り取り経路を通ったためで、
+実測の「約 5 分」は `NODE_READY_TIMEOUT_MS` と一致する。後の観測は
+「4 分超」で諦めており、あと一歩届いていなかった。
+
+S31 / S34 と**同じ族だが同じバグではない**。あちらは Loader dynamic worker
+内部(Go/WASM の env 捕捉、pump window、js.Func の寿命)で、こちらは
+Durable Object 同士の RPC である。共通なのは「リクエストより長生きする
+仕事が黙って打ち切られる」という形だけ。
+
+**修正**: `started`(= `up()` が返った)を `bound`(= kubelet が Node を
+登録した)と別に持ち、ガードを `if (tracked[uid]?.started) continue` にした。
+claim 済みだが未起動の Pod は既存の 15 秒安全網 alarm が拾い直す。新しい
+alarm もタイマーもポーリングも足していない。最悪の起動待ちが約 5 分から
+約 15 秒になる。
+
+**テスト**: `scheduler.test.ts` が本番の形(最初の `up()` が決して settle
+しない promise を返す)を再現する。修正前は
+`expected [ 'cf-probe1' ] to deeply equal [ 'cf-probe1', 'cf-probe1' ]` で
+落ち、修正後は 45 テスト全通過。
+
+**ローカルでは再現しない**(修正前のコードでも t+5 秒で VM が起動する)。
+`wrangler dev` は detached な DO サブリクエストを打ち切らないためで、
+S31 の実測 E1「dev はクロスリクエスト I/O 規則を強制しない」が DO→DO RPC
+にも当てはまることを意味する。唯一この経路を通る CI ゲート
+`smoke-nodes.yml` が手動ディスパッチ専用であることと合わせて、
+**この欠陥はどのゲートにも映らなかった**。
+
+**未検証**: `canceled` そのものの機構(呼び出し元の IoContext による打ち切り、
+NodeVM DO 側の中断、プラットフォームの配置拒否のいずれか)は区別できていない。
+修正はどの場合でも正しく効くが、説明が付くのは 1 番目だけである。本番での
+動作確認も未実施。
