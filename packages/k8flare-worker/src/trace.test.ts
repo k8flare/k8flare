@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { formatPumpTrace, pumpTrace, pumpTraceEnabled } from "./trace.ts";
 
 describe("pump-window tracing", () => {

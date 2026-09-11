@@ -6224,8 +6224,15 @@ restconfig)まで侵食して壊れたので、今回は触ってよいファイ
 | 55 Pod の foreground GC: 全 Pod 消滅 | **12 秒** |
 | アイドル 10 分間の書き込み | **0**(cluster revision 782 のまま) |
 
-設計文書の Stage 5 が要求する「GC owner 消滅 max < 90 秒」に対し、55 Pod で
-9 秒。Node 停止 90 秒/10 分の測定は**未実施**: ユーザーの VM 上の agent を
+**この 9 秒を Stage 5 の合格と読んではならない。** 設計文書の Stage 5 が
+要求する「GC owner 消滅 max < 90 秒」は multi-owner / grace 条件のことで、
+S36 で落ちていたのは「dependents を待っている owner をさらに owner に持つ」
+ケースである。ここで測った 55 Pod は single-owner、finalizer なし、
+`terminationGracePeriodSeconds: 1`、しかも prodprobe クラスタにノードが無い
+ので一度も起動していない。単純経路の基準値としては有効だが、guard が存在する
+理由になっているケースは踏んでいない。
+
+Node 停止 90 秒/10 分の測定は**未実施**: ユーザーの VM 上の agent を
 止める必要があり、S37 で緊急性が消えているため日中の枠に回す。
 
 #### 計装(`PUMP_TRACE=1` のときだけ)
@@ -6235,6 +6242,10 @@ restconfig)まで侵食して壊れたので、今回は触ってよいファイ
 | request | Worker の唯一の fetch(`src/index.ts`) | `{"b":"request","c":"gateway","o":<path>,"ua":<User-Agent>,"m":<method>}` |
 | commit | Cluster DO、revision が確定した直後 | `{"b":"commit","c":"storage","o":<key>,"rv":<revision>}` |
 | observed | KCM の Pod informer が配送したイベント | `{"b":"observed.add\|update\|delete","c":"kcm","w":<pump window id>,"o":<ns/name>,"rv":<rv>}` |
+
+`w` が意味を持つのは Go 側の observed 行だけで、TS 側(request / commit)は
+常に `w:0` を出す。シェル Worker には pump window が無いためで、`w>0` で
+絞ると Go の観測だけが残る。
 
 「controller が動いた」は request 行の User-Agent で識別する。upstream が
 `kube-controller-manager` / `kube-scheduler` を付けるので、追加の配線は要らない。
@@ -6280,5 +6291,11 @@ traffic が見分けられない。実 HTTP 往復で server 側に届くこと�
 #### まだ Stage 0 に足りていないもの
 
 - informer 境界は KCM の Pod だけ。gc / sched / clusterop は未配線。
+- **Loader が起動した dynamic worker の console 出力が本番の Workers Logs /
+  `wrangler tail` に届くかは未確認。** 確認したのは `wrangler dev` だけで、
+  肝心の `observed` 行はまさにその dynamic worker から出る。これは S31 /
+  S34 / S39 と同じ「wrangler dev は本番を再現しない」障害クラスの、promise
+  ではなくログ版である。上の「実機で確認した」は `wrangler dev` の話であって
+  本番の話ではない。
 - Node 停止 90 秒/10 分と復帰の基準測定。
 - 完全 idle の request/alarm 件数(Cloudflare Analytics token 待ち)。

@@ -26,6 +26,9 @@ func TraceInformerObservations(informer cache.SharedIndexInformer, component str
 	}
 	observe := func(verb string) func(any) {
 		return func(obj any) {
+			if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+				obj = tombstone.Obj
+			}
 			m, err := meta.Accessor(obj)
 			if err != nil {
 				return
