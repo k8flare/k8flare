@@ -5661,3 +5661,66 @@ kcm-dw の接続断)は、この 2 サンプルでは再発していない。た
 2 回連続 green になったが、直前の 34445918793 では両方落ちている。
 不可侵ルール 5 の趣旨(原因不明の間欠失敗を required に入れない)から、
 昇格はもう数サンプル green を確認してからにする。
+
+## S37: P0-4 の前提が現行ビルドでは成り立たない — node 復帰は 3〜15 秒 (2026-09-11、本番実測)
+
+`docs/pump-window-design.md`(P0-4)は、pump window の不連続性が生む症状の
+筆頭として「node が復帰しても unreachable taint が消えるまで 5〜6 分」
+(S31 追記 2)を挙げていた。Stage 0 のベースライン測定でこれを本番
+(k8flare.kooffice.workers.dev、version `fcdd0489`)で測り直したところ、
+**再現しなかった**。rule 4 に従い、設計文書の該当記述を消さずにここへ訂正を記録する。
+
+### 測定条件
+
+eixooh8 上の privileged Docker コンテナ(独立 netns、8GB/4CPU 制限)で
+BYO ノード 1 台を join。`docker pause` / `docker unpause` で停止と復帰を作り、
+2 秒間隔で Node の Ready 条件と taint を観測した(分解能 ±2 秒)。
+
+### 復帰までの時間(Ready かつ taint 0)
+
+| シナリオ | 実測 |
+|---|---|
+| 90 秒停止 | 16 秒 |
+| 601 秒停止(ベースライン) | 41 秒 |
+| 600 秒停止 sample1 | 17 秒 |
+| 600 秒停止 sample2 | 13 秒 |
+| 600 秒停止 sample3 | 26 秒 |
+
+10 分停止 4 サンプルの中央値 21.5 秒、最大 41 秒。
+
+### Ready 復帰と taint 消滅の分離
+
+設計が Stage 4 の合格線に置いたのは「Ready=True commit から両 unreachable
+taint 消滅まで p95 ≤15 秒、全サンプル ≤30 秒」である。この区間だけを取ると:
+
+```
+sample2  05:55:47 ready=True → 05:55:50 taints=0   3 秒
+sample3  06:06:59 ready=True → 06:07:14 taints=0  15 秒
+```
+
+**現行ビルドで既に合格線を満たしている。**
+
+### 付随して分かったこと
+
+- 停止中の taint は一度に 2 つ付くのではなく、まず NoSchedule、
+  `tolerationSeconds` 経過後に NoExecute が加わる段階的な挙動だった
+  (upstream と同じ)。S31 追記 2 が「unreachable ×2」と一括で書いていたのは
+  観測の粒度が粗かったため。
+- 停止検出(Ready=Unknown + taint)は 56 秒。upstream の
+  `nodeMonitorGracePeriod` 50 秒と整合する。
+- 55 Pod の foreground GC はオーナー消滅 22 秒 / Pod 全消滅 25 秒で、
+  conformance の 90 秒予算に対し余裕がある。S36 がローカルで観測した
+  「5 回に 1 回は予算近辺」は本番では再現していない(n=1)。
+
+### 帰結(P0-4 の扱い)
+
+S31 追記 2 の 5〜6 分は、その後に入った S32(DefaultTolerationSeconds)・
+S33(foreground ガード)・S34(I/O 修正)・S36(poke と window の修正)の
+いずれか、または合算で解消していたと見るのが妥当。**どの修正が効いたかは
+特定していない**(当時の測定 n=1、ビルドも異なる)。
+
+したがって P0-4 の根拠のうち「node 復帰の遅さ」は**取り下げる**。残る根拠は
+`gracefuldelete.go` の 4 ガード(偶発的複雑性)、scheduler が
+`unreachable:NoSchedule` の Node へ一時的にバインドする件、ローカルの
+foreground GC が 5 回に 1 回予算近辺になる件の 3 つで、いずれも本番では
+未測定である。設計の Stage 1 以降に着手する前に、この 3 つを本番で測り直す。
