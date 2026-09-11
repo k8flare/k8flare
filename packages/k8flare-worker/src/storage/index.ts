@@ -1,6 +1,7 @@
 import { SCHEMA, LIST_SQL } from "./schema.ts";
 import { prefixEnd, base64ToArrayBuffer, jsonResponse } from "./helpers.ts";
 import { currentRevision, type SqlExec } from "./queries.ts";
+import { pumpTrace } from "../trace.ts";
 import { handleReplay, broadcastEvent, type WatchHost } from "./watch.ts";
 import { storeGetCurrent, storeInsert, storeList } from "./store.ts";
 export { WatchHub } from "./watchhub.ts";
@@ -414,6 +415,7 @@ export class Cluster {
         value,
         null,
       );
+      pumpTrace(this.env, "commit", "storage", { o: key, rv: id });
       await broadcastEvent(this.host, this.sql, key, id);
       await this.afterWrite(key);
       return jsonResponse({ revision: id }, 201);
@@ -442,6 +444,7 @@ export class Cluster {
         value: body.value,
         lease,
       };
+      pumpTrace(this.env, "commit", "storage", { o: key, rv: id });
       await broadcastEvent(this.host, this.sql, key, id);
       await this.afterWrite(key);
       return jsonResponse({ revision: id, kv, updated: true });
@@ -467,6 +470,7 @@ export class Cluster {
       oldValue,
       oldValue,
     );
+    pumpTrace(this.env, "commit", "storage", { o: key, rv: id });
     await broadcastEvent(this.host, this.sql, key, id);
     await this.afterWrite(key);
 

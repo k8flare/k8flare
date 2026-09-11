@@ -262,7 +262,7 @@ pointing at the section that establishes it. The history stays untouched below.
 
 ---
 
-### P0-6 `[ ]` Stage 0 of the pump-window design (instrumentation and cost contract)
+### P0-6 `[~]` Stage 0 of the pump-window design (instrumentation and cost contract)
 
 Attempted 2026-09-11 and **discarded**. Two delegated agents were each cut off
 by provider rate limits mid-task and left unverified work; the salvaged result
@@ -276,6 +276,37 @@ observed → controller acted) attributable to a pump window and component, with
 no always-on cost, plus the cost-model entries and a probe-traffic
 discriminator. Note that S37 removed the urgency: the node-recovery latency
 this instrumentation was meant to localise is no longer a defect.
+
+**Redone 2026-09-12, scoped as written above** (`docs/platform-verification.md`
+S44). Done:
+
+- Baseline at the deployed hash **before** instrumenting: convergence 16s,
+  55-pod foreground GC owner gone in 9s / all pods in 12s, ten idle minutes
+  with zero writes.
+- All three boundaries emit under `PUMP_TRACE=1` and were driven in a real
+  Worker, not just unit-tested: request 161 / commit 38 / observed 6 lines for
+  one Namespace plus a 2-replica ReplicationController.
+- Attribution works: each `observed` line names the pump window it arrived in.
+  Measured commit → informer observed at **4–29 ms**.
+- Zero always-on cost, asserted both ways: one string comparison when unset,
+  no informer handler registered at all, and 0 `pumptrace` lines across every
+  test lane with the var unset.
+- Cost-model entry with the per-boundary line counts and the Workers Logs
+  budget that follows from them.
+- Probe-traffic discriminator: `cmd/prodprobe` now sends
+  `k8flare-prodprobe/<run>` as its User-Agent, verified over a real HTTP round
+  trip.
+- **An error in the instrument itself, found and fixed**: the commit timestamp
+  was taken after `broadcastEvent`, so commit → observed came out *negative*
+  (-3 to -1 ms). Moved to immediately after the revision is assigned.
+
+Not done, so this stays `[~]`:
+
+- The informer boundary is wired for KCM's Pod informer only; gc, sched and
+  clusterop are not.
+- The node-stop 90s/10min baseline — it means stopping the agent on the
+  maintainer's VM, deferred to a daytime window rather than done at 03:00.
+- Idle request and alarm counts still need the Cloudflare Analytics token.
 
 ## P2 — known defects and accidental complexity
 
