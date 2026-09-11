@@ -261,7 +261,7 @@ this instrumentation was meant to localise is no longer a defect.
 
 ## P2 — known defects and accidental complexity
 
-### P2-1 `[ ]` `gracefuldelete.go`'s guards are compensating for the platform
+### P2-1 `[~]` `gracefuldelete.go`'s guards are compensating for the platform
 
 Four hand-written guards (`RejectCreateWithTerminatingController`,
 `refuseForegroundFinalize`, `FinishUnblockedForegroundOwners`,
@@ -271,6 +271,26 @@ guard". Rule 3 is satisfied in letter — the real GC is unmodified — while it
 cost migrates into hand-written apiserver code compensating for
 platform-induced informer lag. Revisit after P0-4; the guards should shrink,
 not grow. Also measure their rows-read cost, which is currently unmeasured.
+
+**Measured 2026-09-11, and the answer is no — not yet.** The experiment
+disabled `FinishUnblockedForegroundOwners` and repeated the required
+garbage-collector focus locally. Five runs passed, then the wall time climbed
+253s → 585s → 899s and run 6 died in `BeforeSuite` at the 900s timeout.
+
+The decisive number came from the machine after the experiment stopped: 66
+minutes later, with no test running, the Worker was still serving **451
+requests per minute**. 1260 of the last 1289 were `GET
+/api/v1/namespaces/gc-8627/pods/<name>` returning 404, against a namespace
+that no longer exists. The real garbage collector retries forever, and nothing
+completes the owner it is blocked on — which is precisely the job the guard
+does (S36).
+
+That is a cost-invariant #1 violation (~650k requests/day on a cluster that
+can never converge), not a latency regression. **Removal stays blocked behind
+P0-4**; re-measure once pump windows are continuous. Full write-up and the two
+caveats (the run was killed by `timeout` so framework cleanup never ran; the CI
+failure was a 90s timing budget that a fast laptop does not reproduce) are in
+`docs/platform-verification.md` S43.
 
 ### P2-2 `[x]` `pendingPing` asymmetry in the storage DO
 
