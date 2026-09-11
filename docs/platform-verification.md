@@ -6357,6 +6357,31 @@ dynamic worker のイベントそのものが 1 件も現れない。取りこ�
 ただし tail worker の起動はリクエストとして課金されるため、常時付けるのは
 コスト不変条件に反する。`PUMP_TRACE=1` のときだけ付ける。
 
+#### 実装した。ただし**本番では未検証**
+
+`controllers/index.ts` が `PUMP_TRACE=1` のときだけ `tails: [this.env.SELF]` を
+付け、`src/index.ts` に `tail()` ハンドラを足した。ハンドラは `pumptrace ` で
+始まる行と exception だけを中継する——無加工で流したら
+ReplicationController 1 個の作成で **1,545 行**になり、大半は pump window が
+閉じるたびの reflector 再接続警告(設計どおりの挙動)だった。絞った後は
+observed 行 3 件、ノイズ 0 件。
+
+`wrangler dev` では中継経路が動くことを確認済み(無加工版で
+`dw ? log: ... clusterOperator: run starting` が出た。これはネイティブ出力には
+無い接頭辞なので、中継されたものだと判別できる)。
+
+**本番では確認できていない。** 2026-09-12 04:00 JST に検証デプロイを 3 回
+試みたが、いずれもアセットアップロードが `UND_ERR_CONNECT_TIMEOUT` で失敗した
+(5 回のリトライを使い切り、`workers.cloudflare.com` への curl も接続
+タイムアウト、`api.cloudflare.com` への connect が通常 0.1 秒のところ 5.0 秒)。
+ローカル側のネットワーク障害で、アカウントやコードの問題ではない。本番は
+デプロイされておらず無傷(version 46f38ea9 のまま、readyz 200)。
+
+**したがってこの節の結論は S45 自身が指摘した誤りを繰り返さないよう明示する**:
+中継の実装は `wrangler dev` でしか確かめていない。本番で実際に `observed` 行が
+シェル Worker の tail に現れることを確認するまで、S44 の三境界計装は
+**本番では二境界**である。
+
 #### 障害クラスとしては既知
 
 S31 / S34 / S39 と同じで、**`wrangler dev` は本番を再現しない**。これまでは
