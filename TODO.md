@@ -304,6 +304,16 @@ Not done, so this stays `[~]`:
 
 - The informer boundary is wired for KCM's Pod informer only; gc, sched and
   clusterop are not.
+- **The `observed` boundary is invisible in production** and the fix is
+  unverified there. A Loader-spawned worker's console output does not reach the
+  loading script's `wrangler tail` (S45), so the half of the measurement that
+  lives in Go cannot be read where it matters. The platform's own answer is
+  `WorkerLoaderWorkerCode.tails`, now wired behind `PUMP_TRACE` and working
+  under `wrangler dev` — but three verification deploys failed on a local
+  network fault (`UND_ERR_CONNECT_TIMEOUT`), so production still runs 46f38ea9
+  and the relay has never run there. Deploy and confirm `observed` lines appear
+  in `wrangler tail` before treating Stage 0's three boundaries as three in
+  production.
 - The node-stop 90s/10min baseline — it means stopping the agent on the
   maintainer's VM, deferred to a daytime window rather than done at 03:00.
 - Idle request and alarm counts still need the Cloudflare Analytics token.
