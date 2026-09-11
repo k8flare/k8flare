@@ -131,11 +131,22 @@ func run(ctx context.Context, cfg config, out io.Writer) error {
 		}
 	}()
 
-	pod, err := waitForRunningPod(ctx, cs, cfg.ns, selector, cfg.runningTimeout, cfg.pollInterval)
+	pods, err := waitForRunningPods(ctx, cs, cfg.ns, selector, 1, cfg.runningTimeout, cfg.pollInterval)
 	if err != nil {
 		return err
 	}
-	step("pod %s reached Running after %s", pod, time.Since(activeStart).Round(time.Second))
+	step("pod %s reached Running after %s", pods[0], time.Since(activeStart).Round(time.Second))
+
+	scaledAt := time.Now()
+	step("scaling %s/%s to 2", cfg.ns, cfg.name)
+	if err := scaleDeployment(ctx, cs, cfg.ns, cfg.name, 2); err != nil {
+		return fmt.Errorf("scale deployment: %w", err)
+	}
+	pods, err = waitForRunningPods(ctx, cs, cfg.ns, selector, 2, cfg.runningTimeout, cfg.pollInterval)
+	if err != nil {
+		return fmt.Errorf("a scale-up after the first convergence was not acted on: %w", err)
+	}
+	step("both pods Running %s after the scale (%s)", time.Since(scaledAt).Round(time.Second), strings.Join(pods, ", "))
 
 	step("deleting deployment %s/%s", cfg.ns, cfg.name)
 	if err := deleteDeployment(ctx, cs, cfg.ns, cfg.name); err != nil {

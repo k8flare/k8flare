@@ -8,6 +8,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -70,7 +71,7 @@ func podSummary(pods []corev1.Pod) string {
 	return strings.Join(parts, ", ")
 }
 
-func waitForRunningPod(ctx context.Context, cs kubernetes.Interface, ns, selector string, timeout, interval time.Duration) (string, error) {
+func waitForRunningPods(ctx context.Context, cs kubernetes.Interface, ns, selector string, want int, timeout, interval time.Duration) ([]string, error) {
 	deadline := time.Now().Add(timeout)
 	state := "no pods exist yet"
 	for {
@@ -78,22 +79,35 @@ func waitForRunningPod(ctx context.Context, cs kubernetes.Interface, ns, selecto
 		if err != nil {
 			state = "list pods: " + err.Error()
 		} else {
+			running := []string{}
 			for _, p := range pods.Items {
 				if p.Status.Phase == corev1.PodRunning {
-					return p.Name, nil
+					running = append(running, p.Name)
 				}
+			}
+			if len(running) >= want {
+				sort.Strings(running)
+				return running, nil
 			}
 			state = podSummary(pods.Items)
 		}
 		if !time.Now().Before(deadline) {
-			return "", fmt.Errorf("no pod of %q reached Running within %s -- last seen: %s", selector, timeout, state)
+			return nil, fmt.Errorf("fewer than %d pods of %q reached Running within %s -- last seen: %s", want, selector, timeout, state)
 		}
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return nil, ctx.Err()
 		case <-time.After(interval):
 		}
 	}
+}
+
+func scaleDeployment(ctx context.Context, cs kubernetes.Interface, ns, name string, replicas int32) error {
+	_, err := cs.AppsV1().Deployments(ns).UpdateScale(ctx, name, &autoscalingv1.Scale{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		Spec:       autoscalingv1.ScaleSpec{Replicas: replicas},
+	}, metav1.UpdateOptions{})
+	return err
 }
 
 func waitForPodsGone(ctx context.Context, cs kubernetes.Interface, ns, selector string, timeout, interval time.Duration) error {

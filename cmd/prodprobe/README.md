@@ -10,8 +10,12 @@ One run, against the deployment you point it at:
 
 1. `GET /readyz` must report every component ready.
 2. Create a Deployment; a pod must reach `Running`.
-3. Delete it; the pods must disappear.
-4. The account's analytics must show **zero** Worker and Durable Object
+3. Scale it to 2; the second pod must reach `Running` too. This step is
+   not redundant: S30's measured symptom was a control plane that served
+   the first list and then ignored `kubectl scale` for 3+ minutes, which
+   a probe that only ever creates one Deployment would call healthy.
+4. Delete it; the pods must disappear.
+5. The account's analytics must show **zero** Worker and Durable Object
    requests over a quiet window afterwards — cost invariants #1/#3.
 
 ## Run it

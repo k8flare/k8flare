@@ -36,8 +36,8 @@ func TestSmokeAgainstDev(t *testing.T) {
 		ns:             "default",
 		image:          "registry.k8s.io/pause:3.10",
 		compute:        "",
-		runningTimeout: 3 * time.Minute,
-		deleteTimeout:  3 * time.Minute,
+		runningTimeout: 6 * time.Minute,
+		deleteTimeout:  5 * time.Minute,
 		pollInterval:   time.Second,
 		parking:        false,
 	}

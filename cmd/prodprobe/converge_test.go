@@ -22,18 +22,23 @@ func pod(name string, phase corev1.PodPhase) *corev1.Pod {
 	}
 }
 
-func TestWaitForRunningPod(t *testing.T) {
+func TestWaitForRunningPods(t *testing.T) {
 	cs := fake.NewSimpleClientset(pod("p1", corev1.PodRunning))
-	name, err := waitForRunningPod(context.Background(), cs, "default", "app=k8flare-prodprobe", time.Second, 10*time.Millisecond)
+	names, err := waitForRunningPods(context.Background(), cs, "default", "app=k8flare-prodprobe", 1, time.Second, 10*time.Millisecond)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if name != "p1" {
-		t.Fatalf("got pod %q", name)
+	if len(names) != 1 || names[0] != "p1" {
+		t.Fatalf("got pods %v", names)
+	}
+
+	_, err = waitForRunningPods(context.Background(), cs, "default", "app=k8flare-prodprobe", 2, 100*time.Millisecond, 10*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "fewer than 2 pods") {
+		t.Fatalf("one Running pod must not satisfy a wait for two, got %v", err)
 	}
 }
 
-func TestWaitForRunningPodTimesOutWithPodState(t *testing.T) {
+func TestWaitForRunningPodsTimesOutWithPodState(t *testing.T) {
 	pending := pod("p1", corev1.PodPending)
 	pending.Status.Conditions = []corev1.PodCondition{{
 		Type:    corev1.PodScheduled,
@@ -42,7 +47,7 @@ func TestWaitForRunningPodTimesOutWithPodState(t *testing.T) {
 		Message: "no nodes available",
 	}}
 	cs := fake.NewSimpleClientset(pending)
-	_, err := waitForRunningPod(context.Background(), cs, "default", "app=k8flare-prodprobe", 100*time.Millisecond, 10*time.Millisecond)
+	_, err := waitForRunningPods(context.Background(), cs, "default", "app=k8flare-prodprobe", 1, 100*time.Millisecond, 10*time.Millisecond)
 	if err == nil {
 		t.Fatal("want a timeout error, got nil")
 	}
