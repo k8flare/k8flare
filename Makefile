@@ -364,8 +364,9 @@ packages/k8flare-worker/images/node/k8flare-agent: $(NODES_AGENT_SRC) | gen-mirr
 	echo "$@: $$(wc -c < $@ | tr -d ' ') bytes"
 
 ## deploy: build node agent images, then wrangler deploy (uses whatever wasm is already committed -- run `make wasm` first if it needs rebuilding)
-deploy: nodes-agent
+deploy: wasm nodes-agent
 	npm run check:migrations
+	npm run check:test-vars
 	wrangler deploy --config packages/k8flare-worker/wrangler.jsonc
 
 ## clean-wasm: drop the built chunks so the next `make wasm` rebuilds from scratch

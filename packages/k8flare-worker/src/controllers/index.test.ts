@@ -366,3 +366,39 @@ describe("alarm backoff on a cluster that never converges", () => {
     expect(after).toBeGreaterThanOrEqual(settled - 5_000);
   });
 });
+
+// S41 measured the probe behind /internal/pending-deletions at one LIST per
+// namespaced resource across every namespace, and hasUnconvergedWork ran it on
+// every alarm tick. A deletion can only arrive through a write, and every write
+// advances the cluster revision, so an unmoved revision is proof that a
+// previous empty answer still holds.
+describe("pending-deletions probe", () => {
+  it("is skipped while the cluster revision has not moved", async () => {
+    const { controllers, storage, apiCalls } = newControllers({ pendingDeletions: 0 });
+
+    await controllers.alarm();
+    const first = apiCalls.filter((p) => p.endsWith("/internal/pending-deletions")).length;
+    expect(first).toBe(1);
+    expect(storage.kv.get("noPendingDeletionsAt")).toBe(1);
+
+    await controllers.alarm();
+    const second = apiCalls.filter((p) => p.endsWith("/internal/pending-deletions")).length;
+    expect(second).toBe(1);
+  });
+
+  it("runs again once a write has advanced the revision", async () => {
+    const { controllers, storage, apiCalls } = newControllers({ pendingDeletions: 0 });
+    await controllers.alarm();
+    expect(apiCalls.filter((p) => p.endsWith("/internal/pending-deletions")).length).toBe(1);
+
+    storage.kv.set("noPendingDeletionsAt", 0); // as if a write had moved it on
+    await controllers.alarm();
+    expect(apiCalls.filter((p) => p.endsWith("/internal/pending-deletions")).length).toBe(2);
+  });
+
+  it("still reports work when a deletion is in flight", async () => {
+    const { controllers, storage } = newControllers({ pendingDeletions: 1 });
+    await controllers.alarm();
+    expect(storage.kv.get("noPendingDeletionsAt")).toBeUndefined();
+  });
+});

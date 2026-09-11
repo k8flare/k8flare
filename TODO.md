@@ -261,7 +261,7 @@ this instrumentation was meant to localise is no longer a defect.
 
 ## P2 — known defects and accidental complexity
 
-### P2-1 `[ ]` `gracefuldelete.go`'s guards are compensating for the platform
+### P2-1 `[~]` `gracefuldelete.go`'s guards are compensating for the platform
 
 Four hand-written guards (`RejectCreateWithTerminatingController`,
 `refuseForegroundFinalize`, `FinishUnblockedForegroundOwners`,
@@ -271,6 +271,26 @@ guard". Rule 3 is satisfied in letter — the real GC is unmodified — while it
 cost migrates into hand-written apiserver code compensating for
 platform-induced informer lag. Revisit after P0-4; the guards should shrink,
 not grow. Also measure their rows-read cost, which is currently unmeasured.
+
+**Measured 2026-09-11, and the answer is no — not yet.** The experiment
+disabled `FinishUnblockedForegroundOwners` and repeated the required
+garbage-collector focus locally. Five runs passed, then the wall time climbed
+253s → 585s → 899s and run 6 died in `BeforeSuite` at the 900s timeout.
+
+The decisive number came from the machine after the experiment stopped: 66
+minutes later, with no test running, the Worker was still serving **451
+requests per minute**. 1260 of the last 1289 were `GET
+/api/v1/namespaces/gc-8627/pods/<name>` returning 404, against a namespace
+that no longer exists. The real garbage collector retries forever, and nothing
+completes the owner it is blocked on — which is precisely the job the guard
+does (S36).
+
+That is a cost-invariant #1 violation (~650k requests/day on a cluster that
+can never converge), not a latency regression. **Removal stays blocked behind
+P0-4**; re-measure once pump windows are continuous. Full write-up and the two
+caveats (the run was killed by `timeout` so framework cleanup never ran; the CI
+failure was a 90s timing budget that a fast laptop does not reproduce) are in
+`docs/platform-verification.md` S43.
 
 ### P2-2 `[x]` `pendingPing` asymmetry in the storage DO
 
@@ -327,12 +347,37 @@ stub's doc comment always claimed. Measured in production: 401 retries 0,
 Worker rather than a hibernating Durable Object. The tunnel is unused, so the
 right answer is for the agent not to dial at all; k3s has no switch for that.
 
-### P2-5 `[ ]` `PUMP_WINDOW_DROP_CLOSE` is a test knob in production code
+### P2-5 `[x]` `PUMP_WINDOW_DROP_CLOSE` is a test knob in production code
 
 Added so `wrangler dev` could reproduce a production-only fault
 (`packages/k8flare-worker/src/controllers/index.ts`). Keep it only if it is the
 cheapest way to hold that regression; if so, document it as a test seam and
 make sure it cannot be enabled in a real deployment by accident.
+
+**Kept, and fenced.** It is the cheapest seam: the fault is that production
+tears a poke's IoContext down before `ctx.waitUntil`'s timer runs, and
+`wrangler dev` never does that (S31 E1), so three regression tests
+(`gcmultiowner_test.go`, `kcmdw_test.go`, `ioctxprobe_test.go`) can only reach
+the wedge by dropping the close deliberately. Each passes it per invocation as
+`wrangler dev --var`, so nothing about it lives in a deployment.
+
+What was missing was the guard. `packages/wasm-build/src/check-test-vars.ts`
+now refuses to deploy if `wrangler.jsonc` declares any harness-only var, wired
+into `npm run deploy`,
+`make deploy` and `ci.yml` alongside the migrations check. Verified both ways:
+it passes on `main` and fails with the var added. It does not — and cannot —
+catch a deliberate `wrangler secret put` of the same name; the accident it is
+built for is a test invocation's `--var` being copied into a config.
+
+The guard covers three more names than P2-5 asked for, because the same
+accident has the same consequence for all of them: `KCM_DISABLED`,
+`SCHED_DISABLED` and `CM_DISABLED` are harness kill switches that let a host
+process stand in for a resident controller. Checked 2026-09-11 that all four
+appear only as per-invocation `--var` in test lanes and `e2e-conformance.yml`,
+never as deployment configuration, so the guard cannot block a legitimate
+deploy. Unlike the fault knob they do not corrupt behaviour, they remove a
+controller -- the error message says so rather than calling them all fault
+injection.
 
 ### P2-6 `[~]` `deps-k3s-update` is failing on `main`
 
@@ -381,6 +426,42 @@ bootstrap can construct one in the request's own context".
 promise/stream semantics but not input gates, real IoContext teardown or DO
 storage semantics. `@cloudflare/vitest-pool-workers` would close that gap at
 the cost of a dependency.
+
+### P1-8 `[~]` A k3s patch bump is sitting unmerged
+
+`deps/k3s-v1.36.4-k3s1` (from the weekly automation on 2026-09-07) moves the
+pin from k3s v1.36.3 to v1.36.4 and the `k8s.io/*` staging replaces with it.
+It never became a PR because of P2-6's repository setting, so it has been
+sitting on the remote while `main` moved on. A dependency bump that carries
+upstream fixes should not rot.
+
+**Verified locally 2026-09-11** on `deps/k3s-136-4` (that branch with current
+`main` merged in): `make vet`, `make check`, `tsc` clean; `make gen` produces
+no drift; all five WASM chunks under the Loader cap (apiserver headroom
+2,389KiB, down 177KiB from 2,566KiB); `make test-unit`, `test-apiserver`,
+`test-kcm` and `test-clusterop` all pass.
+
+**Not merged**: the Definition of Done is conformance, and Actions capacity is
+exhausted (see below). Merge once `e2e-conformance.yml` has run green against
+this branch.
+
+### P1-9 `[x]` Two compiled binaries were committed by accident
+
+`k8flare-backup` (34.0 MB) and `prodprobe` (34.6 MB, twice) were committed to
+`main` on 2026-09-11 before `.gitignore` covered them. Untracked and ignored the
+same day; the blobs remain in history.
+
+**Decided 2026-09-11: do not rewrite history.** Measured rather than assumed —
+a fresh clone is **45 MiB** today, and the three blobs are most of it, so a
+rewrite would bring it to roughly 12 MiB. Against that, the project's own audit
+trail cites **24 commit SHAs** in `docs/platform-verification.md` alone, and
+rule 4 exists precisely so those references stay followable. Rewriting
+invalidates every one of them, and every descendant SHA, to save 33 MiB on a
+repository that nobody has cloned yet. That trade is not worth it.
+
+Revisit only if the repository grows another accidental blob — at which point
+one rewrite can clear them all, and should be done *before* the docs accumulate
+more references, not after.
 
 ## Out of scope / deliberately not doing
 

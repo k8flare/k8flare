@@ -164,6 +164,70 @@ compiles the ~40MB WASM modules in-process. They're the local stand-in for
 the conformance workflow's dynamic-worker variants on machines that can't
 run a Linux kubelet.
 
+## Experiments that modify source
+
+Run them in a `git worktree`, never in your main checkout. An experiment that
+disables a guard to see what breaks leaves a change that looks like nothing in
+`git status` once you have moved on, and `git add -A` on an unrelated commit
+will carry it to `main` (`docs/platform-verification.md` S43). A worktree also
+lets the experiment keep its own `.wrangler/state`, so it cannot collide with
+a test lane.
+
+## Running upstream conformance locally
+
+The Definition of Done is `e2e-conformance.yml`, which only a maintainer can
+dispatch — and which cannot run at all when the repository's Actions capacity
+is exhausted. The same upstream binary runs on a laptop. Verified on macOS
+(arm64) 2026-09-11; the garbage-collector focus the required gate uses passes
+6/6 in about three minutes (`docs/platform-verification.md` S42).
+
+```sh
+# 1. The upstream e2e binary, at the version go.mod pins.
+K8S=$(awk '{print $2}' pkg/k8s-js-overlays/upstream-module.txt | sed -E 's/-k3s[0-9]+$//')
+curl -sfL "https://dl.k8s.io/$K8S/kubernetes-test-darwin-arm64.tar.gz" | tar xz   # or linux-amd64
+
+# 2. A TLS front for wrangler dev. client-go refuses to send credentials over
+#    plain HTTP, so the dev instance needs a terminator; any will do.
+openssl req -x509 -nodes -newkey rsa:2048 -days 1 -keyout dev.key -out dev.crt \
+  -subj "/CN=127.0.0.1" \
+  -addext "subjectAltName=IP:127.0.0.1,DNS:localhost,DNS:host.docker.internal"
+
+# 3. wrangler dev behind it, then a node.
+make wasm
+npx wrangler dev -c packages/k8flare-worker/wrangler.jsonc --local \
+  --enable-containers=false --port 8788 --persist-to /tmp/e2e-state
+docker build -t k8flare-node:local packages/k8flare-worker/images/node
+docker run -d --name e2e-node --privileged --cgroupns=private \
+  --tmpfs /run --tmpfs /var/run -e K3S_TOKEN=k8flare-dev-token \
+  k8flare-node:local   # point -server at https://host.docker.internal:<tls port>
+
+# 4. The same focus the required gate uses, lifted from the workflow.
+./kubernetes/test/bin/e2e.test --kubeconfig=kubeconfig.yaml \
+  --provider=skeleton --num-nodes=1 --disable-log-dump --ginkgo.no-color \
+  --ginkgo.focus="$(the GC_FOCUS or BASELINE_FOCUS value in e2e-conformance.yml)"
+```
+
+**Copying the focus out of the workflow has a trap.** `GC_FOCUS` is a
+single-quoted shell string, so the apostrophe in one spec name is written
+`'\''` — the shell's escape, not part of the pattern. Paste it verbatim into a
+regex and that spec silently stops matching, which cost a wrong result once
+already (`docs/platform-verification.md` S42 訂正). Always confirm the count
+first:
+
+```sh
+./kubernetes/test/bin/e2e.test ... --ginkgo.dry-run --ginkgo.focus="$FOCUS" | grep 'Will run'
+# GC_FOCUS must say "Will run 7 of", not 6.
+
+Two things to know before you trust a local run:
+
+- **Pods do not reach Running** on macOS. Nested containerd inside an emulated
+  amd64 container fails with `seccomp is not supported`. The garbage-collector
+  tests examine object lifecycle, not workloads, so they are unaffected — but a
+  focus that needs a Pod to execute will not pass here.
+- **Without a node, 5 of the 7 GC specs still run.** The other two skip with
+  `there are currently no ready, schedulable nodes`, which is a precondition,
+  not a failure of this control plane.
+
 ## WASM chunks and the 64MiB cap
 
 Five chunks are built into `packages/k8flare-worker/assets/wasm/`:

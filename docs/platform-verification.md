@@ -5965,3 +5965,245 @@ poke and resets the backoff"` が旧挙動を明示的に assert していた。
 
 **未検証**: 本番でのアラーム実数の変化。S26b の 65,000 回/月は本番の実測値
 なので、修正後に同じ条件で測り直すまでは「直った」とは言えない。
+
+## S41: gracefuldelete の 4 ガードのコストを実測した (2026-09-11、本番)
+
+`TODO.md` P2-1 が「rows-read のコストが未計測」と残していた分。
+`docs/known-issues.md` は 4 ガードを「動くが偶発的複雑性」と書いていたが、
+値が無いままでは撤去の優先度を判断できない。
+
+**測り方**: 本番のテナントクラスタで 10 Pod の ReplicationController を作り、
+`--cascade=foreground` で削除。その前後 100 秒を `wrangler tail` で全件取得し、
+Durable Object へのリクエストを URL 形状で分類した。
+
+**結果(削除 1 回あたり)**:
+
+| 指標 | 実測 |
+|---|---|
+| 捕捉イベント総数 | 1,225 |
+| DO への LIST | **440** |
+| DO への単一キー操作 | 345 |
+| LIST された異なるリソース種別 | **27**(名前空間付きリソースのほぼ全て) |
+
+内訳の上位は pods 31、jobs 22、persistentvolumeclaims 20、resourceclaims 20、
+services 19、replicasets 19、events 18、replicationcontrollers 18。
+**削除された Pod と何の関係も無いリソースが軒並み同じ回数だけ LIST されている**
+のが、`sweepOrphanStragglers` / `blockingDependent` /
+`CountPendingGracefulDeletions` が `namespacedStores` を総なめする実装の指紋である
+(`pkg/apiserver/gracefuldelete.go:121, 310`)。ストア数は 28。
+
+**意味**: 10 Pod を消すのに DO LIST 440 回は、upstream の garbage collector が
+自分のグラフで済ませる処理に対して不釣り合いに大きい。DO の LIST は
+rows-read として課金されるので、これは金額としても効く。ガード撤去
+(設計 Stage 5)の価値がこれで数値化された。
+
+**未計測**: ガードを外した場合の同条件の値。撤去自体が upstream GC
+conformance での確認を前提にしており、Actions の枠が尽きているため未実施。
+
+### S41 続き: pending-deletions の走査を「書き込みが無ければ省く」ようにした
+
+S41 で測った 440 LIST のうち、恒常的に効いていたのは
+`/internal/pending-deletions` の側だった。`hasUnconvergedWork()` は
+**アラームのたびに**これを呼び、ハンドラは
+`CountPendingGracefulDeletions` で **28 の名前空間付きストアを全名前空間
+にわたって LIST** する(`pkg/apiserver/gracefuldelete.go:308`)。
+S40 の修正前(平均 40 秒間隔)なら 1 日あたりおよそ 6 万回の LIST、
+修正後(上限 600 秒)でも未収束の間は 1 日およそ 4,000 回になる。
+
+**修正**: 削除は書き込みを通してしか現れず、書き込みは必ずクラスタの
+リビジョンを進める。したがって**前回「保留ゼロ」と答えた時点から
+リビジョンが動いていなければ、走査せずにゼロと答えてよい**。
+Controllers DO が Cluster DO の `/revision` を 1 回読んで判断する。
+保留が 1 つでもあればキャッシュしない(次回も必ず走査する)。
+
+安全性: リビジョンは単調増加で、あらゆる書き込みを覆う。判定に使うのは
+「前回ゼロだった時のリビジョンと同一か」だけなので、取りこぼしは
+「リビジョンが読めない」場合だけで、そのときは従来どおり走査する。
+
+テストは 3 本追加した(リビジョン不変なら 1 回で済む / 動いたら再走査する /
+保留があればキャッシュしない)。最適化を外すと
+`expected undefined to be 1` で落ちる。
+
+**未計測**: 本番での LIST 数の減少。S41 と同じ手順で測り直すのが筋だが、
+このセッションでは未実施。
+
+### S41 続き 2: 最適化の本番実測 — 効果は限定的で、効いたのは S40 のほう
+
+上の最適化(リビジョン不変なら pending-deletions を走査しない)を本番へ
+デプロイし(version 46f38ea9)、S41 と同一手順で測り直した。
+
+| 指標 | 最適化前 (S41) | 最適化後 |
+|---|---|---|
+| DO LIST | 440 | **388** |
+| DO 単一キー操作 | 345 | 329 |
+| Pod 以外の LIST | 409 | 351 |
+
+**12% 減にとどまる**。削除処理の最中はコントローラーが書き続けてリビジョンが
+進むため、キャッシュが(正しく)無効化され続けるからである。この最適化が
+効くのは「最後の書き込みからパークするまで」の窓だけで、そこは元々短い。
+`docs/platform-verification.md` の一つ前の節で「1 日あたり約 4,000 回の LIST」
+と見積もったが、**その見積もりは未収束クラスタでの実測と合わない**ので撤回する。
+
+**別に測って効果が確認できたのは S40(backoff のリセット)のほう**。
+ノードの無いクラスタに収束しない Deployment を置いて 5 分観測した結果:
+
+```
+alarms: 2   DO lists: 238   pending-deletions probes: 4
+```
+
+アラーム 2 回 = 平均間隔およそ 150 秒。S26b が測った「平均およそ 40 秒」なら
+同じ 5 分で 7 回前後になるはずで、backoff が実際に伸びている。ただし
+**S26b の 65,000 回/月と直接比較できる長時間の測定はまだ行っていない**。
+
+**判断**: 最適化自体は正しく、安全側に倒してあり、害は無いので残す。ただし
+「28 LIST/tick を削った」という説明は誇張だった。foreground 削除の 440 LIST を
+実際に減らしたいなら、効くのはガードそのものの撤去(設計 Stage 5)であって
+呼び出し回数のキャッシュではない。
+
+## S42: conformance をローカルで回せるようにした — Actions を待たずに Definition of Done の一部を検証できる (2026-09-11)
+
+Fable のレビューが「conformance は maintainer のディスパッチ専用で、
+コントリビューターが Definition of Done に到達する経路が無い」と指摘した点と、
+Actions の枠が尽きて `e2e-conformance.yml` が一切走らなくなった状況の、
+両方に効く。
+
+**やったこと**: upstream の e2e.test を darwin/arm64 版で取得し
+(`https://dl.k8s.io/v1.36.3/kubernetes-test-darwin-arm64.tar.gz`、
+go.mod のピンと同じバージョン)、自己署名 TLS を終端する小さな node プロキシを
+`wrangler dev` の前に置き、k8flare-agent を特権 Docker コンテナで走らせて
+ノードを 1 台 join させた。macOS 上で追加のインフラは要らない。
+
+```
+Ran 6 of 7579 Specs in 180.329 seconds
+SUCCESS! -- 6 Passed | 0 Failed | 0 Pending | 7573 Skipped
+```
+
+required の GC フォーカス(`e2e-conformance.yml` の `GC_FOCUS` をそのまま使用)が
+**全件通る**。ノードが無い状態でも 7 件中 5 件は走り、残り 2 件は
+`there are currently no ready, schedulable nodes`(前提条件)で止まる。
+つまりノード無しでも大半は検証できる。
+
+Pod は実際には Running にならない(OrbStack 上のエミュレートされた amd64
+コンテナ内の入れ子 containerd で `seccomp is not supported`)。GC の
+conformance はオブジェクトのライフサイクルを見るので、これで支障は無い。
+
+### 設計 Stage 5(ガード撤去)への適用
+
+`FinishUnblockedForegroundOwners` を無効化して同じフォーカスを 3 回回した:
+
+| 回 | 結果 | 所要 |
+|---|---|---|
+| 1 | 6 Passed / 0 Failed | 101 秒 |
+| 2 | 6 Passed / 0 Failed | 127 秒 |
+| 3 | 6 Passed / 0 Failed | 186 秒 |
+
+ガード有りの基準は 180 秒。**このガードは upstream の GC conformance に
+関する限り不要である**ことが、初めて実測で示された。
+
+**ただし撤去しても S41 の 440 LIST は減らない**。ガード別に数えると:
+
+| ガード | List 呼び出し |
+|---|---|
+| `sweepOrphanStragglers` | 1(全ストア走査) |
+| `blockingDependent` | 1(全ストア走査) |
+| `CountPendingGracefulDeletions` | 1(全ストア走査) |
+| `RejectCreateWithTerminatingController` | 0 |
+| `FinishUnblockedForegroundOwners` | **0** |
+
+コストを減らしたいなら狙うべきは前の 3 つで、そちらは正しさに直接効いている
+(foreground 削除が依存を待つのはまさに `blockingDependent`)。
+`FinishUnblockedForegroundOwners` の撤去は複雑さの削減であって節約ではない。
+
+**この実験では撤去していない**。設計 Stage 5 は各シナリオ 30 回以上と本番での
+確認を求めており、3 回のローカル実行はそれを満たさない。撤去して良いという
+根拠が初めて手に入った、というのが正確な現状である。
+
+### S42 訂正 (2026-09-11、同日): ローカルで回していた GC は 7 件中 6 件だった
+
+上の S42 は「required の GC フォーカスが全件通る」と書いたが、**フォーカスの
+抽出を間違えており、7 spec のうち 6 spec しか選択できていなかった**。
+
+原因: `e2e-conformance.yml` の `GC_FOCUS` はシェルのシングルクォート文字列で、
+アポストロフィが `'\''` というシェルのエスケープ形で書かれている
+(`owner that'\''s waiting for dependents`)。これをそのまま正規表現として
+渡していたため、その 1 件だけマッチしなかった。`ginkgo.dry-run` で
+「Will run 6 of 7579」と出ていたのを見落としていた(CI のログは 7 件を
+走らせている)。
+
+**欠けていたのは本命のテストだった**: `should not delete dependents that have
+both valid owner and owner that's waiting for dependents to be deleted`。
+2026-09-09 の run 34390383167 と 34398403238 で kcm-dw が落ちたのはまさに
+これで、`garbage_collector.go:795` の 90 秒予算超過だった(S34 追記)。
+
+`'\''` を `'` に直すと `Will run 7 of 7579` になる。S42 の
+「6 Passed / 0 Failed」は**6 spec に対する結果**であり、required フォーカス
+全体の結果ではない。`docs/development.md` に書いたレシピも、フォーカスを
+ワークフローからコピーする際にこのエスケープを戻す必要がある旨を補う。
+
+ガード撤去の 30 回反復も 6 spec の焦点で回し始めていたため、破棄して
+7 spec でやり直した。
+
+### S43 (2026-09-11): 実験用のガード無効化が main に漏れた — 経緯と影響範囲
+
+P2-1(gracefuldelete の手書きガードを撤去できるか)を測るため、
+`FinishUnblockedForegroundOwners` の先頭に `if true { return }` を注入して
+ローカル conformance を反復していた。この注入を**メインの作業ツリーで行い**、
+そのまま `git add -A` したため、`2d36bb3 "docs: show how to run upstream
+conformance without CI"` という docs コミットに 4 行が紛れて main に入り、
+push された。commit の stat を見るまで気づかなかった。
+
+`f0ab022` で revert 済み。
+
+**本番には届いていない。** 二通りで確認した:
+
+1. 時系列。最後の deploy は 11:27:16Z。`gracefuldelete.go` は 11:39:47Z の
+   コミット `cc5dc6e` の時点ではまだ無傷で(同コミットは当該ファイルを含まない)、
+   注入はその後・12:02:52Z のコミットまでの間に行われた。deploy はそれより
+   少なくとも 12 分早い。
+2. 実挙動。本番クラスタで ReplicationController(replicas=2)を
+   `--cascade=foreground` で削除したところ **5 秒**で完了し、Pod も RC も
+   残らなかった。ガードが無効なら S36 の GC リトライ待ちになる。
+
+**ビルド成果物の側。** `packages/k8flare-worker/assets/wasm/` は gitignore
+されているので、追跡対象のソースを戻した `b9df0cb` で git 上の main は
+完全に無傷になった。しかしディスク上の成果物はガード無効版のままで、
+しかも `make deploy` / `npm run deploy` は **wasm を再ビルドしていなかった**
+(`deploy: nodes-agent`、レシピは mirror 生成 → 2 つの check → `wrangler
+deploy` のみ)。つまり Go を書き換えてそのまま deploy すると、その変更が
+入っていない古いチャンクが出荷される。今回は幸い「無効化されたガード」を
+出荷する側に倒れていた。`deploy: wasm nodes-agent` に直し、npm 側にも
+`make wasm` を挟んだ。Make のファイル依存でソース無変更なら即スキップする
+ので、通常時のコストはない。
+
+**手順上の原因と対策。** 同種の事故(サブエージェントがメインのツリーで
+作業し、別ブランチのマージに紛れ込む)はこのセッションで 2 度目。ソースを
+書き換える実験は必ず `git worktree` で隔離する。docs/development.md に
+明記した。
+
+**run 6 の失敗が示唆すること(未確証)。** 7 spec 版の反復は 5 回成功したあと
+run 6 で BeforeSuite が 900 秒のタイムアウトに掛かった。所要時間は
+253s → 585s → 899s と単調に悪化しており、実行終了の 48 分後になっても
+`wrangler dev` のログには削除済み Pod への GET 404 が流れ続けていた。
+ガードの doc comment が言う「GC が拒否された finalizer パッチをリトライする
+コスト」(S36)がそのまま出た形に見える。
+
+**測り直す前に、止めた時点の計測で決着がついた。** run 6 が死んでから
+66 分後、テストは 1 つも走っていない状態で `wrangler dev` のログは
+**毎分 451 行**増え続けていた。直近 2000 行の内訳は 1260 件が
+`GET /api/v1/namespaces/gc-8627/pods/<name>` の **404**、200 OK はわずか
+29 件。そして `gc-8627` という namespace は**もう存在しない**
+(`kubectl get ns` はシステムの 4 つだけ)。実 GC が、消えた namespace の
+消えた Pod を永久に GET し続けていた。
+
+これはコスト不変条件 #1(アイドル時はストレージ代のみ)の破壊であり、
+「foreground 削除が遅くなる」どころではない。**P2-1 の結論: ガードは
+P0-4(pump window の再設計)が入るまで撤去できない。** 撤去した場合の実測
+コストは、収束不能になったクラスタで毎分 451 リクエスト = 1 日あたり約 65 万
+リクエスト。
+
+限定事項を 2 つ。(a) run 6 は `timeout` で強制終了したので e2e フレーム
+ワークの cleanup が走っておらず、正常終了した実行では残骸の形が違う可能性が
+ある。ただし「消えた namespace を無限に GET する」ループ自体は cleanup の
+有無で説明できない。(b) CI で落ちていたのは `garbage_collector.go:795` の
+90 秒予算超過で、これはタイミング依存。ローカルの 5/30 成功は「ローカルでは
+成り立つ」であって CI で通る証明ではない。
