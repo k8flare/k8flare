@@ -5782,3 +5782,47 @@ time="2026-09-11T07:20:10Z" level=info msg="Remotedialer connected to proxy"
 開ける。stub は何もしないため露出するのは資源消費だけだが、hibernation API を
 使っていない(DO ではなくシェル Worker が保持する)点は不変条件 #4 の文言からは
 外れる。トンネル自体が不要なので、本来はエージェントが接続しないのが正しい。
+
+## S39: 本番プローブが初回実行で実在する機能停止を検出した (2026-09-11)
+
+`prod-probe.yml` を初めてスケジュール構成のまま実行したところ **失敗し、
+その失敗が正しかった**。Fable のレビュー(2026-09-11)が最優先に挙げた
+「本番を観測する仕組みが無い」への直接の回答になる事例なので記録する。
+
+### 何が起きたか
+
+```
+prodprobe: FAIL: fewer than 1 pods of "app=k8flare-prodprobe" reached Running
+within 8m0s -- last seen: ...=Pending (Unschedulable: no nodes available to
+schedule pods)
+```
+
+Pod 自体は正しく admission を通っていた(`k8flare.com/compute=containers`
+注釈、`k8flare.com/backend=containers` と `kubernetes.io/hostname=cf--qgpt5`
+の nodeSelector が付与済み)。欠けていたのは NodeVM で、原因は
+**`k8flare-nodevmsmall` の Containers アプリケーションが `provisioning`
+状態**だったこと(`k8flare-nodevmmedium` / `k8flare-nodevmlarge` は `ready`)。
+プローブは既定で tier small を要求する。
+
+### 機構
+
+`wrangler deploy` はノードイメージを毎回ビルドして push するため、
+**デプロイのたびに Containers アプリケーションが再プロビジョニングされ、
+その間 Pod-on-Containers が使えない**。この日は 2 時間で 5 回デプロイして
+おり、その窓が連続していた。2 時間前(06:30Z)の手動プローブ実行が通って
+いたのは、その時点では `ready` だったからで、制御プレーン側の差ではない。
+プロビジョニング完了を待って `ready` に戻ったことを確認済み。
+
+### 帰結
+
+- **プローブは意図どおり働いた**。この停止はローカルのどのゲートにも映らない。
+  `wrangler dev` には Containers アプリケーションという概念が無く、
+  `make test-*` も `e2e-conformance` も BYO ノードか host モードで走る。
+- **ただしこのままだとデプロイ毎に偽アラートが出る**。日次スケジュールと
+  デプロイが重なれば必ず失敗し、運用者は「またか」で無視を学習する。
+  失敗メッセージに前提条件(直近のデプロイで再プロビジョニング中でないか)を
+  明示するか、プロビジョニング中を区別して別の扱いにする必要がある。
+- 派生して分かったこと: テナントクラスタ(`prodprobe`)でも default と同じ
+  挙動で、テナント固有の欠陥ではなかった。当初はテナントの
+  Pod-on-Containers 未対応を疑ったが、default でも同時刻に同じく Pending に
+  なったことで否定した(鵜呑みにせず両方で測った結果)。
