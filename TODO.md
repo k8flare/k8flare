@@ -400,6 +400,24 @@ no drift; all five WASM chunks under the Loader cap (apiserver headroom
 exhausted (see below). Merge once `e2e-conformance.yml` has run green against
 this branch.
 
+### P1-9 `[x]` Two compiled binaries were committed by accident
+
+`k8flare-backup` (34.0 MB) and `prodprobe` (34.6 MB, twice) were committed to
+`main` on 2026-09-11 before `.gitignore` covered them. Untracked and ignored the
+same day; the blobs remain in history.
+
+**Decided 2026-09-11: do not rewrite history.** Measured rather than assumed —
+a fresh clone is **45 MiB** today, and the three blobs are most of it, so a
+rewrite would bring it to roughly 12 MiB. Against that, the project's own audit
+trail cites **24 commit SHAs** in `docs/platform-verification.md` alone, and
+rule 4 exists precisely so those references stay followable. Rewriting
+invalidates every one of them, and every descendant SHA, to save 33 MiB on a
+repository that nobody has cloned yet. That trade is not worth it.
+
+Revisit only if the repository grows another accidental blob — at which point
+one rewrite can clear them all, and should be done *before* the docs accumulate
+more references, not after.
+
 ## Out of scope / deliberately not doing
 
 - `[!]` Replacing the hand-written REST layer with upstream
