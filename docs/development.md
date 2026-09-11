@@ -164,6 +164,15 @@ compiles the ~40MB WASM modules in-process. They're the local stand-in for
 the conformance workflow's dynamic-worker variants on machines that can't
 run a Linux kubelet.
 
+## Experiments that modify source
+
+Run them in a `git worktree`, never in your main checkout. An experiment that
+disables a guard to see what breaks leaves a change that looks like nothing in
+`git status` once you have moved on, and `git add -A` on an unrelated commit
+will carry it to `main` (`docs/platform-verification.md` S43). A worktree also
+lets the experiment keep its own `.wrangler/state`, so it cannot collide with
+a test lane.
+
 ## Running upstream conformance locally
 
 The Definition of Done is `e2e-conformance.yml`, which only a maintainer can
