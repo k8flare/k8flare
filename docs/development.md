@@ -207,6 +207,19 @@ docker run -d --name e2e-node --privileged --cgroupns=private \
   --ginkgo.focus="$(the GC_FOCUS or BASELINE_FOCUS value in e2e-conformance.yml)"
 ```
 
+**What this harness can and cannot stand in for.** It runs the resident WASM
+controllers — there are no host `kube-scheduler` or `kube-controller-manager`
+processes on your laptop, and the recipe passes no `SCHED_DISABLED` /
+`CM_DISABLED` var. So a local run reproduces the `sched-dw` and `kcm-dw`
+variants, which are **advisory** in CI, not the `host` variant that is the
+required gate. For the garbage-collector focus the distinction does not
+matter: the gc dynamic worker runs in every variant, because the host has no
+garbage collector. For anything sig-scheduling it matters a lot — the
+`SchedulerPredicates` specs in `BASELINE_FOCUS` are scheduling-sensitive and a
+single small container node is not the runner CI uses. Treat a local baseline
+failure as "unattributed" until you have run the same focus against `main`
+with the same harness.
+
 **Copying the focus out of the workflow has a trap.** `GC_FOCUS` is a
 single-quoted shell string, so the apostrophe in one spec name is written
 `'\''` — the shell's escape, not part of the pattern. Paste it verbatim into a
