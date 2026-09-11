@@ -322,7 +322,7 @@ suppressed. Left open here because only the create/update/patch paths were
 covered -- delete, deletecollection and the subresources still need the same
 treatment, and none of it is verified against a real `kubectl --dry-run=server`.
 
-### P1-7 `[ ]` `pkg/cfruntime`'s root package cannot be unit-tested
+### P1-7 `[x]` `pkg/cfruntime`'s root package cannot be unit-tested
 
 `handler_js.go`'s `init()` reads `globalThis.context.binding` at program start,
 so merely adding a test file to the package panics with
@@ -331,7 +331,14 @@ first fault shape -- the `toJSResponse` fix that builds the Response in JS
 rather than Go -- has no unit test. Making it testable is a restructure of the
 package's initialisation, not a seam.
 
-Related: the new unit tests run in node, not workerd, so they cover logic and
+**Done 2026-09-11.** `init()` now calls `registerBinding()`, which returns
+false instead of dereferencing an absent `globalThis.context.binding`, so the
+package accepts test files. `toJSResponse` is covered in both directions:
+rebuilding it as a real `Response` (S34's first fault shape) fails the suite
+with "toJSResponse built a Response; it must return plain values so the
+bootstrap can construct one in the request's own context".
+
+**Still open**: the unit tests run in node, not workerd, so they cover logic and
 promise/stream semantics but not input gates, real IoContext teardown or DO
 storage semantics. `@cloudflare/vitest-pool-workers` would close that gap at
 the cost of a dependency.
