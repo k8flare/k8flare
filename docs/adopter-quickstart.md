@@ -67,6 +67,19 @@ fresh deployment replays them harmlessly because there is nothing to
 lose. An existing deployment pulling a *future* destructive tag would
 lose everything, and there is no backup mechanism.
 
+**Guarded since 2026-09-11.** `npm run check:migrations` hashes that block
+and compares it against `packages/k8flare-worker/migrations.sha256`. It runs
+in CI, and `make deploy` / `npm run deploy` run it first and refuse to deploy
+if the block changed. So a `git pull` can no longer carry a destructive tag
+into your deployment unnoticed — accepting one is a separate, deliberate act
+(`npm run check:migrations -- --record` and commit, or
+`K8FLARE_ALLOW_MIGRATION_CHANGE=1` for a single deploy you have reviewed).
+The guard does not protect you if you invoke `wrangler deploy` directly; it
+is wired into the project's own deploy paths, not into wrangler.
+
+There is still no backup or restore mechanism. The guard prevents an
+accidental wipe; it does not let you recover from a deliberate one.
+
 So before every upgrade:
 
 ```sh

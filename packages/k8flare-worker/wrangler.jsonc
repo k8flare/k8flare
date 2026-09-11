@@ -108,6 +108,13 @@
   // deliberate pre-production wipes; a future one would take your data
   // with it. There is no backup mechanism (docs/adopter-quickstart.md).
   // Pin a commit, or fork and review this block, if that matters to you.
+  //
+  // Guarded since 2026-09-11: packages/wasm-build/src/check-migrations.ts
+  // hashes this block and compares it against migrations.sha256. CI fails and
+  // `make deploy` / `npm run deploy` refuse if it changed, so a pull cannot
+  // carry a destructive tag into your deployment unnoticed. Accepting a change
+  // is a separate, deliberate act (`npm run check:migrations -- --record`, or
+  // K8FLARE_ALLOW_MIGRATION_CHANGE=1 for one reviewed deploy).
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["Etcd"] },
     {

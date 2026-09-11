@@ -79,6 +79,13 @@ jobs:
       - name: TypeScript check
         run: vp check
 
+      # A changed Durable Object migrations block can destroy every cluster's
+      # state on the next deploy, and `wrangler deploy` applies it without
+      # prompting. Fail here so the change is reviewed rather than noticed
+      # afterwards (packages/wasm-build/src/check-migrations.ts).
+      - name: Check the DO migrations block is unchanged
+        run: npm run check:migrations
+
       # The former workers/nodes was found (2026-07-03) to be invisible to
       # `vp check`'s type-check pass (root cause in its internal "tsgolint"
       # project discovery, never fully chased). A direct `tsc --noEmit`
