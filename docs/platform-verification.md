@@ -5826,3 +5826,46 @@ Pod 自体は正しく admission を通っていた(`k8flare.com/compute=contain
   挙動で、テナント固有の欠陥ではなかった。当初はテナントの
   Pod-on-Containers 未対応を疑ったが、default でも同時刻に同じく Pending に
   なったことで否定した(鵜呑みにせず両方で測った結果)。
+
+### S39 訂正 (2026-09-11、同日): プロビジョニング説は誤り。Pod-on-Containers が本番で壊れている
+
+上の S39 は「`k8flare-nodevmsmall` が `provisioning` だったから」で説明を
+閉じたが、**これは誤りだった**(rule 2 に照らせば、`ready` に戻った状態で
+測り直す前に結論を書いた時点で踏み外している)。`ready` を確認してから
+プローブを再実行しても、同じ `Unschedulable: no nodes available` で失敗した。
+
+### 測り直して分かったこと
+
+当初「スケジューラ DO が一度も呼ばれていない」と書いたのも誤りで、
+これは `wrangler tail --search "cf-containers-scheduler"` というログ本文
+検索のフィルタが狭すぎただけだった。entrypoint 別に数え直すと、
+`k8flare.com/compute=containers` の Pod を 1 つ作った 75 秒の窓で:
+
+```
+CFContainersScheduler: 5 件 (すべて outcome=ok、うち 1 件は nodes.internal/)
+NodeVMSmall:           2 件 (すべて outcome=canceled)
+```
+
+つまり **poke は届き、スケジューラは動き、NodeVM DO まで到達しているが、
+NodeVM 側のリクエストが `canceled` で終わっている**。例外もログも出ない。
+Pod は 4 分間 Pending のまま、Node は 0 のままだった。
+
+`canceled` は S31 / S34 で追いかけたのと同じ形 —— リクエストが死んだ後も
+続くはずの作業が打ち切られる —— に見えるが、**同一視できる根拠はまだ無い**。
+NodeVM の起動経路に絞った計測が要る。
+
+### この欠陥の位置づけ
+
+Pod-on-Containers は k8flare 固有の機能で、conformance がゲートしている
+制御プレーンの一部ではない(e2e は BYO ノードか host モードで走る)。
+Fable のレビューもここは指摘していない。プローブがこれに依存していたのは、
+BYO VM を用意せずにノードを得る手段として便利だったからにすぎない。
+
+したがって:
+
+1. **Pod-on-Containers は本番で動作しない**ものとして扱う(未解決、TODO 行き)。
+2. **プローブをこの機能から切り離す**。S30 の実際の症状は「最初の list は
+   返すが `kubectl scale` を数分無視する」というコントローラー層の失敗で、
+   それを見るのに Pod が Running になる必要はない。Deployment →
+   ReplicaSet → Pod オブジェクト生成と observedGeneration の追従まで見れば、
+   計算資源を持たないクラスタでも同じ欠陥を検出できる。
