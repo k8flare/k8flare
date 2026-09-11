@@ -54,3 +54,14 @@ func TestTheUserAgentReachesTheServer(t *testing.T) {
 		t.Errorf("server saw User-Agent %q, want it to contain %q", got, "k8flare-prodprobe/42")
 	}
 }
+
+func TestWarmupBudgetIsSeparateFromTheSteadyStateBudget(t *testing.T) {
+	cfg, err := parseFlags([]string{"-url", "https://x.example", "-token", "t", "-parking=false"})
+	if err != nil {
+		t.Fatalf("parseFlags: %v", err)
+	}
+	if cfg.warmupTimeout <= cfg.runningTimeout {
+		t.Errorf("warmupTimeout=%s must exceed runningTimeout=%s: the first convergence after a deploy waits for ~44MB of controller WASM to compile, and giving it the steady-state budget made the probe fail for 8 minutes on a control plane that was merely cold",
+			cfg.warmupTimeout, cfg.runningTimeout)
+	}
+}
