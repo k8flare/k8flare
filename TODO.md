@@ -342,12 +342,22 @@ the wedge by dropping the close deliberately. Each passes it per invocation as
 `wrangler dev --var`, so nothing about it lives in a deployment.
 
 What was missing was the guard. `packages/wasm-build/src/check-test-vars.ts`
-now refuses to deploy if `wrangler.jsonc` declares any fault-injection var
-(`PUMP_WINDOW_DROP_CLOSE`, `KCM_DISABLED`), wired into `npm run deploy`,
+now refuses to deploy if `wrangler.jsonc` declares any harness-only var, wired
+into `npm run deploy`,
 `make deploy` and `ci.yml` alongside the migrations check. Verified both ways:
 it passes on `main` and fails with the var added. It does not — and cannot —
 catch a deliberate `wrangler secret put` of the same name; the accident it is
 built for is a test invocation's `--var` being copied into a config.
+
+The guard covers three more names than P2-5 asked for, because the same
+accident has the same consequence for all of them: `KCM_DISABLED`,
+`SCHED_DISABLED` and `CM_DISABLED` are harness kill switches that let a host
+process stand in for a resident controller. Checked 2026-09-11 that all four
+appear only as per-invocation `--var` in test lanes and `e2e-conformance.yml`,
+never as deployment configuration, so the guard cannot block a legitimate
+deploy. Unlike the fault knob they do not corrupt behaviour, they remove a
+controller -- the error message says so rather than calling them all fault
+injection.
 
 ### P2-6 `[~]` `deps-k3s-update` is failing on `main`
 
