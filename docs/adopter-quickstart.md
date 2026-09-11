@@ -1,5 +1,8 @@
 # Adopter quickstart
 
+> Read [known-issues.md](known-issues.md) first — it is the two-minute list of
+> what is broken or unproven today.
+
 Read this before deciding to run k8flare. It answers the questions the
 rest of the docs assume you already know, and states the limits plainly.
 
