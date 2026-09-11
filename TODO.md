@@ -164,7 +164,7 @@ batch or schedule rather than hand-dispatching.
 
 **Acceptance.** ~10 consecutive green dw runs, or a root cause for each red.
 
-### P1-3 `[~]` The most platform-fragile code has no unit tests
+### P1-3 `[x]` The most platform-fragile code has no unit tests
 
 **Problem.** Every `_test.go` lives in `pkg/apiserver` and drives a real
 `wrangler dev`. `pkg/cfruntime` — pump windows, the JS boundary, promise
@@ -180,6 +180,24 @@ lifecycle).
 
 **Acceptance.** The S31 and S34 fault shapes are each covered by a unit test
 that fails when the fix is reverted. TS tests run in `ci.yml`.
+
+**Done 2026-09-12, and the acceptance criterion was checked by actually
+reverting each fix** in a throwaway worktree rather than by reading the tests:
+
+| Fix reverted | Tests that failed |
+|---|---|
+| S31 — `EnvFromContext`'s fallback to the open pump window (`pkg/cfruntime/cloudflare/env.go`) | `TestEnvFromContextFallsBackToTheOpenWindow`, `TestBindingFromContextResolvesOnTheOpenWindow` |
+| S34 first shape — `toJSResponse` returning plain values instead of a `Response` | `TestToJSResponseReturnsPlainValuesNotAResponse` |
+| S34 second shape — no body on the Fetch spec's null-body statuses | `TestToJSResponseSendsNoBodyForBodilessStatuses` |
+
+Each mutation failed only its own tests, so they discriminate rather than
+tripping on any change. Coverage now stands at 17 Go unit tests across
+`pkg/cfruntime` (3), `pkg/cfruntime/cloudflare` window registry (9) and env
+resolution (5), plus 50 TypeScript tests; `make test-ts` runs in `ci.yml`
+(line 109). One of those TS tests was itself flaky and was fixed the same day
+— it compared an alarm interval against the 600s ceiling using a timestamp
+sampled before the call, so it failed by exactly 1ms whenever the call was
+slow enough.
 
 ### P1-4 `[x]` Destructive DO migrations replay on deploy
 
