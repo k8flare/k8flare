@@ -112,7 +112,51 @@ const windowHandoffAttempts = 2
 // window's lifetime by design. See docs/platform-verification.md S36.
 const responseHeaderDeadline = 10 * time.Second
 
+// tracedComponent names the controller a request came from, taken from the
+// User-Agent client-go already sets. restclient.AddUserAgent builds
+// DefaultKubernetesUserAgent() + "/" + name, so the name is the LAST
+// segment, not the first -- reading it from the front yields "js", which
+// is what os.Args[0] is under wasm.
+func tracedComponent(req *http.Request) string {
+	ua := req.Header.Get("User-Agent")
+	if ua == "" {
+		return "unknown"
+	}
+	if i := strings.LastIndex(ua, "/"); i >= 0 && i+1 < len(ua) {
+		return ua[i+1:]
+	}
+	return ua
+}
+
+// traceIssuedWrite records a write leaving this isolate. Only writes, and
+// only when tracing is on: reads and watches are the bulk of the traffic
+// and none of them is what an "acted" boundary means.
+//
+// Its point is the clock. The commit boundary is stamped by the shell
+// Worker and the observed boundary by Go, in different isolates, and
+// Workers' Date.now() freezes at the last I/O -- so subtracting one from
+// the other measured -888ms in production (S46). This boundary shares a
+// clock with observed, which makes the controller's own write-to-see-it
+// loop measurable where it actually runs.
+func isTracedWrite(req *http.Request) bool {
+	switch req.Method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	}
+	return false
+}
+
+func traceIssuedWrite(req *http.Request) {
+	if !isTracedWrite(req) {
+		return
+	}
+	cloudflare.PumpTrace("issued."+strings.ToLower(req.Method), tracedComponent(req), req.URL.Path, "")
+}
+
 func (t *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if cloudflare.PumpTraceEnabled() {
+		traceIssuedWrite(req)
+	}
 	body, err := readRequestBody(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch: read request body: %w", err)
