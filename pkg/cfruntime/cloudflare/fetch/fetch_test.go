@@ -371,3 +371,42 @@ func TestWithBindingNeedsNoWindow(t *testing.T) {
 		t.Fatalf("Content-Type = %q", got)
 	}
 }
+
+func TestTracedComponentComesFromTheUserAgent(t *testing.T) {
+	for ua, want := range map[string]string{
+		// The real shape: restclient.AddUserAgent appends the component
+		// name to DefaultKubernetesUserAgent(), which under wasm starts
+		// with os.Args[0] == "js".
+		"js/v0.0.0 (js/wasm) kubernetes/$Format/kube-controller-manager": "kube-controller-manager",
+		"js/v0.0.0 (js/wasm) kubernetes/$Format/kube-scheduler":          "kube-scheduler",
+		"js/v0.0.0 (js/wasm) kubernetes/$Format/garbage-collector":       "garbage-collector",
+		"plain": "plain",
+		"":      "unknown",
+	} {
+		req, _ := http.NewRequest(http.MethodPut, "https://x/api/v1/pods/p", nil)
+		if ua != "" {
+			req.Header.Set("User-Agent", ua)
+		}
+		if got := tracedComponent(req); got != want {
+			t.Errorf("tracedComponent(%q) = %q, want %q", ua, got, want)
+		}
+	}
+}
+
+func TestOnlyWritesAreTracedAsIssued(t *testing.T) {
+	// Reads and watches are the bulk of a controller's traffic and none of
+	// them is an action; tracing them would make the boundary useless and
+	// the log volume unbounded.
+	for _, m := range []string{http.MethodGet, http.MethodHead, http.MethodOptions} {
+		req, _ := http.NewRequest(m, "https://x/api/v1/pods", nil)
+		if isTracedWrite(req) {
+			t.Errorf("%s is traced as an issued write", m)
+		}
+	}
+	for _, m := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		req, _ := http.NewRequest(m, "https://x/api/v1/pods", nil)
+		if !isTracedWrite(req) {
+			t.Errorf("%s is not traced as an issued write", m)
+		}
+	}
+}
