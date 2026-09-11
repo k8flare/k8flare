@@ -287,7 +287,11 @@ S44). Done:
   Worker, not just unit-tested: request 161 / commit 38 / observed 6 lines for
   one Namespace plus a 2-replica ReplicationController.
 - Attribution works: each `observed` line names the pump window it arrived in.
-  Measured commit → informer observed at **4–29 ms**.
+  Measured commit → informer observed at 4–29 ms **under `wrangler dev` only**.
+  That figure does not hold in production: the two boundaries are stamped in
+  different isolates and Workers' clocks disagree (S46). The production figure
+  that does hold is `issued` → `observed`, both on the Go clock: **82–93 ms**
+  (S49).
 - All four resident components emit observations, not just KCM: `kcm`, `sched`,
   `clusterop`, and `gc/<resource>` split per GVR, which shows exactly which
   resource kinds the real garbage collector walks (the 27 kinds S41 measured).
