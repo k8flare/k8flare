@@ -35,14 +35,28 @@ export default {
   // invisible exactly where it matters (S45).
   tail(events: TraceItem[]): void {
     for (const event of events) {
+      // Only the measurement, not everything the controllers say. A single
+      // ReplicationController produced 1,545 relayed lines when this
+      // forwarded them all -- mostly reflector reconnect warnings, which
+      // are the pump-window model working as designed.
+      let relayed = 0;
+      let firstDropped = "";
       for (const log of event.logs ?? []) {
-        // Only the measurement, not everything the controllers say. A
-        // single ReplicationController produced 1,545 relayed lines when
-        // this forwarded them all -- mostly reflector reconnect warnings,
-        // which are the pump-window model working as designed.
         const line = log.message.join(" ");
-        if (line.startsWith("pumptrace ")) console.log(line);
+        if (line.startsWith("pumptrace ")) {
+          console.log(line);
+          relayed++;
+        } else if (!firstDropped) {
+          firstDropped = line.slice(0, 120);
+        }
       }
+      // Without this, "the relay is alive but the worker said nothing we
+      // want" and "the relay is delivering nothing at all" look identical
+      // from the outside -- which is exactly the ambiguity that cost a
+      // production measurement window (S45).
+      const dropped = (event.logs?.length ?? 0) - relayed;
+      if (dropped > 0)
+        console.log(`dw dropped=${dropped} relayed=${relayed} first=${firstDropped}`);
       // Exceptions are rare, and a dynamic worker throwing where nobody
       // can see it is the shape of S30: six weeks of controllers doing
       // nothing, with every local gate green.
