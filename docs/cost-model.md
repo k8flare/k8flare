@@ -1377,3 +1377,47 @@ docs/adopter-quickstart.md にトレードオフとして書いた。
 
 **未実測**: 本番(`workers.dev`)での isolate 数あたりの実効レートと、
 cost-gate の rows read への寄与。
+
+## pump window 境界のトレース (estimate + actual, 2026-09-12 — 不変条件 #5)
+
+P0-4 Stage 0 の計装(`PUMP_TRACE`)。不変条件 #5 に従い、実装前ではなく
+実装と同時に見積もりと実測を置く——挙動を変えない観測であり、既定で
+無効だからである。
+
+**既定(var 未設定)= 追加コスト 0。**
+
+| 境界 | 未設定時に払うもの |
+|---|---|
+| request | `env.PUMP_TRACE === "1"` の比較 1 回 |
+| commit | 同上 |
+| observed | **なし**。informer の event handler を登録しない |
+
+3 番目が重要で、早期 return するハンドラでも client-go は
+「オブジェクト数 × イベント数」だけ呼び出す。登録しないことが唯一の
+コスト 0。全テストレーン(54 TS + 全 Go)を var 未設定で通したときの
+`pumptrace` 出力は 0 行(docs/platform-verification.md S44)。
+
+**有効時の単価。** 出力は Workers Logs のみ、DO storage への書き込みは
+一切増えない。したがって rows written は増分 0、alarm も増分 0。増えるのは
+ログ行数と、その分の CPU 時間だけ。
+
+実測(`wrangler dev`、Namespace 1 + replicas=2 の ReplicationController を
+作って約 40 秒):
+
+| 境界 | 行数 |
+|---|---|
+| request | 161 |
+| commit | 38 |
+| observed (kcm) | 6 |
+
+1 Pod を作って収束させる往復で概ね 100 行弱。Workers Logs の無料枠は
+1 日 20 万行(2026-09 時点)なので、**有効にしたまま放置できるのは
+おおよそ 1 日 2,000 回の Pod 収束まで**。恒常的に有効化する想定ではなく、
+測定したい期間だけ deploy で入れて外す運用を前提にする。
+
+**アイドル時に有効な場合。** アイドルなら commit も observed も起きず、
+request も来ないので行数は 0。つまり有効化しても不変条件 #1 は壊れない
+——壊れるとしたらログ側の料金だけで、それも traffic がある間に限る。
+
+**未実測**: 本番での CPU 時間増分と、Workers Logs の実課金。informer 境界を
+gc / sched / clusterop へ広げたときの行数(現在は KCM の Pod のみ)。
