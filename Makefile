@@ -26,7 +26,7 @@ CAP := 67108864 # the Worker Loader's 64MiB total-module-bytes cap (S14 Part 2)
 # Every wasm entrypoint links pkg/cfruntime (the JS dispatch shim); it was
 # missing from all four lists until 2026-07-21, silently leaving chunks
 # stale after cfruntime-only edits.
-CFRUNTIME_SRC := $(shell find pkg/cfruntime -name '*.go')
+CFRUNTIME_SRC := $(shell find pkg/cfruntime -name '*.go' -not -name '*_test.go')
 APISERVER_SRC := $(shell find pkg/apiserver -name '*.go') $(CFRUNTIME_SRC) go.wasm.mod
 # KCM_SRC excludes pkg/controllers/gc and its cmd/gc-wasm entrypoint: they
 # share the pkg/controllers/cmd parent directory but not a package with
