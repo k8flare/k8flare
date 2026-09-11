@@ -199,8 +199,15 @@ block against `migrations.sha256`, runs in CI and ahead of `make deploy` /
 `npm run deploy`, and refuses when it changed. Verified both directions: adding
 a `deleted_classes` tag exits 1 with the recorded and actual hashes, the
 override env var passes it, reverting passes again. It does not cover a direct
-`wrangler deploy`, which is documented. **Still open**: there is no backup or
-restore path, so the guard prevents an accident but cannot undo one.
+`wrangler deploy`, which is documented.
+
+**Backup added 2026-09-11**: `cmd/k8flare-backup dump|restore` walks discovery
+and round-trips every served object. Verified against the real deployment — 21
+objects dumped, the namespace deleted, then restored with ConfigMap data,
+labels and Deployment replicas intact. **Still open**: it cannot cover the CA
+keypairs or the token vault, which live in Durable Object facets the
+Kubernetes API does not serve, so a restore into a fresh deployment returns
+workloads but not cluster identity. Nothing schedules it.
 
 **Acceptance.** An operator who pulls and deploys cannot lose cluster state
 without an explicit, separate action. A documented way to export and restore a
