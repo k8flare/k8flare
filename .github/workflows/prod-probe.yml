@@ -68,16 +68,25 @@ jobs:
           missing=""
           [ -n "$PROBE_URL" ] || missing="$missing K8FLARE_PROBE_URL"
           [ -n "$PROBE_TOKEN" ] || missing="$missing K8FLARE_PROBE_TOKEN"
-          if [ "$PARKING" = "true" ]; then
-            [ -n "$ACCOUNT_ID" ] || missing="$missing CLOUDFLARE_ACCOUNT_ID"
-            [ -n "$API_TOKEN" ] || missing="$missing CLOUDFLARE_ANALYTICS_TOKEN"
-          fi
           if [ -n "$missing" ]; then
             echo "::notice::Production probe skipped -- missing secrets:$missing. A maintainer sets these; see cmd/prodprobe/README.md."
             echo "present=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "parking=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          echo "present=true" >> "$GITHUB_OUTPUT"
+          # The parking assertion needs account analytics; the convergence half
+          # does not. Degrade rather than skip: S30's measured symptom was a
+          # control plane that served the first list and then ignored
+          # `kubectl scale` for minutes, which the convergence half catches on
+          # its own. Skipping the whole run because one optional credential is
+          # absent would have left that undetected for the same six weeks.
+          parking="$PARKING"
+          if [ "$parking" = "true" ] && { [ -z "$ACCOUNT_ID" ] || [ -z "$API_TOKEN" ]; }; then
+            echo "::notice::Running convergence only -- set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_ANALYTICS_TOKEN to also assert the idle-cost invariant."
+            parking=false
+          fi
+          echo "parking=$parking" >> "$GITHUB_OUTPUT"
 
       - name: Probe the deployment
         if: steps.creds.outputs.present == 'true'
@@ -89,7 +98,7 @@ jobs:
           K8FLARE_PROBE_SCRIPT: ${{ vars.K8FLARE_PROBE_SCRIPT || 'k8flare' }}
         run: |
           set -o pipefail
-          go run ./cmd/prodprobe -parking="$PARKING" 2>&1 | tee "$RUNNER_TEMP/probe.log"
+          go run ./cmd/prodprobe -parking="${{ steps.creds.outputs.parking }}" 2>&1 | tee "$RUNNER_TEMP/probe.log"
 
       # The alert. A scheduled workflow that only goes red in a tab nobody
       # opens is not an alert, so a failure files (or comments on) an
