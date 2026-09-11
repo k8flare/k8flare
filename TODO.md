@@ -382,6 +382,24 @@ promise/stream semantics but not input gates, real IoContext teardown or DO
 storage semantics. `@cloudflare/vitest-pool-workers` would close that gap at
 the cost of a dependency.
 
+### P1-8 `[~]` A k3s patch bump is sitting unmerged
+
+`deps/k3s-v1.36.4-k3s1` (from the weekly automation on 2026-09-07) moves the
+pin from k3s v1.36.3 to v1.36.4 and the `k8s.io/*` staging replaces with it.
+It never became a PR because of P2-6's repository setting, so it has been
+sitting on the remote while `main` moved on. A dependency bump that carries
+upstream fixes should not rot.
+
+**Verified locally 2026-09-11** on `deps/k3s-136-4` (that branch with current
+`main` merged in): `make vet`, `make check`, `tsc` clean; `make gen` produces
+no drift; all five WASM chunks under the Loader cap (apiserver headroom
+2,389KiB, down 177KiB from 2,566KiB); `make test-unit`, `test-apiserver`,
+`test-kcm` and `test-clusterop` all pass.
+
+**Not merged**: the Definition of Done is conformance, and Actions capacity is
+exhausted (see below). Merge once `e2e-conformance.yml` has run green against
+this branch.
+
 ## Out of scope / deliberately not doing
 
 - `[!]` Replacing the hand-written REST layer with upstream

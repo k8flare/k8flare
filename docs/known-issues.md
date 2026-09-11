@@ -31,6 +31,7 @@ September 2026 (S31, S34, S39). Assume there are more.
 | The k3s tunnel endpoint is unauthenticated | `/v1-k3s/connect` had to be exempted from the door, because the agent dials with no Authorization header and relies on an mTLS certificate Cloudflare strips. The endpoint is a stub that accepts a socket and does nothing, so what it admits is an idle socket, not a capability — but it is reachable by anyone, and the socket is held by the shell Worker rather than a hibernating Durable Object. | Open, deliberate (`docs/platform-verification.md` S38) |
 | No dynamic storage provisioner | PersistentVolumeClaims stay `Pending`, exactly as on a real cluster with no provisioner configured. PV, PVC and StorageClass exist as CRUD resources. | By design for now (`CLAUDE.md`) |
 | No release tag | There is no tagged version. Pin a commit. | Open |
+| A k3s patch bump is unmerged | `deps/k3s-v1.36.4-k3s1` moves the pin from v1.36.3 to v1.36.4. It passes every local gate with current `main` merged in, but has not been through conformance. | Ready, waiting on CI capacity (`TODO.md` P1-8) |
 
 ## Fixed recently, worth knowing about
 
