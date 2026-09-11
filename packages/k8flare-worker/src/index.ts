@@ -43,8 +43,14 @@ export default {
       let firstDropped = "";
       for (const log of event.logs ?? []) {
         const line = log.message.join(" ");
-        if (line.startsWith("pumptrace ")) {
-          console.log(line);
+        // Not startsWith: Go's log.Printf puts its own "2026/09/11 19:58:37"
+        // in front of every line, so anchoring at the start matched nothing
+        // in production while a substring grep made the local check pass
+        // anyway (S45). Slicing from the marker also drops the duplicate
+        // timestamp -- the trace line carries its own.
+        const at = line.indexOf("pumptrace {");
+        if (at >= 0) {
+          console.log(line.slice(at));
           relayed++;
         } else if (!firstDropped) {
           firstDropped = line.slice(0, 120);
