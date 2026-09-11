@@ -9,7 +9,15 @@ broke (`docs/platform-verification.md` S30/S31).
 One run, against the deployment you point it at:
 
 1. `GET /readyz?verbose=true` must report every component ready.
-2. Create a Deployment; a pod must reach `Running`.
+2. Create a Deployment; the controllers must act on it. By default that
+   means the Pod objects exist and the Deployment's own status catches up --
+   compute is NOT required, so a cluster with no nodes still passes. Pass
+   `-require-running` to demand `Running` instead, which needs a node.
+   The default is deliberate: S30's measured symptom was a control plane that
+   served the first list and then ignored `kubectl scale`, which is a
+   controller failure, and coupling the daily probe to whether compute exists
+   made it fail for an unrelated reason (S39's correction: Pod-on-Containers
+   is currently broken in production).
 3. Scale it to 2; the second pod must reach `Running` too. This step is
    not redundant: S30's measured symptom was a control plane that served
    the first list and then ignored `kubectl scale` for 3+ minutes, which
@@ -30,6 +38,7 @@ One run, against the deployment you point it at:
 go run ./cmd/prodprobe \
   -url https://k8flare.example.workers.dev \
   -token "$CLUSTER_TOKEN" \
+  -compute "" \
   -account "$CLOUDFLARE_ACCOUNT_ID" \
   -api-token "$CLOUDFLARE_ANALYTICS_TOKEN"
 ```
