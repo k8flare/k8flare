@@ -70,28 +70,37 @@ export async function createMeshConnector(
       console.log(`createMeshConnector ${name}: create response had no id`);
       return undefined;
     }
-    const tokenResp = await fetch(
-      `${API_BASE}/accounts/${cfg.accountId}/warp_connector/${id}/token`,
-      {
-        headers: { Authorization: `Bearer ${cfg.token}` },
-      },
-    );
-    if (!tokenResp.ok) {
-      console.log(
-        `createMeshConnector ${name}: token fetch ${tokenResp.status} ${await tokenResp.text()}`,
-      );
+    const token = await meshConnectorToken(env, id);
+    if (!token) {
       await deleteMeshConnector(env, id); // don't leak the half-created connector against the 50-node cap
       return undefined;
     }
-    const tokenBody = (await tokenResp.json()) as { result?: string };
-    if (!tokenBody.result) {
-      console.log(`createMeshConnector ${name}: token response had no result`);
-      await deleteMeshConnector(env, id);
-      return undefined;
-    }
-    return { id, token: tokenBody.result };
+    return { id, token };
   } catch (err) {
     console.log(`createMeshConnector ${name}: ${err}`);
+    return undefined;
+  }
+}
+
+export async function meshConnectorToken(env: Env, id: string): Promise<string | undefined> {
+  const cfg = configured(env);
+  if (!cfg) return undefined;
+  try {
+    const resp = await fetch(`${API_BASE}/accounts/${cfg.accountId}/warp_connector/${id}/token`, {
+      headers: { Authorization: `Bearer ${cfg.token}` },
+    });
+    if (!resp.ok) {
+      console.log(`meshConnectorToken ${id}: ${resp.status} ${await resp.text()}`);
+      return undefined;
+    }
+    const body = (await resp.json()) as { result?: string };
+    if (!body.result) {
+      console.log(`meshConnectorToken ${id}: token response had no result`);
+      return undefined;
+    }
+    return body.result;
+  } catch (err) {
+    console.log(`meshConnectorToken ${id}: ${err}`);
     return undefined;
   }
 }
