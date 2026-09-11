@@ -6288,9 +6288,37 @@ Namespace と replicas=2 の ReplicationController を作ると、三境界す�
 ——識別子がないと、消えていることを証明したい traffic と probe 自身の
 traffic が見分けられない。実 HTTP 往復で server 側に届くことを test で確認済み。
 
-#### まだ Stage 0 に足りていないもの
+#### 四コンポーネント全部に広げた (2026-09-12 追記)
 
-- informer 境界は KCM の Pod だけ。gc / sched / clusterop は未配線。
+ヘルパーを `pkg/pumptrace` という葉パッケージへ出して、四つのエントリポイント
+すべてから使えるようにした。`pkg/controllers` に置いたままだと gc / sched /
+clusterop がそれを import した時点で controller-manager 一式までリンクされる
+(CLAUDE.md のエントリポイント分離の注記、kcm 実測 +4.15MB)。
+
+`wrangler dev --var PUMP_TRACE:1` に Namespace と replicas=2 の
+ReplicationController を与えたときの観測数:
+
+| component | 観測 |
+|---|---|
+| `gc/serviceaccounts` | 10 |
+| `gc/namespaces` | 10 |
+| `sched` | 6 |
+| `kcm` | 6 |
+| `gc/pods` | 6 |
+| `gc/replicationcontrollers` | 4 |
+| `gc/clusters` | 4 |
+| `clusterop` | 4 |
+| `gc/services` / `gc/configmaps` | 2 / 2 |
+
+GC は GVR ごとに `gc/<resource>` として分かれる。実 garbagecollector が
+どの resource を watch しているかがそのまま出るので、S41 で測った
+「foreground 削除 1 回で 27 resource kind に 440 LIST」が、どの kind の
+どの瞬間なのかまで追えるようになる。
+
+チャンクの増分は kcm +3,731 / gc +13,940 / sched +12,596 /
+clusterop +10,577 バイト。cap への余裕は最小の apiserver でも 2,565KiB。
+
+#### まだ Stage 0 に足りていないもの
 - **Loader が起動した dynamic worker の console 出力が本番の Workers Logs /
   `wrangler tail` に届くかは未確認。** 確認したのは `wrangler dev` だけで、
   肝心の `observed` 行はまさにその dynamic worker から出る。これは S31 /

@@ -14,6 +14,8 @@ package gc
 import (
 	"context"
 	"fmt"
+	"github.com/k8flare/k8flare/pkg/cfruntime/cloudflare"
+	"github.com/k8flare/k8flare/pkg/pumptrace"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -130,6 +132,9 @@ func (f *informerFactory) ForResource(gvr schema.GroupVersionResource) (informer
 		resyncPeriod,
 		cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc},
 	)
+	if cloudflare.PumpTraceEnabled() {
+		pumptrace.Observations(sharedIndexInformer, "gc/"+gvr.Resource)
+	}
 	inf := &genericInformer{
 		informer: sharedIndexInformer,
 		lister:   cache.NewGenericLister(sharedIndexInformer.GetIndexer(), gvr.GroupResource()),
