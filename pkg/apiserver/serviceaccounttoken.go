@@ -138,7 +138,7 @@ func handleTokenRequest(w http.ResponseWriter, r *http.Request, cam *CAManager, 
 	}
 	// decodeBody auto-detects JSON vs protobuf -- client-go's typed
 	// clientset sends CreateToken requests as protobuf by default.
-	obj, err := decodeBody(body)
+	obj, err := decodeBody(body, nil)
 	if err != nil {
 		writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to decode TokenRequest: "+err.Error())
 		return

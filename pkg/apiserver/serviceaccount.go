@@ -24,7 +24,7 @@ func ensureDefaultServiceAccount(ctx context.Context, saStore *ResourceStore, na
 			Name:      "default",
 			Namespace: namespace,
 		},
-	})
+	}, nil)
 	if err == nil {
 		return
 	}
@@ -58,7 +58,7 @@ func ensureRootCAConfigMap(ctx context.Context, cmStore *ResourceStore, namespac
 		Data: map[string]string{
 			"ca.crt": "",
 		},
-	})
+	}, nil)
 	if err == nil {
 		return
 	}

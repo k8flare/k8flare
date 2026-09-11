@@ -27,6 +27,10 @@ type ResourceStore struct {
 	namespaced  bool
 	newFunc     func() runtime.Object // creates a new empty object (e.g. &corev1.ConfigMap{})
 	newListFunc func() runtime.Object // creates a new empty list object (e.g. &corev1.ConfigMapList{})
+	// gvk is what this route serves, handed to the body decoder as the
+	// default for a request that omits apiVersion/kind -- see
+	// decodeDefaults.
+	gvk schema.GroupVersionKind
 	// upstream serves the single-object verbs: the real
 	// genericregistry.Store on top of KineStorage (see
 	// upstreamregistry.go). Every resource in apidef.Table goes through
@@ -54,8 +58,40 @@ func NewResourceStore(
 		namespaced:  namespaced,
 		newFunc:     newFunc,
 		newListFunc: newListFunc,
+		gvk:         routeGVK(gv, newFunc),
 		upstream:    NewUpstreamStore(storage, gv, resource, singular, namespaced, newFunc, newListFunc),
 	}
+}
+
+// routeGVK resolves the Kind this route's Go type is registered under in
+// gv. An unregistered type yields the zero value, which decodeDefaults
+// turns back into "no default".
+func routeGVK(gv schema.GroupVersion, newFunc func() runtime.Object) schema.GroupVersionKind {
+	gvks, _, err := Scheme.ObjectKinds(newFunc())
+	if err != nil {
+		return schema.GroupVersionKind{}
+	}
+	for _, gvk := range gvks {
+		if gvk.GroupVersion() == gv {
+			return gvk
+		}
+	}
+	return schema.GroupVersionKind{}
+}
+
+// decodeDefaults is the GroupVersionKind a request body decoded on this
+// route falls back to when it carries no apiVersion/kind of its own.
+// Upstream's create and update handlers pass their route's scope.Kind to
+// the decoder the same way, which is why a real kube-apiserver accepts
+// the TypeMeta-less Events the kube-controller-manager's event
+// broadcaster sends; without it those POSTs answered 400 "Object 'Kind'
+// is missing" and the events they carried were lost (S32).
+func (rs *ResourceStore) decodeDefaults() *schema.GroupVersionKind {
+	if rs.gvk.Empty() {
+		return nil
+	}
+	gvk := rs.gvk
+	return &gvk
 }
 
 // storagePrefix builds the storage prefix for listing resources.
@@ -249,21 +285,26 @@ func selectableFieldsFor(obj runtime.Object) fields.Set {
 // Create persists a new object via the upstream registry (UID/
 // creationTimestamp/generation stamping, generateName, AlreadyExists --
 // all rest.BeforeCreate + genericStrategy).
-func (rs *ResourceStore) Create(ctx context.Context, namespace string, obj runtime.Object) (runtime.Object, error) {
-	return rs.upstreamCreate(ctx, namespace, obj)
+// opts is the caller's own metav1.CreateOptions (dryRun); nil means none.
+func (rs *ResourceStore) Create(ctx context.Context, namespace string, obj runtime.Object, opts *metav1.CreateOptions) (runtime.Object, error) {
+	return rs.upstreamCreate(ctx, namespace, obj, opts)
 }
 
 // Update persists changes via the upstream registry (immutable-field
 // preservation, UID preconditions, generation bump, finalizer-aware
 // deletion completion -- rest.BeforeUpdate + genericStrategy).
-func (rs *ResourceStore) Update(ctx context.Context, namespace, name string, obj runtime.Object) (runtime.Object, error) {
-	return rs.upstreamUpdate(ctx, namespace, name, obj)
+// opts is the caller's own metav1.UpdateOptions (dryRun); nil means none.
+func (rs *ResourceStore) Update(ctx context.Context, namespace, name string, obj runtime.Object, opts *metav1.UpdateOptions) (runtime.Object, error) {
+	return rs.upstreamUpdate(ctx, namespace, name, obj, opts)
 }
 
 // Delete removes one object via the upstream registry and returns the
-// deleted state.
-func (rs *ResourceStore) Delete(ctx context.Context, namespace, name string) (runtime.Object, error) {
-	return rs.upstreamDelete(ctx, namespace, name)
+// deleted state, or -- when opts asks for Orphan/Foreground propagation --
+// marks it terminating and returns it still visible. opts is the caller's
+// own metav1.DeleteOptions (preconditions, grace period, dryRun); nil
+// means an unconditional immediate delete.
+func (rs *ResourceStore) Delete(ctx context.Context, namespace, name string, opts *metav1.DeleteOptions) (runtime.Object, error) {
+	return rs.upstreamDelete(ctx, namespace, name, opts)
 }
 
 // DeleteCollection deletes every object of this resource type in namespace
@@ -272,7 +313,11 @@ func (rs *ResourceStore) Delete(ctx context.Context, namespace, name string) (ru
 // keepName is left alone and omitted from the result (empty = delete
 // everything); the caller uses it to hold back an undeletable object --
 // today only the management Cluster, see clusterprotect.go.
-func (rs *ResourceStore) DeleteCollection(ctx context.Context, namespace, labelSelector, keepName string) (runtime.Object, error) {
+//
+// opts is applied to each item's delete, deep-copied per item because
+// upstream's rest.BeforeDelete mutates what it is given -- the same thing
+// upstream's own Store.DeleteCollection does.
+func (rs *ResourceStore) DeleteCollection(ctx context.Context, namespace, labelSelector, keepName string, opts *metav1.DeleteOptions) (runtime.Object, error) {
 	listObj, err := rs.List(ctx, namespace, "", labelSelector)
 	if err != nil {
 		return nil, fmt.Errorf("store delete collection: list: %w", err)
@@ -292,7 +337,7 @@ func (rs *ResourceStore) DeleteCollection(ctx context.Context, namespace, labelS
 		if keepName != "" && itemMeta.Name == keepName {
 			continue
 		}
-		obj, err := rs.Delete(ctx, namespace, itemMeta.Name)
+		obj, err := rs.Delete(ctx, namespace, itemMeta.Name, opts.DeepCopy())
 		if err != nil {
 			return nil, fmt.Errorf("store delete collection: delete %s: %w", itemMeta.Name, err)
 		}

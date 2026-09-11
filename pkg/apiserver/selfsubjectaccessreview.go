@@ -79,7 +79,7 @@ func handleSelfSubjectAccessReview(w http.ResponseWriter, r *http.Request, authz
 	}
 	defer r.Body.Close()
 
-	obj, err := decodeBody(body)
+	obj, err := decodeBody(body, nil)
 	if err != nil {
 		writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to decode request body: "+err.Error())
 		return
@@ -108,7 +108,7 @@ func handleSubjectAccessReview(w http.ResponseWriter, r *http.Request, authz aut
 	}
 	defer r.Body.Close()
 
-	obj, err := decodeBody(body)
+	obj, err := decodeBody(body, nil)
 	if err != nil {
 		writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to decode request body: "+err.Error())
 		return

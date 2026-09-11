@@ -39,7 +39,7 @@ func handleTokenReview(w http.ResponseWriter, r *http.Request, tokensFn TokensFu
 	}
 	defer r.Body.Close()
 
-	obj, err := decodeBody(body)
+	obj, err := decodeBody(body, nil)
 	if err != nil {
 		writeStatusError(w, http.StatusBadRequest, "BadRequest", "failed to decode request body: "+err.Error())
 		return
