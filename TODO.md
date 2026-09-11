@@ -489,6 +489,33 @@ failure is unattributed on its own. Running the same focus against `main`:
 - main fails one and passes the other → not an average. Inviolable rule #5
   applies: take a second sample of each before concluding anything.
 
+**The comparison came back: environmental.** Same harness, same node, same
+focus, `main` at k3s v1.36.3:
+
+| | specs completed | passed | failed | ended by |
+|---|---|---|---|---|
+| deps/k3s-136-4 (v1.36.4) | 6 in 2400s | 3 | 3 | a 40-minute tool timeout, not the suite |
+| main (v1.36.3) | 4 in 3600s | 2 | 2 | ginkgo's own one-hour suite timeout |
+
+`main` is not better — it completed fewer specs in more time, and it failed
+`SchedulerPredicates` at `predicates.go:1041`, which the bump failed too.
+Neither version got through the focus. The baseline focus is therefore **not a
+usable local signal on this harness**, exactly as the decision rule anticipated,
+and it says nothing for or against v1.36.4.
+
+**Still not merged, and the blocker is not technical.** Inviolable rule #1
+makes conformance CI the Definition of Done, and it cannot run: every job on
+the repository fails in 4 seconds with zero steps. The annotation says why —
+*"The job was not started because recent account payments have failed or your
+spending limit needs to be increased."* This is a **Billing & plans setting on
+the `k8flare` org that a maintainer has to fix**; it is not capacity that
+recovers on its own, and the earlier note in this file that called it
+"exhausted Actions capacity" was wrong about the cause.
+
+The branch is ready: rebased on current `main`, every local gate green, the
+required GC focus 7/7. Merge it as soon as a conformance run can be
+dispatched.
+
 ### P1-9 `[x]` Two compiled binaries were committed by accident
 
 `k8flare-backup` (34.0 MB) and `prodprobe` (34.6 MB, twice) were committed to
