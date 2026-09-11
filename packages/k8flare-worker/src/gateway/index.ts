@@ -25,6 +25,16 @@ function isUnauthenticatedPath(url: URL): boolean {
     p === "/readyz" ||
     p === "/version" ||
     p === "/cacerts" ||
+    // The k3s agent's remotedialer tunnel. It dials with no Authorization
+    // header at all -- ConnectToProxyWithDialer is called with nil headers
+    // and authenticates by mTLS client certificate, which Cloudflare strips
+    // at TLS termination -- so the door rejected every attempt and the agent
+    // retried every 3 seconds forever: about 28,800 billed requests per day
+    // per attached node, measured in production 2026-09-09. The endpoint is
+    // a stub (proxy/remotedialer.ts) that accepts the socket and does
+    // nothing, because kubelet traffic goes over Workers VPC instead, so
+    // what it admits unauthenticated is an idle socket and no capability.
+    p === "/v1-k3s/connect" ||
     p === "/api" ||
     p.startsWith("/openapi/") ||
     /^\/api\/v1$/.test(p) ||

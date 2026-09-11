@@ -5748,3 +5748,37 @@ S33(foreground ガード)・S34(I/O 修正)・S36(poke と window の修正)の
 `unreachable:NoSchedule` の Node へ一時的にバインドする件、ローカルの
 foreground GC が 5 回に 1 回予算近辺になる件の 3 つで、いずれも本番では
 未測定である。設計の Stage 1 以降に着手する前に、この 3 つを本番で測り直す。
+
+## S38: k3s トンネルの 401 ループを止めた (2026-09-11、本番実測)
+
+BYO ノードが接続している間ずっと、`wss://<deploy>/v1-k3s/connect` が 401 を
+返し、エージェントが 3 秒ごとに再試行し続けていた(S30 で 3 分に 65 リクエスト
+を観測)。ノード 1 台につき **1 日あたり約 28,800 の課金対象リクエスト**である。
+
+**原因**: `gateway/index.ts` の door 認証(`isUnauthenticatedPath`)に
+`/v1-k3s/connect` が無かった。一方エージェント側は
+`remotedialer.ConnectToProxyWithDialer(ctx, wsURL, nil, ...)` と**ヘッダを
+nil で渡す**(pinned k3s v1.36.4 の `pkg/agent/tunnel/tunnel.go:369-392`)。
+認証は mTLS クライアント証明書のみで、Cloudflare が TLS 終端で落とすため、
+door を通る材料が何も無かった。`proxy/remotedialer.ts` の doc comment は
+「ここでは認証しない(mTLS だから安全)」と書いていたが、その前段で弾かれて
+いたので**そもそも到達していなかった**。k3s にトンネルを止めるスイッチは無い
+(`DisableAgentTunnel` 等は存在しない)。
+
+**修正**: `/v1-k3s/connect` を `isUnauthenticatedPath` に追加。この
+エンドポイントは stub で、ソケットを受けるだけで何もしない(kubelet 通信は
+Workers VPC を使う)。したがって未認証で許すのは「アイドルのソケット」であり、
+何らかの権限ではない。
+
+**実測 (本番 version ff492939)**: ノード起動から 3 分 41 秒の時点で
+
+```
+401 retries: 0
+connected:  1
+time="2026-09-11T07:20:10Z" level=info msg="Remotedialer connected to proxy"
+```
+
+**残るトレードオフ**: 未認証の WebSocket エンドポイントなので、誰でもソケットを
+開ける。stub は何もしないため露出するのは資源消費だけだが、hibernation API を
+使っていない(DO ではなくシェル Worker が保持する)点は不変条件 #4 の文言からは
+外れる。トンネル自体が不要なので、本来はエージェントが接続しないのが正しい。
