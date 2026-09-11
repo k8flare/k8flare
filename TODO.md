@@ -287,13 +287,35 @@ first `POST events` because this apiserver does not infer kind from the URL
 path the way upstream does. Retries succeed, so events are only partly lost.
 Recorded in S32.
 
-### P2-4 `[ ]` k3s agent's remotedialer tunnel 401-loops
+### P2-7 `[ ]` Pod-on-Containers does not work in production
 
-`/v1-k3s/connect` returns 401 and the agent retries every 3 seconds
-(65 requests in ~3 minutes observed). Either the tunnel is expected to be
-unavailable with the admin token and the agent should not retry that way, or
-authentication is wrong. Determine which; both cost requests continuously
-whenever a node is attached.
+Found by the first scheduled run of the production probe (S39 and its
+correction). A Pod annotated `k8flare.com/compute=containers` is admitted
+correctly and the scheduler is poked — `CFContainersScheduler` answers `ok` —
+but every `NodeVMSmall` request ends `canceled` with no log and no exception,
+no node ever registers, and the Pod stays `Pending` with
+`Unschedulable: no nodes available`. The same path worked earlier the same day,
+so it is a regression or intermittent, not unimplemented. Two hypotheses were
+tested and disproved: a `provisioning` container application (all three are
+`ready`), and the scheduler never being reached (it is, the tail filter was
+too narrow).
+
+The probe no longer depends on this capability, so it is not blocking daily
+monitoring — but Pod-on-Containers is a headline feature that currently does
+not work.
+
+### P2-4 `[x]` k3s agent's remotedialer tunnel 401-loops
+
+**Done 2026-09-11 (S38).** The agent dials with no Authorization header at all
+— pinned k3s calls `ConnectToProxyWithDialer(ctx, wsURL, nil, ...)` and relies
+on an mTLS client certificate that Cloudflare strips — so the gateway's door
+rejected every attempt: about 28,800 billed requests per day per attached node.
+`/v1-k3s/connect` is now on the unauthenticated allowlist, which is what the
+stub's doc comment always claimed. Measured in production: 401 retries 0,
+`Remotedialer connected to proxy` once, 3m41s after the node started.
+**Still open**: it admits an unauthenticated socket, and holds it in the shell
+Worker rather than a hibernating Durable Object. The tunnel is unused, so the
+right answer is for the agent not to dial at all; k3s has no switch for that.
 
 ### P2-5 `[ ]` `PUMP_WINDOW_DROP_CLOSE` is a test knob in production code
 
