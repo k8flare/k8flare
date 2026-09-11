@@ -248,20 +248,24 @@ describe("the alarm", () => {
         { metadata: { generation: 1 }, spec: { replicas: 1 }, status: { observedGeneration: 1 } },
       ],
     });
-    const intervals: number[] = [];
+    const intervals: { atLeast: number; atMost: number }[] = [];
     for (let tick = 0; tick < 10; tick++) {
       storage.alarmSets = [];
       const before = Date.now();
       await controllers.alarm();
+      const after = Date.now();
       expect(storage.alarmSets).toHaveLength(1);
-      intervals.push(storage.alarmSets[0] - before);
+      intervals.push({
+        atLeast: storage.alarmSets[0] - after,
+        atMost: storage.alarmSets[0] - before,
+      });
     }
     // 15s flat for the first few ticks, then doubling, then capped.
-    expect(intervals[0]).toBeGreaterThanOrEqual(15_000);
-    expect(intervals[0]).toBeLessThan(20_000);
-    expect(intervals[5]).toBeGreaterThan(intervals[3]);
-    expect(Math.max(...intervals)).toBeLessThanOrEqual(600_000);
-    expect(intervals[9]).toBeGreaterThan(intervals[6]);
+    expect(intervals[0].atMost).toBeGreaterThanOrEqual(15_000);
+    expect(intervals[0].atLeast).toBeLessThan(20_000);
+    expect(intervals[5].atLeast).toBeGreaterThan(intervals[3].atMost);
+    expect(Math.max(...intervals.map((i) => i.atLeast))).toBeLessThanOrEqual(600_000);
+    expect(intervals[9].atLeast).toBeGreaterThan(intervals[6].atMost);
   });
 
   it("does nothing and re-arms nothing when the test kill switch is set", async () => {
