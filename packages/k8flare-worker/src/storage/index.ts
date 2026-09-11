@@ -258,7 +258,15 @@ export class Cluster {
 
   private async pingControllers(): Promise<void> {
     const controllers = this.env.CONTROLLERS; // local DO binding post-consolidation
-    if (!controllers) return; // not bound in some dev/test configs
+    if (!controllers) {
+      // Not bound in some dev/test configs. Clear the flag rather than
+      // leave it pending like a failed delivery would: there is nothing
+      // for a later tick to retry, so keeping it re-arms the safety-net
+      // alarm every 60s forever on an otherwise idle cluster (cost
+      // invariants #1/#3). pingNodes does the same for SCHEDULER.
+      await this.ctx.storage.delete("pendingPing:controllers");
+      return;
+    }
     if (this.env.KCM_DISABLED === "1") {
       await this.ctx.storage.delete("pendingPing:controllers"); // test kill switch
       return;
