@@ -287,7 +287,7 @@ first `POST events` because this apiserver does not infer kind from the URL
 path the way upstream does. Retries succeed, so events are only partly lost.
 Recorded in S32.
 
-### P2-7 `[ ]` Pod-on-Containers does not work in production
+### P2-7 `[x]` Pod-on-Containers does not work in production
 
 Found by the first scheduled run of the production probe (S39 and its
 correction). A Pod annotated `k8flare.com/compute=containers` is admitted
@@ -303,6 +303,16 @@ too narrow).
 The probe no longer depends on this capability, so it is not blocking daily
 monitoring — but Pod-on-Containers is a headline feature that currently does
 not work.
+
+**Fixed 2026-09-11** (S39 続報). `reconcile()` issued `stub.up()` once from the
+poke's detached context and never retried, because the claim it persists first
+made every later pass skip the Pod. An abandoned promise neither resolves nor
+rejects, so nothing surfaced. Tracking `started` separately from `bound` lets
+the existing 15s safety-net alarm re-issue the boot. Verified in production:
+node registered at t+100s, Pod Running at t+160s, where before it stayed
+Pending indefinitely. **Still open**: the mechanism behind the `canceled`
+outcome itself is not identified, and `wrangler dev` cannot reproduce it — it
+does not abandon detached DO subrequests, which is why no gate caught this.
 
 ### P2-4 `[x]` k3s agent's remotedialer tunnel 401-loops
 
