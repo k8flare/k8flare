@@ -15,62 +15,74 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apiserver/pkg/util/dryrun"
 )
 
-// parseDeletePropagationPolicy extracts spec.propagationPolicy from a DELETE
-// request. Real clients (client-go's Delete/DeleteCollection) send it as a
-// JSON-encoded metav1.DeleteOptions request body; the query parameter form
-// (?propagationPolicy=Foreground) some direct callers use instead is also
-// accepted, matching upstream kube-apiserver's dual acceptance. Restores
-// r.Body after reading it so later code in the same request (there is none
-// today, but this must not be a trap for a future caller) still sees it.
-// An absent/empty policy defaults to Background, matching this project's
-// registered resources' upstream default (none opt into Orphan-by-default).
-func parseDeletePropagationPolicy(r *http.Request) (metav1.DeletionPropagation, error) {
-	if q := r.URL.Query().Get("propagationPolicy"); q != "" {
-		return metav1.DeletionPropagation(q), nil
-	}
+// parseDeleteOptions decodes the caller's whole metav1.DeleteOptions from
+// a DELETE request. Real clients (client-go's Delete/DeleteCollection)
+// send them as a JSON- or protobuf-encoded request body; the query
+// parameter form (?propagationPolicy=Foreground) some direct callers use
+// for the policy is also accepted, matching upstream kube-apiserver's dual
+// acceptance. Restores r.Body after reading it so later code in the same
+// request (there is none today, but this must not be a trap for a future
+// caller) still sees it.
+//
+// PropagationPolicy stays nil when the caller sent none: deletePropagation
+// below defaults the handler's own branching to Background, but the
+// upstream store reads an absent policy off the object's existing
+// finalizers, and substituting Background there would strip a
+// foreground/orphan finalizer the caller never mentioned.
+func parseDeleteOptions(r *http.Request) (*metav1.DeleteOptions, error) {
+	opts := &metav1.DeleteOptions{}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		return "", fmt.Errorf("read request body: %w", err)
+		return nil, fmt.Errorf("read request body: %w", err)
 	}
 	r.Body.Close()
 	r.Body = io.NopCloser(bytes.NewReader(body))
-	if len(body) == 0 {
-		return metav1.DeletePropagationBackground, nil
-	}
-	// client-go's default negotiated content type is protobuf, not JSON --
-	// same reason decodeBody below needs Codecs.UniversalDeserializer rather
-	// than plain encoding/json (found by running this against a real
-	// client-go client, not assumed: a bare json.Unmarshal failed to decode
-	// with "invalid character 'k' looking for beginning of value", the tell
-	// for feeding protobuf bytes to a JSON decoder).
-	obj, err := decodeBody(body)
-	if err != nil {
-		// Real kubectl sends its DeleteOptions body WITHOUT TypeMeta
-		// (`{"propagationPolicy":"Background"}`), which the universal
-		// deserializer rejects with "Object 'Kind' is missing" -- the
-		// upstream apiserver decodes options leniently for exactly this
-		// reason. Fall back to a plain JSON unmarshal before failing;
-		// found live when `kubectl delete deployment` 400'd against
-		// production while curl (with TypeMeta) worked.
-		var jsonOpts metav1.DeleteOptions
-		if jsonErr := json.Unmarshal(body, &jsonOpts); jsonErr == nil {
-			if jsonOpts.PropagationPolicy == nil {
-				return metav1.DeletePropagationBackground, nil
+	if len(body) > 0 {
+		// client-go's default negotiated content type is protobuf, not JSON --
+		// same reason decodeBody below needs Codecs.UniversalDeserializer rather
+		// than plain encoding/json (found by running this against a real
+		// client-go client, not assumed: a bare json.Unmarshal failed to decode
+		// with "invalid character 'k' looking for beginning of value", the tell
+		// for feeding protobuf bytes to a JSON decoder).
+		obj, decodeErr := decodeBody(body)
+		switch {
+		case decodeErr == nil:
+			typed, ok := obj.(*metav1.DeleteOptions)
+			if !ok {
+				return nil, fmt.Errorf("decode delete options: unexpected type %T", obj)
 			}
-			return *jsonOpts.PropagationPolicy, nil
+			opts = typed
+		default:
+			// Real kubectl sends its DeleteOptions body WITHOUT TypeMeta
+			// (`{"propagationPolicy":"Background"}`), which the universal
+			// deserializer rejects with "Object 'Kind' is missing" -- the
+			// upstream apiserver decodes options leniently for exactly this
+			// reason. Fall back to a plain JSON unmarshal before failing;
+			// found live when `kubectl delete deployment` 400'd against
+			// production while curl (with TypeMeta) worked.
+			if jsonErr := json.Unmarshal(body, opts); jsonErr != nil {
+				return nil, fmt.Errorf("decode delete options: %w", decodeErr)
+			}
 		}
-		return "", fmt.Errorf("decode delete options: %w", err)
 	}
-	opts, ok := obj.(*metav1.DeleteOptions)
-	if !ok {
-		return "", fmt.Errorf("decode delete options: unexpected type %T", obj)
+	if q := r.URL.Query().Get("propagationPolicy"); q != "" {
+		policy := metav1.DeletionPropagation(q)
+		opts.PropagationPolicy = &policy
 	}
+	return opts, nil
+}
+
+// deletePropagation is the policy the DELETE handler branches on. An
+// absent policy is Background, matching this project's registered
+// resources' upstream default (none opt into Orphan-by-default).
+func deletePropagation(opts *metav1.DeleteOptions) metav1.DeletionPropagation {
 	if opts.PropagationPolicy == nil {
-		return metav1.DeletePropagationBackground, nil
+		return metav1.DeletePropagationBackground
 	}
-	return *opts.PropagationPolicy, nil
+	return *opts.PropagationPolicy
 }
 
 // decodeBody decodes the request body as a Kubernetes runtime.Object.
@@ -352,16 +364,21 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			return
 		}
 
-		policy, err := parseDeletePropagationPolicy(r)
+		deleteOpts, err := parseDeleteOptions(r)
 		if err != nil {
 			writeStatusError(w, http.StatusBadRequest, "BadRequest", err.Error())
 			return
 		}
+		policy := deletePropagation(deleteOpts)
+		// Everything the upstream store does is dry-run aware; the
+		// cascades, sweeps and ClusterIP releases this handler runs
+		// around it are not, so they are skipped instead.
+		dryRun := dryrun.IsDryRun(deleteOpts.DryRun)
 
 		if name == "" {
 			labelSelector := r.URL.Query().Get("labelSelector")
 
-			if resource == "namespaces" && namespacedStores != nil {
+			if resource == "namespaces" && namespacedStores != nil && !dryRun {
 				// A collection-delete of Namespaces needs the same
 				// dependents sweep as a single named delete below, or
 				// DELETE /api/v1/namespaces would silently orphan every
@@ -415,7 +432,7 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 					if m == nil {
 						continue
 					}
-					marked, err := markForDeletion(ctx, store, m.Namespace, m.Name, policy)
+					marked, err := markForDeletion(ctx, store, m.Namespace, m.Name, deleteOpts.DeepCopy())
 					if isStatusReason(err, metav1.StatusReasonNotFound) {
 						continue // vanished between the list and the mark
 					}
@@ -434,12 +451,12 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 				return
 			}
 			obj, err := store.DeleteCollection(ctx, namespace, labelSelector,
-				ProtectedClusterCollectionKeep(prefix, resource))
+				ProtectedClusterCollectionKeep(prefix, resource), deleteOpts)
 			if err != nil {
 				writeInternalError(w, err)
 				return
 			}
-			if svcList, ok := obj.(*corev1.ServiceList); ok {
+			if svcList, ok := obj.(*corev1.ServiceList); ok && !dryRun {
 				for i := range svcList.Items {
 					ReleaseClusterIP(ctx, store.storage, &svcList.Items[i])
 				}
@@ -460,9 +477,11 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			// fails partway, the Namespace stays visible/gettable, so a
 			// client retry of the same DELETE is the correct recovery path
 			// (every step is idempotent).
-			if err := DeleteNamespaceDependents(ctx, namespacedStores, name); err != nil {
-				writeInternalError(w, err)
-				return
+			if !dryRun {
+				if err := DeleteNamespaceDependents(ctx, namespacedStores, name); err != nil {
+					writeInternalError(w, err)
+					return
+				}
 			}
 		}
 
@@ -476,7 +495,7 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			// shouldFinalizeDelete in the write paths. See
 			// gracefuldelete.go for why the earlier synchronous
 			// alternatives all raced the live controllers.
-			terminating, err := markForDeletion(ctx, store, namespace, name, policy)
+			terminating, err := markForDeletion(ctx, store, namespace, name, deleteOpts)
 			if err != nil {
 				writeResourceError(w, err, resource, name)
 				return
@@ -484,9 +503,13 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			writeRuntimeObject(w, http.StatusOK, terminating)
 			return
 		}
-		obj, err := store.Delete(ctx, namespace, name)
+		obj, err := store.Delete(ctx, namespace, name, deleteOpts)
 		if err != nil {
 			writeResourceError(w, err, resource, name)
+			return
+		}
+		if dryRun {
+			writeRuntimeObject(w, http.StatusOK, obj)
 			return
 		}
 		if resource == "namespaces" && namespacedStores != nil {

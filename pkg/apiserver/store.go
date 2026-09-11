@@ -261,9 +261,12 @@ func (rs *ResourceStore) Update(ctx context.Context, namespace, name string, obj
 }
 
 // Delete removes one object via the upstream registry and returns the
-// deleted state.
-func (rs *ResourceStore) Delete(ctx context.Context, namespace, name string) (runtime.Object, error) {
-	return rs.upstreamDelete(ctx, namespace, name)
+// deleted state, or -- when opts asks for Orphan/Foreground propagation --
+// marks it terminating and returns it still visible. opts is the caller's
+// own metav1.DeleteOptions (preconditions, grace period, dryRun); nil
+// means an unconditional immediate delete.
+func (rs *ResourceStore) Delete(ctx context.Context, namespace, name string, opts *metav1.DeleteOptions) (runtime.Object, error) {
+	return rs.upstreamDelete(ctx, namespace, name, opts)
 }
 
 // DeleteCollection deletes every object of this resource type in namespace
@@ -272,7 +275,11 @@ func (rs *ResourceStore) Delete(ctx context.Context, namespace, name string) (ru
 // keepName is left alone and omitted from the result (empty = delete
 // everything); the caller uses it to hold back an undeletable object --
 // today only the management Cluster, see clusterprotect.go.
-func (rs *ResourceStore) DeleteCollection(ctx context.Context, namespace, labelSelector, keepName string) (runtime.Object, error) {
+//
+// opts is applied to each item's delete, deep-copied per item because
+// upstream's rest.BeforeDelete mutates what it is given -- the same thing
+// upstream's own Store.DeleteCollection does.
+func (rs *ResourceStore) DeleteCollection(ctx context.Context, namespace, labelSelector, keepName string, opts *metav1.DeleteOptions) (runtime.Object, error) {
 	listObj, err := rs.List(ctx, namespace, "", labelSelector)
 	if err != nil {
 		return nil, fmt.Errorf("store delete collection: list: %w", err)
@@ -292,7 +299,7 @@ func (rs *ResourceStore) DeleteCollection(ctx context.Context, namespace, labelS
 		if keepName != "" && itemMeta.Name == keepName {
 			continue
 		}
-		obj, err := rs.Delete(ctx, namespace, itemMeta.Name)
+		obj, err := rs.Delete(ctx, namespace, itemMeta.Name, opts.DeepCopy())
 		if err != nil {
 			return nil, fmt.Errorf("store delete collection: delete %s: %w", itemMeta.Name, err)
 		}

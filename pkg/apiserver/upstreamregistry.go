@@ -248,20 +248,19 @@ func (rs *ResourceStore) upstreamUpdate(ctx context.Context, namespace, name str
 	return out, err
 }
 
-func (rs *ResourceStore) upstreamDelete(ctx context.Context, namespace, name string) (runtime.Object, error) {
-	out, _, err := rs.upstream.Delete(rs.upstreamCtx(ctx, namespace), name, rest.ValidateAllObjectFunc, &metav1.DeleteOptions{})
-	return out, err
-}
-
-// upstreamMarkForDeletion is the graceful-deletion half of DELETE for a
-// migrated resource: handing the propagation policy to Store.Delete makes
-// upstream stamp deletionTimestamp + the policy's finalizer and return the
-// still-visible terminating object, which is exactly what
-// markForDeletion (gracefuldelete.go) does by hand for the resources still
-// on the old path. Idempotent for the same reason: a second DELETE finds
-// the object already deleting and returns it unchanged.
-func (rs *ResourceStore) upstreamMarkForDeletion(ctx context.Context, namespace, name string, policy metav1.DeletionPropagation) (runtime.Object, error) {
-	out, _, err := rs.upstream.Delete(rs.upstreamCtx(ctx, namespace), name, rest.ValidateAllObjectFunc,
-		&metav1.DeleteOptions{PropagationPolicy: &policy})
+// upstreamDelete is the single DELETE path for a migrated resource: both
+// the outright removal and the graceful-deletion half (propagationPolicy
+// Orphan/Foreground, where upstream stamps deletionTimestamp + the
+// policy's finalizer and returns the still-visible terminating object)
+// are the same Store.Delete call, told apart only by what opts carries.
+//
+// opts is the CALLER'S options, unaltered. A hand-built substitute used
+// to stand in here and it silently dropped the caller's Preconditions --
+// a UID-guarded DELETE, which is how a client avoids deleting a recreated
+// object of the same name and what upstream's own garbage collector
+// sends, deleted the wrong object instead of conflicting (TODO.md P0-3).
+// Grace period and dryRun rode the same path.
+func (rs *ResourceStore) upstreamDelete(ctx context.Context, namespace, name string, opts *metav1.DeleteOptions) (runtime.Object, error) {
+	out, _, err := rs.upstream.Delete(rs.upstreamCtx(ctx, namespace), name, rest.ValidateAllObjectFunc, opts)
 	return out, err
 }

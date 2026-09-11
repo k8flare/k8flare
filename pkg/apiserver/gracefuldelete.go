@@ -57,13 +57,14 @@ const markDeletionRetries = 5
 // same way (its maxRetryWhenPatchConflicts).
 const patchConflictRetries = 5
 
-// markForDeletion hands the propagation policy to the upstream store's
-// own graceful-deletion path: it stamps deletionTimestamp and the policy's
+// markForDeletion hands the caller's DeleteOptions to the upstream
+// store's own graceful-deletion path: with an Orphan/Foreground
+// propagationPolicy it stamps deletionTimestamp and the policy's
 // finalizer and returns the still-visible terminating object. Idempotent
 // -- repeating the DELETE finds the object already deleting and returns it
 // unchanged, same as upstream, which is exactly what it is.
-func markForDeletion(ctx context.Context, rs *ResourceStore, namespace, name string, policy metav1.DeletionPropagation) (runtime.Object, error) {
-	return rs.upstreamMarkForDeletion(ctx, namespace, name, policy)
+func markForDeletion(ctx context.Context, rs *ResourceStore, namespace, name string, opts *metav1.DeleteOptions) (runtime.Object, error) {
+	return rs.Delete(ctx, namespace, name, opts)
 }
 
 // shouldFinalizeDelete reports whether writing obj would leave a
