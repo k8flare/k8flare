@@ -610,6 +610,30 @@ Revisit only if the repository grows another accidental blob — at which point
 one rewrite can clear them all, and should be done *before* the docs accumulate
 more references, not after.
 
+### P1-10 `[ ]` デプロイ後の暖機を運用者の手作業にしない (提案・要承認)
+
+**Problem.** S50 で実測: デプロイ後に最初に来たワークロードは reconcile が
+始まるまで **20〜24 分**待つ。約 44MB のコントローラー WASM を、最初に使われた
+時点で初めてコンパイルするため。2 個目以降は 11 秒。`/readyz` はこの間も 200 を
+返す(S47)ので、ロードバランサや運用スクリプトからは区別できない。
+
+現状の緩和は docs/admin-guide.md に書いた手順書きで、デプロイした人が自分で
+Deployment を 1 個作って消す。**運用者が忘れたら利用者が 20 分待つ。**
+
+**Proposal, not implemented — needs a decision.** `npm run deploy` の最後に
+暖機を自動で起こす。候補:
+
+- `/internal/warm` のような新しい認証付きルートを足し、Controllers DO に
+  コンポーネントをロードさせる。書き込みを伴わないので revision を汚さない。
+  代償は**新しい本番エンドポイント 1 本**で、クラスタトークン保持者なら誰でも
+  44MB のコンパイルを起こせる(ただしトークン保持者は書き込みでも同じことが
+  できるので、権限としては新規ではない)。
+- deploy スクリプトが ConfigMap を 1 個作って消す。新しいエンドポイントは
+  不要だが、deploy にクラスタトークンが必要になり、revision が 2 進む。
+
+どちらも本番の挙動を変えるので、実装前に承認を得る。S50 を測っただけの現状
+では**利用者が 20 分待つ既定のまま**であることを明記しておく。
+
 ## Out of scope / deliberately not doing
 
 - `[!]` Replacing the hand-written REST layer with upstream

@@ -253,6 +253,28 @@ npx wrangler deploy -c packages/k8flare-worker/wrangler.jsonc
 デプロイは無停止です(進行中のリクエストは旧バージョンで完走)。k8s
 バージョン自体の更新は [k8s-version-bump.md](k8s-version-bump.md) 参照。
 
+### デプロイ後は必ず暖機する
+
+**デプロイ直後に最初に来たワークロードは 20 分以上待たされます。** 制御
+プレーンは約 44MB のコントローラー WASM を、最初に使われた時点で初めて
+コンパイルするためです。2 個目以降は 11 秒で収束します
+(実測: [platform-verification.md](platform-verification.md) S50)。
+
+`/readyz` はこの間も 200 を返すので、readyz では判断できません(S47)。
+
+デプロイした人が待つほうが利用者が待つよりましなので、**デプロイの直後に
+自分で 1 個投げてください**:
+
+```sh
+kubectl create deployment warmup --image=registry.k8s.io/pause:3.10
+# observedGeneration が追いつくまで待つ(初回は最大 30 分)
+kubectl rollout status deployment/warmup --timeout=30m
+kubectl delete deployment warmup
+```
+
+書き込みであることが必要です。`kubectl get` などの読み取りではコントローラーは
+起きません。
+
 ## 7. トラブルシューティング
 
 | 症状 | まず見るもの |
