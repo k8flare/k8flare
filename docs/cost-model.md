@@ -1390,7 +1390,17 @@ P0-4 Stage 0 の計装(`PUMP_TRACE`)。不変条件 #5 に従い、実装前で�
 |---|---|
 | request | `env.PUMP_TRACE === "1"` の比較 1 回 |
 | commit | 同上 |
+| issued | キャッシュ済み bool の読み取り 1 回 |
 | observed | **なし**。informer の event handler を登録しない |
+
+**訂正 (2026-09-12)**: この表は最初「Go 側も文字列比較 1 回」と書いていたが
+誤りだった。`PumpTraceEnabled()` は `globalThis.context.env.PUMP_TRACE` を
+毎回読んでおり、`syscall/js` の境界を **1 回の呼び出しにつき 3 回**跨いでいた。
+しかもそれを `fetch.RoundTrip` が**全 resident controller の全送信リクエスト
+ごと**に呼んでいたので、誰も測っていない制御プレーンが恒常的に払う形になって
+いた。var はデプロイ時に決まり isolate の生存中は変わらないので
+`sync.Once` でキャッシュした。キャッシュを外すと落ちる単体テストを付けて
+ある。
 
 3 番目が重要で、早期 return するハンドラでも client-go は
 「オブジェクト数 × イベント数」だけ呼び出す。登録しないことが唯一の

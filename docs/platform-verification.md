@@ -6716,3 +6716,17 @@ Pod を作るときパスに名前が入らない(サーバ生成)ため、別�
 - **依然として測れない**: シェル Worker の commit から Go の observed まで。
   時計が違う。これは変わらず Stage 1 の仕事。
 - 名前がパスに現れない作成リクエストのループ。
+
+#### S49 追記: ホットパスに計装のコストが残っていた
+
+セッション末に自分の差分を見直して見つけた。`PumpTraceEnabled()` は
+`globalThis.context.env.PUMP_TRACE` を毎回読む実装で、`syscall/js` の境界を
+1 回につき 3 回跨ぐ。S49 で足した `issued` 境界はそれを
+`fetch.RoundTrip`——**全 resident controller の全送信リクエスト**——から呼んで
+いたので、tracing が無効な本番でも恒常的にコストを払っていた。
+
+S44 に「未設定なら文字列比較 1 回」と書いたのは TS 側だけの話で、Go 側には
+当てはまっていなかった。var はデプロイ時に決まり isolate の生存中は変わらない
+ので `sync.Once` でキャッシュした。キャッシュを外すと落ちるテストを付け、
+有効時の出力が変わらないこと(request 202 / commit 38 / issued 41 /
+observed 20)も実機で確認した。
