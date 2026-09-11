@@ -99,3 +99,25 @@ func TestPumpTraceLineIsPrefixedForLogSearch(t *testing.T) {
 		t.Errorf("trace line = %q, want a stable prefix a log search can filter on", line)
 	}
 }
+
+func TestPumpTraceEnabledIsAnsweredOncePerIsolate(t *testing.T) {
+	// fetch.RoundTrip asks this for every outbound request every resident
+	// controller makes. Answering it live crossed the JS boundary three
+	// times per request on a control plane nobody was measuring.
+	if PumpTraceEnabled() {
+		t.Fatal("expected tracing off in this test binary")
+	}
+	env := js.Global().Get("Object").New()
+	env.Set("PUMP_TRACE", "1")
+	ctxObj := js.Global().Get("Object").New()
+	ctxObj.Set("env", env)
+	js.Global().Set("context", ctxObj)
+	t.Cleanup(func() { js.Global().Delete("context") })
+
+	if readPumpTraceVar() != true {
+		t.Fatal("readPumpTraceVar did not see the var this test just set; the test is not exercising what it claims")
+	}
+	if PumpTraceEnabled() {
+		t.Error("PumpTraceEnabled re-read the var after the first answer; it must be cached off the hot path")
+	}
+}
