@@ -6300,10 +6300,17 @@ traffic が見分けられない。実 HTTP 往復で server 側に届くこと�
 - Node 停止 90 秒/10 分と復帰の基準測定。
 - 完全 idle の request/alarm 件数(Cloudflare Analytics token 待ち)。
 
-### S45 (2026-09-12): 本番では dynamic worker のログが一切見えない
+### S45 (2026-09-12): 本番のシェル Worker の tail に dynamic worker のログは現れない
 
 S44 で「Loader が起動した dynamic worker の console 出力が本番の Workers Logs
-に届くかは未確認」と書いた。確かめたところ、**届いていない**。
+に届くかは未確認」と書いた。確かめたところ、**シェル Worker の
+`wrangler tail` には現れない**。
+
+**測っていない範囲を先に書く**: 確認したのは `wrangler tail` という 1 経路
+だけである。Workers Logs のダッシュボード / Observability API は
+Cloudflare API トークンが要るため確認していない(このトークンは prodprobe の
+parking 判定に要るものと同じで、未発行)。したがって以下は「親の tail に
+現れない」であって「どこにも記録されていない」ではない。
 
 #### 測り方
 
@@ -6337,6 +6344,18 @@ dynamic worker のイベントそのものが 1 件も現れない。取りこ�
    見える。S30(デプロイされた制御プレーンが自分の dynamic worker に到達でき
    ず、6 週間コントローラーが何もしていなかった)が長く見過ごされたのは、
    おそらくこれが理由である。
+
+#### 直し方はプラットフォーム側にある
+
+`@cloudflare/workers-types` の `WorkerLoaderWorkerCode` は
+`tails?: Fetcher[]` と `streamingTails?: Fetcher[]` を受け取る。dynamic worker
+の trace イベント(console 出力を含む)を任意の Fetcher へ送る仕組みで、
+`env.SELF` を渡せばシェル Worker 自身の `tail()` ハンドラに届き、そこで
+`console.log` すれば親の tail / Workers Logs に載る。手製の中継路を作る必要は
+ない(不可侵ルール #3)。
+
+ただし tail worker の起動はリクエストとして課金されるため、常時付けるのは
+コスト不変条件に反する。`PUMP_TRACE=1` のときだけ付ける。
 
 #### 障害クラスとしては既知
 
