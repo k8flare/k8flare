@@ -198,6 +198,17 @@ docker run -d --name e2e-node --privileged --cgroupns=private \
   --ginkgo.focus="$(the GC_FOCUS or BASELINE_FOCUS value in e2e-conformance.yml)"
 ```
 
+**Copying the focus out of the workflow has a trap.** `GC_FOCUS` is a
+single-quoted shell string, so the apostrophe in one spec name is written
+`'\''` — the shell's escape, not part of the pattern. Paste it verbatim into a
+regex and that spec silently stops matching, which cost a wrong result once
+already (`docs/platform-verification.md` S42 訂正). Always confirm the count
+first:
+
+```sh
+./kubernetes/test/bin/e2e.test ... --ginkgo.dry-run --ginkgo.focus="$FOCUS" | grep 'Will run'
+# GC_FOCUS must say "Will run 7 of", not 6.
+
 Two things to know before you trust a local run:
 
 - **Pods do not reach Running** on macOS. Nested containerd inside an emulated
