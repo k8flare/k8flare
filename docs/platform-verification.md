@@ -6589,3 +6589,72 @@ readyz は現状のままとし、この限界を明記する。
 steady-state の主張は後続の scale と delete が担う。最初の収束が 1 分を
 超えたら「これは WASM コンパイルであってコントローラーの故障ではない」と
 probe 自身が言う。予算が 1 本に戻ったら落ちる単体テストも付けた。
+
+### S48 (2026-09-12): ローカルで required の host バリアントを再現した
+
+「ローカルハーネスは host バリアント(required ゲート)を再現できない」と
+docs/development.md に書いたが、**再現できる**。CI のワークフローを読み直した
+ところ、必要なものは全部リポジトリにあった。
+
+#### レシピ
+
+CI と同じ構成:
+
+1. `go build -o k8flare-scheduler ./cmd/scheduler` と
+   `go build -o k8flare-controller-manager ./cmd/controller-manager`
+2. `wrangler dev` を `--var SCHED_DISABLED:1 --var CM_DISABLED:1 --local`
+   で起動。**`--local-protocol https --https-key-path/--https-cert-path` で
+   wrangler 自身に TLS を終端させられるので、S42 で書いた node の TLS
+   プロキシは不要**だった
+3. 両バイナリを `--server=https://127.0.0.1:8443 --token=... --insecure-skip-tls-verify`
+   で起動
+4. ノードを繋いで `e2e.test` を回す
+
+#### 結果
+
+| フォーカス | 結果 |
+|---|---|
+| required GC(7 spec) | **7 Passed / 0 Failed、91 秒** |
+| baseline(11 spec) | 8 Passed / 3 Failed、583 秒 |
+
+以前 sched-dw 構成で回したときは baseline が**完走すらしなかった**
+(1 時間の suite timeout で 4 spec)。host スケジューラにすると 11 spec
+全部が走り、Watchers も LimitRange も通る。
+
+#### 残る 3 件はノードの問題で、制御プレーンの欠陥ではない
+
+落ちるのは `SchedulerPredicates` の 3 件だけで、いずれも **Pod が実際に起動
+すること**を要求する(filler pod で残容量を埋める、hostPort を取る、
+NodeSelector 先で動かす)。kubelet のイベントはこうだった:
+
+```
+FailedCreatePodSandBox: failed to generate seccomp spec opts: seccomp is not supported
+```
+
+**最初に立てた仮説は外れた。** `make nodes-agent` が `CGO_ENABLED=0` かつ
+seccomp ビルドタグ無しでビルドしているので、埋め込み containerd が seccomp を
+無効化してしまい「どのノードでも Pod が起動しない」本番級の欠陥ではないか、
+と考えた。**違った**: k3s-io/containerd v2 の `pkg/seccomp` にビルドタグは
+無く、実行時に
+`prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, 0, 0, 0) != EINVAL` を見ている。
+ビルド方法とは無関係である。
+
+実際には macOS の Docker Desktop 上のコンテナノード固有の現象で、CI は
+ランナー上でエージェントをネイティブに動かしており、そこでは baseline の
+これらの spec が通っている——つまり通常のノードでは Pod は起動する。
+
+ここに至る前に、同じノードで CNI も壊れていた
+(`failed to load flannel 'subnet.env'`)。原因はコンテナ起動時の
+`-with-node-id=false` で、flannel が自分の Node を引けず PodCIDR を読めずに
+起動しなかった。このフラグは per-Pod microVM ノード用で、BYO 相当の e2e
+ノードには不要。外したら `subnet.env` は出るようになった。
+
+#### つまりローカルハーネスは今こう位置づけられる
+
+- **required の GC フォーカスは完全に再現できる**(host バリアント、7/7)。
+  CI が請求で止まっている間の代替として、これは使える。
+- **baseline のうち Pod の起動を要する 3 spec は再現できない。** Docker
+  Desktop の seccomp。Linux ホストや CI ランナーでは通るはずだが、ここでは
+  検証していない。
+- 依然として CI そのものではない。conformance CI が Definition of Done で
+  あることは変わらない(不可侵ルール #1)。
