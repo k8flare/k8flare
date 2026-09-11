@@ -24,7 +24,7 @@ commit) · `[!]` blocked or deliberately deferred (say why).
 
 ## P0 — blocks "a team can run this"
 
-### P0-1 `[ ]` Observe production, not just `wrangler dev`
+### P0-1 `[~]` Observe production, not just `wrangler dev`
 
 **Problem.** There is no signal that the deployed control plane works. S30 sat
 undetected for six weeks: DO-origin Loader calls failed, dynamic workers
@@ -48,7 +48,7 @@ defect reintroduced (verify by deploying a version with the fix reverted, or by
 an equivalent fault injection), and passes against current `main`. Failure
 reaches a human without anyone watching a dashboard.
 
-### P0-2 `[ ]` `/healthz` reports nothing about health
+### P0-2 `[x]` `/healthz` reports nothing about health
 
 **Problem.** The gateway answers `/healthz`, `/livez`, `/readyz` without
 touching storage or any component
@@ -67,7 +67,7 @@ only does work when asked is fine, a self-polling one is not.
 not-ready while liveness stays cheap. Documented in `docs/admin-guide.md` with
 the cost per call.
 
-### P0-3 `[ ]` UID/resourceVersion preconditions are dropped on DELETE
+### P0-3 `[x]` UID/resourceVersion preconditions are dropped on DELETE
 
 **Problem.** `ResourceStore.upstreamMarkForDeletion`
 (`pkg/apiserver/upstreamregistry.go:263-266`) constructs a fresh
@@ -145,7 +145,7 @@ batch or schedule rather than hand-dispatching.
 
 **Acceptance.** ~10 consecutive green dw runs, or a root cause for each red.
 
-### P1-3 `[ ]` The most platform-fragile code has no unit tests
+### P1-3 `[~]` The most platform-fragile code has no unit tests
 
 **Problem.** Every `_test.go` lives in `pkg/apiserver` and drives a real
 `wrangler dev`. `pkg/cfruntime` — pump windows, the JS boundary, promise
@@ -223,7 +223,7 @@ cost migrates into hand-written apiserver code compensating for
 platform-induced informer lag. Revisit after P0-4; the guards should shrink,
 not grow. Also measure their rows-read cost, which is currently unmeasured.
 
-### P2-2 `[ ]` `pendingPing` asymmetry in the storage DO
+### P2-2 `[x]` `pendingPing` asymmetry in the storage DO
 
 `packages/k8flare-worker/src/storage/index.ts:261`: `afterWrite` sets
 `pendingPing:controllers` regardless of whether the `CONTROLLERS` binding
@@ -231,7 +231,7 @@ exists, but `pingControllers` does not clear it when unbound, so an unbound
 config re-arms the safety-net alarm every 60s forever. `pingNodes` clears it.
 Pre-existing, recorded in `docs/custom-code-inventory.md` §5.
 
-### P2-3 `[ ]` Event POSTs 400 on first write
+### P2-3 `[x]` Event POSTs 400 on first write
 
 The real kcm's event broadcaster gets `400 "Object 'Kind' is missing"` on its
 first `POST events` because this apiserver does not infer kind from the URL
@@ -259,6 +259,30 @@ The weekly dependency workflow is red. Unrelated to the current work, but a red
 scheduled workflow trains people to ignore red.
 
 ---
+
+### P0-5 `[ ]` `?dryRun=` was ignored entirely
+
+Found by the P0-3 audit and fixed in the same pass: the apiserver parsed
+`dryRun` nowhere, so a server-side dry run created the object, allocated its
+ClusterIP and ran the post-create effects. Now validated with upstream's
+`ValidateDryRun` and threaded through to the store, with the side effects
+suppressed. Left open here because only the create/update/patch paths were
+covered -- delete, deletecollection and the subresources still need the same
+treatment, and none of it is verified against a real `kubectl --dry-run=server`.
+
+### P1-7 `[ ]` `pkg/cfruntime`'s root package cannot be unit-tested
+
+`handler_js.go`'s `init()` reads `globalThis.context.binding` at program start,
+so merely adding a test file to the package panics with
+`syscall/js: call of Value.Get on undefined`. The consequence is that S34's
+first fault shape -- the `toJSResponse` fix that builds the Response in JS
+rather than Go -- has no unit test. Making it testable is a restructure of the
+package's initialisation, not a seam.
+
+Related: the new unit tests run in node, not workerd, so they cover logic and
+promise/stream semantics but not input gates, real IoContext teardown or DO
+storage semantics. `@cloudflare/vitest-pool-workers` would close that gap at
+the cost of a dependency.
 
 ## Out of scope / deliberately not doing
 
