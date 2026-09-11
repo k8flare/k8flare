@@ -463,6 +463,32 @@ no drift; all five WASM chunks under the Loader cap (apiserver headroom
 exhausted (see below). Merge once `e2e-conformance.yml` has run green against
 this branch.
 
+**Local verification 2026-09-12** (GitHub Actions capacity is still exhausted,
+so this is the substitute for the conformance gate):
+
+- Current `main` merged in; `make check`, `make vet` clean.
+- `make clean-wasm wasm` reproduced every chunk byte-identical to the branch's
+  existing build, and all five are under the 64MiB Loader cap — apiserver has
+  the least headroom at 2389 KiB.
+- `make test` green: apiserver 69.9s, `TestKCMDynamicWorkerControlPlane`
+  414.3s, `TestClusterOperatorLifecycle` 70.1s, 50 TypeScript tests.
+- The **required** garbage-collector focus: `Will run 7 of 7579`, then
+  **7 Passed / 0 Failed in 141s**.
+- The baseline focus fails locally — but see the rule below before reading
+  anything into that.
+
+**Decision rule, written before the comparison came back.** The local harness
+cannot run the `host` variant that gates baseline in CI (no host scheduler or
+controller-manager process; `docs/development.md`), so a local baseline
+failure is unattributed on its own. Running the same focus against `main`:
+
+- main fails the same specs → environmental, merge on the strength of the GC
+  focus and `make test`, and say plainly that the host baseline was not
+  locally reproducible.
+- main passes them → a real regression in the bump; do not merge.
+- main fails one and passes the other → not an average. Inviolable rule #5
+  applies: take a second sample of each before concluding anything.
+
 ### P1-9 `[x]` Two compiled binaries were committed by accident
 
 `k8flare-backup` (34.0 MB) and `prodprobe` (34.6 MB, twice) were committed to
