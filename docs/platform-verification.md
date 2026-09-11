@@ -6299,3 +6299,58 @@ traffic が見分けられない。実 HTTP 往復で server 側に届くこと�
   本番の話ではない。
 - Node 停止 90 秒/10 分と復帰の基準測定。
 - 完全 idle の request/alarm 件数(Cloudflare Analytics token 待ち)。
+
+### S45 (2026-09-12): 本番では dynamic worker のログが一切見えない
+
+S44 で「Loader が起動した dynamic worker の console 出力が本番の Workers Logs
+に届くかは未確認」と書いた。確かめたところ、**届いていない**。
+
+#### 測り方
+
+本番(`wrangler tail --format json`)を 80 秒開けたまま、prodprobe クラスタに
+Namespace と Deployment を作って resident controller を起こした。638 イベント、
+40 ログメッセージを取得。
+
+| 出どころ | 本番 tail | ローカル `wrangler dev` |
+|---|---|---|
+| シェル Worker (TS) の `controllers: <c> dynamic worker up` | **6 件** | 16〜20 件 |
+| dynamic worker 内の Go `log.Printf`(`<label>: run starting`) | **0 件** | 4〜12 件 |
+
+`wrangler dev` では Go 側の行が確かに出る(`clusterOperator: run starting`、
+`garbageCollector: run starting`)。本番では 1 件も無い。
+
+補強として、tail の生 JSON 全体に Go の `log.Printf` が付ける
+`YYYY/MM/DD HH:MM:SS` 形式のタイムスタンプが **0 件**。さらに `scriptName` は
+`k8flare` だけ、`executionModel` は `durableObject` と `stateless` だけで、
+dynamic worker のイベントそのものが 1 件も現れない。取りこぼしではなく、
+**シェル Worker の tail は dynamic worker の実行を含まない**。
+
+#### なぜ重大か
+
+1. **S44 の計装の肝が本番で見えない。** 三境界のうち `observed`(informer が
+   commit を観測した瞬間)は Go 側、つまり dynamic worker の中から出る。
+   `request` と `commit` はシェル側なので見える。測りたかった区別
+   ——「commit が controller に届くのが遅いのか、届いてから動くのが遅いのか」
+   ——の後半が、本番でだけ欠ける。
+2. **計装以前に、resident controller のログが本番で読めない。** kcm / gc /
+   sched / clusterop が何をしていても、また何をしていなくても、外からは同じに
+   見える。S30(デプロイされた制御プレーンが自分の dynamic worker に到達でき
+   ず、6 週間コントローラーが何もしていなかった)が長く見過ごされたのは、
+   おそらくこれが理由である。
+
+#### 障害クラスとしては既知
+
+S31 / S34 / S39 と同じで、**`wrangler dev` は本番を再現しない**。これまでは
+promise の寿命と I/O コンテキストで現れたが、今回はログである。S44 の
+「実機で確認した」は `wrangler dev` の話であって本番の話ではなかった——
+その限定は S44 に書いてあるが、確認した結果としてここで確定させる。
+
+#### 派生して観測したもの(defect ではない)
+
+同じ tail で、resident controller の watch リクエスト
+(`?allowWatchBookmarks=...`)が 54 秒で `canceled` になり
+`waitUntil() tasks did not complete within the allowed time after invocation
+end and have been cancelled` を伴うのを 28 件観測した。638 イベント中 226 件が
+`canceled`。これは pump window が閉じるときに watch が切れる設計どおりの挙動
+(S31 の「pump window closed」と同じ)で、informer は resourceVersion 付きで
+張り直す。例外は 0 件。新しい障害としては扱わない。
