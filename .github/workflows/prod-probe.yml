@@ -1,0 +1,129 @@
+name: Production Probe
+
+# The only gate in this repo that observes a REAL deployment. Every other
+# gate (ci.yml, cost-gate.yml, e2e-conformance.yml) runs against
+# `wrangler dev`, which does not reproduce the production runtime
+# semantics that broke in S30 -- an outage that stood for six weeks with
+# every local gate green. See TODO.md P0-1 and cmd/prodprobe/README.md.
+#
+# What one run asserts, against the deployment named by the secrets below:
+#   1. /readyz reports every component ready (gateway/readyz.ts)
+#   2. a Deployment converges to a Running pod
+#   3. deleting it removes the pods
+#   4. the account's analytics show ZERO Worker and Durable Object
+#      requests for a quiet window afterwards (cost invariants #1/#3),
+#      cross-checked against the probe's own active window so a broken
+#      query cannot report a green idle window
+#
+# Skips cleanly with a notice when the secrets are absent (forks,
+# contributors). Nothing here touches `wrangler deploy`.
+
+on:
+  schedule:
+    # Daily. One run costs ~25 minutes of runner time, most of it sleeping
+    # through the quiet window and the analytics ingestion lag.
+    - cron: "23 2 * * *"
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Deployment base URL (defaults to the K8FLARE_PROBE_URL secret)"
+        required: false
+        type: string
+      parking:
+        description: "Assert the cluster parks (needs the Cloudflare analytics secrets)"
+        required: false
+        type: choice
+        default: "true"
+        options: ["true", "false"]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      issues: write
+    env:
+      PARKING: ${{ inputs.parking || 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      # cmd/prodprobe imports client-go only, so it builds without the
+      # .build/ module mirrors ci.yml has to generate first.
+      - name: Check for credentials
+        id: creds
+        env:
+          PROBE_URL: ${{ inputs.url || secrets.K8FLARE_PROBE_URL }}
+          PROBE_TOKEN: ${{ secrets.K8FLARE_PROBE_TOKEN }}
+          ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          API_TOKEN: ${{ secrets.CLOUDFLARE_ANALYTICS_TOKEN }}
+        run: |
+          missing=""
+          [ -n "$PROBE_URL" ] || missing="$missing K8FLARE_PROBE_URL"
+          [ -n "$PROBE_TOKEN" ] || missing="$missing K8FLARE_PROBE_TOKEN"
+          if [ "$PARKING" = "true" ]; then
+            [ -n "$ACCOUNT_ID" ] || missing="$missing CLOUDFLARE_ACCOUNT_ID"
+            [ -n "$API_TOKEN" ] || missing="$missing CLOUDFLARE_ANALYTICS_TOKEN"
+          fi
+          if [ -n "$missing" ]; then
+            echo "::notice::Production probe skipped -- missing secrets:$missing. A maintainer sets these; see cmd/prodprobe/README.md."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Probe the deployment
+        if: steps.creds.outputs.present == 'true'
+        env:
+          K8FLARE_PROBE_URL: ${{ inputs.url || secrets.K8FLARE_PROBE_URL }}
+          K8FLARE_PROBE_TOKEN: ${{ secrets.K8FLARE_PROBE_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_ANALYTICS_TOKEN }}
+          K8FLARE_PROBE_SCRIPT: ${{ vars.K8FLARE_PROBE_SCRIPT || 'k8flare' }}
+        run: |
+          set -o pipefail
+          go run ./cmd/prodprobe -parking="$PARKING" 2>&1 | tee "$RUNNER_TEMP/probe.log"
+
+      # The alert. A scheduled workflow that only goes red in a tab nobody
+      # opens is not an alert, so a failure files (or comments on) an
+      # issue, which notifies every watcher.
+      - name: Report the failure to a human
+        if: failure() && steps.creds.outputs.present == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: "Production probe failed"
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "The scheduled production probe failed. The deployed control plane is"
+            echo "not converging, not parking, or not reachable."
+            echo
+            echo "Run: $RUN_URL"
+            echo
+            echo '```'
+            tail -n 60 "$RUNNER_TEMP/probe.log" 2>/dev/null || echo "(no probe output captured)"
+            echo '```'
+          } > "$RUNNER_TEMP/issue.md"
+
+          existing=$(gh issue list --state open --search "\"$TITLE\" in:title" \
+            --json number --jq '.[0].number' || echo "")
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file "$RUNNER_TEMP/issue.md"
+          else
+            gh issue create --title "$TITLE" --body-file "$RUNNER_TEMP/issue.md"
+          fi
+
+      - name: Upload the probe log
+        if: always() && steps.creds.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: prodprobe-log
+          path: ${{ runner.temp }}/probe.log
+          if-no-files-found: ignore

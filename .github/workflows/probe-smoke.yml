@@ -1,0 +1,60 @@
+name: Probe Smoke
+
+# Keeps cmd/prodprobe and the /readyz path from bitrotting between
+# production runs. This proves the TOOLING works, not that production
+# does -- it runs against `wrangler dev`, which is exactly the blind spot
+# prod-probe.yml exists to cover.
+#
+# Path-filtered rather than run on every pull request: it needs the same
+# full WASM build ci.yml already pays for, and the Actions quota is
+# limited (see CONTRIBUTING.md).
+
+on:
+  pull_request:
+    paths:
+      - "cmd/prodprobe/**"
+      - "packages/k8flare-worker/src/gateway/**"
+      - ".github/workflows/probe-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version: "24"
+
+      - name: Enable corepack (installed from npm -- runner Node images stopped bundling it, 2026-07)
+        run: npm install -g corepack@latest && corepack enable
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Install binaryen (wasm-opt) -- pinned release, not apt
+        # Same pin and same reason as ci.yml: apt's binaryen optimizes
+        # measurably worse and pushes chunks over the 64MiB Loader cap.
+        run: |
+          curl -sSL https://github.com/WebAssembly/binaryen/releases/download/version_129/binaryen-version_129-x86_64-linux.tar.gz | sudo tar xz -C /opt
+          echo "/opt/binaryen-version_129/bin" >> "$GITHUB_PATH"
+
+      # Every component manifest, not just the apiserver's: /readyz reports
+      # per-component chunk availability, so a partial build fails it.
+      - name: Build WASM
+        run: npm run build:wasm
+
+      - name: Unit tests
+        run: go test -count=1 ./cmd/prodprobe/
+
+      - name: Smoke the probe and /readyz against wrangler dev
+        run: bash cmd/prodprobe/smoke.sh
