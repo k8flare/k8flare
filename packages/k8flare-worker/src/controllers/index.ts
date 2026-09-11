@@ -550,9 +550,38 @@ export class Controllers {
    * probe means stay awake" rule as the lists below.
    */
   private async pendingDeletions(): Promise<boolean> {
+    // The probe behind this costs one LIST per namespaced resource across every
+    // namespace -- 28 of them, measured at 440 Durable Object LISTs for a
+    // single 10-pod foreground delete (S41) -- and it ran on every alarm tick.
+    // A deletion can only appear through a write, and every write advances the
+    // cluster revision, so a revision that has not moved since the last empty
+    // answer cannot have grown one. Reading the revision is a single call.
+    const revision = await this.clusterRevision();
+    if (revision !== null) {
+      const clean = await this.state.storage.get<number>("noPendingDeletionsAt");
+      if (clean === revision) return false;
+    }
     const resp = await this.apiGet("/internal/pending-deletions");
     if (resp === null) return true;
-    return typeof resp.pending === "number" && resp.pending > 0;
+    const pending = typeof resp.pending === "number" && resp.pending > 0;
+    if (!pending && revision !== null) {
+      await this.state.storage.put("noPendingDeletionsAt", revision);
+    }
+    return pending;
+  }
+
+  private async clusterRevision(): Promise<number | null> {
+    const ns = this.env.CLUSTER;
+    if (!ns) return null;
+    try {
+      const stub = ns.get(ns.idFromName(this.clusterName()));
+      const resp = await stub.fetch("http://do.internal/revision");
+      if (!resp.ok) return null;
+      const body = (await resp.json()) as { revision?: number };
+      return typeof body.revision === "number" ? body.revision : null;
+    } catch {
+      return null;
+    }
   }
 
   private async hasUnconvergedWork(): Promise<boolean> {
