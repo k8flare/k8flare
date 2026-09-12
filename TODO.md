@@ -197,9 +197,19 @@ klog を吐かせた: **`Too many replicas` 374 回、`Too few replicas` 0 回**
 だったが、`observed` は Go 側でバーストに落ちる(S56)ので、この 42% 差を
 取りこぼしと読んではいけない。使えるのは klog の質的な非対称のほう。
 
-**Do.** 削除の配送を、バーストで落ちない場所で数える計器を作る(例:
-dynamic worker の応答に積算カウンタを載せ、シェル側が `commit` と同じ経路で
-記録する)。それまで削除取りこぼし説は仮説のまま。
+**Two controller instances found (S59).** `ResidentService` は `sync.Once` で
+run を 1 回に抑えるのに、`controllerManager: run starting` が **2 行**出る
+実行がある(シェル側の `dynamic worker up` は 1 回)。インスタンス数と過剰
+生成の強さが揃う: 1 インスタンス → 4 個、2 インスタンス → 35 個 / 161 POST。
+expectations はインスタンスのメモリに載るので、2 つあれば互いの Pod を
+「余剰」と見て消し合う。S57 の `Too many` 374 / `Too few` 0 とも整合する。
+
+**確定ではない**: 1 インスタンスでも 4 個作っている(目標 2)ので、二重化は
+増幅要因であっても唯一の原因とは限らない。2 つ目がどこから来るかも未特定。
+
+**Do.** Go 側でインスタンス固有 ID を作り `pumptrace` の component 名と
+`run starting` に付ける。どのインスタンスが何を書いたかが取れれば、二重化の
+実在と各々の振る舞いが同時に分かる。
 
 **Acceptance.** ノードを付けた状態で `replicas=2` に対して作られる distinct
 な Pod が 2 個であること。
