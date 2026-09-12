@@ -256,8 +256,17 @@ $(ASSETS)/selector.wasm: $(SELECTOR_SRC)
 gen: | gen-mirrors
 	go run ./cmd/k8flare-gen
 
-## check: TypeScript check (vp check)
+## types: regenerate packages/k8flare-worker/worker-configuration.d.ts from
+## wrangler.jsonc. Run after changing a binding; the file is committed so a
+## fresh clone and an editor need no extra step.
+types:
+	npm run types
+
+## check: TypeScript check (vp check), plus the binding types still matching
+## wrangler.jsonc -- a binding added to the config and not regenerated is a
+## type that silently does not exist.
 check:
+	npm run check:types
 	pnpm exec vp check
 
 ## vet: go vet, split by GOOS -- a plain `go vet ./pkg/...` wildcard fails

@@ -1,44 +1,23 @@
-import type { NodeVMLarge, NodeVMMedium, NodeVMSmall } from "./nodes/nodevm.ts";
-import type { CFContainersScheduler } from "./nodes/scheduler.ts";
-
-// The single Worker's merged environment (union of the former six
-// Workers' envs). Every DO class is local now -- the script_name
-// indirections and cross-Worker service bindings are gone.
-export interface Env {
-  // Durable Objects (all exported from src/index.ts)
-  CLUSTER: DurableObjectNamespace;
-  WATCHHUB: DurableObjectNamespace;
-  CONTROLLERS: DurableObjectNamespace;
-  // Multi-cluster metadata (clusters/registry.ts): {id -> uid/state} and
-  // the cluster list ONLY -- no alarms/WS, idle cost is storage alone.
-  REGISTRY: DurableObjectNamespace;
-  SCHEDULER: DurableObjectNamespace<CFContainersScheduler>;
-  NODE_VM_SMALL: DurableObjectNamespace<NodeVMSmall>;
-  NODE_VM_MEDIUM: DurableObjectNamespace<NodeVMMedium>;
-  NODE_VM_LARGE: DurableObjectNamespace<NodeVMLarge>;
-
-  // Self service bindings (S19 G2): SELF = the public fetch handler
-  // (the KCM dynamic worker's "GATEWAY"); STORAGE = the ClusterLoopback
-  // named entrypoint (the apiserver dynamic worker's route to the
-  // Cluster DO -- DO namespaces cannot cross the Loader env clone).
-  SELF: Fetcher;
-  STORAGE: Fetcher;
-
-  ASSETS: Fetcher;
-  LOADER: WorkerLoader;
-
+// Everything wrangler.jsonc declares -- every Durable Object namespace,
+// both self-bindings, ASSETS, LOADER, MESH, GATEWAY_URL -- comes from
+// Cloudflare.Env in the generated worker-configuration.d.ts, and is more
+// accurate there than it was here by hand: SELF and STORAGE carry the
+// entrypoint's own type rather than a bare Fetcher, so an RPC method that
+// does not exist is a compile error.
+//
+// What stays below is what wrangler cannot see: secrets, values this
+// Worker derives per request, and the harness kill switches that
+// check-test-vars.ts refuses to let anyone put in wrangler.jsonc.
+//
+// Regenerate with `make types` after changing wrangler.jsonc; `make check`
+// fails when the committed file no longer matches the config.
+export interface Env extends Cloudflare.Env {
   // Optional Workers VPC binding for BYO-node kubelet access
   // (logs/exec); attached per deployment, absent in dev.
   // Legacy: Cloudflare Tunnel + VPC Service (infra/setup-tunnel.sh),
   // being phased out in favor of MESH below (user decision 2026-07-07)
   // -- kept as a fallback for existing deployments, not removed.
   KUBELET_VPC?: Fetcher;
-  // Cloudflare Mesh (spikes/s17-mesh-nodevm/FINDINGS.md): a
-  // vpc_networks binding to the account-wide Mesh ("cf1:network").
-  // Reaches a BYO VM node directly at its Mesh IP -- no per-node Tunnel
-  // config, no VPC Service resource. Preferred over KUBELET_VPC when
-  // both are present (gateway/proxy/kubelet.ts).
-  MESH?: Fetcher;
 
   // Per-Pod Cloudflare Mesh membership on the Containers backend
   // (spikes/s17-mesh-nodevm/FINDINGS.md's per-Pod-Mesh entry):
@@ -67,9 +46,6 @@ export interface Env {
   // Cluster-token auth is the baseline either way.
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD?: string;
-  // Public URL in-VM k3s agents join through (microVMs dial out over
-  // the internet; bindings don't reach them).
-  GATEWAY_URL?: string;
   // CI/local-dev only: base64 PEM CA appended to NodeVMs' system trust
   // bundle (nodevm.ts -> entrypoint.sh) so agents can join a
   // wrangler-dev GATEWAY_URL behind a self-signed cert. Never set in

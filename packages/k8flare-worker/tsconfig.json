@@ -17,5 +17,5 @@
     "declaration": false,
     "emitDeclarationOnly": false
   },
-  "include": ["src"]
+  "include": ["src", "worker-configuration.d.ts"]
 }
