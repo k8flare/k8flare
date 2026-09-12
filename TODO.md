@@ -654,7 +654,7 @@ Deployment を 1 個作って消す。**運用者が忘れたら利用者が 20 
 どちらも本番の挙動を変えるので、実装前に承認を得る。S50 を測っただけの現状
 では**利用者が 20 分待つ既定のまま**であることを明記しておく。
 
-### P1-11 `[ ]` required gate が「Pod を 47 個作る制御プレーン」を通している
+### P1-11 `[x]` required gate が「Pod を 47 個作る制御プレーン」を通している — **誤報、取り下げ**
 
 **Observed 2026-09-12 (S52).** `replicas=2` の Deployment 1 個に対して、
 required な `host` バリアントでは 1 namespace に **47 個**の distinct な Pod が
@@ -670,12 +670,19 @@ Pod を bind するが sandbox を作れないコンテナノードがあり(S48
 prodprobe クラスタにはノードが無い——が、`FailedCreatePodSandBox` は Pod を
 Failed にしないので、置き換えの引き金としては説明が足りない。
 
-**Do.** 二つを順に切り分ける。(1) ローカルでノードを外して(コンテナを止めて)
-同じ spec を回し、過剰生成が消えるか。消えればノード側、消えなければ
-apiserver 側。(2) CI が復旧したら runner 上で `commit` 境界
-(`PUMP_TRACE=1`)の distinct Pod 名を数える。CI のノードは Pod を実際に
-動かせるので、ローカルとの決定的な比較になる。P1-1 / P1-2 の昇格判断より
-先に決める。
+**Resolved the same day — this was not a defect.** ノードを止めて同じ spec を
+回すと `replicas=2` に対して Pod は **2 個**になった。計装で機序も取れた:
+Pod の commit 53 件のうち kcm の informer が取りこぼしたものは **0 件**、
+一方で kcm は Node への PATCH を 24 件発行しており、同じ時間帯に kubelet が
+`PLEG is not healthy` を 244 回出していた。**ノードがフラップして Pod が
+evict され、replicaset-controller が正しく補充していた**だけである
+(`docs/platform-verification.md` S52 訂正 2)。
+
+required gate は「暴走する制御プレーン」を通していたのではなく、「Pod を
+起動できないノードに対して正しく振る舞う制御プレーン」を通していた。
+S51 の sched-dw 失敗も同じ補充サイクルのタイミング差に還元される。
+**ローカルハーネスのノードが Pod を起動できるようになるまで、バリアント間の
+差に意味を読み取ってはいけない**——これが S48 から変わらない本当の限界。
 
 **Acceptance.** CI の host 変種で `replicas=2` に対して作られる distinct な
 Pod が 2 個であること、またはそうでない理由が特定されていること。
