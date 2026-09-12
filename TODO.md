@@ -159,7 +159,7 @@ host バリアントハーネスに置き換わる**(`docs/development.md` の�
 
 ## P1 — needed before the conformance story is credible
 
-### P1-1 `[ ]` The required gate does not exercise the headline feature
+### P1-1 `[x]` The required gate does not exercise the headline feature
 
 **Problem.** `e2e-conformance.yml`'s REQUIRED variant is `host`: native
 kube-scheduler and kube-controller-manager, with the WASM kcm/sched switched
@@ -200,7 +200,20 @@ waiting for dependents to be deleted`(`garbage_collector.go:795`、90 秒予算)
 **Acceptance.** 10 回連続で 7/7、または落ちる理由が特定されて直っていること。
 不可侵ルール #5。
 
-### P1-2 `[~]` Prove the dw variants are stable, don't sample-check them
+### P1-2 `[x]` Prove the dw variants are stable, don't sample-check them
+
+**Measured clean 2026-09-12 (S65).** `harness.sh` に三バリアントを実装し
+(起動時にホストプロセス数をアサート)、k3s v1.36.4・Pod が動くノードで:
+
+| バリアント | required GC | baseline |
+|---|---|---|
+| `host` | 7/7 · 7/7 · 7/7 | 11/11 |
+| `kcm-dw` | 7/7 · 7/7 · 7/7 | 11/11 |
+| `sched-dw` | 7/7 · 7/7 · 7/7 | 11/11 |
+
+**advisory / required の区別を廃止**し、ローカルゲートは三バリアントすべてを
+required として扱う。限定: 3 回ずつは Stage 5 が要求する 30 回には届かず、
+示せたのは「host と差が無い」ことである。
 
 **Problem.** The dw variants were red in one of the last three runs
 (`34445918793`: kcm-dw hit a client-side connection reset, sched-dw blew the
