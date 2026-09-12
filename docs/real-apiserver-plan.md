@@ -129,6 +129,33 @@ client-go のスキーマに無い。この project は `pkg/apiserver/scheme.go
 cap への余裕は 21,659 KiB。go-restful と installer の追加分で、
 **まだ `handler.go` を消していない状態での増分**である。
 
+### 段階 1 の第二歩: ClusterIP を upstream の拡張点へ移した(実装済み)
+
+`handler.go` の POST/DELETE ケースに埋まっていた Service の ClusterIP
+割り当てと解放を、`genericregistry.Store` のフックへ移した:
+
+| 効果 | 旧 | 新 |
+|---|---|---|
+| 割り当て | `handler.go` POST ケースの `AssignClusterIP` | `Store.BeginCreate` |
+| 解放 | `settleDeletedObject`(DELETE と finalizer 完了の 2 経路から呼ぶ) | `Store.AfterDelete` |
+
+**これで「その handler を通らない create」でも ClusterIP が付く。** installer
+経由のルートは `handler.go` を通らないので、移さなければ Service だけ壊れて
+いた。
+
+確かめたこと:
+
+- **dry-run**: 旧実装は dry-run で割り当てをスキップしていた(しないと
+  1 回ごとにアドレスを漏らす)。`BeginCreate` は `*metav1.CreateOptions` を
+  受け取るので同じ判定ができる。移植済み
+- **finalizer 完了経路**: 旧実装が 2 箇所から `settleDeletedObject` を呼んで
+  いたのは、finalizer を空にする PUT/PATCH が「削除」になるためである。
+  upstream の `Store.Update` はその場合 `deleteWithoutFinalizers` を通り、
+  そこから `AfterDelete` が走る(mirror の store.go:806 → 607)。**片方だけ
+  漏れることはない**
+
+サイズは +1KB。全テストレーン緑。
+
 ### 段階 1 の残り: 切り替え
 
 `endpoints.APIGroupVersion` を、既に実物の `genericregistry.Store` 群に対して

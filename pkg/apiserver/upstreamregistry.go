@@ -1,7 +1,10 @@
 package apiserver
 
 import (
+	"fmt"
+
 	"context"
+	corev1 "k8s.io/api/core/v1"
 
 	batchv1 "k8s.io/api/batch/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -32,6 +35,12 @@ type genericStrategy struct {
 	names.NameGenerator
 	resource   string
 	namespaced bool
+	// storage is needed by the create-time effects that allocate from a
+	// cluster-wide pool -- today only the Service ClusterIP allocator.
+	// Upstream's own service registry holds an allocator the same way;
+	// this project's pool lives in the Durable Object, so the strategy
+	// holds the client rather than an in-memory bitmap.
+	storage *Storage
 }
 
 func (g genericStrategy) NamespaceScoped() bool { return g.namespaced }
@@ -107,6 +116,7 @@ func NewUpstreamStore(
 		NameGenerator: names.SimpleNameGenerator,
 		resource:      resource,
 		namespaced:    namespaced,
+		storage:       storageClient,
 	}
 	prefix := "/" + resource
 	gr := gv.WithResource(resource).GroupResource()
@@ -145,9 +155,39 @@ func NewUpstreamStore(
 		// ("metadata.deletionTimestamp: field is immutable" -- only the
 		// registry may set it).
 		EnableGarbageCollection: true,
-		CreateStrategy:          strat,
-		UpdateStrategy:          strat,
-		DeleteStrategy:          strat,
+		// ClusterIP allocation and release, at the two extension points
+		// upstream provides for exactly this. They used to live in
+		// handler.go's POST and DELETE cases, which meant a create that
+		// did not go through that handler got a Service with no
+		// ClusterIP. Moving them here makes the effect a property of the
+		// store, so k8s.io/apiserver's own installer (installer.go)
+		// serves Services correctly without handler.go in the path.
+		BeginCreate: func(ctx context.Context, obj runtime.Object, options *metav1.CreateOptions) (genericregistry.FinishFunc, error) {
+			svc, ok := obj.(*corev1.Service)
+			if !ok {
+				return func(context.Context, bool) {}, nil
+			}
+			// Not under dry-run: the allocation is a real persisted write
+			// and nothing releases it afterwards, so a dry-run Service
+			// create would leak an address per call. The reply then
+			// carries no ClusterIP, which is what upstream's dry-run does
+			// too.
+			if len(options.DryRun) > 0 {
+				return func(context.Context, bool) {}, nil
+			}
+			if err := AssignClusterIP(ctx, storageClient, svc); err != nil {
+				return nil, fmt.Errorf("allocate ClusterIP: %w", err)
+			}
+			return func(context.Context, bool) {}, nil
+		},
+		AfterDelete: func(obj runtime.Object, _ *metav1.DeleteOptions) {
+			if svc, ok := obj.(*corev1.Service); ok {
+				ReleaseClusterIP(context.Background(), storageClient, svc)
+			}
+		},
+		CreateStrategy: strat,
+		UpdateStrategy: strat,
+		DeleteStrategy: strat,
 		// Normally filled in by CompleteWithOptions, which this project
 		// bypasses (it requires RESTOptions -> the etcd storagebackend
 		// factory). Everything it would default must be set explicitly;
