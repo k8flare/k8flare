@@ -7259,7 +7259,42 @@ traced な POST は 4 件。つまり `issued` 境界はバーストの間に出
 「何回やったか」は commit 側で数えること。S49 で測った
 `issued`→`observed` の 82〜93ms は個々のペアの時刻差なので影響を受けない。
 
-**したがって機序はまだ名指しできない。** このセッションでは機序の仮説を
-二度立てて二度とも撤回している(ホスト CM 起因、informer 取りこぼし)。
-三度目は、バーストで落ちない計測手段を用意してからにする。commit だけで
-言えるのは「35 個作られて 2 個に収束した」という事実までである。
+#### バースト耐性のある計測: `request` 境界
+
+計測手段は既にあった。`request` 境界はシェル Worker 側なので、`commit` と
+同じ理由でバーストに耐える。しかも **User-Agent とメソッドとパスを持つ**。
+resident controller は `GATEWAY`(= `env.SELF`)経由で apiserver を呼ぶので、
+その呼び出しは公開 fetch ハンドラを通り、この境界に必ず現れる。
+
+同じ実行の `request` 2,816 行のうち、prodshape の Pod に触るもの 338 行:
+
+| メソッド | User-Agent | 対象 | 件数 |
+|---|---|---|---|
+| POST | **replication-controller** | collection(= 作成) | **32** |
+| POST | kube-controller-manager | collection | 3 |
+| POST | kube-scheduler | binding | 35 |
+| DELETE | **replication-controller** | object | **38** |
+| DELETE | kube-controller-manager | object | 30 |
+| GET | (kubelet) | object | 191 |
+| DELETE | garbage-collector | object | 2 |
+
+**作成の合計は 32 + 3 = 35 で、`commit` が数えた distinct な Pod 35 個と
+完全に一致する。** 計器の辻褄が合った。
+
+#### 何が起きているか(ここまでは言える)
+
+**replication-controller 自身が、replicas=2 の RC に対して Pod を 32 個作り、
+38 個消している。** 作っては消す振動である。GC でも kubelet でも scheduler
+でもない。
+
+informer は届いている(取りこぼし 1%)。それでも controller が持つ Pod 集合
+の像が安定していない。**なぜ像が安定しないかは、まだ証明できていない。**
+このセッションで機序の仮説を二度撤回しているので、ここで止める。測れたのは
+「誰が」と「どういう形で」までである。
+
+#### 次の一手
+
+`request` 境界は LIST も見える。replication-controller の LIST の応答が
+振動しているかを、`GET /api/v1/namespaces/<ns>/pods?labelSelector=...` の
+並びと、その直後の POST/DELETE の対応で見る。pump window の閉鎖と
+relist の境界に相関があれば、Stage 1(欠落のない replay)の直接の証拠になる。

@@ -155,9 +155,16 @@ S55 の required GC conformance の flakiness(動くノードで 6 回中 0 回�
 scheduler は bind を 70 発行していた。**ただし distinct な Pod 名 35 個と
 POST 6 件が矛盾しており、計器のほうが合っていない。** 機序は名指しできない。
 
-**Do.** (1) `issued.post` と `commit` を Pod 名で突き合わせ、commit に
-あって issued に無い作成を列挙する——35 と 6 の差がどこから来るかを先に
-説明する。(2) それが説明できてから機序を論じる。(3) 切り分けは隔離
+**Actor identified (S56).** バースト耐性のある `request` 境界(シェル側、
+User-Agent 付き)で数え直した: **replication-controller が Pod を 32 個作り
+38 個消している**(kcm 全体で作成 35 = commit の distinct 35 と一致)。
+GC でも kubelet でも scheduler でもない。informer は届いている(取りこぼし
+1%)のに、controller が持つ Pod 集合の像が安定していない。**なぜ像が安定
+しないかは未証明。**
+
+**Do.** `request` 境界で replication-controller の LIST 応答の並びと、その
+直後の POST/DELETE の対応を見る。pump window の閉鎖と relist の境界に相関が
+あれば、Stage 1(欠落のない replay)の直接の証拠になる。切り分けは隔離
 ワークツリーで(S43)。
 
 **Acceptance.** ノードを付けた状態で `replicas=2` に対して作られる distinct
