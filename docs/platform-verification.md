@@ -6804,3 +6804,45 @@ observedGeneration=1 after 23s   replicas=1
 採用者にとっての意味が変わる。k8flare をそのまま使う運用では、20 分を払うのは
 **k8s/k3s のバージョンを上げたときなど、Go が変わったデプロイだけ**である。
 docs/admin-guide.md の暖機手順もその条件に絞った。
+
+### S51 (2026-09-12): 三バリアントをローカルで比べたら sched-dw だけ落ちた
+
+S48 で host バリアントを再現できるようにしたので、CI が評価する三つの
+control-plane バリアントを同じハーネス・同じノード・同じ required GC フォーカス
+で回した。
+
+| バリアント | 設定 | 結果 |
+|---|---|---|
+| `host`(required) | `SCHED_DISABLED:1 CM_DISABLED:1` + ホスト両方 | **7/7**、91〜171 秒 |
+| `kcm-dw`(advisory) | `SCHED_DISABLED:1 CM_DISABLED:0` + ホスト scheduler のみ | **7/7**、597 秒 |
+| `sched-dw`(advisory) | `SCHED_DISABLED:0 CM_DISABLED:1` + ホスト CM のみ | **0/3**、毎回 6 Passed / 1 Failed |
+
+sched-dw の 3 回はすべて失敗したが、**落ちる spec が同じではない**:
+
+- run 1, 2: `should orphan RS created by deployment when
+  deleteOptions.PropagationPolicy is Orphan`
+  ——`expected 2 pods, got 0 pods`。Deployment を Orphan で消した 0.25 秒後に
+  Pod が 0 件。イベントには `replicaset-controller SuccessfulCreate` が
+  残っているので、作られた Pod が消されている。
+- run 3: `should keep the rc around until all its pods are deleted if the
+  deleteOptions says so [Serial]` の DeferCleanup。
+
+設定は `e2e-conformance.yml` の sched-dw と一致させた(`SCHED_DISABLED:0`、
+`CM_DISABLED:1`、ホスト scheduler なし、ホスト CM あり)。
+
+#### これを defect と断定しない理由
+
+`docs/known-issues.md` は「advisory な dw バリアントは 6 回連続 green」と
+書いており、CI の sched-dw は通っている。矛盾する。**差はノードである**:
+このローカルハーネスのコンテナノードは Pod サンドボックスを作れない
+(seccomp、S48)ので Pod は一度も Running にならない。CI のノードは動く。
+
+ただし host と kcm-dw は**同じ壊れたノードで 7/7 通る**ので、「ノードが
+壊れているから落ちる」だけでは sched-dw だけが落ちる説明にならない。
+
+#### P1-1 / P1-2 への含意
+
+昇格の判断は CI でしかできない(不可侵ルール #1)。そのうえで、**kcm-dw と
+sched-dw を同列に扱わないほうがよい**という材料が出た。ローカルで再現できる
+条件下では sched-dw だけが 3/3 で落ちる。CI が復旧したら、sched-dw は
+kcm-dw より多くのサンプルを要求するか、この Orphan の経路を先に詰める。
