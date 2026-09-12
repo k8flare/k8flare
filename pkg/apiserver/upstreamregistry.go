@@ -35,12 +35,41 @@ type genericStrategy struct {
 	names.NameGenerator
 	resource   string
 	namespaced bool
+	// gvk is the Kind this store persists, used by stampTypeMeta.
+	gvk schema.GroupVersionKind
 	// storage is needed by the create-time effects that allocate from a
 	// cluster-wide pool -- today only the Service ClusterIP allocator.
 	// Upstream's own service registry holds an allocator the same way;
 	// this project's pool lives in the Durable Object, so the strategy
 	// holds the client rather than an in-memory bitmap.
 	storage *Storage
+}
+
+// stampTypeMeta fills in an absent apiVersion/kind before the object is
+// handed to storage. Real kube-apiserver gets this for free: it converts to
+// an internal type and back, and the versioning encoder sets the GVK on
+// everything it writes. This project stores external types with
+// EncodeToStorage, which never consults the Scheme (see its doc comment),
+// so an object whose TypeMeta happens to be empty is persisted without one
+// -- true of anything this apiserver constructs in Go (bootstrap
+// namespaces, the "kubernetes" Service, the default ServiceAccount, the
+// root CA ConfigMap) and equally of any request body that carried no
+// apiVersion/kind, which is how kube-controller-manager's event
+// broadcaster POSTs Events (see ResourceStore.decodeDefaults).
+//
+// Watch is served in TypeScript straight from the stored bytes (no
+// re-encode), so those objects reached every informer as Kind-less events.
+// client-go's reflector cannot decode such an event, warns "Object 'Kind'
+// is missing" and falls back to a full relist -- observed from a real
+// kube-scheduler at startup for both Namespace and Service.
+func (g genericStrategy) stampTypeMeta(obj runtime.Object) {
+	if g.gvk.Empty() {
+		return
+	}
+	kind := obj.GetObjectKind()
+	if kind.GroupVersionKind().Empty() {
+		kind.SetGroupVersionKind(g.gvk)
+	}
 }
 
 func (g genericStrategy) NamespaceScoped() bool { return g.namespaced }
@@ -51,6 +80,7 @@ func (g genericStrategy) NamespaceScoped() bool { return g.namespaced }
 // calling BeforeCreate, which is what invokes this -- so the UID that
 // prepareJobForCreate needs is already set here.
 func (g genericStrategy) PrepareForCreate(_ context.Context, obj runtime.Object) {
+	g.stampTypeMeta(obj)
 	if _, ok := specForGeneration(g.resource, obj); ok {
 		if m := getObjectMeta(obj); m != nil {
 			m.Generation = 1
@@ -77,6 +107,9 @@ func (genericStrategy) AllowCreateOnUpdate() bool { return false }
 // specForGeneration (store.go) for why that gate, and why the comparison
 // is Semantic.DeepEqual.
 func (g genericStrategy) PrepareForUpdate(_ context.Context, obj, old runtime.Object) {
+	// Also on update, or a PUT whose body carried no apiVersion/kind would
+	// put a stamped object back to Kind-less.
+	g.stampTypeMeta(obj)
 	newSpec, ok := specForGeneration(g.resource, obj)
 	if !ok {
 		return
@@ -116,6 +149,7 @@ func NewUpstreamStore(
 		NameGenerator: names.SimpleNameGenerator,
 		resource:      resource,
 		namespaced:    namespaced,
+		gvk:           routeGVK(gv, newFunc),
 		storage:       storageClient,
 	}
 	prefix := "/" + resource
