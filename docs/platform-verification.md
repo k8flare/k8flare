@@ -7059,3 +7059,63 @@ x86 だからで、本番としては正しい。**壊れているのはロー�
   アセットで作り直す(Apple Silicon の場合)。そうすれば baseline focus の
   残り 3 spec と、バリアント間の比較が初めて意味を持つ。required GC
   フォーカスは Pod の起動を要求しないので、今のままでも有効である。
+
+### S54 (2026-09-12): ノードを直したら、今日の「7/7」が成立しない条件だったと分かった
+
+S53 の原因(Apple Silicon 上で x86-64 の k3s アセットを emulate していた)を
+踏まえてローカルハーネスのノードを直し、**初めて Pod が Running になった**。
+そして直した途端、今日ずっと報告してきた数字が崩れた。
+
+#### 直し方
+
+ローカル実験専用のノードイメージ(本番の Dockerfile は amd64 のままで正しい):
+
+1. `k3s-arm64` を取得し、agent も `GOARCH=arm64` でビルドして
+   `--platform linux/arm64` でイメージを作る → **seccomp エラーが消える**
+2. `/var/lib/rancher/k3s` を **named volume** にする → overlayfs の入れ子が
+   解消(`failed to mount rootfs component: overlay`)
+
+これで `kubectl run` した Pod が **Running** になる。
+
+#### 直した結果
+
+| フォーカス | 壊れたノード(今日ずっとこれ) | **動くノード** |
+|---|---|---|
+| baseline(11 spec) | 8 Passed / 3 Failed | **11 Passed / 0 Failed**、356 秒 |
+| required GC(7 spec) | 7 Passed / 0 Failed | **5 Passed / 2 Failed**、278 秒 |
+
+**baseline は初めて全部通った。** S48 で「Pod の起動を要する 3 spec は
+再現できない」と書いた制約は解消された。
+
+**そして GC が落ちた。** 今日 S47 / S48 / S51 / S52 で繰り返し報告した
+「required GC フォーカス 7/7」は、**Pod が一度も起動しないノードでの結果**
+だった。Pod が実際に動く条件では 5/7 である。
+
+#### 落ちた 2 件
+
+- `should not delete dependents that have both valid owner and owner that's
+  waiting for dependents to be deleted [Serial]`
+  ——`the server could not find the requested resource (patch pods
+  simpletest-rc-to-be-deleted-9zlsr)`。PATCH 自体は健在で
+  (`kubectl patch pod` は今も成功する)、**patch しようとした Pod が
+  その時点で既に別物に置き換わっていた**、つまり Pod の churn。
+- `should orphan pods created by rc if delete options say so [Serial]`
+  ——`garbage_collector.go:436`。失敗時のダンプに 1 namespace で
+  **739 events**。
+
+どちらも Pod の激しい入れ替わりが背景にある。S52 訂正 2 で見た
+「ノードがフラップ → evict → 補充」と同じ形に見えるが、**今度はノードが
+健全なので、その説明は使えない**。原因は未特定。
+
+#### 今日の報告への影響(重要)
+
+- 「現 main は required GC フォーカスを host バリアントで 7/7 通る」
+  (S47 / S48)は**条件付きだった**。Pod が起動しないノードでのみ 7/7。
+- 「`deps/k3s-136-4` は required 構成で 7/7」(TODO P1-8)も同じ条件下の
+  測定であり、**そのまま昇格の根拠にしてはいけない**。
+- S51 のバリアント比較(host 7/7 / kcm-dw 7/7 / sched-dw 0/3)も同じ。
+- **baseline 11/11 は逆に、動くノードで初めて取れた本物の緑**である。
+
+CI が復旧したら、まず runner 上でこの 2 件が落ちるかを見る。落ちるなら
+required gate の実体であり、落ちないならローカルの残る差(単一ノード、
+Docker Desktop)に切り分けられる。
