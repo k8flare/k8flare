@@ -56,7 +56,7 @@ func PumpTrace(boundary, component, object, resourceVersion string) {
 	if !PumpTraceEnabled() {
 		return
 	}
-	log.Printf("pumptrace %s", formatPumpTrace(boundary, component, object, resourceVersion, CurrentWindowID(), time.Now()))
+	log.Printf("pumptrace %s", formatPumpTrace(boundary, component+"@"+InstanceID(), object, resourceVersion, CurrentWindowID(), time.Now()))
 }
 
 func formatPumpTrace(boundary, component, object, resourceVersion string, window int, at time.Time) string {
