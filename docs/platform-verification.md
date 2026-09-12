@@ -8556,3 +8556,19 @@ clearing the orphan finalizer with only an Event owned =
 ```
 
 `TestOrphanIsNotWedgedByAnEvent` がこれを回帰として固定する。
+
+#### 修正後のゲート(`e5a5555`、host バリアント、Pod が動くノード)
+
+| | 結果 |
+|---|---|
+| required GC focus | **7/7 × 3**(153s / 90s / 109s)。全 3 回でホストプロセス 2 を確認 |
+| baseline focus | **11/11**(355s) |
+| `make test` 4 レーン | apiserver 67.9s / kcm 325.2s / clusterop 75.3s / cfruntime すべて緑 |
+
+`--ginkgo.dry-run` で `Will run 7 of 7579` / `Will run 11 of 7579` を先に確認して
+いる(focus のシェルエスケープを戻し損ねると黙って本数が減る)。
+
+**これは安定性の主張ではない** — S68 でまさに「3 連続通過」を緑と読み違えた。
+ここで言えるのは「**今日はじめて実際に走るようになった掃除が、7 本の spec を
+壊していない**」までである。穴を閉じているのは依然として拒否側で、それは
+今回の変更で触っていない。掃除が何を救うかは未計測のまま(訂正その 3)。
