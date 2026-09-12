@@ -14,10 +14,18 @@ import type { Env } from "../env.ts";
 // TOKEN_CACHE_TTL_MS (documented tradeoff -- emergency revocation is
 // cluster deletion).
 
+// A token with no role is an administrator (system:masters, via
+// pkg/apiserver/auth.go). Leaving it optional is what lets every vault
+// written before roles existed keep authenticating unchanged; an "agent"
+// token authenticates as system:nodes and nothing more, so a node's copy
+// of it is no longer a cluster administrator (TODO.md P0-8).
+export type ClusterTokenRole = "admin" | "agent";
+
 export interface ClusterToken {
   tokenId: string;
   secret: string;
   createdAt: string;
+  role?: ClusterTokenRole;
 }
 
 export const TOKENS_KEY = "/ca/cluster-tokens";
@@ -72,14 +80,18 @@ export async function writeClusterTokens(
  * REPLAYABLE: the cluster operator derives it deterministically from the
  * rotate annotation's value, so a retried rotation recognizes the token it
  * already minted instead of minting a second one every attempt.
+ *
+ * An omitted role stringifies away, so an administrator token is stored in
+ * exactly the shape every deployed vault already holds.
  */
-export function mintToken(tokenId?: string): ClusterToken {
+export function mintToken(tokenId?: string, role?: ClusterTokenRole): ClusterToken {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   return {
     tokenId: tokenId || crypto.randomUUID().slice(0, 8),
     secret: [...bytes].map((b) => b.toString(16).padStart(2, "0")).join(""),
     createdAt: new Date().toISOString(),
+    role,
   };
 }
 
@@ -96,7 +108,15 @@ export async function clusterSecrets(env: Env, doName: string): Promise<string[]
   // neither a vault token nor the secret, default is the dev posture
   // (dev fallback token), same rule the Go side has always had.
   const vault = await readClusterTokens(env, doName);
-  const secrets = vault?.tokens.map((t) => t.secret) ?? [];
+  // Administrators first. Every caller that wants a CREDENTIAL rather
+  // than a verifier takes [0] (controllers/index.ts, nodes/scheduler.ts,
+  // clusters/api.ts), so an agent-role token sorting first would hand
+  // them a token that cannot administer the cluster.
+  const tokens = vault?.tokens ?? [];
+  const secrets = [
+    ...tokens.filter((t) => (t.role ?? "admin") === "admin"),
+    ...tokens.filter((t) => (t.role ?? "admin") !== "admin"),
+  ].map((t) => t.secret);
   if (doName === "default") {
     if (env.K3S_TOKEN) secrets.push(env.K3S_TOKEN);
     if (secrets.length === 0) secrets.push("k8flare-dev-token");

@@ -50,12 +50,20 @@ func handleTokenReview(w http.ResponseWriter, r *http.Request, tokensFn TokensFu
 		return
 	}
 
-	if tokenMatches(tokensFn(), tr.Spec.Token) {
+	if role, matched := matchToken(tokensFn(), tr.Spec.Token); matched {
+		// Role-aware, or an agent's own token reviews back as an
+		// administrator and the role split is decorative: a kubelet holding
+		// an agent token can ask this endpoint who it is and be told
+		// system:masters.
+		user := nodeUser()
+		if role == RoleAdmin {
+			user = adminUser()
+		}
 		tr.Status = authenticationv1.TokenReviewStatus{
 			Authenticated: true,
 			User: authenticationv1.UserInfo{
-				Username: "admin",
-				Groups:   []string{"system:masters", "system:authenticated"},
+				Username: user.Name,
+				Groups:   user.Groups,
 			},
 		}
 	} else {
