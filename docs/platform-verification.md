@@ -7341,6 +7341,42 @@ replicaset controller は `SatisfiedExpectations` が false の間 `manageReplic
 推測であり、このセッションで機序の仮説を二度撤回しているので、ここでは
 主張しない。**
 
-**次の一手**: 隔離ワークツリーで `replication`/`replicaset` controller の
-expectations にログを入れ、24 回の作成それぞれで `SatisfiedExpectations` が
-何を返したかを見る。S43 の教訓に従い、main の作業ツリーでは触らない。
+#### expectations を upstream 自身のログで見た。module の差し替えは要らなかった
+
+`cmd/controller-manager` は `-v` を受け取って klog verbosity を下流へ渡す。
+ホストバリアントを `-v=4` で起動し、`replicas=2` の RC を 1 個作った:
+
+```
+pods: 2
+expectations fulfilled            94
+Too many replicas                  2
+Too few replicas                   2
+```
+
+**過剰生成が起きない。** upstream の expectations は正常に機能している。
+
+#### これで P0-7 の切り分けが変わった
+
+同じ「単純な RC 1 個」を各構成で作った結果:
+
+| 構成 | 作られた Pod |
+|---|---|
+| 本番実機(全 dw、**ノード無し**) | 2 |
+| ローカル **全 dw**(本番と同じ形)+ 動くノード | **35** |
+| ローカル **host**(ホスト CM)+ 動くノード | **2** |
+
+**ホスト CM は正しく振る舞い、dynamic worker の KCM だけが過剰生成する。**
+S56 の冒頭で「ホスト CM が 1,052 個」と書いたのは conformance スイート
+(多数の RC を高速に作る)を回したときの数字であって、単純な RC 1 個では
+ホスト CM は 2 個で正しい。**ワークロードの質が違うものを並べていた。**
+
+したがって P0-7 は「ノードを付けると壊れる」ではなく、より正確には
+**「ノードが付いている状態で、resident な dynamic worker の KCM が
+replicas=2 に対して Pod を 35 個作る」**である。ホストプロセスの KCM は
+同じ条件で正しい。同じ upstream のコードなので、差は k8flare の実行環境
+——pump window、watch の継続性、isolate の寿命——の側にある。
+
+**次の一手**: WASM の KCM 側で同じ expectations ログを読む手段を作る。
+`pkg/controllers/cmd/kcm-wasm` に klog verbosity を渡す口が無いので、
+まずそれを足す(観測のみ、既定は現状のまま)。そのうえで 35 個作る瞬間の
+`SatisfiedExpectations` を見る。

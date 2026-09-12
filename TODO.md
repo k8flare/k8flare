@@ -173,9 +173,24 @@ kcm の `observed` は 24 個目の前に **20 行**(informer は届いている
 `pkg/leanclient/informers` の indexer / lister は client-go の生成コードと
 同一(コード読みの範囲で問題なし)。**残る候補は expectations の経路。**
 
-**Do.** 隔離ワークツリーで replication/replicaset controller の expectations に
-ログを入れ、24 回の作成それぞれで `SatisfiedExpectations` が何を返したかを
-見る(S43: main の作業ツリーでは触らない)。
+**Narrowed to the dynamic worker (S56).** `cmd/controller-manager -v=4` で
+upstream 自身の expectations ログを読んだ。**ホスト CM は同じ条件で Pod を
+2 個しか作らず、`expectations fulfilled` が 94 回出て正常**だった。単純な
+RC 1 個での比較:
+
+| 構成 | 作られた Pod |
+|---|---|
+| 本番(全 dw、ノード無し) | 2 |
+| ローカル全 dw + 動くノード | **35** |
+| ローカル host CM + 動くノード | **2** |
+
+**過剰生成するのは resident な dynamic worker の KCM だけ。** 同じ upstream の
+コードなので、差は k8flare の実行環境(pump window / watch の継続性 /
+isolate の寿命)側にある。P0-4 の主題そのもの。
+
+**Do.** `pkg/controllers/cmd/kcm-wasm` に klog verbosity を渡す口を足し
+(観測のみ、既定は現状維持)、35 個作る瞬間の `SatisfiedExpectations` を
+WASM 側でも読む。
 
 **Acceptance.** ノードを付けた状態で `replicas=2` に対して作られる distinct
 な Pod が 2 個であること。
