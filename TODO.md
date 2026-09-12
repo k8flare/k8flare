@@ -132,6 +132,33 @@ added to. Numbers recorded, production-measured.
 
 ---
 
+### P0-7 `[ ]` ノードを付けると replicas=2 が Pod を 35 個作る
+
+**Problem (S56).** 本番と同じ構成(全 dynamic worker、ホストプロセス無し)で
+**動くノードを 1 台付ける**と、`replicas=2` の ReplicationController に対して
+**35 個**の distinct な Pod が作られ、最終的に 2 個へ収束する。ノードが
+付いていなければ 2 個で、それが今日までの本番測定の条件だった。
+
+採用者が最初にやること——ノードを 1 台繋いでワークロードを出す——でこれに
+当たる。書き込み量、スケジューリング、kubelet の起動が 17 倍になり、コスト
+不変条件(rows written / alarm / Containers 起動)にも直接効く。
+
+これが見えなかったのは二つの条件が重なっていたため: 本番の prodprobe
+クラスタにノードが無く、ローカルハーネスのノードは S53 まで Pod を起動でき
+なかった。両方が今日直って初めて出た。
+
+S55 の required GC conformance の flakiness(動くノードで 6 回中 0 回しか
+7/7 にならない)も、おそらくこの churn の下流である。
+
+**Do.** (1) 動くノードの条件で「kcm の informer が自分の作成を観測して
+いるか」を測る(S52 でやった取りこぼし率の計測を、今度は動くノードで)。
+(2) 取りこぼしが 0 なら expectations 以外——scheduler の bind、kubelet の
+status 更新、GC の削除——のどれが Pod を消しているかを `issued.delete` で
+特定する。(3) 隔離ワークツリーで切り分ける(S43)。
+
+**Acceptance.** ノードを付けた状態で `replicas=2` に対して作られる distinct
+な Pod が 2 個であること。
+
 ## P1 — needed before the conformance story is credible
 
 ### P1-1 `[ ]` The required gate does not exercise the headline feature
