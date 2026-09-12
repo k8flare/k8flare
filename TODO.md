@@ -162,7 +162,12 @@ GC でも kubelet でも scheduler でもない。informer は届いている(�
 1%)のに、controller が持つ Pod 集合の像が安定していない。**なぜ像が安定
 しないかは未証明。**
 
-**Three candidates eliminated (S56).** 291ms で 24 個作っている窓について:
+**Four candidates eliminated (S56).** 4 つ目: `RejectCreateWithTerminating
+Controller` による 403 で作成が失敗扱いになる筋。存在しない owner なら実際に
+403 になるが、バーストでは POST 32 件に対して作られた Pod も 32 個で、403 が
+混ざった形跡がない。関与なし。
+
+**Three further candidates eliminated (S56).** 291ms で 24 個作っている窓について:
 dynamic worker の再ロードは **0 回**(expectations が消えたのではない)、
 kcm の `observed` は 24 個目の前に **20 行**(informer は届いている)、
 `pkg/leanclient/informers` の indexer / lister は client-go の生成コードと
