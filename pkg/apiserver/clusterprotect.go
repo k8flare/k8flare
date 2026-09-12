@@ -1,6 +1,7 @@
 package apiserver
 
 import (
+	"errors"
 	"strings"
 
 	k8flarev1alpha1 "github.com/k8flare/k8flare/pkg/apis/k8flare/v1alpha1"
@@ -59,3 +60,12 @@ func isClusterResource(prefix, resource string) bool {
 	return strings.TrimSuffix(prefix, "/") == strings.TrimSuffix(clusterAPIPrefix, "/") &&
 		resource == "clusters"
 }
+
+// isProtectedClusterResource is isClusterResource by group rather than by URL
+// prefix, for callers that have parsed request info rather than a raw path.
+func isProtectedClusterResource(group, resource string) bool {
+	return group == k8flarev1alpha1.GroupName && resource == "clusters"
+}
+
+var errManagementClusterUndeletable = errors.New(
+	"is the management cluster and cannot be deleted")

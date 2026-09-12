@@ -479,3 +479,33 @@ func storeForKind(namespacedStores []*ResourceStore, kind string) *ResourceStore
 	}
 	return nil
 }
+
+// RefuseForegroundFinalizeOn is refuseForegroundFinalize evaluated against an
+// update already in flight rather than against a re-read: the store's
+// BeginUpdate hook hands over both objects, so the check costs no extra read
+// and runs for every path that can clear the finalizer, not only the one
+// hand-written handler it used to sit in.
+func RefuseForegroundFinalizeOn(ctx context.Context, rs *ResourceStore, namespacedStores []*ResourceStore, old, next runtime.Object) error {
+	if namespacedStores == nil || rs == nil || !rs.namespaced {
+		return nil
+	}
+	oldMeta, nextMeta := getObjectMeta(old), getObjectMeta(next)
+	if oldMeta == nil || nextMeta == nil {
+		return nil
+	}
+	if oldMeta.DeletionTimestamp == nil || !containsString(oldMeta.Finalizers, metav1.FinalizerDeleteDependents) {
+		return nil
+	}
+	if containsString(nextMeta.Finalizers, metav1.FinalizerDeleteDependents) {
+		return nil
+	}
+	blocker, err := blockingDependent(ctx, namespacedStores, oldMeta.Namespace, string(oldMeta.UID), nil)
+	if err != nil {
+		return err
+	}
+	if blocker == "" {
+		return nil
+	}
+	return apierrors.NewConflict(schema.GroupResource{Resource: rs.resource}, oldMeta.Name,
+		fmt.Errorf("foreground deletion is still waiting on dependent %s", blocker))
+}

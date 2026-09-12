@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apiserver/pkg/audit"
 	"k8s.io/apiserver/pkg/endpoints/request"
+	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
 	"k8s.io/apiserver/pkg/warning"
 	"k8s.io/klog/v2"
 
@@ -181,6 +182,45 @@ func NewServer(cfg ServerConfig) *http.ServeMux {
 			if err := SweepNamespaceEventsAfterDelete(ctx, namespacedStores, ns.Name); err != nil {
 				klog.ErrorS(err, "sweeping namespace events", "namespace", ns.Name)
 			}
+		}
+	}
+
+	// A foreground cascade must not finish while a dependent is still
+	// alive. The guard used to sit in the DELETE handler; in the store's own
+	// hook it also covers the PUT and PATCH that clear the finalizer, which
+	// is how a stale garbage collector actually issues it.
+	for _, rs := range namespacedStores {
+		if rs == nil || rs.upstream == nil {
+			continue
+		}
+		owner := rs
+		owner.upstream.BeginUpdate = func(ctx context.Context, obj, old runtime.Object, _ *metav1.UpdateOptions) (genericregistry.FinishFunc, error) {
+			if err := RefuseForegroundFinalizeOn(ctx, owner, namespacedStores, old, obj); err != nil {
+				return nil, err
+			}
+			return func(context.Context, bool) {}, nil
+		}
+
+		// ...and the other half: the owner the guard was holding open has to
+		// finish once its last blocking dependent goes, or it waits for the
+		// real garbage collector to retry a finalizer patch it has already
+		// been refused (docs/platform-verification.md S36).
+		//
+		// Chained rather than assigned: this store may already carry a hook
+		// of its own, and Services do (releasing the ClusterIP).
+		existing := owner.upstream.AfterDelete
+		owner.upstream.AfterDelete = func(obj runtime.Object, options *metav1.DeleteOptions) {
+			if existing != nil {
+				existing(obj, options)
+			}
+			if len(options.DryRun) > 0 {
+				return
+			}
+			m := getObjectMeta(obj)
+			if m == nil {
+				return
+			}
+			FinishUnblockedForegroundOwners(context.Background(), namespacedStores, owner, m.Namespace, obj)
 		}
 	}
 

@@ -1,6 +1,7 @@
 package apiserver
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"sort"
@@ -396,4 +397,31 @@ func nonEmptyOr(s, fallback string) string {
 		return fallback
 	}
 	return s
+}
+
+// clusterTableConvertor renders `kubectl get clusters` with this project's
+// own columns. Applied to the Cluster resource only: upstream's default
+// converter knows the columns for every kind it ships, and k8flare.com's
+// Cluster is the one kind it has never heard of, so it falls back to Name
+// and Created At. Widening this to every resource was tried and reverted --
+// it replaced working columns with none.
+type clusterTableConvertor struct{}
+
+func (clusterTableConvertor) ConvertToTable(_ context.Context, obj runtime.Object, _ runtime.Object) (*metav1.Table, error) {
+	table, err := ConvertToTable(obj)
+	if err != nil {
+		return nil, err
+	}
+	// Clients that ask for a Table with the objects embedded (kubectl does,
+	// so that `-o yaml` after a `get` still works) read them from each row.
+	if items, err := meta.ExtractList(obj); err == nil {
+		for i := range table.Rows {
+			if i < len(items) {
+				table.Rows[i].Object = runtime.RawExtension{Object: items[i]}
+			}
+		}
+	} else if len(table.Rows) == 1 {
+		table.Rows[0].Object = runtime.RawExtension{Object: obj}
+	}
+	return table, nil
 }

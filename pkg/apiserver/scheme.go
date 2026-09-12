@@ -133,6 +133,8 @@ func init() {
 			Strict: true,
 		},
 	)
+
+	registerFieldLabelConversions()
 }
 
 // Encode serializes a runtime.Object to JSON bytes, stamping
@@ -211,4 +213,25 @@ func DecodeFromStorage(data []byte, into runtime.Object) error {
 		return fmt.Errorf("decode from storage: %w", err)
 	}
 	return nil
+}
+
+// registerFieldLabelConversions lets a field selector name the fields
+// selectableFieldsFor can answer. Upstream rejects any label a Kind has not
+// registered, so without this a `spec.nodeName=` list is a 400 -- and
+// kube-scheduler and kubelet both issue exactly that list. Upstream registers
+// these per Kind in each resource's strategy; the set here is the one
+// knownSelectableFields (store.go) already extracts.
+func registerFieldLabelConversions() {
+	passthrough := func(label, value string) (string, string, error) {
+		if knownSelectableFields[label] {
+			return label, value, nil
+		}
+		return "", "", fmt.Errorf("field label not supported: %s", label)
+	}
+	for _, def := range apidef.Table {
+		gvk := def.GroupVersion.WithKind(def.Kind)
+		if err := Scheme.AddFieldLabelConversionFunc(gvk, passthrough); err != nil {
+			panic(fmt.Sprintf("apiserver: register field labels for %s: %v", gvk, err))
+		}
+	}
 }

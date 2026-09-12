@@ -37,10 +37,18 @@ func InstallRESTForGroupVersion(container *restful.Container, gv schema.GroupVer
 		if s.upstream == nil {
 			return fmt.Errorf("installer: %s %q has no upstream store", gv, resource)
 		}
-		storage[resource] = s.upstream
+		if isProtectedClusterResource(gv.Group, resource) {
+			s.upstream.TableConvertor = clusterTableConvertor{}
+			storage[resource] = protectedClusterStore{s.upstream}
+		} else {
+			storage[resource] = s.upstream
+		}
 		for _, sub := range apidef.SubresourcesOf(gv, resource) {
-			if sub.Name == "status" {
+			switch sub.Name {
+			case "status":
 				storage[resource+"/status"] = newStatusREST(s.upstream)
+			case "scale":
+				storage[resource+"/scale"] = newScaleREST(s.upstream)
 			}
 		}
 	}
