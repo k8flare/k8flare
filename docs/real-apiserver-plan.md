@@ -56,6 +56,50 @@ probe: k8s.io/apiserver/pkg/endpoints を import するだけの main
 
 各段階は独立に出荷でき、前段の成果を壊さない。
 
+### 段階 1 の実現可能性: **確認済み(実行して確認)**
+
+プローブを書いて `GOOS=js` でビルドし、**node の wasm ランタイムで実際に
+走らせた**。`InstallREST` は成功し、resource 1 件に対して upstream が張る
+REST 面がそのまま出た:
+
+```
+InstallREST err: <nil>
+registered resources: 1
+
+GET    /api/v1/namespaces/{namespace}/configmaps
+POST   /api/v1/namespaces/{namespace}/configmaps
+DELETE /api/v1/namespaces/{namespace}/configmaps
+GET    /api/v1/watch/namespaces/{namespace}/configmaps
+GET    /api/v1/namespaces/{namespace}/configmaps/{name}
+PUT    /api/v1/namespaces/{namespace}/configmaps/{name}
+PATCH  /api/v1/namespaces/{namespace}/configmaps/{name}
+DELETE /api/v1/namespaces/{namespace}/configmaps/{name}
+GET    /api/v1/watch/namespaces/{namespace}/configmaps/{name}
+GET    /api/v1/configmaps
+GET    /api/v1/watch/configmaps
+```
+
+**これは `handler.go` の手書き 806 行と `apidef/table.go` の 693 行が
+やっていることである。** upstream がそのまま生成する。
+
+プローブは `docs/probes/install-rest-probe.go.txt` に置いた。
+
+必要だった設定(どれも upstream の通常の使い方):
+
+- `CreateStrategy` / `UpdateStrategy` / `DeleteStrategy` — k8flare は
+  `upstreamregistry.go` に汎用 strategy を既に持っている
+- `TableConvertor` — `rest.NewDefaultTableConvertor` で足りる。
+  `pkg/apiserver/table.go` の 399 行はこれに置き換わる見込み
+- `TypeConverter` — `managedfields.NewDeducedTypeConverter()`。無いと
+  field manager の生成で失敗する
+- `EquivalentResourceRegistry`
+
+**廃止されていたもの**: `APIGroupVersion.Linker` は現行版に無い(以前の
+`runtime.SelfLinker`)。
+
+サイズ: プローブ(installer + 実 Store + scheme、最適化版)は **38.48 MB**。
+現在の apiserver チャンクは 43.9 MB、cap への余裕は 22,669 KiB。
+
 ### 段階 1: API installer を実物にする
 
 `endpoints.APIGroupVersion` を、既に実物の `genericregistry.Store` 群に対して
