@@ -7319,6 +7319,19 @@ informer は届いている(取りこぼし 1%)。それでも controller が持
 | informer がイベントを届けていない | 24 個目の作成より前に kcm の `observed` が **20 行** | **否定** |
 | 自前 informer の indexer / lister が壊れている | `pkg/leanclient/informers` の `namespaceIndexers` は client-go の生成コードと同一で、lister は informer 自身の indexer を使う | **否定**(コード読みの範囲) |
 
+4 つ目の候補も消した。`POST /pods` が k8flare 自前のガード
+`RejectCreateWithTerminatingController` に弾かれて 403 になり、controller が
+「作成失敗」と見なして expectations を下げ、作り直している——という筋を疑った。
+実際、存在しない owner を持つ Pod を POST すると **403
+`cannot create : controller owner ReplicationController "x" does not exist`**
+が返る(upstream より厳しいが、これは意図的で、
+`gracefuldelete.go` に run 29140842888 の根拠付きで書かれている)。
+
+しかしバーストの実測と合わない: replication-controller の POST は **32 件**、
+作られた distinct な Pod も **32 個**(kcm 全体で 35)。403 が混ざっていれば
+POST 数が Pod 数を上回るはずで、上回っていない。**このガードはバーストに
+関与していない。**
+
 **残る候補は expectations の経路そのもの。** upstream の
 replicaset controller は `SatisfiedExpectations` が false の間 `manageReplicas`
 を呼ばない。24 回連続で作成しているということは、expectations が張られて
