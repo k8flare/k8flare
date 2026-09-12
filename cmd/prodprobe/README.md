@@ -131,3 +131,50 @@ gets a bare `ok` and no breakdown, that readiness goes 503 while
 both passes against a converging cluster and fails against one where
 nothing can schedule. It is a test of this tooling, **not** of
 production.
+
+## Scheduling it, now that Actions is off
+
+`.github/workflows/prod-probe.yml` ran this daily. GitHub Actions was switched
+off on cost grounds (2026-09-12), so **that workflow no longer runs** and the
+file is kept only as the specification of what a run must assert.
+
+`scripts/prodprobe-local.sh` + `scripts/com.k8flare.prodprobe.plist` schedule
+it from launchd on the maintainer's machine instead:
+
+```sh
+mkdir -p ~/.config/k8flare
+cat > ~/.config/k8flare/probe.env <<'ENV'
+K8FLARE_PROBE_URL=https://your-deployment.workers.dev
+K8FLARE_PROBE_TOKEN=...
+CLOUDFLARE_ACCOUNT_ID=...     # optional -- without it, convergence only
+CLOUDFLARE_API_TOKEN=...      # optional -- Account Analytics:Read
+ENV
+chmod 600 ~/.config/k8flare/probe.env
+
+cp scripts/com.k8flare.prodprobe.plist ~/Library/LaunchAgents/
+# edit WorkingDirectory to this checkout, then
+launchctl load ~/Library/LaunchAgents/com.k8flare.prodprobe.plist
+```
+
+Runs land in `~/Library/Logs/k8flare/`, with `prodprobe-latest.log` pointing
+at the newest and failures also appended to `prodprobe-failures.log`. A
+failure raises a macOS notification.
+
+**What this costs you compared with the workflow.** It runs only while the
+machine is awake — launchd fires a missed calendar job on wake, so a laptop
+that sleeps nightly still gets a run a day, late; a machine left off reports
+nothing, *silently*, which is the same shape of blindness the probe exists to
+catch. There is no issue filed, no notification to anyone but whoever is at
+that machine, and no record in the repository that a day was missed. Treat the
+timestamp on `prodprobe-latest.log` as part of the signal.
+
+**The alternative, not taken.** A Cloudflare Worker `scheduled` (cron) handler
+would run regardless of any laptop. It was not done here because it touches
+cost invariant #8 directly: a cron on the shell Worker runs on a fixed
+interval whether or not there is anything to observe, which is exactly the
+"nothing runs on an idle cluster" property this project sells, and because the
+probe asserts *zero* requests across a quiet window — a prober living inside
+the account it measures has to exclude itself from its own measurement. If the
+laptop dependency turns out to matter more than either, that is the thing to
+build, and `analytics.go`'s probe-traffic discriminator is where the
+self-exclusion would go.
