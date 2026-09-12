@@ -58,25 +58,6 @@ const markDeletionRetries = 5
 // same way (its maxRetryWhenPatchConflicts).
 const patchConflictRetries = 5
 
-// markForDeletion hands the caller's DeleteOptions to the upstream
-// store's own graceful-deletion path: with an Orphan/Foreground
-// propagationPolicy it stamps deletionTimestamp and the policy's
-// finalizer and returns the still-visible terminating object. Idempotent
-// -- repeating the DELETE finds the object already deleting and returns it
-// unchanged, same as upstream, which is exactly what it is.
-func markForDeletion(ctx context.Context, rs *ResourceStore, namespace, name string, opts *metav1.DeleteOptions) (runtime.Object, error) {
-	return rs.Delete(ctx, namespace, name, opts)
-}
-
-// shouldFinalizeDelete reports whether writing obj would leave a
-// terminating object with no finalizers left -- the state upstream
-// defines as "deletion is now allowed to complete". The write paths
-// delete the object instead of persisting that state.
-func shouldFinalizeDelete(obj runtime.Object) bool {
-	m := getObjectMeta(obj)
-	return m != nil && m.DeletionTimestamp != nil && len(m.Finalizers) == 0
-}
-
 // isStatusReason reports whether err is a StatusError carrying reason.
 // isStatusReason matches both error shapes in play during/after the S25
 // migration: this project's *StatusError and upstream's
@@ -181,52 +162,6 @@ func blockingDependent(ctx context.Context, namespacedStores []*ResourceStore, n
 		}
 	}
 	return "", nil
-}
-
-// refuseForegroundFinalize rejects a finalize-delete that would remove an
-// owner still carrying the "foregroundDeletion" finalizer while blocking
-// dependents exist, returning Conflict so the caller retries later.
-//
-// The real garbagecollector already gates its own finalizer-clearing
-// patch on exactly this, but it gates on ITS GRAPH, and that graph is
-// only as complete as the informers feeding it. As a resident dynamic
-// worker the GC's watch streams are torn down at every pump-window
-// boundary (S31), so a window in which its Pod informer has re-listed
-// but not yet caught up leaves the graph reporting zero dependents for
-// an owner that has dozens -- it then clears the finalizer and the owner
-// vanishes ahead of everything it owns. Measured in the e2e-conformance
-// `host` job (run 34373872717): "should keep the rc around until all its
-// pods are deleted" saw the rc NotFound at the poll one second after the
-// DELETE, with no "N pods remaining" line logged at all, while 24 of its
-// 40 Pods were still present.
-//
-// This is the foreground counterpart to sweepOrphanStragglers above, and
-// exists for the same reason: the GC's per-GVR watches have no
-// cross-stream ordering guarantee here, so the apiserver -- which reads
-// storage directly and therefore cannot be stale -- has the last word on
-// whether the cascade is actually finished. Upstream needs neither guard
-// because its informers never lag this far.
-func refuseForegroundFinalize(ctx context.Context, rs *ResourceStore, namespacedStores []*ResourceStore, namespace, name string) error {
-	if namespacedStores == nil || !rs.namespaced {
-		return nil
-	}
-	cur, err := rs.Get(ctx, namespace, name)
-	if err != nil {
-		return nil // vanished already; the write below reports it properly
-	}
-	m := getObjectMeta(cur)
-	if m == nil || m.DeletionTimestamp == nil || !containsString(m.Finalizers, metav1.FinalizerDeleteDependents) {
-		return nil
-	}
-	blocker, err := blockingDependent(ctx, namespacedStores, namespace, string(m.UID), nil)
-	if err != nil {
-		return err
-	}
-	if blocker == "" {
-		return nil
-	}
-	return apierrors.NewConflict(schema.GroupResource{Resource: rs.resource}, name,
-		fmt.Errorf("foreground deletion is still waiting on dependent %s", blocker))
 }
 
 // FinishUnblockedForegroundOwners completes the deletion of any owner

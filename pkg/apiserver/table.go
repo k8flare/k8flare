@@ -3,7 +3,6 @@ package apiserver
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,24 +15,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/duration"
 )
-
-// wantsTable reports whether r requests the meta.k8s.io/v1 Table
-// representation kubectl's default human-readable "get" output uses, e.g.
-// "Accept: application/json;as=Table;v=v1;g=meta.k8s.io". Checked with a
-// substring match rather than full media-type parsing: kubectl's Accept
-// header is one of a small, well-known fixed set (this parameter, or none),
-// so a strict parser buys no correctness this project's real client
-// (kubectl, not arbitrary user agents) would exercise, at more code.
-func wantsTable(r *http.Request) bool {
-	for _, accept := range r.Header.Values("Accept") {
-		for _, part := range strings.Split(accept, ",") {
-			if strings.Contains(part, "as=Table") {
-				return true
-			}
-		}
-	}
-	return false
-}
 
 // ConvertToTable builds the meta.k8s.io/v1 Table representation of obj (a
 // single resource, or a list of them) for the resource kinds kubectl's

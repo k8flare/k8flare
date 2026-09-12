@@ -10,7 +10,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	kjson "k8s.io/apimachinery/pkg/runtime/serializer/json"
 
@@ -154,29 +153,6 @@ func Encode(obj runtime.Object) ([]byte, error) {
 		}
 	}
 	return runtime.Encode(jsonSerializer, obj)
-}
-
-// DecodeStrict deserializes JSON bytes into a runtime.Object, and
-// additionally reports every unknown or duplicate field
-// found (fieldvalidation.go's `?fieldValidation=Strict`/`Warn` support). obj
-// is still populated even when strictErrs is non-empty -- matching
-// strictJSONSerializer's own contract (see its doc comment) -- callers
-// decide whether that's a hard failure (Strict) or a warning (Warn).
-//
-// Only JSON bodies can be checked this way: protobuf has no equivalent
-// "unknown field" concept in this project's decode path (Codecs's protobuf
-// serializer doesn't track it), so a protobuf body must go through the
-// existing lenient Decode/decodeBody instead -- see fieldvalidation.go's
-// isJSONBody.
-func DecodeStrict(data []byte, gvk *schema.GroupVersionKind) (obj runtime.Object, strictErrs []error, err error) {
-	obj, _, err = strictJSONSerializer.Decode(data, gvk, nil)
-	if err != nil {
-		if sde, ok := runtime.AsStrictDecodingError(err); ok {
-			return obj, sde.Errors(), nil
-		}
-		return nil, nil, fmt.Errorf("decode: %w", err)
-	}
-	return obj, nil, nil
 }
 
 // EncodeToStorage serializes a runtime.Object to JSON suitable for kine storage.
