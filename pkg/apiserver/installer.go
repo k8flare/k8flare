@@ -49,6 +49,8 @@ func InstallRESTForGroupVersion(container *restful.Container, gv schema.GroupVer
 				storage[resource+"/status"] = newStatusREST(s.upstream)
 			case "scale":
 				storage[resource+"/scale"] = newScaleREST(s.upstream)
+			case "binding":
+				storage[resource+"/binding"] = newBindingREST(s.upstream)
 			}
 		}
 	}
