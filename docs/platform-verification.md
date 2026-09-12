@@ -7119,3 +7119,53 @@ S53 の原因(Apple Silicon 上で x86-64 の k3s アセットを emulate して
 CI が復旧したら、まず runner 上でこの 2 件が落ちるかを見る。落ちるなら
 required gate の実体であり、落ちないならローカルの残る差(単一ノード、
 Docker Desktop)に切り分けられる。
+
+### S55 (2026-09-12): 直したハーネスは CI の失敗を再現する
+
+S54 で「動くノードでは required GC が 5/7」と書いた。もう一度回した。
+
+| 実行 | ノード | 結果 | 落ちた spec |
+|---|---|---|---|
+| 今日ずっと | Pod が起動しない | **7/7** | — |
+| S54 run 1 | 動く | 5/7 | `should not delete dependents that have both valid owner and owner that's waiting…` / `should orphan pods created by rc if delete options say so` |
+| run 2 | 動く | 6/7 | `should orphan RS created by deployment … Orphan` |
+
+**動くノードの上では flaky である。**毎回落ちるが、落ちる spec が違う。
+単独実行では通る(`should orphan pods created by rc` を単独で回すと Pass)
+ので、フルの 7 spec を通したときの順序・蓄積状態に依存する。
+
+#### CI で実際に落ちていたものと一致する
+
+2026-09-09 の CI(run 34390383167 / 34398403238)で kcm-dw が落ちたのは
+`should not delete dependents that have both valid owner and owner that's
+waiting for dependents to be deleted` で、`garbage_collector.go:795` の
+90 秒予算超過だった(S34 追記)。**run 1 で落ちた 2 件のうちの 1 件がこれ。**
+
+つまり:
+
+- **今日ずっと 7/7 を出していたのは、Pod が起動しないせいで負荷が足りず、
+  この flakiness を踏まなかったからである。**
+- **直したハーネスは、CI で観測された失敗をローカルで再現する。**
+
+これは大きい。CI が請求で止まっている間、「CI でしか再現しない」と思って
+いた失敗が、手元で 6 分ごとに再現できる。不可侵ルール #5(flaky は直すか
+revert)に取り掛かれる。
+
+#### 落ちる面
+
+3 回で落ちた 3 件はすべて **orphan / Serial** 系で、`pkg/apiserver/
+gracefuldelete.go` の手書きガードと GC の相互作用が効く領域である
+(P2-1 / P0-4 の対象そのもの)。S54 で見た症状——patch 対象の Pod が
+404、1 namespace に 739 events——は Pod の入れ替わりを示すが、ノードは
+健全なので S52 訂正 2 の「フラップ→evict→補充」では説明できない。
+**原因は未特定。**
+
+#### 次にやること
+
+1. 3 回以上回して、落ちる spec の分布と頻度を取る。
+2. `PUMP_TRACE=1` で落ちた実行の `issued` / `observed` / `commit` を並べ、
+   どの境界で時間が消えているかを見る(S49 の物差しが使える)。
+3. `gracefuldelete.go` のガードを 1 つずつ無効化して、どれが関与するかを
+   切り分ける——ただし**必ず隔離ワークツリーで**(S43)。
+
+ローカルで再現できる以上、これは CI の復旧を待つ必要がない。

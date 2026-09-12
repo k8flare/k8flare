@@ -150,6 +150,31 @@ CONTRIBUTING, and any status badge).
 **Acceptance.** Either the dw variants are required, or every place that cites
 the required gate states which configuration it covers.
 
+### P1-12 `[ ]` required GC フォーカスは、Pod が動くノードの上では flaky
+
+**Found 2026-09-12 (S55).** ローカルハーネスのノードを直して Pod が実際に
+起動するようにしたところ、required な GC フォーカス(7 spec、host バリアント)
+が **5/7 → 6/7** と揺れ、毎回違う spec が落ちるようになった。Pod が起動しない
+ノードでは 7/7 だった。単独実行では通るので、フルの 7 spec の順序・蓄積状態に
+依存する。
+
+**CI の失敗と一致する。** 2026-09-09 に CI で落ちた
+`should not delete dependents that have both valid owner and owner that's
+waiting for dependents to be deleted`(`garbage_collector.go:795`、90 秒予算)は、
+ローカルで落ちた 2 件のうちの 1 件である。**CI が止まっている間も、この失敗は
+手元で約 6 分ごとに再現できる。**
+
+落ちた 3 件はすべて orphan / Serial 系で、`gracefuldelete.go` のガードと GC の
+相互作用が効く領域(P2-1 / P0-4 の対象)。
+
+**Do.** (1) 回数を重ねて落ちる spec の分布を取る。(2) `PUMP_TRACE=1` の
+`issued` / `observed` / `commit` を並べてどの境界で時間が消えるかを見る。
+(3) `gracefuldelete.go` のガードを 1 つずつ無効化して切り分ける——**隔離
+ワークツリーで**(S43)。
+
+**Acceptance.** 10 回連続で 7/7、または落ちる理由が特定されて直っていること。
+不可侵ルール #5。
+
 ### P1-2 `[~]` Prove the dw variants are stable, don't sample-check them
 
 **Problem.** The dw variants were red in one of the last three runs
