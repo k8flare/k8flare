@@ -188,9 +188,18 @@ RC 1 個での比較:
 コードなので、差は k8flare の実行環境(pump window / watch の継続性 /
 isolate の寿命)側にある。P0-4 の主題そのもの。
 
-**Do.** `pkg/controllers/cmd/kcm-wasm` に klog verbosity を渡す口を足し
-(観測のみ、既定は現状維持)、35 個作る瞬間の `SatisfiedExpectations` を
-WASM 側でも読む。
+**Done, and it spoke (S57).** `KCM_VERBOSITY` を足して WASM の KCM に
+klog を吐かせた: **`Too many replicas` 374 回、`Too few replicas` 0 回**
+(ホストプロセスは同条件で 2 / 2)。controller の Pod 集合の像が実際より
+多いまま維持されている。消しても像から減らないので、また消す。
+
+**定量では言えない**: 同じ実行で DELETE 91 件に対し `observed.delete` 53 件
+だったが、`observed` は Go 側でバーストに落ちる(S56)ので、この 42% 差を
+取りこぼしと読んではいけない。使えるのは klog の質的な非対称のほう。
+
+**Do.** 削除の配送を、バーストで落ちない場所で数える計器を作る(例:
+dynamic worker の応答に積算カウンタを載せ、シェル側が `commit` と同じ経路で
+記録する)。それまで削除取りこぼし説は仮説のまま。
 
 **Acceptance.** ノードを付けた状態で `replicas=2` に対して作られる distinct
 な Pod が 2 個であること。
