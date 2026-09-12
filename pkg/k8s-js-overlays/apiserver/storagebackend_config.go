@@ -24,7 +24,6 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apiserver/pkg/server/egressselector"
 	"k8s.io/apiserver/pkg/storage/value"
 	flowcontrolrequest "k8s.io/apiserver/pkg/util/flowcontrol/request"
 )
@@ -49,8 +48,15 @@ type TransportConfig struct {
 	KeyFile       string
 	CertFile      string
 	TrustedCAFile string
-	// function to determine the egress dialer. (i.e. konnectivity server dialer)
-	EgressLookup egressselector.Lookup
+	// Upstream has `EgressLookup egressselector.Lookup` here, to dial etcd
+	// through a konnectivity proxy. This build has no etcd and no
+	// konnectivity, and nothing in the linked graph ever reads the field --
+	// but declaring it links k8s.io/apiserver/pkg/server/egressselector and,
+	// through it, all of google.golang.org/grpc: 3.85MB of the apiserver
+	// chunk's 42.6MB of code, for a field that is never set and never read
+	// (docs/wasm-size.md). Dropped rather than stubbed, so a future caller
+	// that wants it fails to compile instead of silently getting a nil
+	// dialer.
 	// The TracerProvider can add tracing the connection
 	TracerProvider oteltrace.TracerProvider
 }

@@ -66,7 +66,72 @@ wasm-objdump -j Code -x /tmp/apiserver-symbols.wasm      # 関数ごとのサイ
 
 ## 効く順に並べた削減候補
 
-### 1. protobuf のマーシャラ — **8.04 MB(Code の 18.9%)**
+### 実験して分かったこと(先に読むこと)
+
+以下の候補 1〜3 は**リンクグラフからの推論**で書いた。**実際に測ったら、
+1 は成立しなかった。** 順序も入れ替わる。測定は
+「候補を実装する前に、小さなプローブで効果を確かめる」形で行った。
+
+#### 実験 A: protobuf シリアライザを外せば marshaler が落ちるか → **落ちない**
+
+`k8s.io/api` の marshaler が到達可能になっている根は
+`apimachinery/pkg/runtime/serializer`(CodecFactory)が protobuf
+シリアライザを import していることだと考えた。同じスキーマを、JSON
+シリアライザだけ使う版と CodecFactory を使う版で作って比べた:
+
+```
+probe-json : 15.83 MB
+probe-pb   : 15.83 MB     <- 完全に同一
+```
+
+**差が無い。** 保持している主体はシリアライザではない。
+
+#### 実験 B: 何が型を保持しているか → **スキーマへの登録そのもの**
+
+```
+runtime.NewScheme() だけ              8.01 MB
+ + corev1.Pod / PodList を登録        14.77 MB   (+6.76 MB)
+ + client-go の全グループ            15.83 MB   (+1.06 MB)
+```
+
+**Pod を 1 種類登録するだけで 6.76 MB。** そこから先、他の全 API グループを
+足しても **1.06 MB しか増えない。**
+
+つまり:
+
+- **API グループを絞る戦略は効かない**(全部足しても 1 MB)
+- Pod の型グラフ(PodSpec → Container → VolumeSource → 各ボリューム
+  プラグイン型…)が単体で 6.76 MB を持ち込む。**Kubernetes の制御プレーンで
+  ある以上、これは避けられない**
+- スキーマ登録は `reflect` 経由で全メソッドを保持させる。protobuf の
+  marshaler もそれで残る。**シリアライザを外しても消えない**
+
+**Go/WASM で Kubernetes の制御プレーンを書く限り、下限は約 15.8 MB** である。
+apiserver チャンクの 64.2 MB のうち、残る約 48 MB が削減の対象になる。
+
+#### 実験 C: egressselector の削除 → **459 KB 削減(実測)**
+
+候補 2 として挙げた経路のうち、`storagebackend` の未使用フィールド
+`EgressLookup` を落とした。
+
+```
+64,679,214 バイト  ->  64,220,107 バイト   (-459,107、余裕 2,372 -> 2,821 KiB)
+```
+
+ただし **grpc 自体は残った**(63 パッケージ)。経路が複数あったためである:
+
+```
+k8s.io/apiserver/pkg/storage/value        -> grpc/codes, grpc/status
+k8s.io/apiserver/pkg/storage/cacher/progress -> grpc/metadata
+k8s.io/component-base/tracing             -> otlptracegrpc -> grpc 本体一式
+```
+
+シンボル版での実測: grpc 本体 1.37 MB / protobuf ランタイム 2.44 MB /
+opentelemetry 0.66 MB = **計 4.48 MB**。最大の経路は
+`k8s.io/apiserver/pkg/storage/cacher` が `component-base/tracing` を
+import していることで、k8flare はトレースを一切設定していない。
+
+### ~~1. protobuf のマーシャラ~~ — **実験 A/B により却下**
 
 `k8s.io/api` の 10.71 MB のうち **75% (8.04 MB)** が
 `Marshal` / `MarshalTo` / `MarshalToSizedBuffer` / `Unmarshal` / `Size` /
@@ -127,10 +192,23 @@ k8flare は **OpenAPI 文書を Static Assets から配信**している(CLAUDE.
 `pkg/features.init` (213 KB) は**全 feature gate の定義表**である。
 apiserver チャンクがこれらを必要としているかは未確認。
 
-### 合計の見込み
+### 合計の見込み(実験後に改訂)
 
-候補 1〜3 だけで **Code から約 14.3 MB(34%)**。Data への波及を含めれば、
-**61.7 MB の出荷サイズが 45 MB 前後まで落ちる可能性がある**(未検証の見積もり)。
+~~候補 1〜3 だけで Code から約 14.3 MB~~ — **却下**。実験 A/B により、
+protobuf marshaler の 8.04 MB は**シリアライザを外しても落ちない**
+(スキーマ登録が reflect 経由で保持する)。
+
+実際に取れる見込み:
+
+| 候補 | 見込み | 状態 |
+|---|---|---|
+| egressselector の未使用フィールド | **459 KB** | **実施済み・実測** |
+| `component-base/tracing` → OTLP gRPC exporter | ~3 MB(grpc 1.37 + protobuf 2.44 + otel 0.66 のうち、他経路が残す分を除く) | 未着手 |
+| gnostic(OpenAPI モデル) | ~2.4 MB | 未着手 |
+| crypto / TLS 2.76 MB | 要調査(何に使っているか未確認) | 未着手 |
+
+**API 型そのものは削れない。** 削れるのは「使っていない周辺機能」だけで、
+合計しても 6 MB 程度、64 MB に対して 10% 弱である。
 
 ## 検証していないこと
 
