@@ -7826,3 +7826,68 @@ facet書込が読めると確認した committed cut を表す必要がある」
 >
 > したがって P0-7 の第二の原因は**依然として未特定**である。確定しているのは
 > 「relist を 15 回まで落としても Pod は 30 個作られる」という事実だけ。
+
+### S62 (2026-09-12): P0-7 は存在しなかった。私が起動したまま放置したプロセスだった
+
+**取り下げる。** S56 から S61 まで積み上げた「ノードを付けると `replicas=2` が
+Pod を 35〜60 個作る」という欠陥は、**私が過去の実験で起動したまま放置した
+ホスト controller-manager プロセスが、同じ apiserver を叩いていた**ためである。
+
+#### どうやって分かったか
+
+シェル側の `request` 境界が記録している **User-Agent の生の値**を、抽出せず
+そのまま並べた:
+
+```
+   10  cm-now/v1.36.3 (darwin/arm64) kubernetes/…/replication-controller
+    2  js/v1.36.3 (js/wasm) kubernetes/…/kube-controller-manager
+    2  deps-cm/v1.36.4 (darwin/arm64) kubernetes/…/replication-controller
+    2  k8flare-controller-manager/v1.36.3 (darwin/arm64) …
+```
+
+`cm-now` / `deps-cm` / `k8flare-controller-manager` は**私がビルドして
+起動したホストバイナリ**で、`darwin/arm64` と書いてある。`js/wasm` が本物の
+resident controller である。**本物は 2 個しか作っていなかった。**
+
+プロセスを数えると **16 個**が生き残っていた。`pkill -f 'cm-now'` は効かず、
+PID を列挙して `kill -9` する必要があった。
+
+#### 全部落としてから測り直した結果
+
+```
+pod creations by client: {'js/v1.36.3': 2}
+distinct pods created for replicas=2: 2
+Warning: watch ended with error: 0
+Listing and watching: 15
+```
+
+**`replicas=2` に対して Pod は 2 個。正しい。**
+
+#### 何が汚染され、何が生き残るか
+
+| 節 | 主張 | 判定 |
+|---|---|---|
+| S56 | ノードを付けると 35 個作られる | **取り下げ** |
+| S57 | `Too many replicas` 374 回 | **取り下げ**(余計な CM が作った Pod を本物が余剰と見ていた) |
+| S58 | 60 Pod に対し add/update/delete | **取り下げ**(Pod 数が汚染) |
+| S59 | 二重インスタンス | 既に取り下げ済み(中継の artifact) |
+| S61 追記 | 二重 ADD | 既に取り下げ済み(中継の artifact) |
+| **S60** | **WASM の informer が 2 分半で 120 回 relist、ホストは 15 回で watch エラー 0** | **有効**。この数字は WASM 自身の klog(`wrangler dev` の出力)で、ホストバイナリは別ファイルに書く。汚染されていない |
+| **S61** | **watch を窓境界で EOF にすると relist 120→15、watch エラー 477→0** | **有効**。同上 |
+
+**S61 のコード修正は正しい。** resident controller の informer が窓ごとに
+LIST からやり直していたのは実在し、直った。ただし**その動機として書いた
+「Pod が 60 個作られる」は私の測定ミス**であり、修正の価値は「informer の
+連続性がホストプロセスと同等になった」ことに尽きる。
+
+#### 手順上の原因
+
+ローカルハーネスの実験を何十回も回す中で、`pkill -f sched-now` などを
+その都度書いていたが、**名前を変えて作ったバイナリ(`cm-now` / `deps-cm` /
+`k8flare-controller-manager`)を網羅していなかった**。しかも全部が同じ
+`127.0.0.1:8443` を向いていたので、どの実験も互いを汚染していた。
+
+S43 で「ソースを書き換える実験は worktree で隔離する」と書いた。**プロセスも
+同じである**: 実験ごとに起動したものは、実験ごとに確実に落とす。ポートや
+データディレクトリを分けても、同じ apiserver を向いていれば意味がない。
+docs/development.md に書いた。
