@@ -174,27 +174,61 @@ compiles the ~40MB WASM modules in-process. They're the stand-in for the
 `kcmdw`/`scheddw` conformance variants on a machine that can't run a Linux
 kubelet — a smoke test, not the conformance gate itself.
 
-## The harness lifecycle script
+## Starting and stopping the local conformance harness
 
-`scripts/e2e-harness.sh` owns starting and stopping the local conformance
-harness. Use it rather than assembling the pieces by hand:
+There is no script. `scripts/` was removed in 2026-07-08 as a deliberate
+simplification, grew back, and was removed again on 2026-09-13 — a shell
+wrapper around four commands is a thing to keep working, and its one guard was
+itself broken in a machine-specific way (it looked for the host binaries under
+a hardcoded directory, so it counted zero and refused to start against two
+processes that had come up perfectly).
+
+Run the pieces. Each variant is the same four steps with different flags:
 
 ```sh
-export HARNESS_ASSETS=/path/to/dir   # holds e2e/kubeconfig.yaml, e2e/tls/, e2e/kubernetes/
-export HARNESS_SCHED=/path/to/k8flare-scheduler          # go build ./cmd/scheduler
-export HARNESS_CM=/path/to/k8flare-controller-manager    # go build ./cmd/controller-manager
+E=/path/to/assets          # holds e2e/kubeconfig.yaml, e2e/tls/, e2e/kubernetes/
+go build -o /tmp/sched-now ./cmd/scheduler
+go build -o /tmp/cm-now    ./cmd/controller-manager
 
-scripts/e2e-harness.sh start host      # or kcmdw | scheddw | alldw
-scripts/e2e-harness.sh status
-scripts/e2e-harness.sh stop
+# 1. the Worker, behind TLS, with the variant's controllers disabled.
+#    host: both disabled. kcm-dw: --var CM_DISABLED:0. sched-dw: --var SCHED_DISABLED:0.
+#    all-dw: neither flag, and no host binaries below.
+npx wrangler dev -c packages/k8flare-worker/wrangler.jsonc --enable-containers=false \
+  --var SCHED_DISABLED:1 --var CM_DISABLED:1 \
+  --local --port 8443 --local-protocol https \
+  --https-key-path $E/e2e/tls/dev.key --https-cert-path $E/e2e/tls/dev.crt \
+  --persist-to /tmp/e2e-state &
+
+# 2. the host control plane the variant asks for
+/tmp/sched-now --server=https://127.0.0.1:8443 --token=k8flare-dev-token \
+  --data-dir=/tmp/hcp/s --insecure-skip-tls-verify &
+/tmp/cm-now    --server=https://127.0.0.1:8443 --token=k8flare-dev-token \
+  --data-dir=/tmp/hcp/c --insecure-skip-tls-verify &
+
+# 3. a node
+docker restart k8flare-e2e-node
+kubectl --kubeconfig=$E/e2e/kubeconfig.yaml get nodes -w   # wait for Ready
+
+# 4. the focus, from .github/workflows/e2e-conformance.yml
+$E/e2e/kubernetes/test/bin/e2e.test --kubeconfig=$E/e2e/kubeconfig.yaml \
+  --provider=skeleton --num-nodes=1 --disable-log-dump --ginkgo.no-color \
+  --ginkgo.focus="$GC_FOCUS"
 ```
 
-`start` calls `stop` first and then **refuses to continue unless exactly the
-right number of host processes is running** (host 2, kcm-dw 1, sched-dw 1,
-all-dw 0). `stop` kills by PID and by name and **exits non-zero if anything
-survives**. Both guards exist because sixteen stray controller-managers once
-accumulated across a session's experiments and made a `replicas=2` workload
-look like it churned sixty pods (`docs/platform-verification.md` S62).
+**Count the host processes before you trust a result, and kill by PID when you
+are done.** A host `kube-controller-manager` or `kube-scheduler` left pointing
+at `127.0.0.1:8443` keeps writing to that cluster, and `pkill -f <name>`
+silently matches nothing when the binary was built under a different name.
+Sixteen of them once accumulated across one session and made a `replicas=2`
+workload look like it churned sixty pods (`docs/platform-verification.md` S62).
+The check is one command:
+
+```sh
+pgrep -fl 'sched-now|cm-now|k8flare-scheduler|k8flare-controller-manager'
+```
+
+`host` expects two, `kcm-dw` and `sched-dw` one each, `all-dw` none. Anything
+else and the run is measuring somebody else's processes.
 
 ## Experiments that start processes
 
@@ -229,8 +263,7 @@ decided not to pay for GitHub Actions (`docs/platform-verification.md` S63),
 nothing is waiting for billing to be restored, and every workflow run stops
 in about four seconds at GitHub's billing gate. `e2e-conformance.yml` is kept
 because its `GC_FOCUS` and `BASELINE_FOCUS` regexes are what the local run
-uses; `scripts/e2e-harness.sh` (see "The harness lifecycle script" above)
-is what starts and stops it.
+uses; starting and stopping the run is four commands, above.
 
 Verified on macOS (arm64): the garbage-collector focus passes **7/7 in
 90–170 seconds** in the `host` variant (`docs/platform-verification.md` S48),
@@ -241,9 +274,7 @@ and S65 then measured all three variants — `host`, `kcmdw`, `scheddw` — at
 bug in S42 — the shell escaping described below dropped one spec, and the one
 it dropped was the spec CI had actually been failing.)
 
-Steps 2 and 3 below are what `scripts/e2e-harness.sh start` does for you, on
-its own port and state directory; assemble them by hand only when you are
-debugging the harness itself.
+The full recipe, from nothing:
 
 ```sh
 # 1. The upstream e2e binary, at the version go.mod pins.

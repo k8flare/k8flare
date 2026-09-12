@@ -138,18 +138,23 @@ production.
 off on cost grounds (2026-09-12), so **that workflow no longer runs** and the
 file is kept only as the specification of what a run must assert.
 
-`scripts/prodprobe-local.sh` + `scripts/com.k8flare.prodprobe.plist` schedule
-it from launchd on the maintainer's machine instead. Three Make targets, and
-none of them need you to edit anything:
+**Nothing schedules it.** A launchd wrapper existed briefly and was removed on
+2026-09-13: it was 14KB of macOS-specific shell for a probe that had never once
+run successfully, and its presence made the repository claim an observability
+it did not have. Scheduling belongs to whoever operates a deployment, not to
+this repository, and it is one line:
 
 ```sh
-make probe-install      # render the plist for THIS checkout and load it
-make probe-status       # what launchd actually holds, and how stale it is
-make probe-uninstall    # unload and delete it; logs are left alone
+K8FLARE_PROBE_URL=https://your-deployment.workers.dev \
+K8FLARE_PROBE_TOKEN=... \
+  go run ./cmd/prodprobe -parking=false -compute ""
 ```
 
-`make probe-install` refuses while the credentials file is missing, prints the
-exact file to write, and touches launchd only once it is there:
+Add `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` (Account Analytics:Read)
+and drop `-parking=false` to also assert the idle-cost invariant. Put it behind
+whatever your platform schedules with — cron, launchd, a CI runner you pay for,
+a different machine. The only thing this repository asserts is what a run
+checks, which is the rest of this document.
 
 ```sh
 mkdir -p ~/.config/k8flare
@@ -162,47 +167,11 @@ ENV
 chmod 600 ~/.config/k8flare/probe.env
 ```
 
-The plist in `scripts/` is a **template**, not a loadable file: it carries
-`__K8FLARE_CHECKOUT__`, `__K8FLARE_PATH__` and `__K8FLARE_LOGDIR__`, which
-`probe-install` substitutes. Two of those are the reason to install it this way
-rather than by hand. launchd runs a job with `PATH=/usr/bin:/bin:/usr/sbin:/sbin`
-and no login shell, so a toolchain under `$HOME` (mise, homebrew) is
-unreachable; install bakes the directory of the `go` on your own PATH into the
-plist. And a plist copied with the placeholder still in it **loads
-successfully** and can never run — launchd validates the XML, not the paths.
-Install also compiles `./cmd/prodprobe` first, because `go.mod`'s replace
-directives point into `.build/*-mirror`: a wiped `.build/` turns every 02:23
-run into an error nobody reads.
+Two things that bit the launchd attempt are worth carrying to whatever you
+schedule it with. A scheduler runs the job with a bare `PATH` and no login
+shell, so a toolchain under `$HOME` (mise, homebrew) is unreachable and the run
+fails before it starts. And `go.mod`'s replace directives point into
+`.build/*-mirror`, so a wiped `.build/` turns every scheduled run into an error
+nobody reads — build the binary once, `go build -o /somewhere ./cmd/prodprobe`,
+and schedule that.
 
-`make probe-status` answers, from `launchctl print` rather than from hope:
-whether launchd holds the job, whether it holds a **calendar trigger** for it
-(loaded is not the same as scheduled), what the last run exited with, and how
-old the newest log in `~/Library/Logs/k8flare/` is. It exits non-zero whenever
-the answer is "production is not being observed" — not installed, not
-scheduled, never run, failed, no credentials, or a newest log older than 48
-hours. A week of silence looks different from a run an hour ago that passed.
-Nothing runs at install time (a probe run takes ~25 minutes); force one with
-`launchctl kickstart -p gui/$(id -u)/com.k8flare.prodprobe`.
-
-Runs land in `~/Library/Logs/k8flare/`, with `prodprobe-latest.log` pointing
-at the newest and failures also appended to `prodprobe-failures.log`. A
-failure raises a macOS notification.
-
-**What this costs you compared with the workflow.** It runs only while the
-machine is awake — launchd fires a missed calendar job on wake, so a laptop
-that sleeps nightly still gets a run a day, late; a machine left off reports
-nothing, *silently*, which is the same shape of blindness the probe exists to
-catch. There is no issue filed, no notification to anyone but whoever is at
-that machine, and no record in the repository that a day was missed. Treat the
-timestamp on `prodprobe-latest.log` as part of the signal.
-
-**The alternative, not taken.** A Cloudflare Worker `scheduled` (cron) handler
-would run regardless of any laptop. It was not done here because it touches
-cost invariant #8 directly: a cron on the shell Worker runs on a fixed
-interval whether or not there is anything to observe, which is exactly the
-"nothing runs on an idle cluster" property this project sells, and because the
-probe asserts *zero* requests across a quiet window — a prober living inside
-the account it measures has to exclude itself from its own measurement. If the
-laptop dependency turns out to matter more than either, that is the thing to
-build, and `analytics.go`'s probe-traffic discriminator is where the
-self-exclusion would go.

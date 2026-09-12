@@ -5,6 +5,11 @@
 # Node version strips TS types natively, no build step or extra runner
 # needed). scripts/setup-tunnel.sh and scripts/ec2-user-data.sh moved to
 # infra/ -- they're one-time/guided infra bootstrap, not build steps.
+# It grew back and was removed again 2026-09-13: a shell wrapper around four
+# commands is a thing to keep working, and the one guard it carried was itself
+# broken in a machine-specific way. The conformance harness is now four
+# commands in docs/development.md, and the production probe is `go run
+# ./cmd/prodprobe` -- scheduling it is the operator's, not the repo's.
 #
 # Prefers real dependency-based rebuilds (GNU Make's file-mtime rules)
 # over always re-running everything: `make wasm` only pays the ~2min kcm
@@ -47,12 +52,12 @@ CLUSTEROP_SRC := $(shell find pkg/controllers/clusterop pkg/controllers/restconf
 	$(shell find pkg/clientgo-lean-overlays pkg/k8s-js-overlays -type f)
 NODES_AGENT_SRC := $(shell find pkg/agent cmd/agent -name '*.go') go.mod go.sum
 
-.PHONY: all wasm wasm-apiserver wasm-kcm wasm-gc wasm-sched wasm-clusterop gen-mirrors gen check vet test test-unit test-cfruntime test-ts test-kcm test-clusterop dev deploy clean-wasm nodes-agent setup-tunnel probe-install probe-status probe-uninstall help
+.PHONY: all wasm wasm-apiserver wasm-kcm wasm-gc wasm-sched wasm-clusterop gen-mirrors gen check vet test test-unit test-cfruntime test-ts test-kcm test-clusterop dev deploy clean-wasm nodes-agent setup-tunnel help
 
 all: wasm
 
 help:
-	@echo "targets: wasm wasm-apiserver wasm-kcm wasm-gc wasm-sched wasm-clusterop gen check vet test test-unit test-cfruntime test-ts test-kcm test-clusterop dev deploy clean-wasm nodes-agent setup-tunnel probe-install probe-status probe-uninstall"
+	@echo "targets: wasm wasm-apiserver wasm-kcm wasm-gc wasm-sched wasm-clusterop gen check vet test test-unit test-cfruntime test-ts test-kcm test-clusterop dev deploy clean-wasm nodes-agent setup-tunnel"
 
 ## gen-mirrors: regenerate .build/{k8s-js,clientgo-lean,apiserver-js}-mirror,
 ## the local copies go.mod's k8s.io/kubernetes, k8s.io/client-go and
@@ -388,21 +393,3 @@ clean-wasm:
 setup-tunnel:
 	bash infra/setup-tunnel.sh
 
-## probe-install: schedule cmd/prodprobe -- the only check that observes a REAL
-## deployment -- from launchd on this machine. Renders
-## scripts/com.k8flare.prodprobe.plist for THIS checkout (path and a PATH that
-## reaches go, neither of which launchd can infer), loads it, and then reports
-## what launchd actually holds rather than what the copy hoped. Refuses, and
-## prints the exact file to write, while ~/.config/k8flare/probe.env is absent.
-probe-install:
-	bash scripts/prodprobe-local.sh install
-
-## probe-status: is it loaded, is it scheduled, did the last run pass, how old
-## is the newest log. Exits non-zero whenever the answer is "production is not
-## being observed" -- a week without a run must not look like a green day.
-probe-status:
-	bash scripts/prodprobe-local.sh status
-
-## probe-uninstall: unload the agent and delete the installed plist. Logs stay.
-probe-uninstall:
-	bash scripts/prodprobe-local.sh uninstall

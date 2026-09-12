@@ -51,8 +51,8 @@ Key design points:
 - **Upstream conformance is the definition of done.** Official Kubernetes
   e2e tests run against a real `wrangler dev` stack with a real k3s agent
   (kubelet + containerd). Since 2026-09-12 that gate runs **locally, not in
-  CI**: `scripts/e2e-harness.sh` drives the three control-plane variants and
-  the focus sets are lifted from `.github/workflows/e2e-conformance.yml`,
+  CI**: a maintainer runs the three control-plane variants by hand and the
+  focus sets are lifted from `.github/workflows/e2e-conformance.yml`,
   which is kept as their reference and no longer executes. The recipe is in
   [docs/development.md](docs/development.md#running-upstream-conformance-locally);
   why CI is off is in [CONTRIBUTING.md](CONTRIBUTING.md#ci-there-isnt-any-since-2026-09-12).

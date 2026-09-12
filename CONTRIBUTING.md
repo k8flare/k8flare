@@ -81,7 +81,8 @@ copies them out of it.
 
 **The gate is local.** Upstream conformance is still this project's
 definition of done — what ended is CI enforcing it. A maintainer runs it
-before merge with `scripts/e2e-harness.sh`:
+before merge, by hand — the recipe is four commands in
+[docs/development.md](docs/development.md):
 
 - the three control-plane variants (`host`, `kcmdw`, `scheddw`). All three
   are required: `docs/platform-verification.md` S65 measured them
