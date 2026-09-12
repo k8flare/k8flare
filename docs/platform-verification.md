@@ -7996,3 +7996,51 @@ P1-1 は「required ゲートが headline feature(resident な WASM コントロ
   「30 回以上」には届かない。**「host と差が無い」ことが示せた段階**である。
 - ローカルのノードは 1 台で、Docker Desktop 上にある。CI ランナーや実 VM と
   同一ではない。
+
+### S66 (2026-09-12): 外部レビュー(Codex)の指摘。S49 の 82〜93ms は無効
+
+ユーザーの求めに応じて Codex に本番投入可否の批判的レビューを依頼した
+(Fable は枠が 99% で不可)。**判定は NO-GO**。指摘のうち、私自身の測定の
+誤りを先に訂正する。
+
+#### S49「issued → observed を同一時計で 82〜93ms」は成立しない
+
+S49 と `docs/pump-window-design.md` §5.1a (b) に、
+「`issued`(Go の transport)と `observed`(Go の informer)は同一 isolate・
+同一時計なので引き算できる」と書いた。**違う。**
+
+測定に使ったペアは `issued.patch`(**kube-scheduler**)→ `observed`
+(**kcm**)である。Controllers DO の Loader id は
+`${name}:${doName}@${sha}#${tokenTag}` で、**component 名が入る**
+(`controllers/index.ts:279`)。つまり sched と kcm は**別の loaded worker =
+別 isolate** であり、S46 で記録したクロックずれ(本番で -888ms)が同じように
+掛かる。**「どちらも Go である」ことは「同じ時計である」ことの証明ではない。**
+
+さらに `issued` は resourceVersion を空で出しているので、同名オブジェクトへの
+複数の書き込みと観測を一意に対応付けられない。
+
+**したがって 82〜93ms という値は撤回する。** これで撤回した測定・仮説は
+このセッションで 5 件目である(S52 / S58 / S59 / S62 / S66)。共通しているのは
+**「自分が作った計器の出力を、現象の性質と取り違えた」**ことで、今回もまた
+外部の目が入って初めて気づいた。
+
+同一 isolate に閉じた所要時間を測るなら、**同じ component の中で完結する
+区間**(たとえば kcm の `issued` → kcm の `observed`)に限り、書き込み結果の
+UID / RV で対応付ける必要がある。component を跨ぐ区間は、共通の観測点を
+作るまで測れない。
+
+#### Codex の他の指摘(要約、対応は別途)
+
+| 優先 | 指摘 | 状態 |
+|---|---|---|
+| P0 | `storeInsert` は root envelope → facet 本体の順で書き、facet 失敗時の永続的な修復が無い。`replayDelta` が欠けた本体を値なし envelope で代用し、**bookmark はその revision まで進む**。限定試験で `value:null` イベントを再現したとのこと | **未対応**。P0-4 Stage 1 の中核 |
+| P0 | 定期本番プローブは Actions 上にあり、Actions を使わない決定で**継続的な本番監視が途切れている** | **未対応** |
+| P0 | node join の秘密と管理者トークンが同一。同じ秘密を Bearer で送れば `system:masters` | 既知(SECURITY.md)だが**隔離境界としては不足** |
+| P1 | 4 ガードは admission だけではなく、作成拒否は全クライアントに作用し、owner 解決が `Kind` のみで `APIVersion` を見ない | **未対応** |
+| P1 | S50 の 20〜24 分停止に対し `admin-guide.md` が「デプロイは無停止」と書いている | **本節で修正** |
+| P1 | backup が CA / token vault を含まず、復旧が完結しない | 既知(P1-4 の残り) |
+| P1 | docs の訂正が履歴として残る一方、**現在形の記述が古いまま**で採用判断を誤らせる | **本節と §5.1a で修正** |
+| P2 | 計装のカウンタに停止条件・上限が無い | **未対応** |
+
+レビュー時点のコミットは `898de9b` で、**`scripts/e2e-harness.sh` はその後に
+コミットした**(「ハーネスがリポジトリに無い」という指摘はその時点では正しい)。
