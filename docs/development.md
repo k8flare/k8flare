@@ -164,6 +164,28 @@ compiles the ~40MB WASM modules in-process. They're the local stand-in for
 the conformance workflow's dynamic-worker variants on machines that can't
 run a Linux kubelet.
 
+## The harness lifecycle script
+
+`scripts/e2e-harness.sh` owns starting and stopping the local conformance
+harness. Use it rather than assembling the pieces by hand:
+
+```sh
+export HARNESS_ASSETS=/path/to/dir   # holds e2e/kubeconfig.yaml, e2e/tls/, e2e/kubernetes/
+export HARNESS_SCHED=/path/to/k8flare-scheduler          # go build ./cmd/scheduler
+export HARNESS_CM=/path/to/k8flare-controller-manager    # go build ./cmd/controller-manager
+
+scripts/e2e-harness.sh start host      # or kcmdw | scheddw | alldw
+scripts/e2e-harness.sh status
+scripts/e2e-harness.sh stop
+```
+
+`start` calls `stop` first and then **refuses to continue unless exactly the
+right number of host processes is running** (host 2, kcm-dw 1, sched-dw 1,
+all-dw 0). `stop` kills by PID and by name and **exits non-zero if anything
+survives**. Both guards exist because sixteen stray controller-managers once
+accumulated across a session's experiments and made a `replicas=2` workload
+look like it churned sixty pods (`docs/platform-verification.md` S62).
+
 ## Experiments that start processes
 
 Kill what you started, by PID, and check. A local harness experiment that
