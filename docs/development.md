@@ -227,6 +227,14 @@ The check is one command:
 pgrep -fl 'sched-now|cm-now|k8flare-scheduler|k8flare-controller-manager'
 ```
 
+Clean up with that same pattern, and **not** with `lsof -ti :8443`. That
+matches every process holding a socket on the port, which includes the
+*clients* connected to it -- on 2026-09-13 it selected OrbStack's network
+helper carrying the e2e node's connection, and `kill -9` on the result took
+the machine's whole Docker engine down for eight minutes, along with
+containers belonging to other projects. The port is not the thing you
+started; the binaries you built are.
+
 `host` expects two, `kcm-dw` and `sched-dw` one each, `all-dw` none. Anything
 else and the run is measuring somebody else's processes.
 
