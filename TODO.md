@@ -150,11 +150,15 @@ added to. Numbers recorded, production-measured.
 S55 の required GC conformance の flakiness(動くノードで 6 回中 0 回しか
 7/7 にならない)も、おそらくこの churn の下流である。
 
-**Do.** (1) 動くノードの条件で「kcm の informer が自分の作成を観測して
-いるか」を測る(S52 でやった取りこぼし率の計測を、今度は動くノードで)。
-(2) 取りこぼしが 0 なら expectations 以外——scheduler の bind、kubelet の
-status 更新、GC の削除——のどれが Pod を消しているかを `issued.delete` で
-特定する。(3) 隔離ワークツリーで切り分ける(S43)。
+**First measurement taken (S56).** 動くノードでも informer の取りこぼしは
+**1%** で、expectations の破綻ではない。kcm は Pod を POST 6 / DELETE 60、
+scheduler は bind を 70 発行していた。**ただし distinct な Pod 名 35 個と
+POST 6 件が矛盾しており、計器のほうが合っていない。** 機序は名指しできない。
+
+**Do.** (1) `issued.post` と `commit` を Pod 名で突き合わせ、commit に
+あって issued に無い作成を列挙する——35 と 6 の差がどこから来るかを先に
+説明する。(2) それが説明できてから機序を論じる。(3) 切り分けは隔離
+ワークツリーで(S43)。
 
 **Acceptance.** ノードを付けた状態で `replicas=2` に対して作られる distinct
 な Pod が 2 個であること。
