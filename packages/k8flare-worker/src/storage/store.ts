@@ -116,8 +116,15 @@ async function fillOffloaded(host: FacetHost, rows: KineRow[]): Promise<KineRow[
   });
 }
 
-/** SQLite takes a bounded number of bound parameters; one round trip per batch. */
-const FILL_BATCH = 400;
+/**
+ * Bound parameters per fill request. workerd caps SQLite's variable count at
+ * 100 (`sqlite3_limit(db, SQLITE_LIMIT_VARIABLE_NUMBER, 100)`), which is far
+ * below the engine default and is NOT reproduced by the node:sqlite harness
+ * these tests run against -- a batch of 400 passes locally and fails in
+ * production with "variable number must be between ?1 and ?100". Found by
+ * review against the workerd binary this repo pins, not by a test.
+ */
+const FILL_BATCH = 100;
 
 /** Fill rows the caller already read from the parent. */
 export function fillOffloadedRows(host: FacetHost, rows: KineRow[]): Promise<KineRow[]> {

@@ -702,3 +702,14 @@ func APIPrefix(gv schema.GroupVersion) string {
 	}
 	return "/apis/" + gv.Group + "/" + gv.Version + "/"
 }
+
+// SubresourcesOf returns the subresources declared for one resource, so a
+// caller building routes does not have to scan Table itself.
+func SubresourcesOf(gv schema.GroupVersion, resource string) []Subresource {
+	for i := range Table {
+		if Table[i].GroupVersion == gv && Table[i].Resource == resource {
+			return Table[i].Subresources
+		}
+	}
+	return nil
+}

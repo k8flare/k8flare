@@ -13,7 +13,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/apiserver/pkg/audit"
 	"k8s.io/apiserver/pkg/endpoints/request"
+	"k8s.io/apiserver/pkg/warning"
+	"k8s.io/klog/v2"
 
 	"github.com/k8flare/k8flare/pkg/apiserver/apidef"
 )
@@ -154,8 +157,30 @@ func NewServer(cfg ServerConfig) *http.ServeMux {
 	// because it needs the sibling stores of its own group, which only exist
 	// once every group has been assembled.
 	if namespaceStore != nil && namespaceStore.upstream != nil {
-		namespaceStore.upstream.AfterCreate = func(obj runtime.Object, _ *metav1.CreateOptions) {
+		namespaceStore.upstream.AfterCreate = func(obj runtime.Object, options *metav1.CreateOptions) {
+			if len(options.DryRun) > 0 {
+				return
+			}
 			ApplyPostCreateEffects(context.Background(), coreStores, obj)
+		}
+		// Deleting a Namespace takes its contents with it. Upstream leaves
+		// that to the namespace controller; this apiserver does it inline,
+		// and the hook is where that survives the handler it used to live in.
+		namespaceStore.upstream.AfterDelete = func(obj runtime.Object, options *metav1.DeleteOptions) {
+			if len(options.DryRun) > 0 {
+				return
+			}
+			ns, ok := obj.(*corev1.Namespace)
+			if !ok {
+				return
+			}
+			ctx := context.Background()
+			if err := DeleteNamespaceDependents(ctx, namespacedStores, ns.Name); err != nil {
+				klog.ErrorS(err, "sweeping namespace dependents", "namespace", ns.Name)
+			}
+			if err := SweepNamespaceEventsAfterDelete(ctx, namespacedStores, ns.Name); err != nil {
+				klog.ErrorS(err, "sweeping namespace events", "namespace", ns.Name)
+			}
 		}
 	}
 
@@ -184,7 +209,16 @@ func NewServer(cfg ServerConfig) *http.ServeMux {
 			writeInternalError(w, fmt.Errorf("request info: %w", err))
 			return
 		}
-		installed.ServeHTTP(w, r.WithContext(request.WithRequestInfo(r.Context(), info)))
+		ctx := request.WithRequestInfo(r.Context(), info)
+		// Every PATCH calls audit.LogRequestPatch, which dereferences the
+		// audit context without checking it; a request that arrives without
+		// one panics before it reaches storage.
+		ctx = audit.WithAuditContext(ctx)
+		// Strict decoding reports unknown fields through the warning
+		// recorder. With none installed the warnings are dropped and a
+		// fieldValidation=Warn request looks like it validated clean.
+		ctx = warning.WithWarningRecorder(ctx, headerWarnings{w})
+		installed.ServeHTTP(w, withStrictByDefault(r).WithContext(ctx))
 	})
 
 	for _, gv := range apidef.GroupVersions() {
@@ -197,4 +231,36 @@ func NewServer(cfg ServerConfig) *http.ServeMux {
 	}
 
 	return mux
+}
+
+// withStrictByDefault makes a request that says nothing about field
+// validation behave as Strict. Upstream defaults to Warn; this apiserver has
+// rejected unknown fields by default since fieldvalidation.go, and a silently
+// accepted typo in a manifest is the thing that default exists to prevent.
+// An explicit ?fieldValidation= is left alone.
+func withStrictByDefault(r *http.Request) *http.Request {
+	q := r.URL.Query()
+	if q.Get("fieldValidation") != "" {
+		return r
+	}
+	q.Set("fieldValidation", metav1.FieldValidationStrict)
+	out := r.Clone(r.Context())
+	out.URL.RawQuery = q.Encode()
+	return out
+}
+
+// headerWarnings is the recorder upstream's warning filter installs: warnings
+// raised while serving become Warning response headers.
+type headerWarnings struct {
+	w http.ResponseWriter
+}
+
+func (h headerWarnings) AddWarning(agent, text string) {
+	if text == "" {
+		return
+	}
+	if agent == "" {
+		agent = "-"
+	}
+	h.w.Header().Add("Warning", fmt.Sprintf("299 %s %q", agent, text))
 }

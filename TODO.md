@@ -179,6 +179,30 @@ HTTP Basic `node:<token>` で提示する(`auth.go:112-118`)。つまり
 Node authorizer / NodeRestriction admission(`pkg/apiserver/auth.go` と
 `rbac.go` の手書きを置き換える方向。独自コード削減と同じ作業になる)。
 
+### P0-9 `[ ]` watch に RBAC が事実上かかっていない
+
+**Problem.** `authorizeWatchRBAC`
+(`packages/k8flare-worker/src/gateway/index.ts`)は `X-Remote-User` が
+入っているときだけ働く。**本番でそれを設定するものは存在しない**(repo 全体で
+set している箇所は 0 件)ので、この関数は最初から実質 no-op だった。
+2026-09-13 に受信 `X-Remote-*` を剥がしたので(P0-8 の (1))、テスト用の
+抜け道も閉じ、**dead code であることが可視化された**。
+
+さらに `handleWatch` の `dwAuth` は**生のクラスタトークンしか受け付けない**
+ため、ServiceAccount JWT を持つ client-go informer は watch を開けない。
+
+つまり watch は「クラスタトークン保持者は全部見える / それ以外は何も見えない」
+の二値で、RBAC は通っていない。
+
+**Do.** watch の認証を SA JWT に対応させ、`authorizeWatchRBAC` を実在する
+identity の上で再設計する(あるいは apiserver 側の実物の authorizer に
+寄せる — installer 化で `APIGroupVersion.Authorizer` が使えるようになった)。
+
+**注記**: この過程で `TestRBACEnforcement` の watch に関する 2 アサーション
+(「bound user で pods を watch → 200 / secrets → 403」)が**移植できずに
+落ちている**。X-Remote-User という偽の identity 供給源に依存していたため。
+上の設計が決まったら復活させること。
+
 ## P1 — needed before the conformance story is credible
 
 ### P1-1 `[x]` The required gate does not exercise the headline feature

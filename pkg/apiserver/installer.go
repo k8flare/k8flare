@@ -38,6 +38,11 @@ func InstallRESTForGroupVersion(container *restful.Container, gv schema.GroupVer
 			return fmt.Errorf("installer: %s %q has no upstream store", gv, resource)
 		}
 		storage[resource] = s.upstream
+		for _, sub := range apidef.SubresourcesOf(gv, resource) {
+			if sub.Name == "status" {
+				storage[resource+"/status"] = newStatusREST(s.upstream)
+			}
+		}
 	}
 	if len(storage) == 0 {
 		return nil

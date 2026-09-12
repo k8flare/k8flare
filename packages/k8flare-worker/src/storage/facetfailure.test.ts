@@ -452,4 +452,16 @@ describe("a namespaced write whose facet half is slow, fails, or outlives its in
 
     expect(facet.rowsRequested.flat()).not.toContain(later);
   });
+
+  it("never asks a facet for more revisions than workerd will bind", async () => {
+    // The local SQLite binds as many parameters as asked; workerd stops at
+    // 100. The harness cannot reproduce that, so the invariant is asserted
+    // on the request instead of on the failure it would cause.
+    for (let i = 0; i < 150; i++) await create(`/registry/pods/default/p${i}`, `v${i}`);
+    facet.rowsRequested = [];
+    const listed = await list(PREFIX);
+    expect(listed.kvs).toHaveLength(150);
+    expect(facet.rowsRequested.length).toBeGreaterThan(1);
+    for (const batch of facet.rowsRequested) expect(batch.length).toBeLessThanOrEqual(100);
+  });
 });
