@@ -7479,3 +7479,55 @@ controller は終了処理中の Pod をいつまでも稼働中と数える。�
 **次の一手**: シェル側の `request` から `PUT`/`PATCH`/`POST .../binding` の
 件数を取り、Go 側の `update` 10 と突き合わせる。両方ともバースト耐性がある
 ので、今度は定量的に比較できる。
+
+#### S58 訂正 (同日、直後): update は落ちていなかった
+
+上で「update が 10 しかないのは informer が落としているからではないか」と
+書き、`FilterActivePods` を経由する機序を有力な仮説として挙げた。**同じ窓の
+シェル側を数えて否定した。**
+
+シェル側(バースト耐性あり)で、update イベントを生むはずの変更:
+
+| 要求 | 件数 |
+|---|---|
+| `PATCH .../pods/<name>/status` | 5 |
+| `POST .../pods/<name>/binding` | 3 |
+| **合計** | **8** |
+
+**informer が配送した update は 10。** 落ちていないどころか、変更の数より
+多い(差は resync 等)。**informer は add / update / delete のすべてを
+届けている。**
+
+では update が 8 しかないのはなぜか。**作られた 161 個の Pod のほとんどが、
+何にも触られないまま消えているから**である。bind まで行ったのは 3 個だけ。
+つまり「作って bind して status を書いて churn する」のではなく、
+**「作ってすぐ消す」を 161 回繰り返している。**
+
+したがって S58 本文の機序(deletionTimestamp の update が届かず終了処理中の
+Pod を稼働中と数える)は**取り下げる**。
+
+#### ここまでで消えた候補と、残るもの
+
+| 候補 | 判定 | 根拠 |
+|---|---|---|
+| dynamic worker の再ロードで expectations が消える | 否定 | バースト窓内の再ロード 0 回 |
+| informer が add/delete を落とす | 否定 | 137 / 135 で釣り合う |
+| informer が update を落とす | **否定** | シェル側の変更 8 件に対し配送 10 件 |
+| 自前 informer の indexer / lister | 否定 | client-go の生成コードと同一 |
+| 403 ガードで作成が失敗扱いになる | 否定 | POST 数と作成された Pod 数が一致 |
+| upstream の expectations 実装そのもの | 否定 | ホストプロセスは同条件で正しい |
+
+**残るのは、expectations が「満たされた」と判定され続けていること。**
+S57 の klog は `expectations fulfilled` を **697 回**出している。
+`SatisfiedExpectations` が true を返す間 `manageReplicas` は走れるので、
+2 分間に 697 回走れていたことになる。informer は健全なのだから、
+**期待値の記帳そのものが作成と噛み合っていない**。ホストプロセスでは
+同じコードが 94 回で収束する。
+
+差は k8flare の実行環境側にしかない。**次に見るべきは、controller が
+何度も作り直されていないか——`NewReplicationManager` を含む
+`RunControllerManager` が、1 つの dynamic worker の中で複数回走っていないか**
+である。expectations は controller インスタンスのメモリに載るので、
+インスタンスが作り直されれば毎回空になり、毎回「満たされた」と判定される。
+再ロード(isolate の入れ替え)は 0 回だったが、**同一 isolate 内で
+`ResidentService` の run が複数回起動していないか**はまだ見ていない。
