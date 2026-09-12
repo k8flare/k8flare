@@ -34,6 +34,9 @@ package main
 
 import (
 	"context"
+	"flag"
+
+	"k8s.io/klog/v2"
 
 	"github.com/k8flare/k8flare/pkg/cfruntime"
 	"github.com/k8flare/k8flare/pkg/cfruntime/cloudflare"
@@ -41,7 +44,32 @@ import (
 	"github.com/k8flare/k8flare/pkg/controllers/restconfig"
 )
 
+// setVerbosity forwards KCM_VERBOSITY to klog, which is how the real
+// controllers say what they are doing -- "expectations fulfilled",
+// "Too few replicas", and the rest. cmd/controller-manager has taken a
+// -v flag for this since it was written; the WASM entrypoint had no way
+// to ask, which is why a defect that the host binary could be
+// interrogated about (P0-7) could not be interrogated here.
+//
+// Unset leaves klog exactly where it was. Raising it is expensive --
+// upstream logs per object per sync -- so this is an operator knob for a
+// measurement window, like PUMP_TRACE, not something to leave on.
+func setVerbosity() {
+	level := cloudflare.GetenvDefault("KCM_VERBOSITY", "")
+	if level == "" {
+		return
+	}
+	var fs flag.FlagSet
+	klog.InitFlags(&fs)
+	if err := fs.Set("v", level); err != nil {
+		klog.Errorf("KCM_VERBOSITY=%q rejected by klog: %v", level, err)
+		return
+	}
+	klog.Infof("controllerManager: klog verbosity set to %s", level)
+}
+
 func main() {
+	setVerbosity()
 	token := cloudflare.GetenvDefault("K3S_TOKEN", "k8flare-dev-token")
 	restCfg := restconfig.RestConfig("GATEWAY", token, cloudflare.Getenv("CLUSTER_BASE_PATH"))
 	workers.ResidentService("controllerManager", func(ctx context.Context) error {

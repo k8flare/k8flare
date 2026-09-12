@@ -293,6 +293,7 @@ export class Controllers {
         };
         if (token) dynamicEnv.K3S_TOKEN = token;
         if (this.env.PUMP_TRACE) dynamicEnv.PUMP_TRACE = this.env.PUMP_TRACE;
+        if (this.env.KCM_VERBOSITY) dynamicEnv.KCM_VERBOSITY = this.env.KCM_VERBOSITY;
         const tails = pumpTraceEnabled(this.env) ? [this.env.SELF] : undefined;
         return {
           tails,
