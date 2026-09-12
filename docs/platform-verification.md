@@ -6870,3 +6870,53 @@ sched は dynamic worker、workload controller はホストプロセス、とい
 sched-dw を同列に扱わないほうがよい**という材料が出た。ローカルで再現できる
 条件下では sched-dw だけが 3/3 で落ちる。CI が復旧したら、sched-dw は
 kcm-dw より多くのサンプルを要求するか、この Orphan の経路を先に詰める。
+
+### S52 (2026-09-12): ホストの controller-manager はこの apiserver に対して Pod を作りすぎる
+
+S51 の sched-dw 失敗を、S49 で足した `issued` / `commit` 境界で追った。
+**別の、もっと大きなものが出た。**
+
+#### 何が見えたか
+
+`replicas=2` の Deployment 1 個に対して、1 つの namespace 内で作られた
+**distinct な Pod 名**:
+
+| バリアント | 作られた Pod | orphan spec |
+|---|---|---|
+| `sched-dw` | **35 個** | FAIL |
+| `host`(required) | **47 個** | **PASS** |
+| 本番(全 dynamic worker) | **2 個** | 正しい(S51 で 120 秒確認) |
+
+つまり **host バリアントも同じように作りすぎているが、conformance の
+チェックの瞬間にたまたま 2 個見えているので通っている**。sched-dw との差は
+欠陥の有無ではなく、タイミングである。
+
+Go 側からの DELETE は `issued.delete` に 1 件も現れない。作成も削除も
+**ホストプロセスの controller-manager** が行っており、それは WASM の
+transport を通らないので `issued` には映らない。`commit`(storage 側)は
+起点を問わず全書き込みを見るので、そちらで捕まえた。
+
+#### 解釈(確定していない)
+
+replicaset-controller は Pod を作ったあと自分の informer でそれを観測して
+expectations を満たす。観測が届かないと、次の同期でまた作る。35〜47 個という
+数はその形に見える。ホスト CM はこのローカルハーネスでは `wrangler dev` に
+HTTPS で繋いでおり、watch は pump window が閉じるたびに切れる。それが
+expectations を壊している可能性がある。
+
+**本番では起きない。** 本番は host プロセスを 1 つも動かさず、S51 で
+`--cascade=orphan` 後に ReplicaSet 1 個と Pod 2 個が 120 秒安定することを
+確認済み。したがってこれは**製品の欠陥ではなく、CI が使うテスト構成の
+性質**である。
+
+#### なぜ重要か
+
+`e2e-conformance.yml` の required gate は、まさにこの host 構成で走る。
+**required gate は、Pod を 47 個作ってから 2 個に収束するような制御プレーンを
+「通った」と判定している。** conformance の spec がそれを検出しないのは、
+spec がその瞬間の数だけを見るからである。
+
+CI が復旧したら最初に見るべきは、CI の runner 上でも同じ過剰生成が起きて
+いるかどうか。起きていれば required gate の信頼度そのものの問題で、
+起きていなければローカルハーネス(切れる watch)の固有事情に切り分けられる。
+どちらでも、S51 の sched-dw 失敗はその下流の症状にすぎない。
