@@ -201,7 +201,22 @@ klog を吐かせた: **`Too many replicas` 374 回、`Too few replicas` 0 回**
 確定している事実は: 動くノードがあると replicas=2 に対して Pod が 35〜60 個
 作られ 2 個に収束する / dynamic worker の KCM 固有(ホストは 2 個)/
 controller インスタンスは 1 つ / informer は add・update・delete を完全配送 /
-klog は `Too many replicas` ばかりで `Too few` は 0。**機序は未特定。**
+klog は `Too many replicas` ばかりで `Too few` は 0。**機序を特定した (S60)。** 同じワークロード・同じ `-v=4` で実行形態だけを
+変えて upstream 自身のログを比べた:
+
+| | WASM KCM | ホストプロセス |
+|---|---|---|
+| `Warning: watch ended with error` | **477** | **0** |
+| `Listing and watching`(relist) | **120** | **15** |
+
+**pump window が閉じるたびに watch が切れ、reflector が 2 分半で 120 回
+張り直している。** relist の最中・直後は controller の Pod 集合の像が権威と
+一致せず、そこで `manageReplicas` が走ると作りすぎ・消しすぎが起きる。
+個々のイベントは落ちていない(S58 訂正)——**落ちているのは連続性**。
+
+**これは P0-4 そのもの。** 設計文書 5.1 の「欠落のない replay を先に確立する」
+が未達であることの、実ワークロードでの定量化である。したがって P0-7 の修正は
+P0-4 の Stage 1 に含まれる。単独で直すものではない。
 
 以下は取り下げた仮説の記録:
 

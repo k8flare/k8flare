@@ -7644,3 +7644,59 @@ distinct kcm instances in traces: 1                      <- kcm@5f6f00 のみ
   出さない(S57)。
 
 **機序は未特定。** 次に触るなら、上の「確定している事実」だけを出発点にする。
+
+### S60 (2026-09-12): P0-7 の機序 — informer が 2 分半で 120 回張り直している
+
+自分の計器で 3 回誤った(S52 / S58 / S59)ので、今度は**語句を推測して grep
+するのをやめ、KCM が実際に出しているメッセージを頻度順に並べた**。答えは
+一行目にあった。
+
+#### 同じワークロード、同じ `-v=4`、違うのは実行形態だけ
+
+| upstream 自身のログ | **WASM KCM**(dynamic worker) | **ホストプロセス** |
+|---|---|---|
+| `Warning: watch ended with error` | **477** | **0** |
+| `Listing and watching`(= relist) | **120** | **15** |
+| `Caches populated` | **120** | **15** |
+
+ホストは 15 回——informer の種類ごとに起動時 1 回ずつ——で、その後 watch は
+一度も切れない。**WASM 側は 477 回切れ、120 回張り直している。** informer
+1 種あたり約 8 回の relist である。
+
+これは私の計器の数字ではない。**upstream の reflector 自身が出している。**
+
+#### これが P0-7 を説明する
+
+pump window が閉じるたびに watch が切れる(S31 の
+「cloudflare: pump window closed」)。reflector は再 LIST する。relist の
+最中および直後、controller が見ている Pod 集合は権威と一致しない。
+そこで `manageReplicas` が走れば、足りなければ作り、多ければ消す。それが
+2 分半に 120 回起きる。
+
+観測されている形とすべて噛み合う:
+
+- `Too many replicas` ばかりで `Too few` が 0(S57)——relist 直後の像は
+  たいてい**多い**側にずれる(消したはずの Pod が再び現れる)
+- 60 個作って 2 個に収束(S59 訂正)
+- informer は add/update/delete を完全配送している(S58 訂正)——**個々の
+  イベントは落ちていない。落ちているのは連続性である**
+- ホストプロセスは同条件で正しい(S56)——watch が切れないから
+
+#### これは P0-4 そのものである
+
+`docs/pump-window-design.md` の 5.1 は「**欠落のない replay を先に確立する**」
+と書いている。S60 はその欠落を、実際のワークロードで、upstream のログで
+定量化したものである。**P0-4 は「いつか直す設計課題」ではなく、ノードを 1 台
+繋いだ瞬間に 30 倍の Pod churn として現れる実害**である。
+
+本番がこれを踏んでいないのは prodprobe クラスタにノードが無いからにすぎない
+(S56)。
+
+#### まだ証明していない一段
+
+relist 1 回ごとに controller が何を見て何をしたか、という個別の対応は
+追っていない。上は「relist が 120 回起きている」「host では 0 回で正しい」
+「churn の形が relist で説明できる」という三つの事実の一致である。
+個別対応まで見るなら、relist の時刻と `issued.post` / `issued.delete` の
+時刻を突き合わせる——ただし `issued` はバーストで落ちるので(S56)、
+先にそれを直す必要がある。
