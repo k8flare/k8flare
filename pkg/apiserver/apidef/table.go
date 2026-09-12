@@ -685,6 +685,17 @@ func GroupVersions() []schema.GroupVersion {
 // core group, "/apis/{group}/{version}/" for a named group. Matches the
 // mux pattern shape workers/apiserver/main.go registers one route per
 // GroupVersion with.
+// APIRoot is the prefix k8s.io/apiserver's installer mounts a GroupVersion
+// under: the core group lives at /api, every other group at /apis. The
+// installer appends the group and version itself, which is why this stops
+// short of what APIPrefix returns.
+func APIRoot(gv schema.GroupVersion) string {
+	if gv.Group == "" {
+		return "/api"
+	}
+	return "/apis"
+}
+
 func APIPrefix(gv schema.GroupVersion) string {
 	if gv.Group == "" {
 		return "/api/" + gv.Version + "/"

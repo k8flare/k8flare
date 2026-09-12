@@ -100,7 +100,36 @@ GET    /api/v1/watch/configmaps
 サイズ: プローブ(installer + 実 Store + scheme、最適化版)は **38.48 MB**。
 現在の apiserver チャンクは 43.9 MB、cap への余裕は 22,669 KiB。
 
-### 段階 1: API installer を実物にする
+### 段階 1 の第一歩: installer を組み込んだ(実装済み)
+
+`pkg/apiserver/installer.go` を追加した。`apidef.Table` の全 GroupVersion に
+ついて、既に実物である `ResourceStore.upstream`(`genericregistry.Store`)を
+`rest.Storage` として `endpoints.APIGroupVersion` に渡し、
+`restful.Container` を返す。
+
+**全リソースが通った**(`installer_test.go`):
+
+```
+installed 446 routes across 14 group-versions
+
+pods: GET/POST/DELETE /api/v1/namespaces/{namespace}/pods
+      GET/PUT/PATCH/DELETE /api/v1/namespaces/{namespace}/pods/{name}
+      GET /api/v1/pods
+      GET /api/v1/watch/... (3 種)
+```
+
+途中で 1 件だけ詰まった: k8flare 独自の `k8flare.com/v1alpha1` は
+client-go のスキーマに無い。この project は `pkg/apiserver/scheme.go` の
+`Scheme` に `apidef.Table` から一括登録しており(register.go が
+「登録経路を二重に持つと必ず食い違う」と書いているとおり)、installer も
+そちらを使う必要がある。client-go の `scheme.Scheme` を使うと Cluster の
+登録で失敗する。
+
+サイズ: apiserver チャンク 43,895,613 → **44,929,219 バイト(+1.03 MB)**。
+cap への余裕は 21,659 KiB。go-restful と installer の追加分で、
+**まだ `handler.go` を消していない状態での増分**である。
+
+### 段階 1 の残り: 切り替え
 
 `endpoints.APIGroupVersion` を、既に実物の `genericregistry.Store` 群に対して
 組み立て、`restful.Container` を `pkg/cfruntime` の fetch ハンドラから
