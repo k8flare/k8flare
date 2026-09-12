@@ -55,6 +55,18 @@ describe("pump-window tracing", () => {
     });
   });
 
+  it("marks a relayed copy so it is not counted as a second event", () => {
+    // Under `wrangler dev` the dynamic worker's output is printed and
+    // relayed, so every Go-side line appears twice. Without a marker the
+    // duplicate reads as a real duplicate event (S61).
+    const emitted = formatPumpTrace("observed.add", "kcm", { w: 5, rv: 7 }, 1757600000000);
+    const at = emitted.indexOf("pumptrace {");
+    const relayed = `pumptrace {"r":1,${emitted.slice(at + "pumptrace ".length + 1)}`;
+    const parsed = JSON.parse(relayed.slice("pumptrace ".length));
+    expect(parsed.r).toBe(1);
+    expect(parsed).toMatchObject({ b: "observed.add", c: "kcm", w: 5, rv: 7 });
+  });
+
   it("lets a field override the placeholder window id", () => {
     const line = formatPumpTrace("observed", "kcm", { w: 12, rv: 747 }, 1757600000000);
     expect(JSON.parse(line.slice("pumptrace ".length))).toMatchObject({ w: 12, t: 1757600000000 });
