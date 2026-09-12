@@ -117,6 +117,12 @@ export interface Env {
   // nothing -- a cluster nobody is measuring must cost what it always did.
   // Forwarded into the resident dynamic workers by controllers/index.ts.
   PUMP_TRACE?: string;
+  // Operator knob for a measurement window: klog verbosity for the kcm
+  // dynamic worker, forwarded into it the same way PUMP_TRACE is. The
+  // host binary has taken -v since it was written; this gives the WASM
+  // one the same handle (docs/platform-verification.md S56). Unset
+  // changes nothing.
+  KCM_VERBOSITY?: string;
   // Multi-cluster: the public URL path prefix ("/c/<id>", "" for
   // default) the supervisor advertises to joining agents.
   CLUSTER_BASE_PATH?: string;

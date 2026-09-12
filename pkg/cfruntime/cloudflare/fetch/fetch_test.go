@@ -142,6 +142,47 @@ func TestWithLiveBindingReportsCtxCancellationRatherThanBlocking(t *testing.T) {
 	}
 }
 
+func TestNonWatchBodyReadStillFailsWhenItsWindowCloses(t *testing.T) {
+	// The EOF above is scoped to watches. Truncating any other body
+	// silently would hand the caller half an object and call it success.
+	quiet := newFakeStream(func(call int) js.Value {
+		if call == 1 {
+			return resolved(chunkResult("{\"kind\":\"PodList\","))
+		}
+		return newPendingPromise().promise
+	})
+	binding := newFakeBinding(func(int) js.Value {
+		return resolved(jsResponse(http.StatusOK, nil, quiet))
+	})
+	id := cloudflare.OpenPumpWindow(envWith("STORAGE", binding), 60_000)
+	t.Cleanup(func() { cloudflare.ClosePumpWindow(id) })
+
+	resp, err := liveClient().Get("http://storage.internal/list/registry/pods/")
+	if err != nil {
+		t.Fatalf("opening the list: %v", err)
+	}
+	defer resp.Body.Close()
+	buf := make([]byte, 64)
+	if n, err := resp.Body.Read(buf); err != nil || n == 0 {
+		t.Fatalf("first chunk: n=%d err=%v", n, err)
+	}
+	next := make(chan error, 1)
+	go func() {
+		_, err := resp.Body.Read(buf)
+		next <- err
+	}()
+	settle()
+	cloudflare.ClosePumpWindow(id)
+	select {
+	case err := <-next:
+		if errors.Is(err, io.EOF) {
+			t.Fatal("a truncated non-watch body reported EOF; the caller would parse half an object as if it were whole")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("read never returned after its window closed")
+	}
+}
+
 // The response-body half of S31, and the one that actually stalled the
 // informers: a watch stream is answered immediately and then stays open,
 // so the read that waits for the next event is the call the closing window
@@ -192,8 +233,15 @@ func TestWatchBodyReadIsReleasedWhenItsWindowCloses(t *testing.T) {
 	cloudflare.ClosePumpWindow(id)
 	select {
 	case r := <-next:
-		if !errors.Is(r.err, cloudflare.ErrPumpWindowClosed) {
-			t.Fatalf("read after its window closed returned err %v, want ErrPumpWindowClosed so client-go re-watches on a live window", r.err)
+		// EOF, not ErrPumpWindowClosed. The requirement this test exists
+		// for is that the read is RELEASED (S31); which error it carries
+		// decides what client-go does next. An error makes the reflector
+		// throw its cache away and LIST again -- 120 re-lists in two and
+		// a half minutes, which is what makes a replicas=2 workload churn
+		// 60 pods (docs/platform-verification.md S60). A clean end makes
+		// it re-WATCH from the last resourceVersion it saw.
+		if !errors.Is(r.err, io.EOF) {
+			t.Fatalf("watch read after its window closed returned err %v, want io.EOF so client-go re-watches from its resourceVersion instead of re-listing", r.err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("read never returned after its window closed: the reflector is wedged for the isolate's lifetime with nothing logged, which is S31")

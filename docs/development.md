@@ -164,6 +164,22 @@ compiles the ~40MB WASM modules in-process. They're the local stand-in for
 the conformance workflow's dynamic-worker variants on machines that can't
 run a Linux kubelet.
 
+## Experiments that start processes
+
+Kill what you started, by PID, and check. A local harness experiment that
+starts a host `kube-controller-manager` or `kube-scheduler` against
+`127.0.0.1:8443` keeps writing to that cluster until it is killed — and
+`pkill -f <name>` silently matches nothing if the binary was built under a
+different name. Sixteen stray controller-managers accumulated across one
+session's experiments and made a `replicas=2` workload look like it churned
+sixty pods; the real controller had created two
+(`docs/platform-verification.md` S62). Separate ports and data directories do
+not help when every process points at the same apiserver.
+
+```sh
+pgrep -fl 'controller-manager|scheduler|wrangler' | grep -v Chrome
+```
+
 ## Experiments that modify source
 
 Run them in a `git worktree`, never in your main checkout. An experiment that
@@ -224,9 +240,12 @@ need for the TLS proxy above), then point both binaries at it with
 `--server=https://127.0.0.1:8443 --token=... --insecure-skip-tls-verify`. That
 passes the required garbage-collector focus 7/7 in about 90 seconds
 (`docs/platform-verification.md` S48). Three of the eleven baseline specs still
-fail there, but for a reason outside the control plane: on Docker Desktop the
-containerised node cannot create a pod sandbox (`seccomp is not supported`), so
-any spec that needs a pod to actually run cannot pass. For the garbage-collector focus the distinction does not
+fail there, but for a reason outside the control plane: on Apple Silicon the
+node image's k3s assets are x86-64 and run under emulation, where
+`prctl(PR_SET_SECCOMP, …)` returns EINVAL, so containerd decides seccomp is
+unsupported and refuses to create any pod sandbox (`docs/platform-verification.md`
+S53). Rebuild the node image with arm64 k3s assets to lift that; the required
+garbage-collector focus does not need pods to run and passes as is. For the garbage-collector focus the distinction does not
 matter: the gc dynamic worker runs in every variant, because the host has no
 garbage collector. For anything sig-scheduling it matters a lot — the
 `SchedulerPredicates` specs in `BASELINE_FOCUS` are scheduling-sensitive and a

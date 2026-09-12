@@ -218,7 +218,7 @@ func (t *roundTripper) roundTripOnce(req *http.Request, body []byte) (*http.Resp
 	if err != nil {
 		return nil, fmt.Errorf("fetch: %w", err)
 	}
-	return responseFromJS(window, jsResp)
+	return responseFromJS(window, jsResp, isWatchRequest(req))
 }
 
 func requestToJS(req *http.Request, body []byte) js.Value {
@@ -245,13 +245,23 @@ func requestToJS(req *http.Request, body []byte) js.Value {
 // version, kube-controller-manager's and the garbage collector's
 // informers never completed a single sync (found live 2026-07-10, see
 // docs/platform-verification.md's cfruntime-rewrite correction).
-func responseFromJS(window *cloudflare.Window, resp js.Value) (*http.Response, error) {
+// isWatchRequest reports whether req asked for a watch stream. Only those
+// may end at a pump-window boundary without it being a failure.
+func isWatchRequest(req *http.Request) bool {
+	if req == nil || req.URL == nil {
+		return false
+	}
+	q := req.URL.Query()
+	return q.Get("watch") == "true" || q.Get("watch") == "1" || q.Get("sendInitialEvents") == "true"
+}
+
+func responseFromJS(window *cloudflare.Window, resp js.Value, watch bool) (*http.Response, error) {
 	status := resp.Get("status").Int()
 	header := headerFromJS(resp.Get("headers"))
 
 	var body io.ReadCloser = http.NoBody
 	if stream := resp.Get("body"); !stream.IsNull() && !stream.IsUndefined() {
-		body = &streamBody{stream: stream, window: window}
+		body = &streamBody{stream: stream, window: window, watch: watch}
 	}
 
 	contentLength := int64(-1) // unknown (e.g. a streaming watch)
@@ -281,6 +291,7 @@ type streamBody struct {
 	window *cloudflare.Window
 	buf    bytes.Buffer
 	eof    bool
+	watch  bool
 }
 
 func (b *streamBody) Read(p []byte) (int, error) {
@@ -304,6 +315,18 @@ func (b *streamBody) Read(p []byte) (int, error) {
 		result, err := awaitPromise(b.window, pending, 0)
 		if err != nil {
 			b.eof = true
+			if b.watch && errors.Is(err, cloudflare.ErrPumpWindowClosed) {
+				// A watch whose pump window closed has not failed, it has
+				// ended. Reporting an error makes client-go's reflector
+				// throw the cache away and LIST again -- measured at 120
+				// re-lists in two and a half minutes, which is what makes
+				// a replicas=2 workload churn 60 pods
+				// (docs/platform-verification.md S60). EOF makes it
+				// re-WATCH from the last resourceVersion it saw instead.
+				// Scoped to watches: truncating any other body silently
+				// would hand the caller half an object.
+				return 0, io.EOF
+			}
 			return 0, fmt.Errorf("read response stream: %w", err)
 		}
 		if result.Get("done").Bool() {

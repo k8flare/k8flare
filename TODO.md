@@ -132,6 +132,31 @@ added to. Numbers recorded, production-measured.
 
 ---
 
+### P0-7 `[x]` ~~ノードを付けると replicas=2 が Pod を 35 個作る~~ — **誤報、取り下げ**
+
+**存在しなかった** (`docs/platform-verification.md` S62)。私が過去の実験で
+起動したまま放置した**ホスト controller-manager が 16 個**、同じ apiserver を
+叩いていた。User-Agent の生の値を見ると `cm-now/… (darwin/arm64)` などの
+ホストバイナリが大半を作っており、本物の resident controller
+(`js/… (js/wasm)`)は **2 個**しか作っていなかった。全部落として測り直すと
+`replicas=2` に対して Pod は **2 個**で正しい。
+
+**この誤報から生き残るもの**: S60 / S61 の watch 連続性の測定と修正。
+WASM の informer が窓ごとに LIST からやり直していた(watch エラー 477 /
+relist 120)のは実在し、S61 の修正で 0 / 15(ホストプロセスと同値)になった。
+それらの数字は WASM 自身の klog であり、ホストバイナリは別ファイルに書くので
+汚染されていない。**修正の価値は「informer の連続性がホストと同等になった」
+ことであって、Pod の churn ではない。**
+
+
+## 検証ゲートの変更 (ユーザー決定 2026-09-12)
+
+**GitHub Actions は使わない**(「Actions は使わないでください お金ないので」)。
+不可侵ルール #1 の「conformance CI = Definition of Done」は、**ローカルの
+host バリアントハーネスに置き換わる**(`docs/development.md` のレシピ、
+`docs/platform-verification.md` S48 / S63)。以下で「CI 待ち」と書かれていた
+項目は、すべてローカルで判定する。
+
 ## P1 — needed before the conformance story is credible
 
 ### P1-1 `[ ]` The required gate does not exercise the headline feature
@@ -150,7 +175,32 @@ CONTRIBUTING, and any status badge).
 **Acceptance.** Either the dw variants are required, or every place that cites
 the required gate states which configuration it covers.
 
-### P1-2 `[ ]` Prove the dw variants are stable, don't sample-check them
+### P1-12 `[ ]` required GC フォーカスは、Pod が動くノードの上では flaky
+
+**Found 2026-09-12 (S55).** ローカルハーネスのノードを直して Pod が実際に
+起動するようにしたところ、required な GC フォーカス(7 spec、host バリアント)
+が **5/7 → 6/7** と揺れ、毎回違う spec が落ちるようになった。Pod が起動しない
+ノードでは 7/7 だった。単独実行では通るので、フルの 7 spec の順序・蓄積状態に
+依存する。
+
+**CI の失敗と一致する。** 2026-09-09 に CI で落ちた
+`should not delete dependents that have both valid owner and owner that's
+waiting for dependents to be deleted`(`garbage_collector.go:795`、90 秒予算)は、
+ローカルで落ちた 2 件のうちの 1 件である。**CI が止まっている間も、この失敗は
+手元で約 6 分ごとに再現できる。**
+
+落ちた 3 件はすべて orphan / Serial 系で、`gracefuldelete.go` のガードと GC の
+相互作用が効く領域(P2-1 / P0-4 の対象)。
+
+**Do.** (1) 回数を重ねて落ちる spec の分布を取る。(2) `PUMP_TRACE=1` の
+`issued` / `observed` / `commit` を並べてどの境界で時間が消えるかを見る。
+(3) `gracefuldelete.go` のガードを 1 つずつ無効化して切り分ける——**隔離
+ワークツリーで**(S43)。
+
+**Acceptance.** 10 回連続で 7/7、または落ちる理由が特定されて直っていること。
+不可侵ルール #5。
+
+### P1-2 `[~]` Prove the dw variants are stable, don't sample-check them
 
 **Problem.** The dw variants were red in one of the last three runs
 (`34445918793`: kcm-dw hit a client-side connection reset, sched-dw blew the
@@ -163,6 +213,21 @@ treat any red as a defect to root-cause, not to re-run. Watch Actions quota;
 batch or schedule rather than hand-dispatching.
 
 **Acceptance.** ~10 consecutive green dw runs, or a root cause for each red.
+
+**Local evidence 2026-09-12, and it is not symmetric** (`docs/platform-verification.md`
+S51). Same harness, same node, same required GC focus:
+
+| variant | result |
+|---|---|
+| `host` (required) | 7/7 |
+| `kcm-dw` (advisory) | 7/7 |
+| `sched-dw` (advisory) | **0 of 3 runs passed**, 6/7 each time, on two different specs |
+
+The contradiction with "6 consecutive green" in CI is real and unresolved: this
+harness's node cannot start pods (S48), CI's can. But `host` and `kcm-dw` pass
+7/7 on that same broken node, so a broken node alone does not explain why only
+`sched-dw` fails. Promotion is a CI decision either way — the point here is
+that the two advisory variants should not be promoted on the same evidence.
 
 ### P1-3 `[x]` The most platform-fragile code has no unit tests
 
@@ -616,8 +681,9 @@ more references, not after.
 
 ### P1-10 `[ ]` デプロイ後の暖機を運用者の手作業にしない (提案・要承認)
 
-**Problem.** S50 で実測: デプロイ後に最初に来たワークロードは reconcile が
-始まるまで **20〜24 分**待つ。約 44MB のコントローラー WASM を、最初に使われた
+**Problem.** S50 で実測: **コントローラーの wasm が変わった**デプロイの後、
+最初に来たワークロードは reconcile が始まるまで **20〜24 分**待つ
+(wasm が同一のデプロイなら 23 秒で、この問題は起きない)。約 44MB のコントローラー WASM を、最初に使われた
 時点で初めてコンパイルするため。2 個目以降は 11 秒。`/readyz` はこの間も 200 を
 返す(S47)ので、ロードバランサや運用スクリプトからは区別できない。
 
@@ -637,6 +703,39 @@ Deployment を 1 個作って消す。**運用者が忘れたら利用者が 20 
 
 どちらも本番の挙動を変えるので、実装前に承認を得る。S50 を測っただけの現状
 では**利用者が 20 分待つ既定のまま**であることを明記しておく。
+
+### P1-11 `[x]` required gate が「Pod を 47 個作る制御プレーン」を通している — **誤報、取り下げ**
+
+**Observed 2026-09-12 (S52).** `replicas=2` の Deployment 1 個に対して、
+required な `host` バリアントでは 1 namespace に **47 個**の distinct な Pod が
+作られ、それから 2 個に収束していた。`sched-dw` では 35 個で、そちらは
+conformance の spec が落ちる。**host が通っているのは、spec がその瞬間の数しか
+見ないからにすぎない。**
+
+**訂正済み**: 当初これをホストプロセスの controller-manager に帰属させたが、
+ホストプロセスを 1 つも使わない本番同形の構成(全 dynamic worker)でも
+**18 個**作られた。分かれ目はバリアントではなく**ローカルか本番か**である
+(本番は 2 個、`--cascade=orphan` 後 120 秒安定)。機序は未特定。ローカルには
+Pod を bind するが sandbox を作れないコンテナノードがあり(S48)、本番の
+prodprobe クラスタにはノードが無い——が、`FailedCreatePodSandBox` は Pod を
+Failed にしないので、置き換えの引き金としては説明が足りない。
+
+**Resolved the same day — this was not a defect.** ノードを止めて同じ spec を
+回すと `replicas=2` に対して Pod は **2 個**になった。計装で機序も取れた:
+Pod の commit 53 件のうち kcm の informer が取りこぼしたものは **0 件**、
+一方で kcm は Node への PATCH を 24 件発行しており、同じ時間帯に kubelet が
+`PLEG is not healthy` を 244 回出していた。**ノードがフラップして Pod が
+evict され、replicaset-controller が正しく補充していた**だけである
+(`docs/platform-verification.md` S52 訂正 2)。
+
+required gate は「暴走する制御プレーン」を通していたのではなく、「Pod を
+起動できないノードに対して正しく振る舞う制御プレーン」を通していた。
+S51 の sched-dw 失敗も同じ補充サイクルのタイミング差に還元される。
+**ローカルハーネスのノードが Pod を起動できるようになるまで、バリアント間の
+差に意味を読み取ってはいけない**——これが S48 から変わらない本当の限界。
+
+**Acceptance.** CI の host 変種で `replicas=2` に対して作られる distinct な
+Pod が 2 個であること、またはそうでない理由が特定されていること。
 
 ## Out of scope / deliberately not doing
 

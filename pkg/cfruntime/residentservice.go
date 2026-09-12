@@ -7,6 +7,8 @@ import (
 	"log"
 	"net/http"
 	"sync"
+
+	"github.com/k8flare/k8flare/pkg/cfruntime/cloudflare"
 )
 
 // ResidentService starts run at most once per WASM instance and keeps it
@@ -56,7 +58,7 @@ func ResidentService(label string, run func(ctx context.Context) error) {
 				// what "runs for the instance's lifetime" actually means.
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
-				log.Printf("%s: run starting", label)
+				log.Printf("%s: run starting (instance %s)", label, cloudflare.InstanceID())
 				err := run(ctx)
 				// A resident controller returning at all is a fault: it is
 				// supposed to block for the instance's lifetime. Logged

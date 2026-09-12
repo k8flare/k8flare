@@ -6776,3 +6776,1166 @@ S47 で「デプロイ直後の probe はコールドスタートで偽陽性に
 利用者は、最初の 1 個が動き出すまで 20 分以上待たされる。** 2 個目以降は
 11 秒である。`/readyz` はこの状態を 200 で返す(S47)。docs/known-issues.md に
 書いた。
+
+#### S50 追記: 20 分を払うのは「wasm が変わったデプロイ」だけだった
+
+上の測定は「デプロイ後に最初に使うワークロード」と書いたが、条件が広すぎた。
+切り分けた。
+
+**実験**: コードを一切変えずにもう一度デプロイし(`4e3f7f37`、wasm の sha256 は
+`kcm 935466eb4094a9f8` / `apiserver 9b308857947e5f21` で直前と同一)、12 分
+放置してクラスタをパークさせてから Deployment を 1 個作った。
+
+```
+observedGeneration=1 after 23s   replicas=1
+```
+
+**23 秒**。20 分ではない。
+
+つまりコンパイル結果は **wasm の内容で keyed されており、Worker の
+バージョン変更を跨いで再利用される**。Loader の id が `manifest.sha256` を
+含む(`controllers/index.ts`)ことと整合する。払うのは:
+
+| デプロイの種類 | 最初のワークロード |
+|---|---|
+| Go を変えた(wasm の sha256 が変わる) | **20〜24 分** |
+| TypeScript / 設定だけ(wasm 同一) | **23 秒** |
+
+採用者にとっての意味が変わる。k8flare をそのまま使う運用では、20 分を払うのは
+**k8s/k3s のバージョンを上げたときなど、Go が変わったデプロイだけ**である。
+docs/admin-guide.md の暖機手順もその条件に絞った。
+
+### S51 (2026-09-12): 三バリアントをローカルで比べたら sched-dw だけ落ちた
+
+S48 で host バリアントを再現できるようにしたので、CI が評価する三つの
+control-plane バリアントを同じハーネス・同じノード・同じ required GC フォーカス
+で回した。
+
+| バリアント | 設定 | 結果 |
+|---|---|---|
+| `host`(required) | `SCHED_DISABLED:1 CM_DISABLED:1` + ホスト両方 | **7/7**、91〜171 秒 |
+| `kcm-dw`(advisory) | `SCHED_DISABLED:1 CM_DISABLED:0` + ホスト scheduler のみ | **7/7**、597 秒 |
+| `sched-dw`(advisory) | `SCHED_DISABLED:0 CM_DISABLED:1` + ホスト CM のみ | **0/3**、毎回 6 Passed / 1 Failed |
+
+sched-dw の 3 回はすべて失敗したが、**落ちる spec が同じではない**:
+
+- run 1, 2: `should orphan RS created by deployment when
+  deleteOptions.PropagationPolicy is Orphan`
+  ——`expected 2 pods, got 0 pods`。Deployment を Orphan で消した 0.25 秒後に
+  Pod が 0 件。イベントには `replicaset-controller SuccessfulCreate` が
+  残っているので、作られた Pod が消されている。
+- run 3: `should keep the rc around until all its pods are deleted if the
+  deleteOptions says so [Serial]` の DeferCleanup。
+
+設定は `e2e-conformance.yml` の sched-dw と一致させた(`SCHED_DISABLED:0`、
+`CM_DISABLED:1`、ホスト scheduler なし、ホスト CM あり)。
+
+#### これを defect と断定しない理由
+
+`docs/known-issues.md` は「advisory な dw バリアントは 6 回連続 green」と
+書いており、CI の sched-dw は通っている。矛盾する。**差はノードである**:
+このローカルハーネスのコンテナノードは Pod サンドボックスを作れない
+(seccomp、S48)ので Pod は一度も Running にならない。CI のノードは動く。
+
+ただし host と kcm-dw は**同じ壊れたノードで 7/7 通る**ので、「ノードが
+壊れているから落ちる」だけでは sched-dw だけが落ちる説明にならない。
+
+#### 「orphan が全バリアントで壊れている」仮説は否定された
+
+一番怖い読み方は「orphan の経路は全バリアントで壊れていて、sched-dw だけが
+速いので conformance の即時チェックに引っかかる」だった。本番で直接確かめた:
+
+```
+pods before delete: 2; rs: 1
+deployment.apps "od" deleted        (--cascade=orphan)
+  t+2s:   rs=1 pods=2
+  t+10s:  rs=1 pods=2
+  t+30s:  rs=1 pods=2
+  t+60s:  rs=1 pods=2
+  t+120s: rs=1 pods=2
+```
+
+**本番の orphan は正しい。**120 秒経っても ReplicaSet も Pod 2 個も残る。
+しかも本番は kcm / gc / sched の dynamic worker を**すべて**動かしている
+——sched DW が動いているだけで壊れるわけではない。
+
+したがって sched-dw の失敗は、**そのハイブリッド構成に固有**である:
+sched は dynamic worker、workload controller はホストプロセス、という
+組み合わせは CI のテスト構成にしか存在せず、本番にも `host` 構成にも無い。
+採用者に影響する欠陥ではない。
+
+#### P1-1 / P1-2 への含意
+
+昇格の判断は CI でしかできない(不可侵ルール #1)。そのうえで、**kcm-dw と
+sched-dw を同列に扱わないほうがよい**という材料が出た。ローカルで再現できる
+条件下では sched-dw だけが 3/3 で落ちる。CI が復旧したら、sched-dw は
+kcm-dw より多くのサンプルを要求するか、この Orphan の経路を先に詰める。
+
+### S52 (2026-09-12): ホストの controller-manager はこの apiserver に対して Pod を作りすぎる
+
+S51 の sched-dw 失敗を、S49 で足した `issued` / `commit` 境界で追った。
+**別の、もっと大きなものが出た。**
+
+#### 何が見えたか
+
+`replicas=2` の Deployment 1 個に対して、1 つの namespace 内で作られた
+**distinct な Pod 名**:
+
+| バリアント | 作られた Pod | orphan spec |
+|---|---|---|
+| `sched-dw` | **35 個** | FAIL |
+| `host`(required) | **47 個** | **PASS** |
+| 本番(全 dynamic worker) | **2 個** | 正しい(S51 で 120 秒確認) |
+
+つまり **host バリアントも同じように作りすぎているが、conformance の
+チェックの瞬間にたまたま 2 個見えているので通っている**。sched-dw との差は
+欠陥の有無ではなく、タイミングである。
+
+Go 側からの DELETE は `issued.delete` に 1 件も現れない。作成も削除も
+**ホストプロセスの controller-manager** が行っており、それは WASM の
+transport を通らないので `issued` には映らない。`commit`(storage 側)は
+起点を問わず全書き込みを見るので、そちらで捕まえた。
+
+#### 解釈(確定していない)
+
+replicaset-controller は Pod を作ったあと自分の informer でそれを観測して
+expectations を満たす。観測が届かないと、次の同期でまた作る。35〜47 個という
+数はその形に見える。ホスト CM はこのローカルハーネスでは `wrangler dev` に
+HTTPS で繋いでおり、watch は pump window が閉じるたびに切れる。それが
+expectations を壊している可能性がある。
+
+**本番では起きない。** 本番は host プロセスを 1 つも動かさず、S51 で
+`--cascade=orphan` 後に ReplicaSet 1 個と Pod 2 個が 120 秒安定することを
+確認済み。したがってこれは**製品の欠陥ではなく、CI が使うテスト構成の
+性質**である。
+
+#### なぜ重要か
+
+`e2e-conformance.yml` の required gate は、まさにこの host 構成で走る。
+**required gate は、Pod を 47 個作ってから 2 個に収束するような制御プレーンを
+「通った」と判定している。** conformance の spec がそれを検出しないのは、
+spec がその瞬間の数だけを見るからである。
+
+CI が復旧したら最初に見るべきは、CI の runner 上でも同じ過剰生成が起きて
+いるかどうか。起きていれば required gate の信頼度そのものの問題で、
+起きていなければローカルハーネス(切れる watch)の固有事情に切り分けられる。
+どちらでも、S51 の sched-dw 失敗はその下流の症状にすぎない。
+
+#### S52 訂正 (同日): ホスト CM のせいではなかった。全ローカル構成で起きる
+
+上で「作成も削除も**ホストプロセスの controller-manager** が行っている」と
+書き、過剰生成をホスト CM に帰属させた。**次の実験でそれを自分で否定した。**
+
+ホストプロセスを 1 つも使わない、本番と同じ形(全 dynamic worker、
+`SCHED_DISABLED` も `CM_DISABLED` も無し)で同じ spec を回した:
+
+```
+SUCCESS! -- 1 Passed | 0 Failed
+gc-9742: 18 distinct simpletest pods for a replicas=2 Deployment
+```
+
+**18 個。**ホスト CM は 1 つも動いていない。したがって過剰生成はホスト CM の
+性質ではない。
+
+| 構成 | 作られた Pod |
+|---|---|
+| ローカル `all-dw`(本番と同じ形) | 18 |
+| ローカル `sched-dw` | 35 |
+| ローカル `host` | 47 |
+| **本番** | **2** |
+
+**分かれ目はバリアントではなく、ローカルか本番かである。**
+
+#### 残る差は何か(未特定)
+
+ローカルと本番で違うのは、いちばん目立つところではノードである。ローカルには
+コンテナノードが 1 台あり、Pod を bind するが sandbox を作れない(seccomp、
+S48)。prodprobe クラスタにはノードが無く、Pod は Pending のまま留まる。
+
+ただし「sandbox 作成に失敗した Pod を replicaset-controller が置き換える」
+という単純な説明は、まだ確かめていない。kubelet の
+`FailedCreatePodSandBox` は Pod を Failed にせず Pending のままにするので、
+置き換えの引き金としては説明が足りない。**機序は未特定である。**
+
+上の S52 本文にある「ホストプロセスの controller-manager が行っており」と
+「製品の欠陥ではなく、CI が使うテスト構成の性質」という二つの断定は、
+この訂正で取り下げる。前者は誤り、後者は根拠を失った(ローカル固有では
+あるが、CI 構成固有ではない)。本番が 2 個で正しいことだけは S51 で
+確認済みで、そこは変わらない。
+
+#### S52 訂正 2 (同日): 過剰生成は制御プレーンが**正しく**振る舞った結果だった
+
+一つ目の訂正で「機序は未特定」と書いた。特定できたので取り下げる。
+
+**ノードを外すと過剰生成は消える。** 同じ本番同形の構成で、コンテナノードを
+止めて `replicas=2` を作ると:
+
+```
+distinct pods created for replicas=2 with NO NODE attached: 2
+```
+
+**2 個。**本番と同じ。
+
+**ノードがある時に何が起きていたか。** 計装で数えた:
+
+- 取りこぼし仮説は**否定**: Pod の commit 53 件のうち、kcm の informer が
+  報告しなかったものは **0 件 (0%)**。informer は自分が作った Pod を全部
+  見えている。
+- kcm は Pod を **POST 42 / DELETE 28** 発行していた。さらに **Node への
+  PATCH を 24 件**発行していた。
+- コンテナノードの kubelet は同じ時間帯に
+  `container runtime is down` を 295 回、`PLEG is not healthy` を 244 回
+  出していた(sandbox を作れないため、S48)。
+
+つまり: **ノードが Ready↔NotReady をフラップ → nodelifecycle が taint →
+Pod が evict される → replicaset-controller が正しく補充する**。24 件の Node
+PATCH がその taint の出し入れである。
+
+**これは壊れたノードに対する Kubernetes の正しい振る舞いであって、制御
+プレーンの欠陥ではない。** 上の S52 本文の
+「**required gate は、Pod を 47 個作ってから 2 個に収束するような制御プレーンを
+「通った」と判定している**」という書き方は、あたかも制御プレーンが暴走して
+いるかのように読める。**取り下げる。** 正しくは「required gate は、Pod を
+起動できないノードに対して正しく補充を繰り返す制御プレーンを通している」で
+あり、それは通って当然である。
+
+同様に S51 の sched-dw 失敗も、この補充サイクルのどの瞬間に conformance の
+即時チェックが当たるかの問題に還元される。ローカルハーネスのノードが
+Pod を起動できる状態になるまで、この二つのバリアント差に意味を読み取っては
+いけない。
+
+**残る本当の限界は S48 のまま**: macOS の Docker Desktop 上のコンテナノードは
+Pod を起動できない。それが原因で、baseline focus の 3 spec と、この
+バリアント比較が信用できない。required GC フォーカス 7/7 は Pod の起動を
+要求しないので有効である。
+
+### S53 (2026-09-12): ローカルノードが Pod を起動できない理由が特定できた
+
+S48 以降ずっと「macOS の Docker Desktop 上のコンテナノードは
+`seccomp is not supported` で Pod サンドボックスを作れない」を限界として
+扱ってきた。原因が分かった。**k8flare の欠陥ではなく、Apple Silicon 上で
+x86-64 バイナリをエミュレーション実行していたため**である。
+
+#### 追い方
+
+containerd v2 の `seccompEnabled()` は
+`prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, 0, 0, 0) != EINVAL` を見るだけで、
+ビルドタグは無い(この点は先に確認し、「seccomp ビルドタグ欠落」という
+最初の仮説は否定した)。そこで同じ prctl を呼ぶだけの小さなプローブを
+両アーキテクチャ向けに作り、**同じコンテナの中で**走らせた:
+
+| プローブのアーキテクチャ | prctl の戻り | containerd の判定 |
+|---|---|---|
+| arm64(ネイティブ) | EFAULT (bad address) | **有効: true** |
+| amd64(エミュレーション) | **EINVAL** | **有効: false** |
+
+つまりエミュレーション下では seccomp フィルタを設定できず、カーネルが
+非対応であるかのように見える。
+
+#### どのバイナリがそれを踏んでいたか
+
+agent を arm64 でビルドし直して入れ替えても直らなかった。**containerd は
+agent の中ではなく別プロセス**(PID 1486)で、k3s が
+`/var/lib/rancher/k3s/data/<hash>/bin/containerd` に展開したものだった。
+ELF の machine フィールドを読むと:
+
+```
+containerd:            3e 00  = x86-64   <- エミュレーション
+/usr/local/bin/k8flare-agent:  b7 00  = aarch64
+```
+
+ノードイメージ(`packages/k8flare-worker/images/node/`)は amd64 の k3s
+アセットを展開しており、それが Apple Silicon 上で emulate されている。
+`make nodes-agent` が `GOARCH=amd64` 固定なのは、Cloudflare Containers が
+x86 だからで、本番としては正しい。**壊れているのはローカルの実験環境だけ。**
+
+#### 何が変わるか
+
+- **k8flare の欠陥ではない。** CI のランナー(linux/amd64)でも BYO VM でも
+  ネイティブなのでこの経路は踏まない。
+- S48 / S51 / S52 で「ノードが Pod を起動できないため信用できない」と
+  限定した結論は、**限定の理由がこれで確定した**。
+- ローカルハーネスを完全なものにするには、ノードイメージを arm64 の k3s
+  アセットで作り直す(Apple Silicon の場合)。そうすれば baseline focus の
+  残り 3 spec と、バリアント間の比較が初めて意味を持つ。required GC
+  フォーカスは Pod の起動を要求しないので、今のままでも有効である。
+
+### S54 (2026-09-12): ノードを直したら、今日の「7/7」が成立しない条件だったと分かった
+
+S53 の原因(Apple Silicon 上で x86-64 の k3s アセットを emulate していた)を
+踏まえてローカルハーネスのノードを直し、**初めて Pod が Running になった**。
+そして直した途端、今日ずっと報告してきた数字が崩れた。
+
+#### 直し方
+
+ローカル実験専用のノードイメージ(本番の Dockerfile は amd64 のままで正しい):
+
+1. `k3s-arm64` を取得し、agent も `GOARCH=arm64` でビルドして
+   `--platform linux/arm64` でイメージを作る → **seccomp エラーが消える**
+2. `/var/lib/rancher/k3s` を **named volume** にする → overlayfs の入れ子が
+   解消(`failed to mount rootfs component: overlay`)
+
+これで `kubectl run` した Pod が **Running** になる。
+
+#### 直した結果
+
+| フォーカス | 壊れたノード(今日ずっとこれ) | **動くノード** |
+|---|---|---|
+| baseline(11 spec) | 8 Passed / 3 Failed | **11 Passed / 0 Failed**、356 秒 |
+| required GC(7 spec) | 7 Passed / 0 Failed | **5 Passed / 2 Failed**、278 秒 |
+
+**baseline は初めて全部通った。** S48 で「Pod の起動を要する 3 spec は
+再現できない」と書いた制約は解消された。
+
+**そして GC が落ちた。** 今日 S47 / S48 / S51 / S52 で繰り返し報告した
+「required GC フォーカス 7/7」は、**Pod が一度も起動しないノードでの結果**
+だった。Pod が実際に動く条件では 5/7 である。
+
+#### 落ちた 2 件
+
+- `should not delete dependents that have both valid owner and owner that's
+  waiting for dependents to be deleted [Serial]`
+  ——`the server could not find the requested resource (patch pods
+  simpletest-rc-to-be-deleted-9zlsr)`。PATCH 自体は健在で
+  (`kubectl patch pod` は今も成功する)、**patch しようとした Pod が
+  その時点で既に別物に置き換わっていた**、つまり Pod の churn。
+- `should orphan pods created by rc if delete options say so [Serial]`
+  ——`garbage_collector.go:436`。失敗時のダンプに 1 namespace で
+  **739 events**。
+
+どちらも Pod の激しい入れ替わりが背景にある。S52 訂正 2 で見た
+「ノードがフラップ → evict → 補充」と同じ形に見えるが、**今度はノードが
+健全なので、その説明は使えない**。原因は未特定。
+
+#### 今日の報告への影響(重要)
+
+- 「現 main は required GC フォーカスを host バリアントで 7/7 通る」
+  (S47 / S48)は**条件付きだった**。Pod が起動しないノードでのみ 7/7。
+- 「`deps/k3s-136-4` は required 構成で 7/7」(TODO P1-8)も同じ条件下の
+  測定であり、**そのまま昇格の根拠にしてはいけない**。
+- S51 のバリアント比較(host 7/7 / kcm-dw 7/7 / sched-dw 0/3)も同じ。
+- **baseline 11/11 は逆に、動くノードで初めて取れた本物の緑**である。
+
+CI が復旧したら、まず runner 上でこの 2 件が落ちるかを見る。落ちるなら
+required gate の実体であり、落ちないならローカルの残る差(単一ノード、
+Docker Desktop)に切り分けられる。
+
+### S55 (2026-09-12): 直したハーネスは CI の失敗を再現する
+
+S54 で「動くノードでは required GC が 5/7」と書いた。もう一度回した。
+
+| 実行 | ノード | 結果 | 落ちた spec |
+|---|---|---|---|
+| 今日ずっと | Pod が起動しない | **7/7** | — |
+| S54 run 1 | 動く | 5/7 | `should not delete dependents that have both valid owner and owner that's waiting…` / `should orphan pods created by rc if delete options say so` |
+| run 2 | 動く | 6/7 | `should orphan RS created by deployment … Orphan` |
+
+**動くノードの上では flaky である。**毎回落ちるが、落ちる spec が違う。
+単独実行では通る(`should orphan pods created by rc` を単独で回すと Pass)
+ので、フルの 7 spec を通したときの順序・蓄積状態に依存する。
+
+#### CI で実際に落ちていたものと一致する
+
+2026-09-09 の CI(run 34390383167 / 34398403238)で kcm-dw が落ちたのは
+`should not delete dependents that have both valid owner and owner that's
+waiting for dependents to be deleted` で、`garbage_collector.go:795` の
+90 秒予算超過だった(S34 追記)。**run 1 で落ちた 2 件のうちの 1 件がこれ。**
+
+つまり:
+
+- **今日ずっと 7/7 を出していたのは、Pod が起動しないせいで負荷が足りず、
+  この flakiness を踏まなかったからである。**
+- **直したハーネスは、CI で観測された失敗をローカルで再現する。**
+
+これは大きい。CI が請求で止まっている間、「CI でしか再現しない」と思って
+いた失敗が、手元で 6 分ごとに再現できる。不可侵ルール #5(flaky は直すか
+revert)に取り掛かれる。
+
+#### 落ちる面
+
+3 回で落ちた 3 件はすべて **orphan / Serial** 系で、`pkg/apiserver/
+gracefuldelete.go` の手書きガードと GC の相互作用が効く領域である
+(P2-1 / P0-4 の対象そのもの)。S54 で見た症状——patch 対象の Pod が
+404、1 namespace に 739 events——は Pod の入れ替わりを示すが、ノードは
+健全なので S52 訂正 2 の「フラップ→evict→補充」では説明できない。
+**原因は未特定。**
+
+#### 次にやること
+
+1. 3 回以上回して、落ちる spec の分布と頻度を取る。
+2. `PUMP_TRACE=1` で落ちた実行の `issued` / `observed` / `commit` を並べ、
+   どの境界で時間が消えているかを見る(S49 の物差しが使える)。
+3. `gracefuldelete.go` のガードを 1 つずつ無効化して、どれが関与するかを
+   切り分ける——ただし**必ず隔離ワークツリーで**(S43)。
+
+ローカルで再現できる以上、これは CI の復旧を待つ必要がない。
+
+### S56 (2026-09-12): ノードを付けると replicas=2 が Pod を 35 個作る
+
+S55 の flakiness を追って、ハーネスのノードが**実際に Pod を動かせる**状態で
+測り直した。**production-grade に直結する欠陥が出た。**
+
+#### 測定
+
+`replicas=2` の ReplicationController 1 個に対して、1 namespace で作られた
+distinct な Pod 名:
+
+| 構成 | 作られた Pod | 最終的な Pod |
+|---|---|---|
+| **本番実機**(全 dw、**ノード無し**) | **2** | 2 |
+| ローカル **本番と同じ構成**(全 dw、ホストプロセス無し)+ **動くノード** | **35** | 2 |
+| ローカル host バリアント(ホスト CM)+ 動くノード | **1,052** | — |
+
+ホスト CM の 1,052 は CI のテスト構成の話だが、**35 のほうは本番と同じ
+構成である**。最終的には 2 個に収束するので外からは正しく見えるが、そこに
+至るまでに 33 個の Pod を作って消している。
+
+#### なぜ今まで見えなかったか
+
+- **本番の prodprobe クラスタにはノードが付いていない。** Pod は Pending の
+  まま留まり、スケジュールも起動もされないので、この経路に入らない。
+  今日ここまでの本番測定(収束 16 秒、55 Pod GC 9 秒、orphan 120 秒安定)は
+  すべてノード無しの測定である。
+- **ローカルハーネスのノードは S53 まで Pod を起動できなかった。** だから
+  ローカルでも踏まなかった。両方が同時に直った今日、初めて見えた。
+
+#### 何を意味するか
+
+**ノードを 1 台付けて 2 レプリカのワークロードを出すと、収束するまでに
+Pod が 35 個作られる。** 採用者が最初にやることそのものである。書き込み量・
+スケジューリング・kubelet の起動がすべて 17 倍になる。コスト不変条件にも
+効く(rows written、DO alarm、Containers の起動)。
+
+S55 の GC conformance の flakiness(6 回中 0 回しか 7/7 にならない)も、
+おそらくこの churn の下流である。1 namespace に 753〜1052 件の Pod が
+出入りしていれば、orphan / dependents 系の spec がその瞬間に何を見るかは
+安定しない。
+
+#### 機序の一次測定(動くノード、本番と同じ構成)
+
+| 量 | 値 |
+|---|---|
+| prodshape namespace の Pod commit | 105 |
+| うち kcm の informer が報告しなかったもの | **2 (1%)** |
+| kcm が発行した Pod の POST | **6** |
+| kcm が発行した Pod の DELETE | **60** |
+| scheduler が発行した POST(bind) | 70 |
+| garbage-collector の DELETE | 2 |
+
+**「informer が自分の作成を取りこぼす」仮説は、動くノードの条件でも否定
+された**(1%)。expectations の破綻ではない。
+
+**ただしこの計測はそれ自体が辻褄が合っていない。** distinct な Pod 名は
+35 個あるのに、kcm の Pod POST は 6 件しか記録されていない。6 回の作成から
+35 個の名前は出ない。どちらかが間違っている:
+
+- `issued` 境界が一部の作成を取り落としている(たとえば DW の isolate が
+  入れ替わった直後の書き込み)、または
+- distinct 名の数え方が何かを重複計上している。
+
+#### 35 と 6 の差を調べた結果: 計器のほうが落としている
+
+`commit` 側の 35 は**本物**だった。キーを列挙すると
+`/registry/pods/prodshape/simpletest.rc-qwzn4`、`-htwqd`、`-d7tr9`… と
+35 個の異なる Pod で、それぞれ 3〜4 commit(作成・bind・status)を持つ。
+重複計上ではない。
+
+一方 `issued` 側は 6 件しか記録していない。時間分布を見ると原因が分かる:
+
+```
+10s bucket : pod commits / traced pod POSTs
+   +  0s :  103 / 4
+   +200s :    2 / 0
+```
+
+**105 の Pod commit のうち 103 が 10 秒に集中している。** その同じ 10 秒で
+traced な POST は 4 件。つまり `issued` 境界はバーストの間に出力を落として
+いる。commit(TS 側、Cluster DO)は落ちず、issued(Go 側、dynamic worker
+から `wrangler dev` の stdout へ)が落ちる——出どころが違うので、どちらかが
+先に詰まる。
+
+**計器の限界として記録する**: **`issued` の件数はバースト中の量的分析に
+使えない。** 順序と帰属(どの component が何をしたか)は使えるが、
+「何回やったか」は commit 側で数えること。S49 で測った
+`issued`→`observed` の 82〜93ms は個々のペアの時刻差なので影響を受けない。
+
+#### バースト耐性のある計測: `request` 境界
+
+計測手段は既にあった。`request` 境界はシェル Worker 側なので、`commit` と
+同じ理由でバーストに耐える。しかも **User-Agent とメソッドとパスを持つ**。
+resident controller は `GATEWAY`(= `env.SELF`)経由で apiserver を呼ぶので、
+その呼び出しは公開 fetch ハンドラを通り、この境界に必ず現れる。
+
+同じ実行の `request` 2,816 行のうち、prodshape の Pod に触るもの 338 行:
+
+| メソッド | User-Agent | 対象 | 件数 |
+|---|---|---|---|
+| POST | **replication-controller** | collection(= 作成) | **32** |
+| POST | kube-controller-manager | collection | 3 |
+| POST | kube-scheduler | binding | 35 |
+| DELETE | **replication-controller** | object | **38** |
+| DELETE | kube-controller-manager | object | 30 |
+| GET | (kubelet) | object | 191 |
+| DELETE | garbage-collector | object | 2 |
+
+**作成の合計は 32 + 3 = 35 で、`commit` が数えた distinct な Pod 35 個と
+完全に一致する。** 計器の辻褄が合った。
+
+#### 何が起きているか(ここまでは言える)
+
+**replication-controller 自身が、replicas=2 の RC に対して Pod を 32 個作り、
+38 個消している。** 作っては消す振動である。GC でも kubelet でも scheduler
+でもない。
+
+informer は届いている(取りこぼし 1%)。それでも controller が持つ Pod 集合
+の像が安定していない。**なぜ像が安定しないかは、まだ証明できていない。**
+このセッションで機序の仮説を二度撤回しているので、ここで止める。測れたのは
+「誰が」と「どういう形で」までである。
+
+#### バースト profile と、消し込めた候補
+
+同じ `request` 境界で replication-controller の 244 リクエストを時系列に
+並べた:
+
+```
++      0 create
++    106 create   (×14 この 6ms の間に)
++    259 create   (×6)
++    291 create   (×3)   <- ここまで 291ms で 24 個
++   1248 delete
++   1433 delete / create が交互
+```
+
+**replicas=2 の RC に対して、291 ミリ秒で 24 個作っている。** そのあと
+削除と作成が交互に続き、最終的に 2 個へ収束する。同じ実行で
+`PUT .../replicationcontrollers/simpletest.rc/status` を **116 回**出して
+おり、status 更新がまた自分を起こす形になっている。
+
+この 291ms の窓について確かめた:
+
+| 候補 | 測定 | 判定 |
+|---|---|---|
+| dynamic worker が再ロードされて in-memory の expectations が消える | 窓の中の (re)load は **0 回**(実行全体では 8 回) | **否定** |
+| informer がイベントを届けていない | 24 個目の作成より前に kcm の `observed` が **20 行** | **否定** |
+| 自前 informer の indexer / lister が壊れている | `pkg/leanclient/informers` の `namespaceIndexers` は client-go の生成コードと同一で、lister は informer 自身の indexer を使う | **否定**(コード読みの範囲) |
+
+4 つ目の候補も消した。`POST /pods` が k8flare 自前のガード
+`RejectCreateWithTerminatingController` に弾かれて 403 になり、controller が
+「作成失敗」と見なして expectations を下げ、作り直している——という筋を疑った。
+実際、存在しない owner を持つ Pod を POST すると **403
+`cannot create : controller owner ReplicationController "x" does not exist`**
+が返る(upstream より厳しいが、これは意図的で、
+`gracefuldelete.go` に run 29140842888 の根拠付きで書かれている)。
+
+しかしバーストの実測と合わない: replication-controller の POST は **32 件**、
+作られた distinct な Pod も **32 個**(kcm 全体で 35)。403 が混ざっていれば
+POST 数が Pod 数を上回るはずで、上回っていない。**このガードはバーストに
+関与していない。**
+
+**残る候補は expectations の経路そのもの。** upstream の
+replicaset controller は `SatisfiedExpectations` が false の間 `manageReplicas`
+を呼ばない。24 回連続で作成しているということは、expectations が張られて
+いないか、毎回「満たされた」と判定されている。k8flare は RC を
+`replication.NewReplicationManager`(RC↔RS 変換を挟む upstream の実装)で
+動かしているので、変換層のキーの扱いが関係しうる——**が、これは未検証の
+推測であり、このセッションで機序の仮説を二度撤回しているので、ここでは
+主張しない。**
+
+#### expectations を upstream 自身のログで見た。module の差し替えは要らなかった
+
+`cmd/controller-manager` は `-v` を受け取って klog verbosity を下流へ渡す。
+ホストバリアントを `-v=4` で起動し、`replicas=2` の RC を 1 個作った:
+
+```
+pods: 2
+expectations fulfilled            94
+Too many replicas                  2
+Too few replicas                   2
+```
+
+**過剰生成が起きない。** upstream の expectations は正常に機能している。
+
+#### これで P0-7 の切り分けが変わった
+
+同じ「単純な RC 1 個」を各構成で作った結果:
+
+| 構成 | 作られた Pod |
+|---|---|
+| 本番実機(全 dw、**ノード無し**) | 2 |
+| ローカル **全 dw**(本番と同じ形)+ 動くノード | **35** |
+| ローカル **host**(ホスト CM)+ 動くノード | **2** |
+
+**ホスト CM は正しく振る舞い、dynamic worker の KCM だけが過剰生成する。**
+S56 の冒頭で「ホスト CM が 1,052 個」と書いたのは conformance スイート
+(多数の RC を高速に作る)を回したときの数字であって、単純な RC 1 個では
+ホスト CM は 2 個で正しい。**ワークロードの質が違うものを並べていた。**
+
+したがって P0-7 は「ノードを付けると壊れる」ではなく、より正確には
+**「ノードが付いている状態で、resident な dynamic worker の KCM が
+replicas=2 に対して Pod を 35 個作る」**である。ホストプロセスの KCM は
+同じ条件で正しい。同じ upstream のコードなので、差は k8flare の実行環境
+——pump window、watch の継続性、isolate の寿命——の側にある。
+
+**次の一手**: WASM の KCM 側で同じ expectations ログを読む手段を作る。
+`pkg/controllers/cmd/kcm-wasm` に klog verbosity を渡す口が無いので、
+まずそれを足す(観測のみ、既定は現状のまま)。そのうえで 35 個作る瞬間の
+`SatisfiedExpectations` を見る。
+
+### S57 (2026-09-12): WASM の KCM は「replica が多すぎる」と 374 回言い、「少なすぎる」とは一度も言わない
+
+P0-7 を追うため、`pkg/controllers/cmd/kcm-wasm` に klog verbosity の口
+(`KCM_VERBOSITY`、既定は現状維持)を足した。ホストバイナリは最初から `-v` を
+持っていたのに、WASM 側には無かった——**ホストでは問い詰められる欠陥を、
+本番の実行形態では問い詰められなかった**。
+
+#### 測定(全 dw、動くノード、`replicas=2` の RC 1 個)
+
+| ログ | 回数 |
+|---|---|
+| `expectations fulfilled` | 697 |
+| **`Too many replicas`** | **374** |
+| **`Too few replicas`** | **0** |
+
+**「多すぎる」と 374 回言い、「少なすぎる」とは一度も言わない。** 対照として
+ホストプロセスの KCM は同条件で `Too many` 2 / `Too few` 2 で収束する(S56)。
+
+この非対称は決定的である。controller の Pod 集合の像が正確なら、余剰を消して
+2 に達した時点で黙るはずである。374 回「多すぎる」と言い続けるのは、
+**像が実際より多いまま維持されている**ことを意味する。消しても像から減らない
+ので、また消す。実物は目標を割り込み、別の経路で補充される——これが 35 個の
+churn の形と一致する。
+
+#### 定量では言えないこと(計器の制約)
+
+同じ実行で「apiserver が受理した Pod の DELETE は 91 件、kcm の
+`observed.delete` は 53 件」と出た。**この 42% の差を「削除イベントの
+取りこぼし」と読んではいけない。** `observed` は Go 側の出力で、S56 で
+記録したとおりバーストで落ちる。`observed.add` 59 / `update` 74 も同じ理由で
+過小である。**量の比較には使えない。**
+
+使えるのは klog の**質的な非対称**のほうで、これは取りこぼしでは作れない
+(落ちるなら両方落ちる)。
+
+#### したがって P0-7 について今言えること
+
+- 過剰生成は **resident な dynamic worker の KCM に固有**(ホストプロセスは
+  同条件で正しい、S56)。
+- その KCM は自分の Pod 集合を**実際より多く**見続けている(klog の非対称)。
+- **なぜ像が減らないのかは、まだ証明していない。** 削除イベントの取りこぼしが
+  第一候補だが、それを測る計器(Go 側の `observed`)がバーストで落ちるため、
+  現状の道具では測れない。
+
+**次の一手**: 削除の配送を、バーストで落ちない場所で数える。`observed` を
+Go の console ではなく、シェル側が数えられる形に出す(例: dynamic worker の
+応答ヘッダに積算カウンタを載せ、シェルが `commit` と同じ経路で記録する)。
+それができるまで、削除取りこぼし説は仮説のままにする。
+
+### S58 (2026-09-12): バースト耐性の計器を作ったら、informer が update をほとんど届けていなかった
+
+S57 の「量では言えない」を解くため、`pkg/pumptrace` に**イベント毎ではなく
+メモリで数えて 5 秒ごとに 1 行出す**カウンタを足した。1 行/5 秒ならバーストで
+落ちない。シェル側の `request` 境界も同じくバーストに耐えるので、**両側を
+同じ土俵で比べられる**ようになった。
+
+#### 測定(全 dw、動くノード、`replicas=2` の RC 1 個、最終的に Pod 2 個)
+
+| 側 | 量 | 値 |
+|---|---|---|
+| シェル(apiserver が受理した) | POST `/pods` | **161** |
+| | DELETE `/pods/<name>` | **681** |
+| Go(kcm の informer が配送した) | add | 137 |
+| | **update** | **10** |
+| | delete | 135 |
+
+読み取れること:
+
+- **add と delete はほぼ釣り合っている**(137 / 135)。存在の増減は届いている。
+- **update が 10 しかない。** 137 個の Pod が作られ、bind され、kubelet が
+  status を書いている。その全部が update イベントを生むはずで、10 は桁違いに
+  少ない。
+- **DELETE 要求が 681 件。** 作られた Pod は 161 個なので、1 個あたり 4 回
+  消しに行っている。**既に終了処理中の Pod を、何度も消しに行っている。**
+
+#### 有力な機序(まだ仮説)
+
+upstream の replicaset controller は `FilterActivePods` で
+**`deletionTimestamp` が入った Pod を「稼働中」から除く**。その
+`deletionTimestamp` は **update イベント**で届く。update が届かなければ、
+controller は終了処理中の Pod をいつまでも稼働中と数える。結果:
+
+1. 「replica が多すぎる」と判定し続ける(S57 の 374 回、`Too few` は 0 回)
+2. 既に消している Pod をまた消しに行く(DELETE 681 件)
+3. 実物は目標を割り込み、補充が走る(POST 161 件)
+
+これは P0-4 が「欠落のない replay を先に確立する」と書いている、その欠落の
+具体形に見える。
+
+**まだ証明ではない。** 示したのは相関(update が桁違いに少ない)と、それが
+`FilterActivePods` の入力であるという upstream の事実である。
+**update が本当に落ちているのか、それとも別の理由で生成されていないのか**は
+分けて確かめる必要がある——たとえば同じ窓でシェル側が受理した PUT/PATCH の
+件数と比べる。S56/S57 で仮説を先走って撤回しているので、ここで止める。
+
+**次の一手**: シェル側の `request` から `PUT`/`PATCH`/`POST .../binding` の
+件数を取り、Go 側の `update` 10 と突き合わせる。両方ともバースト耐性がある
+ので、今度は定量的に比較できる。
+
+#### S58 訂正 (同日、直後): update は落ちていなかった
+
+上で「update が 10 しかないのは informer が落としているからではないか」と
+書き、`FilterActivePods` を経由する機序を有力な仮説として挙げた。**同じ窓の
+シェル側を数えて否定した。**
+
+シェル側(バースト耐性あり)で、update イベントを生むはずの変更:
+
+| 要求 | 件数 |
+|---|---|
+| `PATCH .../pods/<name>/status` | 5 |
+| `POST .../pods/<name>/binding` | 3 |
+| **合計** | **8** |
+
+**informer が配送した update は 10。** 落ちていないどころか、変更の数より
+多い(差は resync 等)。**informer は add / update / delete のすべてを
+届けている。**
+
+では update が 8 しかないのはなぜか。**作られた 161 個の Pod のほとんどが、
+何にも触られないまま消えているから**である。bind まで行ったのは 3 個だけ。
+つまり「作って bind して status を書いて churn する」のではなく、
+**「作ってすぐ消す」を 161 回繰り返している。**
+
+したがって S58 本文の機序(deletionTimestamp の update が届かず終了処理中の
+Pod を稼働中と数える)は**取り下げる**。
+
+#### ここまでで消えた候補と、残るもの
+
+| 候補 | 判定 | 根拠 |
+|---|---|---|
+| dynamic worker の再ロードで expectations が消える | 否定 | バースト窓内の再ロード 0 回 |
+| informer が add/delete を落とす | 否定 | 137 / 135 で釣り合う |
+| informer が update を落とす | **否定** | シェル側の変更 8 件に対し配送 10 件 |
+| 自前 informer の indexer / lister | 否定 | client-go の生成コードと同一 |
+| 403 ガードで作成が失敗扱いになる | 否定 | POST 数と作成された Pod 数が一致 |
+| upstream の expectations 実装そのもの | 否定 | ホストプロセスは同条件で正しい |
+
+**残るのは、expectations が「満たされた」と判定され続けていること。**
+S57 の klog は `expectations fulfilled` を **697 回**出している。
+`SatisfiedExpectations` が true を返す間 `manageReplicas` は走れるので、
+2 分間に 697 回走れていたことになる。informer は健全なのだから、
+**期待値の記帳そのものが作成と噛み合っていない**。ホストプロセスでは
+同じコードが 94 回で収束する。
+
+差は k8flare の実行環境側にしかない。**次に見るべきは、controller が
+何度も作り直されていないか——`NewReplicationManager` を含む
+`RunControllerManager` が、1 つの dynamic worker の中で複数回走っていないか**
+である。expectations は controller インスタンスのメモリに載るので、
+インスタンスが作り直されれば毎回空になり、毎回「満たされた」と判定される。
+再ロード(isolate の入れ替え)は 0 回だったが、**同一 isolate 内で
+`ResidentService` の run が複数回起動していないか**はまだ見ていない。
+
+### S59 (2026-09-12): controller-manager が 1 つの dynamic worker に 2 つ立っている
+
+S58 の最後に挙げた「同一 isolate 内で `ResidentService` の run が複数回
+起動していないか」を数えた。**起動していた。**
+
+`ResidentService` は `startOnce sync.Once` で run を 1 回に抑えるので、
+`controllerManager: run starting` が 2 行出るなら **Go のインスタンスが 2 つ**
+ある。一方シェル側の `controllers: kcm dynamic worker up` は 1 回しか出ない
+——シェルは 1 回しかロードしていないのに、Go は 2 つ動いている。
+
+| 実行ログ | `run starting` | `dynamic worker up` | 作られた Pod |
+|---|---|---|---|
+| `kv-dev`(KCM_VERBOSITY の回) | **1** | 1 | 4 |
+| `prodshape-dev` | **2** | 1 | **35** |
+| `cnt-dev` | **2** | 1 | **161 POST** |
+
+**インスタンス数と過剰生成の強さが揃っている。**
+
+#### なぜこれが効くか
+
+replicaset/replication controller の expectations は**そのインスタンスの
+メモリ**に載る。2 つ動いていれば、片方が作った Pod はもう片方の期待値には
+無い。もう片方は「期待していない Pod が増えた」=「replica が多すぎる」と
+判定して消し、最初の片方は「消えた」と見て補充する。**S57 の
+`Too many replicas` 374 回 / `Too few replicas` 0 回**、および
+「作ってすぐ消す」を 161 回(S58 訂正)という形と、これで整合する。
+
+ホストプロセスの KCM は 1 プロセスしか無いので同条件で正しい(S56)。
+informer も indexer も expectations 実装も健全である(S58)という、これまでの
+消し込みとも矛盾しない。
+
+#### まだ確定ではない
+
+- **1 インスタンスでも 4 個作っている**(目標 2)。インスタンス二重化だけが
+  原因なら 1 つのときは 2 個になるはずで、なっていない。二重化は増幅要因では
+  あっても、唯一の原因ではない可能性が残る。
+- 2 つ目のインスタンスが**どこから来るのか**を特定していない。Worker Loader が
+  同じコードのインスタンスを複数立てうるのか、Controllers DO が別 ID で
+  2 回ロードしているのか、`getEntrypoint().fetch()` が別インスタンスに
+  当たっているのか。**設計は 1 コンポーネント 1 インスタンスを前提にしている**
+  (`components[name]` に 1 つだけ持つ)ので、前提のほうが誤っている可能性が
+  ある。
+
+#### 次の一手
+
+Go 側で**インスタンス固有の ID**(起動時に乱数)を作り、`pumptrace` の
+component 名に付けて出す。どのインスタンスがどの書き込みをしたかが分かれば、
+二重化の実在と、それぞれが何をしているかが同時に取れる。`ResidentService` の
+`run starting` ログにも同じ ID を付ける。
+
+### S59 訂正 (同日): インスタンスは 1 つだった。2 行目は私の計器が出していた
+
+S59 で「`controllerManager: run starting` が 2 行出るからインスタンスが 2 つ」
+と書いた。**インスタンスに名前を付けて確かめたら、1 つだった。**
+
+```
+2 controllerManager: run starting (instance 5f6f00)     <- ID が同じ
+distinct kcm instances in traces: 1                      <- kcm@5f6f00 のみ
+```
+
+生ログを見ると 2 行目の正体が分かる:
+
+```
+1796: 2026/09/12 02:40:52 controllerManager: run starting (instance 5f6f00)
+3415: dw dropped=81 relayed=10 first=2026/09/12 02:40:52 controllerManager: run starting (instance 5f6f00)
+```
+
+**2 行目は tail 中継の診断行**(`dw dropped=N relayed=M first=…`、S46 で
+「中継が生きているのか黙っているのか区別するため」に足したもの)が、落とした
+最初のメッセージとして同じ行を引用していただけである。`grep -c` がそれを
+数えていた。
+
+**S59 の二重インスタンス説は取り下げる。** 同じ実行で:
+
+| 量 | 値 |
+|---|---|
+| controllerManager インスタンス | **1** |
+| distinct な Pod(replicas=2 に対して) | **60** |
+| shell 側 POST / DELETE | 103 / 135 |
+| informer の add / update / delete | 60 / 59 / 58 |
+
+**インスタンスは 1 つで、informer は 60 個の Pod の add・update・delete を
+すべて届けており、それでも 60 個作られる。** S58 訂正の「informer は健全」と
+合わせて、配送側は完全に潔白である。
+
+#### 計器の教訓(3 度目)
+
+このセッションで機序の仮説を 3 回立てて 3 回とも撤回した:
+ホスト CM 起因(S52)、informer の update 取りこぼし(S58)、二重インスタンス
+(S59)。**3 回とも、次の測定が否定した。** 共通点は
+**「自分の計器が作った数字を、現象の数字だと思った」**ことである:
+
+- S52: 壊れたノードのフラップを制御プレーンの暴走と読んだ
+- S58: バーストで落ちる出力の少なさを、配送の欠落と読んだ
+- S59: 中継の診断行を、2 つ目のインスタンスと読んだ
+
+計器を足すたびに、その計器自身が次の誤読の材料になっている。**P0-7 について
+新しい機序を主張する前に、その根拠が計器の産物でないことを先に示す。**
+
+#### P0-7 の現在地(確定している事実のみ)
+
+- 動くノードが 1 台あると、`replicas=2` に対して Pod が 35〜60 個作られ、
+  2 個に収束する。ノードが無ければ 2 個(本番はこの条件)。
+- resident な dynamic worker の KCM に固有。ホストプロセスの KCM は同条件で
+  2 個(S56)。
+- controller インスタンスは 1 つ。informer は add/update/delete を完全に
+  届けている。upstream の expectations 実装も、indexer も、403 ガードも
+  関与しない。
+- klog は `Too many replicas` を大量に出し、`Too few replicas` を 1 度も
+  出さない(S57)。
+
+**機序は未特定。** 次に触るなら、上の「確定している事実」だけを出発点にする。
+
+### S60 (2026-09-12): P0-7 の機序 — informer が 2 分半で 120 回張り直している
+
+自分の計器で 3 回誤った(S52 / S58 / S59)ので、今度は**語句を推測して grep
+するのをやめ、KCM が実際に出しているメッセージを頻度順に並べた**。答えは
+一行目にあった。
+
+#### 同じワークロード、同じ `-v=4`、違うのは実行形態だけ
+
+| upstream 自身のログ | **WASM KCM**(dynamic worker) | **ホストプロセス** |
+|---|---|---|
+| `Warning: watch ended with error` | **477** | **0** |
+| `Listing and watching`(= relist) | **120** | **15** |
+| `Caches populated` | **120** | **15** |
+
+ホストは 15 回——informer の種類ごとに起動時 1 回ずつ——で、その後 watch は
+一度も切れない。**WASM 側は 477 回切れ、120 回張り直している。** informer
+1 種あたり約 8 回の relist である。
+
+これは私の計器の数字ではない。**upstream の reflector 自身が出している。**
+
+#### これが P0-7 を説明する
+
+pump window が閉じるたびに watch が切れる(S31 の
+「cloudflare: pump window closed」)。reflector は再 LIST する。relist の
+最中および直後、controller が見ている Pod 集合は権威と一致しない。
+そこで `manageReplicas` が走れば、足りなければ作り、多ければ消す。それが
+2 分半に 120 回起きる。
+
+観測されている形とすべて噛み合う:
+
+- `Too many replicas` ばかりで `Too few` が 0(S57)——relist 直後の像は
+  たいてい**多い**側にずれる(消したはずの Pod が再び現れる)
+- 60 個作って 2 個に収束(S59 訂正)
+- informer は add/update/delete を完全配送している(S58 訂正)——**個々の
+  イベントは落ちていない。落ちているのは連続性である**
+- ホストプロセスは同条件で正しい(S56)——watch が切れないから
+
+#### これは P0-4 そのものである
+
+`docs/pump-window-design.md` の 5.1 は「**欠落のない replay を先に確立する**」
+と書いている。S60 はその欠落を、実際のワークロードで、upstream のログで
+定量化したものである。**P0-4 は「いつか直す設計課題」ではなく、ノードを 1 台
+繋いだ瞬間に 30 倍の Pod churn として現れる実害**である。
+
+本番がこれを踏んでいないのは prodprobe クラスタにノードが無いからにすぎない
+(S56)。
+
+#### まだ証明していない一段
+
+relist 1 回ごとに controller が何を見て何をしたか、という個別の対応は
+追っていない。上は「relist が 120 回起きている」「host では 0 回で正しい」
+「churn の形が relist で説明できる」という三つの事実の一致である。
+個別対応まで見るなら、relist の時刻と `issued.post` / `issued.delete` の
+時刻を突き合わせる——ただし `issued` はバーストで落ちるので(S56)、
+先にそれを直す必要がある。
+
+#### S60 追記: 反証可能な予測を立てて確かめた — relist が原因である
+
+S60 の機序が正しいなら、**pump window を延ばせば relist が減り、churn も
+減る**はずである。隔離ワークツリー(S43)で `PUMP_WINDOW_MS` を
+25,000 → 100,000(4 倍)にして、同じワークロードを回した:
+
+| `PUMP_WINDOW_MS` | watch が切れた回数 | relist | `replicas=2` に対して作られた Pod |
+|---|---|---|---|
+| **25,000**(現行) | 477 | 120 | **60** |
+| **100,000**(4 倍) | **69** | **34** | **34** |
+
+窓を 4 倍にすると watch の切断は **7 分の 1**、relist は **3.5 分の 1**、
+作られる Pod は **43% 減**。**churn は relist の回数に連動して動く。**
+相関の一致だけでなく、介入に対して予測どおり動いた。
+
+**これは修正案ではない。** `PUMP_WINDOW_MS` はコスト不変条件に直接効く定数
+(窓が長いほど resident の CPU 時間が伸びる)で、伸ばすのは解ではない。
+**4 倍にしてもまだ 34 個作る**——減るだけで直らない。直すのは連続性の側で、
+それが `docs/pump-window-design.md` の Stage 1 である。この実験は
+「Stage 1 が効く対象はここだ」という因果の証拠として使う。
+
+### S61 (2026-09-12): watch が窓の境界で「失敗」ではなく「終了」するようにした
+
+S60 で機序を特定し、介入で因果まで確かめた。その先の修正のうち、**最小で
+効果の大きい一手**が取れた。
+
+#### 何が起きていたか
+
+pump window が閉じると、進行中の watch のボディ読み取りが
+`ErrPumpWindowClosed` を返していた。client-go の reflector はこれを
+**エラー**として扱い、キャッシュを捨てて **LIST からやり直す**。
+
+だが窓が閉じた watch は**失敗していない、終わっただけ**である。EOF を返せば
+reflector は最後に見た resourceVersion から **再 watch** する。
+
+#### 変更
+
+`streamBody.Read` が、**watch リクエストに限って**(`?watch=true` /
+`sendInitialEvents=true`)窓の閉鎖を `io.EOF` として返す。watch 以外の
+ボディでこれをやると呼び出し側に半端なオブジェクトを渡してしまうので、
+スコープを切った。既存の
+`TestWatchBodyReadIsReleasedWhenItsWindowCloses`(S31 の「read が解放される
+こと」を守るテスト)は意図を保ったまま期待値を更新し、**watch 以外は従来
+どおりエラーになることを固定する新しいテストを足した。**
+
+#### 測定(同じワークロード、`replicas=2` の RC 1 個、動くノード 1 台)
+
+| | `Warning: watch ended with error` | `Listing and watching`(relist) | 作られた Pod |
+|---|---|---|---|
+| 現行 main | 477 | 120 | 60 |
+| `PUMP_WINDOW_MS` 4 倍(参考) | 69 | 34 | 34 |
+| **この変更** | **0** | **15** | **30** |
+
+**relist が 15 回になった。これはホストプロセスと同じ値である**(informer の
+種類ごとに起動時 1 回)。watch のエラーは 0。**resident controller の informer
+が、ホストプロセスと同じ連続性を持つようになった。**
+
+#### まだ直っていない
+
+**Pod は 30 個できる。** relist を完全に消しても半分にしかならない。
+つまり **P0-7 には relist 以外の第二の原因がある。** この変更はその一つ目を
+取り除いたにすぎない。第二の原因は未特定で、次の調査対象である。
+
+`docs/pump-window-design.md` の Stage 1 が目指す「欠落のない replay」は、
+この変更で達成されたわけではない——達成されたのは「境界が欠落として扱われ
+ない」ことだけである。cut の保証はまだ無い。
+
+#### S61 追記: 第二の原因の手がかり — 30 個の Pod に ADD が 60 件
+
+relist を 15 回まで落とした後のトレースを、もう一段見た。
+
+| 量 | 値 |
+|---|---|
+| Pod の作成(シェル側、バースト耐性あり) | **30** |
+| うち controller が**最初の Pod を見る前**に出したもの | **1** |
+| 作成が起きた時間帯 | 最初の **1,575ms** に全部 |
+| kcm の informer が配送した `observed.add`(この namespace) | **60** |
+
+読み取れること:
+
+- **盲目的に作っているのではない。** 最初の観測は +30ms に届いており、
+  30 個のうち 29 個はそれ以降に出ている。controller は見ながら作っている。
+- **1 つの Pod につき ADD が 2 回届いている。** `Observations` の登録は
+  `pumptrace.Observations(factory.Pods().Informer(), "kcm")` の 1 箇所だけで、
+  informer は共有インスタンス(`f.pods` にキャッシュ)なので、**計器の二重
+  登録ではない。**
+
+`SharedIndexInformer` は、対象がストアに既に在れば ADD ではなく UPDATE を
+出す。**ADD が 2 回出るということは、その間にストアから消えている**——
+`Replace`(relist)か、delete の観測かのどちらかである。
+
+upstream の expectations は「期待した数の ADD を観測したら満たされた」と
+判定する。**ADD が二重に届けば、実際の作成が終わる前に満たされたことになり、
+次の sync が走って更に作る。** 30 個という数と、1.5 秒という時間幅に合う。
+
+#### なぜこれが `docs/pump-window-design.md` 5.1 の話なのか
+
+ストアから消えてまた ADD される経路のうち、設計文書が名指ししているのは
+**LIST が、controller が既に delete を観測した Pod を含んだ状態で返る**
+ケースである(「committed cut」を保証していないため)。5.1 はまさにこれを
+「resume の watermark は単なる最大 id でなく、そのprefixについて必要な全
+facet書込が読めると確認した committed cut を表す必要がある」と書いている。
+
+**ただしこれは仮説である。** ADD が二重になる経路を、実際のイベント列で
+特定していない。このセッションで機序の仮説を 3 回撤回しているので、
+**次に触るときは「どの ADD がどこから来たか」を 1 件ずつ追う**こと——
+`observed.add` の rv と、直前の `commit` / relist の対応を並べる。
+
+> **訂正 (同日、直後): 二重 ADD は存在しなかった。また私の中継だった。**
+>
+> 上の手順どおり 1 件ずつ追ったところ、30 個すべてで 2 回の ADD が
+> **同じ rv・同じ時刻・同じ window** だった。イベントが 2 回来たのではなく、
+> **同じ 1 行が 2 回ログに出ていた**。`wrangler dev` は dynamic worker の
+> 出力をそのまま印字し、S46 の tail 中継が同じ行をもう一度 `console.log`
+> するためである。
+>
+> メモリ内カウンタ(ログの重複に影響されない)は **add 30 / delete 28 /
+> update 33** で、Pod 30 個と一致する。**ADD の二重配送は存在しない。**
+>
+> これで中継に騙されたのは 3 度目である(S59 の「2 インスタンス」、
+> S61 のこの節、そして今回の数え直し)。**中継が出すコピーに
+> `"r":1` の印を付けた**ので、以後は機械的に除外できる。単体テストも足した。
+>
+> したがって P0-7 の第二の原因は**依然として未特定**である。確定しているのは
+> 「relist を 15 回まで落としても Pod は 30 個作られる」という事実だけ。
+
+### S62 (2026-09-12): P0-7 は存在しなかった。私が起動したまま放置したプロセスだった
+
+**取り下げる。** S56 から S61 まで積み上げた「ノードを付けると `replicas=2` が
+Pod を 35〜60 個作る」という欠陥は、**私が過去の実験で起動したまま放置した
+ホスト controller-manager プロセスが、同じ apiserver を叩いていた**ためである。
+
+#### どうやって分かったか
+
+シェル側の `request` 境界が記録している **User-Agent の生の値**を、抽出せず
+そのまま並べた:
+
+```
+   10  cm-now/v1.36.3 (darwin/arm64) kubernetes/…/replication-controller
+    2  js/v1.36.3 (js/wasm) kubernetes/…/kube-controller-manager
+    2  deps-cm/v1.36.4 (darwin/arm64) kubernetes/…/replication-controller
+    2  k8flare-controller-manager/v1.36.3 (darwin/arm64) …
+```
+
+`cm-now` / `deps-cm` / `k8flare-controller-manager` は**私がビルドして
+起動したホストバイナリ**で、`darwin/arm64` と書いてある。`js/wasm` が本物の
+resident controller である。**本物は 2 個しか作っていなかった。**
+
+プロセスを数えると **16 個**が生き残っていた。`pkill -f 'cm-now'` は効かず、
+PID を列挙して `kill -9` する必要があった。
+
+#### 全部落としてから測り直した結果
+
+```
+pod creations by client: {'js/v1.36.3': 2}
+distinct pods created for replicas=2: 2
+Warning: watch ended with error: 0
+Listing and watching: 15
+```
+
+**`replicas=2` に対して Pod は 2 個。正しい。**
+
+#### 何が汚染され、何が生き残るか
+
+| 節 | 主張 | 判定 |
+|---|---|---|
+| S56 | ノードを付けると 35 個作られる | **取り下げ** |
+| S57 | `Too many replicas` 374 回 | **取り下げ**(余計な CM が作った Pod を本物が余剰と見ていた) |
+| S58 | 60 Pod に対し add/update/delete | **取り下げ**(Pod 数が汚染) |
+| S59 | 二重インスタンス | 既に取り下げ済み(中継の artifact) |
+| S61 追記 | 二重 ADD | 既に取り下げ済み(中継の artifact) |
+| **S60** | **WASM の informer が 2 分半で 120 回 relist、ホストは 15 回で watch エラー 0** | **有効**。この数字は WASM 自身の klog(`wrangler dev` の出力)で、ホストバイナリは別ファイルに書く。汚染されていない |
+| **S61** | **watch を窓境界で EOF にすると relist 120→15、watch エラー 477→0** | **有効**。同上 |
+
+**S61 のコード修正は正しい。** resident controller の informer が窓ごとに
+LIST からやり直していたのは実在し、直った。ただし**その動機として書いた
+「Pod が 60 個作られる」は私の測定ミス**であり、修正の価値は「informer の
+連続性がホストプロセスと同等になった」ことに尽きる。
+
+#### 手順上の原因
+
+ローカルハーネスの実験を何十回も回す中で、`pkill -f sched-now` などを
+その都度書いていたが、**名前を変えて作ったバイナリ(`cm-now` / `deps-cm` /
+`k8flare-controller-manager`)を網羅していなかった**。しかも全部が同じ
+`127.0.0.1:8443` を向いていたので、どの実験も互いを汚染していた。
+
+S43 で「ソースを書き換える実験は worktree で隔離する」と書いた。**プロセスも
+同じである**: 実験ごとに起動したものは、実験ごとに確実に落とす。ポートや
+データディレクトリを分けても、同じ apiserver を向いていれば意味がない。
+docs/development.md に書いた。
+
+### S63 (2026-09-12): 環境を掃除したら required GC は 3/3 で 7/7 だった。CI は使わない
+
+#### ユーザー決定: GitHub Actions は今後使わない
+
+「Actions は使わないでください　お金ないので」。conformance CI が
+Definition of Done であるという不可侵ルール #1 の運用は、**ここで終わる**。
+**ローカルの host バリアントハーネスが、これからのゲートである。**
+
+以後、この文書と TODO で「CI 待ち」と書かれた項目は、すべてローカルで
+判定する。請求が直るのを待つ項目は無い。
+
+#### S54 / S55 も汚染されていた
+
+S62 で 16 個の野良 controller-manager を落とした後、同じ required GC
+フォーカス(7 spec、host バリアント、Pod が動くノード)を 3 回回した:
+
+| 実行 | 結果 | 野良プロセス |
+|---|---|---|
+| 1 | **7 Passed / 0 Failed** | 2(= 期待どおりの host sched + host cm のみ) |
+| 2 | **7 Passed / 0 Failed** | 2 |
+| 3 | **7 Passed / 0 Failed** | 2 |
+
+**S54 の「動くノードでは 5/7 に落ちる」と S55 の「6 回中 0 回しか 7/7 に
+ならない、CI の失敗を再現する」は取り下げる。** どちらも野良プロセスが
+同じクラスタの Pod を作り消ししていたためで、orphan 系の spec が不安定に
+なったのはその副作用だった。
+
+したがって **S54 が「7/7 は Pod が起動しないノードでの結果だった」と
+訂正した内容自体が誤り**だった。Pod が動くノードでも 7/7 である。
+
+#### ハーネスの操作を 1 つのスクリプトに集約した
+
+野良プロセスが 16 個溜まったのは、実験ごとに `pkill -f <名前>` を書いていて
+**名前を変えて作ったバイナリを網羅できていなかった**ためである。さらに
+`pkill -f 'wrangler dev'` も実体が `wrangler.js dev` なのでマッチしていな
+かった。
+
+`harness.sh start|stop|status` に集約した:
+
+- `stop` は PID ファイルと名前パターンの両方で殺し、**0 になるまで確認して、
+  ならなければ終了コード 1 で拒否する**
+- `start` は必ず `stop` を先に呼び、host バリアントでは**ホストプロセスが
+  ちょうど 2 個であることを確認してから**先へ進む
+- `status` は野良と wrangler の数を出す
+
+docs/development.md にも「実験で起動したプロセスは PID で確実に落とし、
+数を確認する」節を書いた。

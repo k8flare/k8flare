@@ -50,7 +50,14 @@ export default {
         // timestamp -- the trace line carries its own.
         const at = line.indexOf("pumptrace {");
         if (at >= 0) {
-          console.log(line.slice(at));
+          // Marked, because under `wrangler dev` the dynamic worker's own
+          // output is printed too and this relay adds a second identical
+          // copy. Counting those copies as separate events produced three
+          // wrong conclusions before the marker existed (S59, S61) -- the
+          // analysis now drops anything carrying "r":1 when an unrelayed
+          // copy exists, and in production, where only this copy exists,
+          // reads it as the event.
+          console.log(`pumptrace {"r":1,${line.slice(at + "pumptrace {".length)}`);
           relayed++;
         } else if (!firstDropped) {
           firstDropped = line.slice(0, 120);
