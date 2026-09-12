@@ -7581,3 +7581,66 @@ Go 側で**インスタンス固有の ID**(起動時に乱数)を作り、`pump
 component 名に付けて出す。どのインスタンスがどの書き込みをしたかが分かれば、
 二重化の実在と、それぞれが何をしているかが同時に取れる。`ResidentService` の
 `run starting` ログにも同じ ID を付ける。
+
+### S59 訂正 (同日): インスタンスは 1 つだった。2 行目は私の計器が出していた
+
+S59 で「`controllerManager: run starting` が 2 行出るからインスタンスが 2 つ」
+と書いた。**インスタンスに名前を付けて確かめたら、1 つだった。**
+
+```
+2 controllerManager: run starting (instance 5f6f00)     <- ID が同じ
+distinct kcm instances in traces: 1                      <- kcm@5f6f00 のみ
+```
+
+生ログを見ると 2 行目の正体が分かる:
+
+```
+1796: 2026/09/12 02:40:52 controllerManager: run starting (instance 5f6f00)
+3415: dw dropped=81 relayed=10 first=2026/09/12 02:40:52 controllerManager: run starting (instance 5f6f00)
+```
+
+**2 行目は tail 中継の診断行**(`dw dropped=N relayed=M first=…`、S46 で
+「中継が生きているのか黙っているのか区別するため」に足したもの)が、落とした
+最初のメッセージとして同じ行を引用していただけである。`grep -c` がそれを
+数えていた。
+
+**S59 の二重インスタンス説は取り下げる。** 同じ実行で:
+
+| 量 | 値 |
+|---|---|
+| controllerManager インスタンス | **1** |
+| distinct な Pod(replicas=2 に対して) | **60** |
+| shell 側 POST / DELETE | 103 / 135 |
+| informer の add / update / delete | 60 / 59 / 58 |
+
+**インスタンスは 1 つで、informer は 60 個の Pod の add・update・delete を
+すべて届けており、それでも 60 個作られる。** S58 訂正の「informer は健全」と
+合わせて、配送側は完全に潔白である。
+
+#### 計器の教訓(3 度目)
+
+このセッションで機序の仮説を 3 回立てて 3 回とも撤回した:
+ホスト CM 起因(S52)、informer の update 取りこぼし(S58)、二重インスタンス
+(S59)。**3 回とも、次の測定が否定した。** 共通点は
+**「自分の計器が作った数字を、現象の数字だと思った」**ことである:
+
+- S52: 壊れたノードのフラップを制御プレーンの暴走と読んだ
+- S58: バーストで落ちる出力の少なさを、配送の欠落と読んだ
+- S59: 中継の診断行を、2 つ目のインスタンスと読んだ
+
+計器を足すたびに、その計器自身が次の誤読の材料になっている。**P0-7 について
+新しい機序を主張する前に、その根拠が計器の産物でないことを先に示す。**
+
+#### P0-7 の現在地(確定している事実のみ)
+
+- 動くノードが 1 台あると、`replicas=2` に対して Pod が 35〜60 個作られ、
+  2 個に収束する。ノードが無ければ 2 個(本番はこの条件)。
+- resident な dynamic worker の KCM に固有。ホストプロセスの KCM は同条件で
+  2 個(S56)。
+- controller インスタンスは 1 つ。informer は add/update/delete を完全に
+  届けている。upstream の expectations 実装も、indexer も、403 ガードも
+  関与しない。
+- klog は `Too many replicas` を大量に出し、`Too few replicas` を 1 度も
+  出さない(S57)。
+
+**機序は未特定。** 次に触るなら、上の「確定している事実」だけを出発点にする。

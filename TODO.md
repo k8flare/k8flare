@@ -197,7 +197,15 @@ klog を吐かせた: **`Too many replicas` 374 回、`Too few replicas` 0 回**
 だったが、`observed` は Go 側でバーストに落ちる(S56)ので、この 42% 差を
 取りこぼしと読んではいけない。使えるのは klog の質的な非対称のほう。
 
-**Two controller instances found (S59).** `ResidentService` は `sync.Once` で
+**S59 は取り下げ**(インスタンスは 1 つ、2 行目は tail 中継の診断行だった)。
+確定している事実は: 動くノードがあると replicas=2 に対して Pod が 35〜60 個
+作られ 2 個に収束する / dynamic worker の KCM 固有(ホストは 2 個)/
+controller インスタンスは 1 つ / informer は add・update・delete を完全配送 /
+klog は `Too many replicas` ばかりで `Too few` は 0。**機序は未特定。**
+
+以下は取り下げた仮説の記録:
+
+**~~Two controller instances found (S59)~~.** `ResidentService` は `sync.Once` で
 run を 1 回に抑えるのに、`controllerManager: run starting` が **2 行**出る
 実行がある(シェル側の `dynamic worker up` は 1 回)。インスタンス数と過剰
 生成の強さが揃う: 1 インスタンス → 4 個、2 インスタンス → 35 個 / 161 POST。
