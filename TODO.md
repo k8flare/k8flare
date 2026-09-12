@@ -132,136 +132,22 @@ added to. Numbers recorded, production-measured.
 
 ---
 
-### P0-7 `[ ]` ノードを付けると replicas=2 が Pod を 35 個作る
+### P0-7 `[x]` ~~ノードを付けると replicas=2 が Pod を 35 個作る~~ — **誤報、取り下げ**
 
-**Problem (S56).** 本番と同じ構成(全 dynamic worker、ホストプロセス無し)で
-**動くノードを 1 台付ける**と、`replicas=2` の ReplicationController に対して
-**35 個**の distinct な Pod が作られ、最終的に 2 個へ収束する。ノードが
-付いていなければ 2 個で、それが今日までの本番測定の条件だった。
+**存在しなかった** (`docs/platform-verification.md` S62)。私が過去の実験で
+起動したまま放置した**ホスト controller-manager が 16 個**、同じ apiserver を
+叩いていた。User-Agent の生の値を見ると `cm-now/… (darwin/arm64)` などの
+ホストバイナリが大半を作っており、本物の resident controller
+(`js/… (js/wasm)`)は **2 個**しか作っていなかった。全部落として測り直すと
+`replicas=2` に対して Pod は **2 個**で正しい。
 
-採用者が最初にやること——ノードを 1 台繋いでワークロードを出す——でこれに
-当たる。書き込み量、スケジューリング、kubelet の起動が 17 倍になり、コスト
-不変条件(rows written / alarm / Containers 起動)にも直接効く。
+**この誤報から生き残るもの**: S60 / S61 の watch 連続性の測定と修正。
+WASM の informer が窓ごとに LIST からやり直していた(watch エラー 477 /
+relist 120)のは実在し、S61 の修正で 0 / 15(ホストプロセスと同値)になった。
+それらの数字は WASM 自身の klog であり、ホストバイナリは別ファイルに書くので
+汚染されていない。**修正の価値は「informer の連続性がホストと同等になった」
+ことであって、Pod の churn ではない。**
 
-これが見えなかったのは二つの条件が重なっていたため: 本番の prodprobe
-クラスタにノードが無く、ローカルハーネスのノードは S53 まで Pod を起動でき
-なかった。両方が今日直って初めて出た。
-
-S55 の required GC conformance の flakiness(動くノードで 6 回中 0 回しか
-7/7 にならない)も、おそらくこの churn の下流である。
-
-**First measurement taken (S56).** 動くノードでも informer の取りこぼしは
-**1%** で、expectations の破綻ではない。kcm は Pod を POST 6 / DELETE 60、
-scheduler は bind を 70 発行していた。**ただし distinct な Pod 名 35 個と
-POST 6 件が矛盾しており、計器のほうが合っていない。** 機序は名指しできない。
-
-**Actor identified (S56).** バースト耐性のある `request` 境界(シェル側、
-User-Agent 付き)で数え直した: **replication-controller が Pod を 32 個作り
-38 個消している**(kcm 全体で作成 35 = commit の distinct 35 と一致)。
-GC でも kubelet でも scheduler でもない。informer は届いている(取りこぼし
-1%)のに、controller が持つ Pod 集合の像が安定していない。**なぜ像が安定
-しないかは未証明。**
-
-**Four candidates eliminated (S56).** 4 つ目: `RejectCreateWithTerminating
-Controller` による 403 で作成が失敗扱いになる筋。存在しない owner なら実際に
-403 になるが、バーストでは POST 32 件に対して作られた Pod も 32 個で、403 が
-混ざった形跡がない。関与なし。
-
-**Three further candidates eliminated (S56).** 291ms で 24 個作っている窓について:
-dynamic worker の再ロードは **0 回**(expectations が消えたのではない)、
-kcm の `observed` は 24 個目の前に **20 行**(informer は届いている)、
-`pkg/leanclient/informers` の indexer / lister は client-go の生成コードと
-同一(コード読みの範囲で問題なし)。**残る候補は expectations の経路。**
-
-**Narrowed to the dynamic worker (S56).** `cmd/controller-manager -v=4` で
-upstream 自身の expectations ログを読んだ。**ホスト CM は同じ条件で Pod を
-2 個しか作らず、`expectations fulfilled` が 94 回出て正常**だった。単純な
-RC 1 個での比較:
-
-| 構成 | 作られた Pod |
-|---|---|
-| 本番(全 dw、ノード無し) | 2 |
-| ローカル全 dw + 動くノード | **35** |
-| ローカル host CM + 動くノード | **2** |
-
-**過剰生成するのは resident な dynamic worker の KCM だけ。** 同じ upstream の
-コードなので、差は k8flare の実行環境(pump window / watch の継続性 /
-isolate の寿命)側にある。P0-4 の主題そのもの。
-
-**Done, and it spoke (S57).** `KCM_VERBOSITY` を足して WASM の KCM に
-klog を吐かせた: **`Too many replicas` 374 回、`Too few replicas` 0 回**
-(ホストプロセスは同条件で 2 / 2)。controller の Pod 集合の像が実際より
-多いまま維持されている。消しても像から減らないので、また消す。
-
-**定量では言えない**: 同じ実行で DELETE 91 件に対し `observed.delete` 53 件
-だったが、`observed` は Go 側でバーストに落ちる(S56)ので、この 42% 差を
-取りこぼしと読んではいけない。使えるのは klog の質的な非対称のほう。
-
-**S59 は取り下げ**(インスタンスは 1 つ、2 行目は tail 中継の診断行だった)。
-確定している事実は: 動くノードがあると replicas=2 に対して Pod が 35〜60 個
-作られ 2 個に収束する / dynamic worker の KCM 固有(ホストは 2 個)/
-controller インスタンスは 1 つ / informer は add・update・delete を完全配送 /
-klog は `Too many replicas` ばかりで `Too few` は 0。**機序を特定した (S60)。** 同じワークロード・同じ `-v=4` で実行形態だけを
-変えて upstream 自身のログを比べた:
-
-| | WASM KCM | ホストプロセス |
-|---|---|---|
-| `Warning: watch ended with error` | **477** | **0** |
-| `Listing and watching`(relist) | **120** | **15** |
-
-**pump window が閉じるたびに watch が切れ、reflector が 2 分半で 120 回
-張り直している。** relist の最中・直後は controller の Pod 集合の像が権威と
-一致せず、そこで `manageReplicas` が走ると作りすぎ・消しすぎが起きる。
-個々のイベントは落ちていない(S58 訂正)——**落ちているのは連続性**。
-
-**因果まで確かめた**: 隔離ワークツリーで `PUMP_WINDOW_MS` を 4 倍にすると
-watch 切断 477→69、relist 120→34、作られる Pod 60→34。**churn は relist に
-連動する。** ただし 4 倍にしても 34 個作るので、窓を伸ばすのは解ではない
-(しかもコスト不変条件に反する)。
-
-**一つ目の原因を除去した (S61)。** 窓が閉じた watch のボディ読み取りが
-エラーを返していたため reflector が LIST からやり直していた。watch に限って
-`io.EOF` を返すようにしたところ:
-
-| | watch エラー | relist | 作られた Pod |
-|---|---|---|---|
-| 変更前 | 477 | 120 | 60 |
-| **変更後** | **0** | **15** | **30** |
-
-**relist はホストプロセスと同じ 15 回になった。** ただし **Pod は 30 個
-残る**——**P0-7 には relist 以外の第二の原因がある。**
-
-**第二の原因は未特定。** 一度「30 Pod に ADD 60 件」を手がかりとしたが、
-1 件ずつ追ったら 30 個すべて**同じ rv・同じ時刻**の重複で、tail 中継が同じ行を
-二度出していただけだった(メモリ内カウンタは add 30 / delete 28 / update 33 で
-Pod 数と一致)。中継のコピーに `"r":1` の印を付けて再発を防いだ。
-
-確定しているのは「**relist を 15 回まで落としても Pod は 30 個作られる**」
-という事実のみ。次に追うなら、ログ行ではなく**メモリ内カウンタとシェル側の
-`request` だけ**を使う(どちらも重複しない)。
-
-**これは P0-4 そのもの。** 設計文書 5.1 の「欠落のない replay を先に確立する」
-が未達であることの、実ワークロードでの定量化である。S61 で達成されたのは
-「境界が欠落として扱われない」ことだけで、cut の保証はまだ無い。
-
-以下は取り下げた仮説の記録:
-
-**~~Two controller instances found (S59)~~.** `ResidentService` は `sync.Once` で
-run を 1 回に抑えるのに、`controllerManager: run starting` が **2 行**出る
-実行がある(シェル側の `dynamic worker up` は 1 回)。インスタンス数と過剰
-生成の強さが揃う: 1 インスタンス → 4 個、2 インスタンス → 35 個 / 161 POST。
-expectations はインスタンスのメモリに載るので、2 つあれば互いの Pod を
-「余剰」と見て消し合う。S57 の `Too many` 374 / `Too few` 0 とも整合する。
-
-**確定ではない**: 1 インスタンスでも 4 個作っている(目標 2)ので、二重化は
-増幅要因であっても唯一の原因とは限らない。2 つ目がどこから来るかも未特定。
-
-**Do.** Go 側でインスタンス固有 ID を作り `pumptrace` の component 名と
-`run starting` に付ける。どのインスタンスが何を書いたかが取れれば、二重化の
-実在と各々の振る舞いが同時に分かる。
-
-**Acceptance.** ノードを付けた状態で `replicas=2` に対して作られる distinct
-な Pod が 2 個であること。
 
 ## P1 — needed before the conformance story is credible
 
