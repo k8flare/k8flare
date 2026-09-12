@@ -7721,3 +7721,49 @@ S60 の機序が正しいなら、**pump window を延ばせば relist が減り
 **4 倍にしてもまだ 34 個作る**——減るだけで直らない。直すのは連続性の側で、
 それが `docs/pump-window-design.md` の Stage 1 である。この実験は
 「Stage 1 が効く対象はここだ」という因果の証拠として使う。
+
+### S61 (2026-09-12): watch が窓の境界で「失敗」ではなく「終了」するようにした
+
+S60 で機序を特定し、介入で因果まで確かめた。その先の修正のうち、**最小で
+効果の大きい一手**が取れた。
+
+#### 何が起きていたか
+
+pump window が閉じると、進行中の watch のボディ読み取りが
+`ErrPumpWindowClosed` を返していた。client-go の reflector はこれを
+**エラー**として扱い、キャッシュを捨てて **LIST からやり直す**。
+
+だが窓が閉じた watch は**失敗していない、終わっただけ**である。EOF を返せば
+reflector は最後に見た resourceVersion から **再 watch** する。
+
+#### 変更
+
+`streamBody.Read` が、**watch リクエストに限って**(`?watch=true` /
+`sendInitialEvents=true`)窓の閉鎖を `io.EOF` として返す。watch 以外の
+ボディでこれをやると呼び出し側に半端なオブジェクトを渡してしまうので、
+スコープを切った。既存の
+`TestWatchBodyReadIsReleasedWhenItsWindowCloses`(S31 の「read が解放される
+こと」を守るテスト)は意図を保ったまま期待値を更新し、**watch 以外は従来
+どおりエラーになることを固定する新しいテストを足した。**
+
+#### 測定(同じワークロード、`replicas=2` の RC 1 個、動くノード 1 台)
+
+| | `Warning: watch ended with error` | `Listing and watching`(relist) | 作られた Pod |
+|---|---|---|---|
+| 現行 main | 477 | 120 | 60 |
+| `PUMP_WINDOW_MS` 4 倍(参考) | 69 | 34 | 34 |
+| **この変更** | **0** | **15** | **30** |
+
+**relist が 15 回になった。これはホストプロセスと同じ値である**(informer の
+種類ごとに起動時 1 回)。watch のエラーは 0。**resident controller の informer
+が、ホストプロセスと同じ連続性を持つようになった。**
+
+#### まだ直っていない
+
+**Pod は 30 個できる。** relist を完全に消しても半分にしかならない。
+つまり **P0-7 には relist 以外の第二の原因がある。** この変更はその一つ目を
+取り除いたにすぎない。第二の原因は未特定で、次の調査対象である。
+
+`docs/pump-window-design.md` の Stage 1 が目指す「欠落のない replay」は、
+この変更で達成されたわけではない——達成されたのは「境界が欠落として扱われ
+ない」ことだけである。cut の保証はまだ無い。
