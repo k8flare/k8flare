@@ -50,18 +50,21 @@ than the Node authorizer plus NodeRestriction admission
 (`pkg/apiserver/rbac.go`). TLS client certificates per node are a
 follow-up, not a shipped feature.
 
-**Nothing strips `X-Remote-User` / `X-Remote-Group` from an inbound
-request.** Those headers are honoured as the caller's identity
-(`pkg/apiserver/auth.go:88-97`), on the stated assumption that a
+**Inbound `X-Remote-User` / `X-Remote-Group` are stripped at the gateway
+boundary.** Those headers are honoured as the caller's identity inside the
+Go apiserver (`pkg/apiserver/auth.go:88-97`), on the stated assumption that a
 TLS-terminating proxy sets them from a client certificate. No component in
-this repository sets them, and the gateway only reads them
-(`packages/k8flare-worker/src/gateway/index.ts:100,117`) — so today any
-holder of a cluster token can name themselves any user in any group. That is
-not an escalation *at present*, because a cluster token is already
-`system:masters`; it becomes one the moment tokens carry distinct roles, so
-it has to be closed before that work, not after (`TODO.md` P0-8). If you put
-a TLS-terminating proxy in front of this, it must overwrite both headers on
-every request rather than pass them through.
+this repository sets them for a legitimate purpose, so the gateway removes
+any inbound `X-Remote-*` header, case-insensitively, before routing or
+authentication (`packages/k8flare-worker/src/gateway/index.ts`,
+`stripForgedRemoteIdentityHeaders`) — a holder of a cluster token can no
+longer name themselves any user in any group. That was not an escalation
+*at present*, because a cluster token is already `system:masters`; it would
+have become one the moment tokens carry distinct roles, so it was closed
+before that work, not after (`TODO.md` P0-8). One consequence: the
+client-certificate identity path in `auth.go` is now unreachable from
+outside this Worker — there is no supported way for a TLS-terminating proxy
+in front of k8flare to inject a trusted identity via these headers.
 
 **A publicly documented dev token can be live.** The *default* cluster
 falls back to accepting the well-known token `k8flare-dev-token` when its

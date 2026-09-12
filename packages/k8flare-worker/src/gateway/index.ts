@@ -206,11 +206,22 @@ async function serveOpenAPIV2(req: Request, env: Env, url: URL): Promise<Respons
   return new Response(null, { status: 406 });
 }
 
+function stripForgedRemoteIdentityHeaders(req: Request): Request {
+  const headers = new Headers(req.headers);
+  const keysToStrip: string[] = [];
+  for (const key of headers.keys()) {
+    if (key.toLowerCase().startsWith("x-remote-")) keysToStrip.push(key);
+  }
+  for (const key of keysToStrip) headers.delete(key);
+  return new Request(req, { headers });
+}
+
 export async function handleGateway(
   req: Request,
   outerEnv: Env,
   ctx: ExecutionContext,
 ): Promise<Response> {
+  req = stripForgedRemoteIdentityHeaders(req);
   let url = new URL(req.url);
 
   // Bootstrap kubeconfig, plus 410 Gone for the retired management API

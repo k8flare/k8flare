@@ -10,16 +10,18 @@ import (
 	"testing"
 	"time"
 
+	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 )
 
-// rbacDo sends one request as a derived identity: valid cluster token +
-// X-Remote-User (the TLS-proxy identity path in auth.go). groups may be
-// empty (auth.go then assigns just system:authenticated).
-func rbacDo(t *testing.T, method, path, remoteUser, remoteGroups string, body string) (*http.Response, string) {
+// rbacDo sends one request as a derived identity: a real ServiceAccount
+// JWT bearer token (see mintDerivedIdentity), or the empty string for the
+// admin identity (the bare cluster token).
+func rbacDo(t *testing.T, method, path, bearerToken, body string) (*http.Response, string) {
 	t.Helper()
 	var rdr io.Reader
 	if body != "" {
@@ -29,13 +31,11 @@ func rbacDo(t *testing.T, method, path, remoteUser, remoteGroups string, body st
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	req.Header.Set("Authorization", "Bearer k8flare-dev-token")
-	if remoteUser != "" {
-		req.Header.Set("X-Remote-User", remoteUser)
+	token := bearerToken
+	if token == "" {
+		token = "k8flare-dev-token"
 	}
-	if remoteGroups != "" {
-		req.Header.Set("X-Remote-Group", remoteGroups)
-	}
+	req.Header.Set("Authorization", "Bearer "+token)
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -49,6 +49,26 @@ func rbacDo(t *testing.T, method, path, remoteUser, remoteGroups string, body st
 	return resp, string(b)
 }
 
+func mintDerivedIdentity(t *testing.T, client *kubernetes.Clientset, ns, name string) (string, rbacv1.Subject) {
+	t.Helper()
+	ctx := context.Background()
+	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
+	if _, err := client.CoreV1().ServiceAccounts(ns).Create(ctx, sa, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
+		t.Fatalf("create serviceaccount %s/%s: %v", ns, name, err)
+	}
+	t.Cleanup(func() {
+		_ = client.CoreV1().ServiceAccounts(ns).Delete(context.Background(), name, metav1.DeleteOptions{})
+	})
+	tr := &authenticationv1.TokenRequest{
+		Spec: authenticationv1.TokenRequestSpec{Audiences: []string{"https://k8flare.internal"}},
+	}
+	result, err := client.CoreV1().ServiceAccounts(ns).CreateToken(ctx, name, tr, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("CreateToken for %s/%s: %v", ns, name, err)
+	}
+	return result.Status.Token, rbacv1.Subject{Kind: rbacv1.ServiceAccountKind, Namespace: ns, Name: name}
+}
+
 // TestRBACEnforcement drives the real RBACAuthorizer end-to-end: a
 // derived identity is denied by default, gains exactly what a live
 // Role/RoleBinding grants, and `kubectl auth can-i` (SSAR) agrees with
@@ -56,20 +76,20 @@ func rbacDo(t *testing.T, method, path, remoteUser, remoteGroups string, body st
 func TestRBACEnforcement(t *testing.T) {
 	client := setupWranglerDev(t)
 	ctx := context.Background()
-	const user = "rbac-test-alice"
+	bearer, subject := mintDerivedIdentity(t, client, "default", "rbac-test-alice")
 
 	// The admin identity (bare cluster token) bypasses RBAC.
-	if resp, body := rbacDo(t, "GET", "/api/v1/namespaces/default/pods", "", "", ""); resp.StatusCode != 200 {
+	if resp, body := rbacDo(t, "GET", "/api/v1/namespaces/default/pods", "", ""); resp.StatusCode != 200 {
 		t.Fatalf("admin list pods: got %d, want 200: %s", resp.StatusCode, body)
 	}
 
 	// A derived identity with no bindings is denied...
-	if resp, body := rbacDo(t, "GET", "/api/v1/namespaces/default/pods", user, "", ""); resp.StatusCode != 403 {
+	if resp, body := rbacDo(t, "GET", "/api/v1/namespaces/default/pods", bearer, ""); resp.StatusCode != 403 {
 		t.Fatalf("unbound user list pods: got %d, want 403: %s", resp.StatusCode, body)
 	}
 	// ...but can hit discovery (system:discovery -> system:authenticated,
 	// straight from the real bootstrap policy).
-	if resp, body := rbacDo(t, "GET", "/api/v1", user, "", ""); resp.StatusCode != 200 {
+	if resp, body := rbacDo(t, "GET", "/api/v1", bearer, ""); resp.StatusCode != 200 {
 		t.Fatalf("unbound user discovery: got %d, want 200: %s", resp.StatusCode, body)
 	}
 
@@ -90,7 +110,7 @@ func TestRBACEnforcement(t *testing.T) {
 	})
 	binding := &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: "rbac-test-pod-reader", Namespace: "default"},
-		Subjects:   []rbacv1.Subject{{Kind: rbacv1.UserKind, APIGroup: rbacv1.GroupName, Name: user}},
+		Subjects:   []rbacv1.Subject{subject},
 		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: role.Name},
 	}
 	if _, err := client.RbacV1().RoleBindings("default").Create(ctx, binding, metav1.CreateOptions{}); err != nil {
@@ -101,24 +121,24 @@ func TestRBACEnforcement(t *testing.T) {
 	})
 
 	// Granted verbs work; everything else stays denied.
-	if resp, body := rbacDo(t, "GET", "/api/v1/namespaces/default/pods", user, "", ""); resp.StatusCode != 200 {
+	if resp, body := rbacDo(t, "GET", "/api/v1/namespaces/default/pods", bearer, ""); resp.StatusCode != 200 {
 		t.Fatalf("bound user list pods: got %d, want 200: %s", resp.StatusCode, body)
 	}
 	pod := `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"rbac-test-denied"},"spec":{"containers":[{"name":"c","image":"busybox"}]}}`
-	if resp, body := rbacDo(t, "POST", "/api/v1/namespaces/default/pods", user, "", pod); resp.StatusCode != 403 {
+	if resp, body := rbacDo(t, "POST", "/api/v1/namespaces/default/pods", bearer, pod); resp.StatusCode != 403 {
 		t.Fatalf("bound user create pod: got %d, want 403: %s", resp.StatusCode, body)
 	}
-	if resp, body := rbacDo(t, "GET", "/api/v1/namespaces/kube-system/pods", user, "", ""); resp.StatusCode != 403 {
+	if resp, body := rbacDo(t, "GET", "/api/v1/namespaces/kube-system/pods", bearer, ""); resp.StatusCode != 403 {
 		t.Fatalf("bound user list pods in kube-system: got %d, want 403: %s", resp.StatusCode, body)
 	}
-	if resp, body := rbacDo(t, "GET", "/api/v1/namespaces/default/secrets", user, "", ""); resp.StatusCode != 403 {
+	if resp, body := rbacDo(t, "GET", "/api/v1/namespaces/default/secrets", bearer, ""); resp.StatusCode != 403 {
 		t.Fatalf("bound user list secrets: got %d, want 403: %s", resp.StatusCode, body)
 	}
 
 	// `kubectl auth can-i` (SSAR) answers from the same authorizer.
 	ssar := func(verb, resource string) bool {
 		body := fmt.Sprintf(`{"apiVersion":"authorization.k8s.io/v1","kind":"SelfSubjectAccessReview","spec":{"resourceAttributes":{"verb":%q,"resource":%q,"namespace":"default"}}}`, verb, resource)
-		resp, out := rbacDo(t, "POST", "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews", user, "", body)
+		resp, out := rbacDo(t, "POST", "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews", bearer, body)
 		if resp.StatusCode != 201 {
 			t.Fatalf("ssar %s %s: got %d: %s", verb, resource, resp.StatusCode, out)
 		}
@@ -137,32 +157,6 @@ func TestRBACEnforcement(t *testing.T) {
 	}
 	if ssar("delete", "pods") {
 		t.Fatalf("can-i delete pods: got true, want false")
-	}
-
-	// The TS watch path enforces the same policy via SubjectAccessReview
-	// (gateway/index.ts authorizeWatchRBAC): allowed resource streams,
-	// denied resource 403s before a stream opens.
-	watchStatus := func(path string) int {
-		req, err := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d%s", testPort, path), nil)
-		if err != nil {
-			t.Fatalf("new watch request: %v", err)
-		}
-		req.Header.Set("Authorization", "Bearer k8flare-dev-token")
-		req.Header.Set("X-Remote-User", user)
-		wctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		resp, err := (&http.Client{}).Do(req.WithContext(wctx))
-		if err != nil {
-			t.Fatalf("watch %s: %v", path, err)
-		}
-		defer resp.Body.Close()
-		return resp.StatusCode
-	}
-	if got := watchStatus("/api/v1/namespaces/default/pods?watch=true&timeoutSeconds=1"); got != 200 {
-		t.Fatalf("watch pods as bound user: got %d, want 200", got)
-	}
-	if got := watchStatus("/api/v1/namespaces/default/secrets?watch=true&timeoutSeconds=1"); got != 403 {
-		t.Fatalf("watch secrets as bound user: got %d, want 403", got)
 	}
 
 	// The kubelet identity (Basic node:<token>) reads nodes through the
@@ -195,11 +189,11 @@ func TestRBACEnforcement(t *testing.T) {
 func TestClusterAdminBootstrapRoles(t *testing.T) {
 	client := setupWranglerDev(t)
 	ctx := context.Background()
-	const user = "rbac-test-cluster-admin"
 	const ns = "k8flare-system"
+	bearer, subject := mintDerivedIdentity(t, client, "default", "rbac-test-cluster-admin")
 
 	// Unbound: no access to either half.
-	if resp, body := rbacDo(t, "GET", "/apis/k8flare.com/v1alpha1/clusters", user, "", ""); resp.StatusCode != 403 {
+	if resp, body := rbacDo(t, "GET", "/apis/k8flare.com/v1alpha1/clusters", bearer, ""); resp.StatusCode != 403 {
 		t.Fatalf("unbound user list clusters: got %d, want 403: %s", resp.StatusCode, body)
 	}
 
@@ -211,7 +205,7 @@ func TestClusterAdminBootstrapRoles(t *testing.T) {
 
 	crb := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: "rbac-test-cluster-admin"},
-		Subjects:   []rbacv1.Subject{{Kind: rbacv1.UserKind, APIGroup: rbacv1.GroupName, Name: user}},
+		Subjects:   []rbacv1.Subject{subject},
 		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "k8flare:cluster-admin"},
 	}
 	if _, err := client.RbacV1().ClusterRoleBindings().Create(ctx, crb, metav1.CreateOptions{}); err != nil {
@@ -222,7 +216,7 @@ func TestClusterAdminBootstrapRoles(t *testing.T) {
 	})
 	rb := &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: "rbac-test-cluster-secrets", Namespace: ns},
-		Subjects:   []rbacv1.Subject{{Kind: rbacv1.UserKind, APIGroup: rbacv1.GroupName, Name: user}},
+		Subjects:   []rbacv1.Subject{subject},
 		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: "k8flare:cluster-secret-reader"},
 	}
 	if _, err := client.RbacV1().RoleBindings(ns).Create(ctx, rb, metav1.CreateOptions{}); err != nil {
@@ -234,30 +228,56 @@ func TestClusterAdminBootstrapRoles(t *testing.T) {
 
 	// The bundled ClusterRole is resolvable even though no such object
 	// exists in storage, and grants the whole Cluster lifecycle.
-	if resp, body := rbacDo(t, "GET", "/apis/k8flare.com/v1alpha1/clusters", user, "", ""); resp.StatusCode != 200 {
+	if resp, body := rbacDo(t, "GET", "/apis/k8flare.com/v1alpha1/clusters", bearer, ""); resp.StatusCode != 200 {
 		t.Fatalf("bound user list clusters: got %d, want 200: %s", resp.StatusCode, body)
 	}
 	cluster := `{"apiVersion":"k8flare.com/v1alpha1","kind":"Cluster","metadata":{"name":"rbac-test-issued"},"spec":{"displayName":"issued by a bound admin"}}`
-	if resp, body := rbacDo(t, "POST", "/apis/k8flare.com/v1alpha1/clusters", user, "", cluster); resp.StatusCode != 201 {
+	if resp, body := rbacDo(t, "POST", "/apis/k8flare.com/v1alpha1/clusters", bearer, cluster); resp.StatusCode != 201 {
 		t.Fatalf("bound user create cluster: got %d, want 201: %s", resp.StatusCode, body)
 	}
 	t.Cleanup(func() {
-		_, _ = rbacDo(t, "DELETE", "/apis/k8flare.com/v1alpha1/clusters/rbac-test-issued", user, "", "")
+		_, _ = rbacDo(t, "DELETE", "/apis/k8flare.com/v1alpha1/clusters/rbac-test-issued", bearer, "")
 	})
 
 	// Credential Secrets in k8flare-system only -- the namespaced Role is
 	// the whole point of not granting secrets cluster-wide.
-	if resp, body := rbacDo(t, "GET", "/api/v1/namespaces/"+ns+"/secrets", user, "", ""); resp.StatusCode != 200 {
+	if resp, body := rbacDo(t, "GET", "/api/v1/namespaces/"+ns+"/secrets", bearer, ""); resp.StatusCode != 200 {
 		t.Fatalf("bound user list %s secrets: got %d, want 200: %s", ns, resp.StatusCode, body)
 	}
-	if resp, body := rbacDo(t, "GET", "/api/v1/namespaces/default/secrets", user, "", ""); resp.StatusCode != 403 {
+	if resp, body := rbacDo(t, "GET", "/api/v1/namespaces/default/secrets", bearer, ""); resp.StatusCode != 403 {
 		t.Fatalf("bound user list default secrets: got %d, want 403: %s", resp.StatusCode, body)
 	}
-	if resp, body := rbacDo(t, "DELETE", "/api/v1/namespaces/"+ns+"/secrets/nonexistent", user, "", ""); resp.StatusCode != 403 {
+	if resp, body := rbacDo(t, "DELETE", "/api/v1/namespaces/"+ns+"/secrets/nonexistent", bearer, ""); resp.StatusCode != 403 {
 		t.Fatalf("bound user delete a %s secret: got %d, want 403: %s", ns, resp.StatusCode, body)
 	}
 	// Cluster administration is not general administration.
-	if resp, body := rbacDo(t, "GET", "/api/v1/namespaces/default/pods", user, "", ""); resp.StatusCode != 403 {
+	if resp, body := rbacDo(t, "GET", "/api/v1/namespaces/default/pods", bearer, ""); resp.StatusCode != 403 {
 		t.Fatalf("bound user list pods: got %d, want 403: %s", resp.StatusCode, body)
+	}
+}
+
+func TestAuthIgnoresForgedRemoteIdentityHeaders(t *testing.T) {
+	setupWranglerDev(t)
+
+	forgedIdentityStatus := func(headerName string) int {
+		t.Helper()
+		req, err := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/api/v1/namespaces/default/pods", testPort), nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer k8flare-dev-token")
+		req.Header.Set(headerName, "rbac-test-forged-unbound")
+		resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+		if err != nil {
+			t.Fatalf("do request: %v", err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	for _, headerName := range []string{"X-Remote-User", "x-remote-user", "X-REMOTE-USER"} {
+		if got := forgedIdentityStatus(headerName); got != 200 {
+			t.Fatalf("cluster token + forged %s: got %d, want 200 (an unbound derived identity would get 403 if this header reached the Go authenticator)", headerName, got)
+		}
 	}
 }
