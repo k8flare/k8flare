@@ -150,7 +150,7 @@ CONTRIBUTING, and any status badge).
 **Acceptance.** Either the dw variants are required, or every place that cites
 the required gate states which configuration it covers.
 
-### P1-2 `[ ]` Prove the dw variants are stable, don't sample-check them
+### P1-2 `[~]` Prove the dw variants are stable, don't sample-check them
 
 **Problem.** The dw variants were red in one of the last three runs
 (`34445918793`: kcm-dw hit a client-side connection reset, sched-dw blew the
@@ -163,6 +163,21 @@ treat any red as a defect to root-cause, not to re-run. Watch Actions quota;
 batch or schedule rather than hand-dispatching.
 
 **Acceptance.** ~10 consecutive green dw runs, or a root cause for each red.
+
+**Local evidence 2026-09-12, and it is not symmetric** (`docs/platform-verification.md`
+S51). Same harness, same node, same required GC focus:
+
+| variant | result |
+|---|---|
+| `host` (required) | 7/7 |
+| `kcm-dw` (advisory) | 7/7 |
+| `sched-dw` (advisory) | **0 of 3 runs passed**, 6/7 each time, on two different specs |
+
+The contradiction with "6 consecutive green" in CI is real and unresolved: this
+harness's node cannot start pods (S48), CI's can. But `host` and `kcm-dw` pass
+7/7 on that same broken node, so a broken node alone does not explain why only
+`sched-dw` fails. Promotion is a CI decision either way — the point here is
+that the two advisory variants should not be promoted on the same evidence.
 
 ### P1-3 `[x]` The most platform-fragile code has no unit tests
 
