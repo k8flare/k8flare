@@ -287,14 +287,19 @@ compactionは仕事起因のbatchに同乗し、idle vacuumのcronを新設し�
 契約を確定させる前にレビューが見るべき材料である。**本書を書いた時点では
 まだ分かっていなかった。**
 
-**(0) Stage 1 が直す対象の実害が測れた。** ノードを 1 台繋いで
-`replicas=2` のワークロードを出すと、resident の KCM は informer を
-2 分半で **120 回**張り直し(ホストプロセスは 15 回、watch 切断 0 回)、
-`replicas=2` に対して Pod を **60 個**作って 2 個に収束する。`PUMP_WINDOW_MS`
-を 4 倍にすると relist 34 回・Pod 34 個へ連動して減る——**churn は relist の
-回数に因果的に連動する**(S60 とその追記)。5.1 の「欠落のない replay」は
-将来の品質目標ではなく、**今この瞬間、ノードを繋いだ利用者が踏む実害**である。
-Stage 1 の受入測定は、この Pod 数が 2 になることを含めるべきである。
+**(0) Stage 1 が直す対象について、確定していることと撤回したこと。**
+
+**確定**: resident の KCM は informer を 2 分半で **120 回**張り直していた
+(ホストプロセスは 15 回、watch 切断 0 回)。これは WASM 自身の klog による
+測定で、S61 の修正(窓境界の watch を EOF として扱う)で **watch 切断 0 /
+relist 15**、ホストプロセスと同値になった。
+
+**撤回 (S62)**: 「`replicas=2` に対して Pod を 60 個作る」「churn は relist に
+因果的に連動する」は誤り。当時 16 個の野良 controller-manager が同じクラスタを
+叩いていた。清浄な環境では `replicas=2` に対して Pod は **2 個**である。
+**Stage 1 の受入測定に Pod 数の改善を含めてはならない。** 直す対象は
+5.1 が最初から書いている「欠落のない replay」そのものであり、その実害は
+まだ本番ワークロードで定量化されていない。
 
 **(a) cut は「時刻」では表現できない。** commit を刻むのはシェル Worker、
 observed を刻むのは dynamic worker 内の Go で、Workers の `Date.now()` は
@@ -306,12 +311,12 @@ Go 側まで届けば、Stage 0 の `observed` 境界と突き合わせるだけ
 storage→controller の遅延が初めて測れるようになる。**Stage 1 の受入測定は
 この値の有無に依存する。**
 
-**(b) controller 側の区間はすでに測れている。** `issued`(Go の transport)
-と `observed`(Go の informer)は同一 isolate・同一時計なので引き算できる。
-本番実測でスケジューラの bind が KCM の informer に届くまで **82〜93ms**
-(S49)。Stage 1 の「境界起因 full snapshot 0 / 欠落 0」を測るとき、
-controller 側の遅延はこの既存の物差しで切り分けられる。新しい計測機構を
-Stage 1 で作る必要はない。
+**(b) ~~controller 側の区間はすでに測れている~~ — 撤回 (S66)。**
+「`issued` と `observed` は同一 isolate・同一時計」と書いたが誤り。測定に
+使ったのは scheduler の `issued` と kcm の `observed` で、Loader id に
+component 名が入る以上この二つは別 isolate である。**82〜93ms という値は
+無効。** component を跨ぐ所要時間は、共通の観測点を作るまで測れない。
+Stage 1 の受入測定にこの物差しを前提にしてはならない。
 
 **(c) 観測は resync と区別して数えること。** informer は同じ revision を
 約 25 秒おきに再配送する。revision ごとに**最初の観測だけ**を採らないと、

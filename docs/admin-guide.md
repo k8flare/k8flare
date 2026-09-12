@@ -250,8 +250,12 @@ make wasm && make test && make test-kcm   # ローカル検証
 npx wrangler deploy -c packages/k8flare-worker/wrangler.jsonc
 ```
 
-デプロイは無停止です(進行中のリクエストは旧バージョンで完走)。k8s
-バージョン自体の更新は [k8s-version-bump.md](k8s-version-bump.md) 参照。
+**リクエストの切り替えは無停止です**(進行中のリクエストは旧バージョンで
+完走)。**ただしコントローラーはそうではありません**: WASM が変わった
+デプロイでは、最初に来たワークロードが reconcile されるまで 20 分以上かかり
+ます(S50、下の「暖機」節)。その間 apiserver は応答し `/readyz` も 200 を
+返すので、**外から見て区別できません**。k8s バージョン自体の更新は
+[k8s-version-bump.md](k8s-version-bump.md) 参照。
 
 ### Go を変えたデプロイの後は暖機する
 
