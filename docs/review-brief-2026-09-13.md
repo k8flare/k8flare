@@ -1,6 +1,6 @@
 # Review brief — `fix/facet-write-durability`, 2026-09-13
 
-Twenty commits, +4,016 / −2,697 across 65 files, not merged. Read this with
+Twenty-three commits, +4,456 / −2,697 across 67 files, not merged. Read this with
 `git diff main...HEAD`.
 
 This exists because a reviewer arriving cold at 4,000 lines reviews the diff;
@@ -169,7 +169,7 @@ instrumentation and changed the resync period.
 
 ### 5. The gate
 
-`b2d410c` `5f30d6b` `3889ea8` `c63cfd5`
+`b2d410c` `5f30d6b` `3889ea8` `c63cfd5` `e5a5555`
 
 The required garbage-collector focus was failing **41% of the time** — seven
 of seventeen runs. Root cause, measured at one-second resolution on a
@@ -196,7 +196,7 @@ foreground's question, not orphaning's).
 
 **Codex reviewed that fix and found two more P1s, both the same class as the
 bug being fixed — a hook placed on a path that does not run when expected.**
-They are fixed in `<pending>` and are the most useful thing in this brief:
+They are fixed in `e5a5555` and are the most useful thing in this brief:
 
 - The sweep was still dead. The UID travelled from `BeginUpdate` to
   `AfterDelete` in a map, and `BeginUpdate`'s FinishFunc runs with `ok=false`

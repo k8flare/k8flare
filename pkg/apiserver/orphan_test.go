@@ -208,3 +208,70 @@ func TestOrphanIsNotWedgedByAnEvent(t *testing.T) {
 		t.Errorf("expected the Deployment to be gone once its last finalizer was cleared")
 	}
 }
+
+// TestForegroundIsNotWedgedByAnEvent is the same wedge on the other
+// guard. RefuseForegroundFinalizeOn asks blockingDependent, which wants
+// blockOwnerDeletion -- an Event can carry it, and the collector ignores
+// Events either way, so the owner would never finish terminating.
+func TestForegroundIsNotWedgedByAnEvent(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+	ns := "test-gc-foreground-event-ns"
+
+	_ = client.CoreV1().Namespaces().Delete(ctx, ns, metav1.DeleteOptions{})
+	if _, err := client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: ns},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("Create namespace: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = client.CoreV1().Namespaces().Delete(context.Background(), ns, metav1.DeleteOptions{})
+	})
+
+	deploy, err := client.AppsV1().Deployments(ns).Create(ctx, &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "owner-deploy-fg-evented"},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create deployment: %v", err)
+	}
+
+	blocking := true
+	if _, err := client.CoreV1().Events(ns).Create(ctx, &corev1.Event{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "owner-deploy-fg-evented.1",
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "apps/v1", Kind: "Deployment",
+				Name: deploy.Name, UID: deploy.UID,
+				BlockOwnerDeletion: &blocking,
+			}},
+		},
+		InvolvedObject: corev1.ObjectReference{
+			APIVersion: "apps/v1", Kind: "Deployment",
+			Namespace: ns, Name: deploy.Name, UID: deploy.UID,
+		},
+		Reason:  "ScalingReplicaSet",
+		Message: "an event the collector will never look at",
+		Type:    corev1.EventTypeNormal,
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("Create event: %v", err)
+	}
+
+	policy := metav1.DeletePropagationForeground
+	if err := client.AppsV1().Deployments(ns).Delete(ctx, deploy.Name, metav1.DeleteOptions{
+		PropagationPolicy: &policy,
+	}); err != nil {
+		t.Fatalf("Delete deployment with Foreground policy: %v", err)
+	}
+
+	current, err := client.AppsV1().Deployments(ns).Get(ctx, deploy.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("re-reading the terminating Deployment: %v", err)
+	}
+	current.Finalizers = nil
+	if _, err := client.AppsV1().Deployments(ns).Update(ctx, current, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("clearing the foreground finalizer with only an Event owned = %v, want success", err)
+	}
+	if _, err := client.AppsV1().Deployments(ns).Get(ctx, deploy.Name, metav1.GetOptions{}); err == nil {
+		t.Errorf("expected the Deployment to be gone once its last finalizer was cleared")
+	}
+}
