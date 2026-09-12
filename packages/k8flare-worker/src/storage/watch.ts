@@ -1,9 +1,7 @@
 import { AFTER_SQL } from "./schema.ts";
 import { rowToEvent } from "./helpers.ts";
-import type { KineRow } from "./helpers.ts";
-import { classifyKey } from "./keyspace.ts";
-import { getFacet, facetFetch, facetJson, type FacetHost } from "./facets.ts";
-import { storeReplay, facetRawToKineRow } from "./store.ts";
+import { type FacetHost } from "./facets.ts";
+import { storeReplay, fillOffloadedRows } from "./store.ts";
 import type { SqlExec } from "./queries.ts";
 
 interface DurableObjectNamespaceLike {
@@ -63,18 +61,15 @@ export async function broadcastEvent(
   key: string,
   revision: number,
 ): Promise<void> {
-  const cls = classifyKey(key);
-  let rows: KineRow[];
-  if (cls.kind === "cluster") {
-    rows = sql.exec(AFTER_SQL, revision - 1).toArray();
-  } else {
-    const stub = getFacet(host, cls.facet);
-    const resp = await facetFetch(stub, new Request(`http://facet.internal/after/${revision - 1}`));
-    const body = await facetJson<{ rows?: any[] }>(resp);
-    rows = (body.rows || []).map(facetRawToKineRow);
-  }
-
-  rows = rows.filter((r) => r.theid === revision);
+  // Correction (2026-09-13): this used to read a namespaced key's row from
+  // its facet. It reads the parent's log for every key now and lets
+  // storeReplay's filler fetch only what the parent has already handed over,
+  // because between the facet's acknowledgement and the parent's trim the row
+  // is in both places, and before the acknowledgement it is only in the
+  // parent -- so facet-first can find nothing for a write that committed.
+  const rows = (await fillOffloadedRows(host, sql.exec(AFTER_SQL, revision - 1).toArray())).filter(
+    (r) => r.theid === revision,
+  );
   if (rows.length === 0) return;
 
   const events = rows.map(rowToEvent);

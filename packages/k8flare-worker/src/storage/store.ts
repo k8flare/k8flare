@@ -18,64 +18,146 @@
 // than a redundant mirror: a large cluster's Pod/ConfigMap/Secret data lives
 // in per-namespace 10GB budgets, not the parent's.
 //
-// Correction (2026-09-12): the two sentences that stood here claimed live
-// broadcast never needs to consult a facet because the caller already holds
-// the value. It does consult one -- broadcastEvent (watch.ts) re-reads the
-// committed row, and for a facet-routed key the parent's own copy is the
-// value-trimmed envelope, so it asks the facet. That is what makes a
-// broadcast for a write whose facet half failed correctly emit nothing.
-// Every read of namespaced data -- points, lists, replays and broadcast --
-// goes through the facet.
-import { LIST_SQL, AFTER_SQL } from "./schema.ts";
+// Because the parent always performs the envelope insert *before* calling
+// the facet, live broadcast never needs to consult a facet (the caller
+// already has the value in hand -- see broadcastEvent in watch.ts). Only
+// point reads/lists/replays of namespaced data need a facet round trip.
+// Correction (2026-09-13): the paragraph above described the parent's row as
+// value-trimmed from the moment it is written. It no longer is. A namespaced
+// write now lands in the parent WITH its value and is trimmed only once the
+// facet acknowledges it, so a committed row is complete at every instant and
+// no reader has to work out what a parent row with no facet row means. That
+// question -- unanswerable, because an apply in flight and an apply that never
+// happened look identical from one side -- was the cause of every defect this
+// file has had (docs/platform-verification.md S67 and its two corrections).
+//
+// The rule that replaces it, and it holds for every read: PARENT FIRST. If the
+// parent's row still has its value, that is the record. If it does not, the
+// facet acknowledged before this read began and therefore has it. Reading the
+// facet first is never safe: the acknowledgement and the trim can both land in
+// between, and the row is then in neither place.
+//
+// Correction (2026-09-12): the two sentences above claiming live broadcast
+// never needs to consult a facet were wrong -- broadcastEvent (watch.ts)
+// re-reads the committed row, and follows the same parent-first rule.
+import { LIST_SQL, AFTER_SQL, GET_SQL } from "./schema.ts";
 import { prefixEnd, rowToEvent, arrayBufferToBase64, base64ToArrayBuffer } from "./helpers.ts";
 import type { KineRow, KineEvent, KineKV } from "./helpers.ts";
-import { getCurrent, insert, currentRevision } from "./queries.ts";
+import { insert, currentRevision } from "./queries.ts";
 import type { SqlExec } from "./queries.ts";
-import { classifyKey, classifyPrefix, namespaceFacet, EVENTS_FACET } from "./keyspace.ts";
+import { classifyKey } from "./keyspace.ts";
 import { getFacet, facetFetch, facetJson, type FacetHost } from "./facets.ts";
 
 /**
- * Revisions this instance has assigned but not yet heard back about from the
- * owning facet. A Durable Object has exactly one live instance, so an apply
- * can only be in flight from here -- which is what lets a reader tell "the
- * facet has not got it yet" (wait) from "the facet never will" (a write that
- * failed, and whose caller was told so).
+ * Has this row's value been handed over to its facet? Until it has, the
+ * parent's copy is the only one, and the row must be read from here.
  *
- * Keyed by the host object, which the Cluster DO builds once per instance, so
- * two clusters sharing an isolate do not clamp each other's revisions.
+ * A row that carries neither a value nor a previous one would be
+ * indistinguishable from a handed-over one; storeInsert refuses to write one
+ * rather than leave that ambiguity in the log.
  */
-const pendingAppliesByHost = new WeakMap<object, Set<number>>();
-
-function pendingApplies(host: FacetHost): Set<number> {
-  let pending = pendingAppliesByHost.get(host);
-  if (!pending) {
-    pending = new Set();
-    pendingAppliesByHost.set(host, pending);
-  }
-  return pending;
+export function isOffloaded(row: KineRow): boolean {
+  return row.value === null && row.old_value === null;
 }
 
 /**
- * The newest revision a reader may be shown. Everything at or below it has a
- * settled outcome; the first in-flight apply is the ceiling, because handing
- * out a bookmark past a revision that is about to land would make the watcher
- * resume after an event it never received.
+ * Replace rows the parent has handed over with the facet's copies. Rows the
+ * parent still holds are returned untouched and cost no round trip, so a read
+ * that arrives before the hand-over completes is served entirely locally.
+ *
+ * `rawsFor` decides how much of a facet to ask for -- the keys under a prefix
+ * for a list, the revisions after a point for a replay -- so this never pulls
+ * a facet's whole history to fill one row.
  */
-function settledRevision(sql: SqlExec, host: FacetHost): number {
-  let firstPending = Infinity;
-  for (const id of pendingApplies(host)) firstPending = Math.min(firstPending, id);
-  const latest = currentRevision(sql);
-  return firstPending === Infinity ? latest : Math.min(latest, firstPending - 1);
+async function fillOffloaded(
+  host: FacetHost,
+  rows: KineRow[],
+  rawsFor: (facetName: string) => Promise<KineRow[]>,
+): Promise<KineRow[]> {
+  const facets = new Set<string>();
+  for (const row of rows) {
+    if (!isOffloaded(row)) continue;
+    const cls = classifyKey(row.thename);
+    if (cls.kind !== "cluster") facets.add(cls.facet);
+  }
+  if (facets.size === 0) return rows;
+
+  const byRevision = new Map<number, KineRow>();
+  await Promise.all(
+    Array.from(facets).map(async (facetName) => {
+      for (const row of await rawsFor(facetName)) byRevision.set(row.theid, row);
+    }),
+  );
+
+  return rows.map((row) => {
+    if (!isOffloaded(row)) return row;
+    const cls = classifyKey(row.thename);
+    if (cls.kind === "cluster") return row;
+    const filled = byRevision.get(row.theid);
+    if (!filled) {
+      // The parent only trims after the facet acknowledges, so this is the
+      // facet having lost an acknowledged write. Fail the read rather than
+      // serve an object with no value, which is what the caller would get.
+      throw new Error(
+        `facet ${cls.facet} is missing revision ${row.theid} for ${row.thename}, which the parent handed to it`,
+      );
+    }
+    return filled;
+  });
 }
 
-/** Did `id` reach the facet? Asked by exact id -- /key would answer about the key's newest row instead. */
-async function facetHasRevision(host: FacetHost, facet: string, id: number): Promise<boolean> {
+/**
+ * Fill a set of rows the caller already read from the parent, asking each
+ * facet only for revisions at or above the lowest one present.
+ */
+export function fillOffloadedRows(host: FacetHost, rows: KineRow[]): Promise<KineRow[]> {
+  const since = rows.length > 0 ? Math.min(...rows.map((r) => r.theid)) - 1 : 0;
+  return fillOffloaded(host, rows, (facetName) => facetAfterRaw(host, facetName, since));
+}
+
+/** The facet's own copy of one key, shaped for fillOffloaded. */
+async function facetKeyRaw(host: FacetHost, facetName: string, key: string): Promise<KineRow[]> {
   const resp = await facetFetch(
-    getFacet(host, facet),
-    new Request(`http://facet.internal/after/${id - 1}`),
+    getFacet(host, facetName),
+    new Request(`http://facet.internal/key${key}?includeDeleted=1`),
+  );
+  const body = await facetJson<{ row?: any }>(resp);
+  return body.row ? [facetRawToKineRow(body.row)] : [];
+}
+
+/** The facet's own copies of everything after a revision, shaped for fillOffloaded. */
+async function facetAfterRaw(
+  host: FacetHost,
+  facetName: string,
+  sinceRevision: number,
+): Promise<KineRow[]> {
+  const resp = await facetFetch(
+    getFacet(host, facetName),
+    new Request(`http://facet.internal/after/${sinceRevision}`),
   );
   const body = await facetJson<{ rows?: any[] }>(resp);
-  return (body.rows || []).some((raw) => raw.theid === id);
+  return (body.rows || []).map(facetRawToKineRow);
+}
+
+/**
+ * The parent's own view of a prefix: one row per key, newest first, tombstones
+ * excluded unless asked for. The parent has a row for every key in the
+ * cluster, so this is the authoritative key set for any prefix -- including
+ * prefixes that span namespaces, which no longer need a fan-out to discover
+ * which facets exist.
+ */
+function parentRows(
+  sql: SqlExec,
+  prefix: string,
+  limit: number,
+  revision: number,
+  includeDeleted: boolean,
+): KineRow[] {
+  const deleted = includeDeleted ? 1 : 0;
+  const q =
+    (revision > 0 ? LIST_SQL("AND mkv.id <= ?4") : LIST_SQL("AND mkv.name > ?4")) +
+    (limit > 0 ? ` LIMIT ${limit}` : "");
+  return sql.exec(q, prefix, prefixEnd(prefix), deleted, revision > 0 ? revision : "").toArray();
 }
 
 /** Decode a facet's JSON row (base64 value/old_value) back into a real KineRow. */
@@ -95,19 +177,8 @@ export function facetRawToKineRow(raw: any): KineRow {
   };
 }
 
-function byName(a: KineRow, b: KineRow): number {
-  return a.thename < b.thename ? -1 : a.thename > b.thename ? 1 : 0;
-}
-
 function prefixMatches(prefix: string, name: string): boolean {
   return prefix.endsWith("/") ? name.startsWith(prefix) : name === prefix;
-}
-
-/** List live Namespace names from the parent's own (cluster-scoped) log. */
-async function listNamespaces(sql: SqlExec): Promise<string[]> {
-  const prefix = "/registry/namespaces/";
-  const rows = sql.exec(LIST_SQL("AND mkv.name > ?4"), prefix, prefixEnd(prefix), 0, "").toArray();
-  return rows.map((r) => r.thename.slice(prefix.length));
 }
 
 async function facetListRaw(
@@ -123,25 +194,6 @@ async function facetListRaw(
   return (body.rows || []).map(facetRawToKineRow);
 }
 
-async function facetList(
-  host: FacetHost,
-  facetName: string,
-  prefix: string,
-  limit: number,
-  revision: number,
-): Promise<{ revision: number; kvs: KineKV[] }> {
-  const stub = getFacet(host, facetName);
-  const qs = new URLSearchParams();
-  if (limit > 0) qs.set("limit", String(limit));
-  if (revision > 0) qs.set("revision", String(revision));
-  const q = qs.toString();
-  const reqUrl = `http://facet.internal/list${prefix}${q ? "?" + q : ""}`;
-  const resp = await facetFetch(stub, new Request(reqUrl));
-  const body = await facetJson<{ revision: number; rows?: any[] }>(resp);
-  const kvs = (body.rows || []).map((r: any) => rowToEvent(facetRawToKineRow(r)).kv);
-  return { revision: body.revision, kvs };
-}
-
 /** Facet-aware replacement for queries.ts's getCurrent(). */
 export async function storeGetCurrent(
   sql: SqlExec,
@@ -149,42 +201,13 @@ export async function storeGetCurrent(
   key: string,
   includeDeleted = false,
 ): Promise<{ rev: number; event: KineEvent | null }> {
-  const cls = classifyKey(key);
-  if (cls.kind === "cluster") return getCurrent(sql, key, includeDeleted);
-
-  // The revision comes from the parent's own log, never the facet's. It is
-  // the compare-and-swap token every caller turns into the next write's
-  // prev_revision, and only the parent's is cluster-wide and monotonic: two
-  // concurrent creates that both read a *facet* revision pick different
-  // prev_revisions, so kine_name_prev_revision_uindex lets both through and
-  // the second silently replaces the first.
-  for (let attempt = 0; attempt < 8; attempt++) {
-    const tip = getCurrent(sql, key, true);
-    const resp = await facetFetch(
-      getFacet(host, cls.facet),
-      new Request(`http://facet.internal/key${key}?includeDeleted=1`),
-    );
-    const body = await facetJson<{ revision: number; row?: any }>(resp);
-
-    if (tip.event) {
-      const tipRevision = tip.event.kv.modRevision;
-      if (body.row?.theid !== tipRevision && !pendingApplies(host).has(tipRevision)) {
-        // An envelope whose facet half will never arrive. Left in place it
-        // pins prev_revision for this key, and every retry of the write that
-        // produced it collides with it -- an update retries with the same
-        // modRevision forever, so nothing else unwedges the key.
-        discardOrphanedEnvelope(sql, key, tipRevision);
-        continue;
-      }
-    }
-
-    const rev = settledRevision(sql, host);
-    if (!body.row) return { rev, event: null };
-    const event = rowToEvent(facetRawToKineRow(body.row));
-    if (event.delete && !includeDeleted) return { rev, event: null };
-    return { rev, event };
-  }
-  throw new Error(`storeGetCurrent: ${key} still has an unresolvable envelope after 8 attempts`);
+  const rows = sql.exec(GET_SQL(includeDeleted), key).toArray();
+  const rev = rows.length > 0 ? rows[0].current_rev : currentRevision(sql);
+  if (rows.length === 0) return { rev, event: null };
+  const [filled] = await fillOffloaded(host, rows, (facetName) =>
+    facetKeyRaw(host, facetName, key),
+  );
+  return { rev, event: rowToEvent(filled) };
 }
 
 /**
@@ -211,9 +234,13 @@ export async function storeInsert(
     return insert(sql, key, create, del, createRevision, prevRevision, lease, value, oldValue);
   }
 
-  const id = insert(sql, key, create, del, createRevision, prevRevision, lease, null, null);
-  const pending = pendingApplies(host);
-  pending.add(id);
+  if (value === null && oldValue === null) {
+    throw new Error(
+      `storeInsert: ${key} carries neither a value nor a previous one; such a row cannot be told apart from one whose value has been handed to its facet`,
+    );
+  }
+
+  const id = insert(sql, key, create, del, createRevision, prevRevision, lease, value, oldValue);
   try {
     const resp = await facetFetch(
       getFacet(host, cls.facet),
@@ -233,52 +260,21 @@ export async function storeInsert(
         }),
       }),
     );
-    await facetJson(resp); // throws on facet-side error instead of silently leaving the parent's envelope and the facet's copy out of sync
+    await facetJson(resp);
   } catch (err) {
-    // A failure here does not mean the facet did not apply: the write may
-    // have committed and only the acknowledgement been lost. Ask before
-    // undoing anything, and when the question itself cannot be answered,
-    // keep the envelope -- a later reader resolves it, by which point no
-    // apply for this id can be in flight any more.
-    let landed = false;
-    try {
-      landed = await facetHasRevision(host, cls.facet, id);
-    } catch {
-      throw err;
-    }
-    if (landed) return id;
-    discardOrphanedEnvelope(sql, key, id);
-    throw err;
-  } finally {
-    pending.delete(id);
+    // The write stands. It is durable in the parent and every read path
+    // serves it from there, so reporting failure would be a lie that costs
+    // the caller a retry and, for a create, a spurious 409. What is lost is
+    // the storage offload for this row until something repairs it, which is
+    // why this is loud.
+    console.warn(
+      `storeInsert: ${key} at revision ${id} stays in the parent: ${String(err)}. ` +
+        "Reads are unaffected; the namespace facet does not have this revision.",
+    );
+    return id;
   }
+  sql.exec("UPDATE kine SET value = NULL, old_value = NULL WHERE id = ?1", id);
   return id;
-}
-
-/**
- * Undo the parent's half of a write the facet is known not to hold. Left in
- * place the envelope pins prev_revision for its key, so the write that
- * produced it can never be retried -- kine_name_prev_revision_uindex turns
- * every attempt into a spurious 409 while GET says the object is not there.
- *
- * Callers must have established that the facet will never apply this id:
- * either it answered that it does not have it while no apply was in flight,
- * or it answered a probe after the apply had definitively ended. "The facet
- * did not answer" is not that, and neither is "the fetch threw".
- *
- * Only when the envelope is still the newest row for its key: a later write
- * chains its prev_revision to this id, and removing a link mid-chain is worse
- * than leaving it (replayDelta drops what the facet cannot fill).
- *
- * The id is not reused -- the parent's kine.id is AUTOINCREMENT, so
- * sqlite_sequence keeps handing out higher ids after the delete.
- */
-function discardOrphanedEnvelope(sql: SqlExec, key: string, id: number): void {
-  sql.exec(
-    "DELETE FROM kine WHERE id = ?1 AND NOT EXISTS (SELECT 1 FROM kine WHERE name = ?2 AND id > ?1)",
-    id,
-    key,
-  );
 }
 
 /** Facet-aware, HTTP-list-shaped read (matches index.ts's handleList response: always excludes tombstones). */
@@ -289,40 +285,13 @@ export async function storeList(
   limit: number,
   revision: number,
 ): Promise<{ revision: number; count: number; kvs: KineKV[] }> {
-  const cls = classifyPrefix(prefix);
-
-  if (cls.kind === "cluster") {
-    const end = prefixEnd(prefix);
-    let rows: KineRow[];
-    if (revision === 0) {
-      const q = LIST_SQL("AND mkv.name > ?4") + (limit > 0 ? ` LIMIT ${limit}` : "");
-      rows = sql.exec(q, prefix, end, 0, "").toArray();
-    } else {
-      const q = LIST_SQL("AND mkv.id <= ?4") + (limit > 0 ? ` LIMIT ${limit}` : "");
-      rows = sql.exec(q, prefix, end, 0, revision).toArray();
-    }
-    const kvs = rows.map((r) => rowToEvent(r).kv);
-    return { revision: settledRevision(sql, host), count: kvs.length, kvs };
-  }
-
-  if (cls.kind === "namespace" || cls.kind === "events" || cls.kind === "ca-vault") {
-    // The facet's own MAX(id) is the newest revision that happened to touch
-    // this namespace, which is not a revision the cluster can be watched
-    // from. A client LISTs and then watches from what the LIST reported.
-    const { kvs } = await facetList(host, cls.facet, prefix, limit, revision);
-    return { revision: settledRevision(sql, host), count: kvs.length, kvs };
-  }
-
-  // all-namespaces fan-out ("root" never reaches here -- it's only used
-  // internally for the WatchHub firehose, via storeListRaw/storeReplay).
-  const namespaces = await listNamespaces(sql);
-  const perNs = await Promise.all(
-    namespaces.map((ns) => facetList(host, namespaceFacet(ns), prefix, limit, revision)),
+  const rows = parentRows(sql, prefix, limit, revision, false);
+  const rev = rows.length > 0 ? rows[0].current_rev : currentRevision(sql);
+  const filled = await fillOffloaded(host, rows, (facetName) =>
+    facetListRaw(host, facetName, prefix, false),
   );
-  let kvs = perNs.flatMap((r) => r.kvs);
-  kvs.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-  if (limit > 0) kvs = kvs.slice(0, limit);
-  return { revision: settledRevision(sql, host), count: kvs.length, kvs };
+  const kvs = filled.map((r) => rowToEvent(r).kv);
+  return { revision: rev, count: kvs.length, kvs };
 }
 
 /**
@@ -337,32 +306,10 @@ export async function storeListRaw(
   prefix: string,
   includeDeleted: boolean,
 ): Promise<KineRow[]> {
-  const cls = classifyPrefix(prefix);
-
-  if (cls.kind === "cluster") {
-    const q = LIST_SQL("AND mkv.name > ?4");
-    return sql.exec(q, prefix, prefixEnd(prefix), includeDeleted ? 1 : 0, "").toArray();
-  }
-  if (cls.kind === "namespace" || cls.kind === "events" || cls.kind === "ca-vault") {
-    return facetListRaw(host, cls.facet, prefix, includeDeleted);
-  }
-  if (cls.kind === "root") {
-    const localRows = sql
-      .exec(LIST_SQL("AND mkv.name > ?4"), "/", prefixEnd("/"), includeDeleted ? 1 : 0, "")
-      .toArray();
-    const namespaces = await listNamespaces(sql);
-    const facetNames = [...namespaces.map(namespaceFacet), EVENTS_FACET];
-    const perFacet = await Promise.all(
-      facetNames.map((fn) => facetListRaw(host, fn, "/", includeDeleted)),
-    );
-    return [...localRows, ...perFacet.flat()].sort(byName);
-  }
-  // all-namespaces
-  const namespaces = await listNamespaces(sql);
-  const perNs = await Promise.all(
-    namespaces.map((ns) => facetListRaw(host, namespaceFacet(ns), prefix, includeDeleted)),
+  const rows = parentRows(sql, prefix, 0, 0, includeDeleted);
+  return fillOffloaded(host, rows, (facetName) =>
+    facetListRaw(host, facetName, prefix, includeDeleted),
   );
-  return perNs.flat().sort(byName);
 }
 
 /**
@@ -379,14 +326,20 @@ export async function storeReplay(
   prefix: string,
   sinceRevision: number,
 ): Promise<{ events: KineEvent[]; bookmark: number }> {
-  // Not currentRevision: a bookmark past an apply still in flight is the one
-  // number a watcher must never be given. It resumes from the bookmark, and
-  // the revision it skipped lands a moment later with nothing to redeliver it.
-  const bookmark = settledRevision(sql, host);
+  // Taken before anything is awaited. A bookmark below the content a client
+  // is handed makes it re-receive events it already has, which an informer
+  // absorbs; a bookmark above makes it skip one, which nothing recovers.
+  const bookmark = currentRevision(sql);
 
   if (sinceRevision > 0) {
-    const events = await replayDelta(sql, host, prefix, sinceRevision, bookmark);
-    return { events, bookmark };
+    const rows = sql
+      .exec(AFTER_SQL, sinceRevision)
+      .toArray()
+      .filter((r) => prefixMatches(prefix, r.thename));
+    const filled = await fillOffloaded(host, rows, (facetName) =>
+      facetAfterRaw(host, facetName, sinceRevision),
+    );
+    return { events: filled.map(rowToEvent), bookmark };
   }
 
   const rows = await storeListRaw(sql, host, prefix, false);
@@ -397,60 +350,6 @@ export async function storeReplay(
     return event;
   });
   return { events, bookmark };
-}
-
-async function replayDelta(
-  sql: SqlExec,
-  host: FacetHost,
-  prefix: string,
-  sinceRevision: number,
-  ceiling: number,
-): Promise<KineEvent[]> {
-  const rows = sql.exec(AFTER_SQL, sinceRevision).toArray();
-  // Stopping at the ceiling rather than skipping the in-flight revision:
-  // a later write to the same key chains its prev_revision to it, so passing
-  // it on alone would hand the watcher a modification of a state it never saw.
-  const matched = rows.filter((r) => r.theid <= ceiling && prefixMatches(prefix, r.thename));
-
-  const facetNames = new Set<string>();
-  for (const r of matched) {
-    const cls = classifyKey(r.thename);
-    if (cls.kind !== "cluster") facetNames.add(cls.facet);
-  }
-
-  const rowsByFacet = new Map<string, Map<number, any>>();
-  await Promise.all(
-    Array.from(facetNames).map(async (facetName) => {
-      const stub = getFacet(host, facetName);
-      const resp = await facetFetch(
-        stub,
-        new Request(`http://facet.internal/after/${sinceRevision}`),
-      );
-      const body = await facetJson<{ rows?: any[] }>(resp);
-      const byId = new Map<number, any>();
-      for (const raw of body.rows || []) byId.set(raw.theid, raw);
-      rowsByFacet.set(facetName, byId);
-    }),
-  );
-
-  const filled: KineRow[] = [];
-  for (const r of matched) {
-    const cls = classifyKey(r.thename);
-    if (cls.kind === "cluster") {
-      filled.push(r);
-      continue;
-    }
-    const raw = rowsByFacet.get(cls.facet)?.get(r.theid);
-    if (raw) {
-      filled.push(facetRawToKineRow(raw));
-      continue;
-    }
-    console.warn(
-      `replayDelta: dropping revision ${r.theid} for ${r.thename}: facet ${cls.facet} has no row. ` +
-        "It is at or below the settled ceiling, so no apply for it is in flight and none can start.",
-    );
-  }
-  return filled.map(rowToEvent);
 }
 
 // Namespace deletion deliberately does NOT destroy its facet -- see the long
