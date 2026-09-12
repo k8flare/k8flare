@@ -76,6 +76,8 @@ cp("storagebackend_config.go", "pkg/storage/storagebackend/config.go");
 cp("feature_support_checker.go", "pkg/storage/feature/feature_support_checker.go");
 fs.rmSync(path.join(DST, "pkg/storage/feature/feature_support_checker_test.go"), { force: true });
 cp("sharding_parser.go", "pkg/sharding/parser.go");
+// storageversion/manager.go: see pkg/k8s-js-overlays/apiserver/storageversion_manager.go.
+cp("storageversion_manager.go", "pkg/storageversion/manager.go");
 fs.rmSync(path.join(DST, "pkg/sharding/parser_test.go"), { force: true });
 cp("cache_watcher.go", "pkg/storage/cacher/cache_watcher.go");
 cp("cacher_flowcontrol_shim.go", "pkg/storage/cacher/flowcontrol_js_shim.go");
