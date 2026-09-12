@@ -214,8 +214,12 @@ batch or schedule rather than hand-dispatching.
 
 **Acceptance.** ~10 consecutive green dw runs, or a root cause for each red.
 
-**Local evidence 2026-09-12, and it is not symmetric** (`docs/platform-verification.md`
-S51). Same harness, same node, same required GC focus:
+**S51 の比較は野良プロセスで汚染されていた** (S62)。当時 16 個のホスト
+controller-manager が同じクラスタを叩いており、sched-dw だけが落ちたのも
+その副作用の可能性が高い。**測り直すまで、この表を昇格の根拠にしてはならない。**
+
+~~**Local evidence 2026-09-12, and it is not symmetric** (`docs/platform-verification.md`
+S51). Same harness, same node, same required GC focus:~~
 
 | variant | result |
 |---|---|
@@ -571,7 +575,7 @@ promise/stream semantics but not input gates, real IoContext teardown or DO
 storage semantics. `@cloudflare/vitest-pool-workers` would close that gap at
 the cost of a dependency.
 
-### P1-8 `[~]` A k3s patch bump is sitting unmerged
+### P1-8 `[x]` A k3s patch bump is sitting unmerged
 
 `deps/k3s-v1.36.4-k3s1` (from the weekly automation on 2026-09-07) moves the
 pin from k3s v1.36.3 to v1.36.4 and the `k8s.io/*` staging replaces with it.
