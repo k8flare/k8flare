@@ -1,13 +1,19 @@
 package apiserver
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/apiserver/pkg/endpoints/request"
 
 	"github.com/k8flare/k8flare/pkg/apiserver/apidef"
 )
@@ -132,13 +138,61 @@ func NewServer(cfg ServerConfig) *http.ServeMux {
 	// no core/v1 request has arrived yet in this instance's lifetime.
 	coreStores := storesByGV[corev1.SchemeGroupVersion]
 
+	// The REST surface comes from k8s.io/apiserver's own installer over the
+	// same genericregistry.Store instances (installer.go). Built once here
+	// rather than per request: InstallREST walks every resource's storage
+	// and builds a route table, which is startup work, not request work.
+	admit := &k8flareAdmission{
+		namespaces:       namespaceStore,
+		priorityClasses:  priorityClassStore,
+		limitRanges:      coreStores["limitranges"],
+		namespacedStores: namespacedStores,
+	}
+
+	// Namespace creation still has to seed the default ServiceAccount and the
+	// root CA ConfigMap. Wired here rather than where the store is built,
+	// because it needs the sibling stores of its own group, which only exist
+	// once every group has been assembled.
+	if namespaceStore != nil && namespaceStore.upstream != nil {
+		namespaceStore.upstream.AfterCreate = func(obj runtime.Object, _ *metav1.CreateOptions) {
+			ApplyPostCreateEffects(context.Background(), coreStores, obj)
+		}
+	}
+
+	installed, err := NewRESTContainer(storesByGV, admit)
+	if err != nil {
+		panic(fmt.Sprintf("apiserver: install REST routes: %v", err))
+	}
+	// Upstream's REST handlers read the parsed request out of the context
+	// rather than the URL; a generic apiserver puts it there in its handler
+	// chain, and without it every route answers "missing requestInfo".
+	//
+	// The body is endpoints/filters.WithRequestInfo's, inlined rather than
+	// imported: that package's authentication filter reaches
+	// apiserver/pkg/util/webhook, which needs the OTLP tracing wrapper this
+	// build deliberately does not link (pkg/k8s-js-overlays/component-base,
+	// worth 20.3MB), and client-go/tools/events, which the leanwidth
+	// clientset does not have. Deviating from rule #3 for a six-line
+	// wrapper is cheaper than carrying either back.
+	resolver := &request.RequestInfoFactory{
+		APIPrefixes:          sets.NewString("api", "apis"),
+		GrouplessAPIPrefixes: sets.NewString("api"),
+	}
+	restHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		info, err := resolver.NewRequestInfo(r)
+		if err != nil {
+			writeInternalError(w, fmt.Errorf("request info: %w", err))
+			return
+		}
+		installed.ServeHTTP(w, r.WithContext(request.WithRequestInfo(r.Context(), info)))
+	})
+
 	for _, gv := range apidef.GroupVersions() {
 		prefix := apidef.APIPrefix(gv)
-		stores := storesByGV[gv]
 
 		mux.Handle(prefix, AuthMiddleware(cfg.Tokens, AuthzMiddleware(authz, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			BootstrapCluster(r.Context(), coreStores)
-			HandleResource(w, r, prefix, stores, namespacedStores, priorityClassStore, namespaceStore)
+			restHandler.ServeHTTP(w, r)
 		}))))
 	}
 

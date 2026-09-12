@@ -204,7 +204,16 @@ Rules of thumb:
 
 ## Backup and exit
 
-**There is no backup mechanism.** State lives in Durable Objects; your
+**Correction (2026-09-13): there is one, and it is described 120 lines
+above.** `cmd/k8flare-backup` round-trips every object the API serves,
+verified against a real deployment. What it cannot cover is the CA keypairs
+and the per-cluster token vault, which live in Durable Object facets the
+Kubernetes API deliberately does not serve -- so a restore into a fresh
+deployment returns your workloads but not your cluster's identity, and nodes
+holding certificates signed by the old CA will not rejoin. Read the rest of
+this section as being about *that* gap, not about a total absence.
+
+State lives in Durable Objects; your
 safety nets are:
 
 - Cloudflare's 30-day point-in-time recovery on DO SQLite.

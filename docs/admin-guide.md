@@ -30,7 +30,7 @@ k8flare を自分の Cloudflare アカウントにデプロイし、クラスタ
 ```sh
 pnpm install
 make wasm                                     # WASM チャンク生成 (~2分)
-npx wrangler deploy -c packages/k8flare-worker/wrangler.jsonc
+npm run deploy
 ```
 
 **初回デプロイ前に `packages/k8flare-worker/wrangler.jsonc` の
@@ -247,7 +247,7 @@ wireguard を使います([cloudflare-mesh-networking.md](cloudflare-mesh-networ
 ```sh
 git pull
 make wasm && make test && make test-kcm   # ローカル検証
-npx wrangler deploy -c packages/k8flare-worker/wrangler.jsonc
+npm run deploy
 ```
 
 **リクエストの切り替えは無停止です**(進行中のリクエストは旧バージョンで

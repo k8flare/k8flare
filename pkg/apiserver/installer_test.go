@@ -23,7 +23,7 @@ func TestTheRealInstallerAcceptsEveryResourceWeServe(t *testing.T) {
 		storesByGV[gv] = NewResourceStoresForGroupVersion(storage, gv)
 	}
 
-	handler, err := NewRESTContainer(storesByGV)
+	handler, err := NewRESTContainer(storesByGV, nil)
 	if err != nil {
 		t.Fatalf("NewRESTContainer: %v", err)
 	}

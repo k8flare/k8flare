@@ -32,7 +32,7 @@ Build WASM step failed on a build that passed locally). Size
 reproducibility depends on the version.
 
 The chunk that gets hurt is whichever is closest to the cap, which today
-is **apiserver** (65.2MB, ~1.8MB of headroom) — not `gc`, which the
+is **apiserver** (42.8MB, ~21MB of headroom) — not `gc`, which the
 original note named and which now sits 25MB clear. `make wasm` prints
 every chunk's headroom; trust that over any number written down here.
 

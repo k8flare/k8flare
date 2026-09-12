@@ -103,7 +103,7 @@ open a real Cloudflare proxy session at startup — failing without
 credentials, and quietly using your real account with them.
 
 Chunk sizes are gated at build time against the Worker Loader's 64MiB cap.
-The apiserver chunk currently has roughly 1.8MB of headroom, so adding a
+The apiserver chunk currently has roughly 21MB of headroom, so adding a
 dependency to it can fail the build outright; `make wasm` prints the
 remaining headroom for every chunk.
 
