@@ -7531,3 +7531,53 @@ S57 の klog は `expectations fulfilled` を **697 回**出している。
 インスタンスが作り直されれば毎回空になり、毎回「満たされた」と判定される。
 再ロード(isolate の入れ替え)は 0 回だったが、**同一 isolate 内で
 `ResidentService` の run が複数回起動していないか**はまだ見ていない。
+
+### S59 (2026-09-12): controller-manager が 1 つの dynamic worker に 2 つ立っている
+
+S58 の最後に挙げた「同一 isolate 内で `ResidentService` の run が複数回
+起動していないか」を数えた。**起動していた。**
+
+`ResidentService` は `startOnce sync.Once` で run を 1 回に抑えるので、
+`controllerManager: run starting` が 2 行出るなら **Go のインスタンスが 2 つ**
+ある。一方シェル側の `controllers: kcm dynamic worker up` は 1 回しか出ない
+——シェルは 1 回しかロードしていないのに、Go は 2 つ動いている。
+
+| 実行ログ | `run starting` | `dynamic worker up` | 作られた Pod |
+|---|---|---|---|
+| `kv-dev`(KCM_VERBOSITY の回) | **1** | 1 | 4 |
+| `prodshape-dev` | **2** | 1 | **35** |
+| `cnt-dev` | **2** | 1 | **161 POST** |
+
+**インスタンス数と過剰生成の強さが揃っている。**
+
+#### なぜこれが効くか
+
+replicaset/replication controller の expectations は**そのインスタンスの
+メモリ**に載る。2 つ動いていれば、片方が作った Pod はもう片方の期待値には
+無い。もう片方は「期待していない Pod が増えた」=「replica が多すぎる」と
+判定して消し、最初の片方は「消えた」と見て補充する。**S57 の
+`Too many replicas` 374 回 / `Too few replicas` 0 回**、および
+「作ってすぐ消す」を 161 回(S58 訂正)という形と、これで整合する。
+
+ホストプロセスの KCM は 1 プロセスしか無いので同条件で正しい(S56)。
+informer も indexer も expectations 実装も健全である(S58)という、これまでの
+消し込みとも矛盾しない。
+
+#### まだ確定ではない
+
+- **1 インスタンスでも 4 個作っている**(目標 2)。インスタンス二重化だけが
+  原因なら 1 つのときは 2 個になるはずで、なっていない。二重化は増幅要因では
+  あっても、唯一の原因ではない可能性が残る。
+- 2 つ目のインスタンスが**どこから来るのか**を特定していない。Worker Loader が
+  同じコードのインスタンスを複数立てうるのか、Controllers DO が別 ID で
+  2 回ロードしているのか、`getEntrypoint().fetch()` が別インスタンスに
+  当たっているのか。**設計は 1 コンポーネント 1 インスタンスを前提にしている**
+  (`components[name]` に 1 つだけ持つ)ので、前提のほうが誤っている可能性が
+  ある。
+
+#### 次の一手
+
+Go 側で**インスタンス固有の ID**(起動時に乱数)を作り、`pumptrace` の
+component 名に付けて出す。どのインスタンスがどの書き込みをしたかが分かれば、
+二重化の実在と、それぞれが何をしているかが同時に取れる。`ResidentService` の
+`run starting` ログにも同じ ID を付ける。
