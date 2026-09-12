@@ -209,12 +209,31 @@ func NewUpstreamStore(
 			if len(options.DryRun) > 0 {
 				return func(context.Context, bool) {}, nil
 			}
+			if !serviceNeedsClusterIP(svc) {
+				return func(context.Context, bool) {}, nil
+			}
 			if err := AssignClusterIP(ctx, storageClient, svc); err != nil {
 				return nil, fmt.Errorf("allocate ClusterIP: %w", err)
 			}
-			return func(context.Context, bool) {}, nil
+			// The allocation is a persisted write that happens before the
+			// object reaches storage, so a create that fails after this
+			// point -- AlreadyExists, a validation error, a storage error --
+			// leaks the address unless it is handed back here.
+			allocated := svc.DeepCopy()
+			return func(_ context.Context, stored bool) {
+				if !stored {
+					ReleaseClusterIP(context.Background(), storageClient, allocated)
+				}
+			}, nil
 		},
-		AfterDelete: func(obj runtime.Object, _ *metav1.DeleteOptions) {
+		AfterDelete: func(obj runtime.Object, options *metav1.DeleteOptions) {
+			// AfterDelete fires for a dry-run delete too: the storage layer
+			// reads and validates and reports success without writing, so
+			// releasing here would hand a live Service's address back to the
+			// allocator while the Service itself is still served.
+			if len(options.DryRun) > 0 {
+				return
+			}
 			if svc, ok := obj.(*corev1.Service); ok {
 				ReleaseClusterIP(context.Background(), storageClient, svc)
 			}

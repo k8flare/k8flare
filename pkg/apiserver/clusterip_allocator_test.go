@@ -155,3 +155,125 @@ func TestDeleteNamespaceDependents_ReleasesServiceClusterIPs(t *testing.T) {
 		t.Errorf("expected %s to be released by DeleteNamespaceDependents, but it's still marked allocated", svc.Spec.ClusterIP)
 	}
 }
+
+// newServiceStoreForHookTest builds the real Service store so its
+// BeginCreate/AfterDelete hooks can be driven directly. Checking the
+// persisted bitmap is the only deterministic way to see what they did:
+// AllocateNext picks at random over the /16, so "allocate again and see
+// whether the same address comes back" is not a thing to wait for.
+func newServiceStoreForHookTest(storage *Storage) *ResourceStore {
+	return NewResourceStore(storage, corev1.SchemeGroupVersion, "services", "service", true,
+		func() runtime.Object { return &corev1.Service{} },
+		func() runtime.Object { return &corev1.ServiceList{} },
+	)
+}
+
+func allocatedOffset(t *testing.T, storage *Storage, ip string) (int, *ClusterIPAllocator) {
+	t.Helper()
+	allocator := ServiceIPAllocator(storage)
+	offset, err := allocator.offsetFor(net.ParseIP(ip))
+	if err != nil {
+		t.Fatalf("offsetFor(%s): %v", ip, err)
+	}
+	return offset, allocator
+}
+
+func bitmapHas(t *testing.T, allocator *ClusterIPAllocator, offset int) bool {
+	t.Helper()
+	bitmap, _, err := allocator.load(context.Background())
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	return bitmap.Has(offset)
+}
+
+// TestServiceAfterDelete_DryRunKeepsClusterIP: a dry-run DELETE reaches
+// AfterDelete. The storage layer reads and validates and reports success
+// without writing, so a hook that releases unconditionally hands a live
+// Service's address back to the allocator -- and the Service is still
+// being served with it.
+func TestServiceAfterDelete_DryRunKeepsClusterIP(t *testing.T) {
+	storage := newTestStorage(newFakeKV())
+	ctx := context.Background()
+	svcStore := newServiceStoreForHookTest(storage)
+
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "svc-dryrun"}}
+	if err := AssignClusterIP(ctx, storage, svc); err != nil {
+		t.Fatalf("AssignClusterIP: %v", err)
+	}
+	if _, err := svcStore.Create(ctx, "ns-dryrun", svc, nil); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	offset, allocator := allocatedOffset(t, storage, svc.Spec.ClusterIP)
+	if !bitmapHas(t, allocator, offset) {
+		t.Fatalf("expected %s to be allocated after the create", svc.Spec.ClusterIP)
+	}
+
+	svcStore.upstream.AfterDelete(svc, &metav1.DeleteOptions{DryRun: []string{metav1.DryRunAll}})
+	if !bitmapHas(t, allocator, offset) {
+		t.Errorf("a dry-run delete released %s while the Service still exists", svc.Spec.ClusterIP)
+	}
+
+	svcStore.upstream.AfterDelete(svc, &metav1.DeleteOptions{})
+	if bitmapHas(t, allocator, offset) {
+		t.Errorf("a real delete left %s allocated", svc.Spec.ClusterIP)
+	}
+}
+
+// TestServiceBeginCreate_ReleasesOnFailedCreate: the allocation is a
+// persisted write made before the object reaches storage, so a create
+// that fails afterwards -- AlreadyExists, validation, a storage error --
+// leaks the address unless the FinishFunc hands it back.
+func TestServiceBeginCreate_ReleasesOnFailedCreate(t *testing.T) {
+	storage := newTestStorage(newFakeKV())
+	ctx := context.Background()
+	svcStore := newServiceStoreForHookTest(storage)
+
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "svc-doomed"}}
+	finish, err := svcStore.upstream.BeginCreate(ctx, svc, &metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("BeginCreate: %v", err)
+	}
+	if svc.Spec.ClusterIP == "" {
+		t.Fatal("expected BeginCreate to allocate a ClusterIP")
+	}
+	offset, allocator := allocatedOffset(t, storage, svc.Spec.ClusterIP)
+	if !bitmapHas(t, allocator, offset) {
+		t.Fatalf("expected %s to be allocated by BeginCreate", svc.Spec.ClusterIP)
+	}
+
+	finish(ctx, false)
+	if bitmapHas(t, allocator, offset) {
+		t.Errorf("a create that never reached storage leaked %s", svc.Spec.ClusterIP)
+	}
+}
+
+// TestServiceBeginCreate_LeavesAnExplicitClusterIPAlone: the release must
+// hand back only what this hook allocated. A Service that names its own
+// ClusterIP is not allocated from the bitmap at all, so releasing it on a
+// failed create would free an address belonging to whoever does hold it.
+func TestServiceBeginCreate_LeavesAnExplicitClusterIPAlone(t *testing.T) {
+	storage := newTestStorage(newFakeKV())
+	ctx := context.Background()
+	svcStore := newServiceStoreForHookTest(storage)
+
+	held := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "svc-holder"}}
+	if err := AssignClusterIP(ctx, storage, held); err != nil {
+		t.Fatalf("AssignClusterIP: %v", err)
+	}
+	offset, allocator := allocatedOffset(t, storage, held.Spec.ClusterIP)
+
+	squatter := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "svc-squatter"},
+		Spec:       corev1.ServiceSpec{ClusterIP: held.Spec.ClusterIP},
+	}
+	finish, err := svcStore.upstream.BeginCreate(ctx, squatter, &metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("BeginCreate: %v", err)
+	}
+	finish(ctx, false)
+
+	if !bitmapHas(t, allocator, offset) {
+		t.Errorf("a failed create of a Service naming %s released the holder's address", held.Spec.ClusterIP)
+	}
+}

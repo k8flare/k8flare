@@ -76,8 +76,8 @@ func AssignClusterIP(ctx context.Context, storage *Storage, svc *corev1.Service)
 
 // ReleaseClusterIP returns svc's ClusterIP to the pool, if it had a real
 // allocated one (not empty, not "None", not an ExternalName Service).
-// Called from handler.go's DELETE cases, after the Service is already gone
-// from storage: best-effort, logged rather than surfaced as a
+// Called from the Service store's AfterDelete, after the Service is already
+// gone from storage: best-effort, logged rather than surfaced as a
 // client-visible error, since the delete itself already succeeded by the
 // time this runs and there's nothing left to roll back to.
 func ReleaseClusterIP(ctx context.Context, storage *Storage, svc *corev1.Service) {
