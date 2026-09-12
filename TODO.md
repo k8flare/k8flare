@@ -654,6 +654,27 @@ Deployment を 1 個作って消す。**運用者が忘れたら利用者が 20 
 どちらも本番の挙動を変えるので、実装前に承認を得る。S50 を測っただけの現状
 では**利用者が 20 分待つ既定のまま**であることを明記しておく。
 
+### P1-11 `[ ]` required gate が「Pod を 47 個作る制御プレーン」を通している
+
+**Observed 2026-09-12 (S52).** `replicas=2` の Deployment 1 個に対して、
+required な `host` バリアントでは 1 namespace に **47 個**の distinct な Pod が
+作られ、それから 2 個に収束していた。`sched-dw` では 35 個で、そちらは
+conformance の spec が落ちる。**host が通っているのは、spec がその瞬間の数しか
+見ないからにすぎない。**
+
+本番では起きない(全 dynamic worker 構成で、`--cascade=orphan` 後に Pod 2 個が
+120 秒安定)。ホストプロセスの controller-manager はこのローカルハーネスでは
+`wrangler dev` に繋いでおり、watch が pump window ごとに切れる。
+replicaset-controller の expectations がそれで壊れている、というのが仮説。
+
+**Do.** CI が復旧したら、runner 上の `host` 変種で同じ過剰生成が起きるかを
+最初に確認する。`commit` 境界(`PUMP_TRACE=1`)で distinct な Pod 名を数えれば
+よい。起きていれば required gate の信頼度の問題であり、起きていなければ
+ローカルハーネス固有として切り離せる。P1-1 / P1-2 の昇格判断より先に決める。
+
+**Acceptance.** CI の host 変種で `replicas=2` に対して作られる distinct な
+Pod が 2 個であること、またはそうでない理由が特定されていること。
+
 ## Out of scope / deliberately not doing
 
 - `[!]` Replacing the hand-written REST layer with upstream
