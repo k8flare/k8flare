@@ -7767,3 +7767,44 @@ reflector は最後に見た resourceVersion から **再 watch** する。
 `docs/pump-window-design.md` の Stage 1 が目指す「欠落のない replay」は、
 この変更で達成されたわけではない——達成されたのは「境界が欠落として扱われ
 ない」ことだけである。cut の保証はまだ無い。
+
+#### S61 追記: 第二の原因の手がかり — 30 個の Pod に ADD が 60 件
+
+relist を 15 回まで落とした後のトレースを、もう一段見た。
+
+| 量 | 値 |
+|---|---|
+| Pod の作成(シェル側、バースト耐性あり) | **30** |
+| うち controller が**最初の Pod を見る前**に出したもの | **1** |
+| 作成が起きた時間帯 | 最初の **1,575ms** に全部 |
+| kcm の informer が配送した `observed.add`(この namespace) | **60** |
+
+読み取れること:
+
+- **盲目的に作っているのではない。** 最初の観測は +30ms に届いており、
+  30 個のうち 29 個はそれ以降に出ている。controller は見ながら作っている。
+- **1 つの Pod につき ADD が 2 回届いている。** `Observations` の登録は
+  `pumptrace.Observations(factory.Pods().Informer(), "kcm")` の 1 箇所だけで、
+  informer は共有インスタンス(`f.pods` にキャッシュ)なので、**計器の二重
+  登録ではない。**
+
+`SharedIndexInformer` は、対象がストアに既に在れば ADD ではなく UPDATE を
+出す。**ADD が 2 回出るということは、その間にストアから消えている**——
+`Replace`(relist)か、delete の観測かのどちらかである。
+
+upstream の expectations は「期待した数の ADD を観測したら満たされた」と
+判定する。**ADD が二重に届けば、実際の作成が終わる前に満たされたことになり、
+次の sync が走って更に作る。** 30 個という数と、1.5 秒という時間幅に合う。
+
+#### なぜこれが `docs/pump-window-design.md` 5.1 の話なのか
+
+ストアから消えてまた ADD される経路のうち、設計文書が名指ししているのは
+**LIST が、controller が既に delete を観測した Pod を含んだ状態で返る**
+ケースである(「committed cut」を保証していないため)。5.1 はまさにこれを
+「resume の watermark は単なる最大 id でなく、そのprefixについて必要な全
+facet書込が読めると確認した committed cut を表す必要がある」と書いている。
+
+**ただしこれは仮説である。** ADD が二重になる経路を、実際のイベント列で
+特定していない。このセッションで機序の仮説を 3 回撤回しているので、
+**次に触るときは「どの ADD がどこから来たか」を 1 件ずつ追う**こと——
+`observed.add` の rv と、直前の `commit` / relist の対応を並べる。
