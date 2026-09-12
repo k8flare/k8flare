@@ -61,31 +61,41 @@ export function isOffloaded(row: KineRow): boolean {
 }
 
 /**
- * Replace rows the parent has handed over with the facet's copies. Rows the
- * parent still holds are returned untouched and cost no round trip, so a read
- * that arrives before the hand-over completes is served entirely locally.
+ * Replace rows the parent has handed over with the facet's copies, asking
+ * each facet for exactly the revisions the parent selected.
  *
- * `rawsFor` decides how much of a facet to ask for -- the keys under a prefix
- * for a list, the revisions after a point for a replay -- so this never pulls
- * a facet's whole history to fill one row.
+ * By revision, never by key or prefix: the facet's own "latest row for this
+ * name" is not the row the parent chose. A concurrent update, a LIST at a
+ * past revision, or a key whose newest row is a tombstone all make those two
+ * disagree, and the disagreement reads as data loss.
  */
-async function fillOffloaded(
-  host: FacetHost,
-  rows: KineRow[],
-  rawsFor: (facetName: string) => Promise<KineRow[]>,
-): Promise<KineRow[]> {
-  const facets = new Set<string>();
+async function fillOffloaded(host: FacetHost, rows: KineRow[]): Promise<KineRow[]> {
+  const wanted = new Map<string, number[]>();
   for (const row of rows) {
     if (!isOffloaded(row)) continue;
     const cls = classifyKey(row.thename);
-    if (cls.kind !== "cluster") facets.add(cls.facet);
+    if (cls.kind === "cluster") continue;
+    const ids = wanted.get(cls.facet);
+    if (ids) ids.push(row.theid);
+    else wanted.set(cls.facet, [row.theid]);
   }
-  if (facets.size === 0) return rows;
+  if (wanted.size === 0) return rows;
 
   const byRevision = new Map<number, KineRow>();
   await Promise.all(
-    Array.from(facets).map(async (facetName) => {
-      for (const row of await rawsFor(facetName)) byRevision.set(row.theid, row);
+    Array.from(wanted, async ([facetName, ids]) => {
+      for (let i = 0; i < ids.length; i += FILL_BATCH) {
+        const resp = await facetFetch(
+          getFacet(host, facetName),
+          new Request("http://facet.internal/rows", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ids: ids.slice(i, i + FILL_BATCH) }),
+          }),
+        );
+        const body = await facetJson<{ rows?: any[] }>(resp);
+        for (const raw of body.rows || []) byRevision.set(raw.theid, facetRawToKineRow(raw));
+      }
     }),
   );
 
@@ -106,37 +116,12 @@ async function fillOffloaded(
   });
 }
 
-/**
- * Fill a set of rows the caller already read from the parent, asking each
- * facet only for revisions at or above the lowest one present.
- */
+/** SQLite takes a bounded number of bound parameters; one round trip per batch. */
+const FILL_BATCH = 400;
+
+/** Fill rows the caller already read from the parent. */
 export function fillOffloadedRows(host: FacetHost, rows: KineRow[]): Promise<KineRow[]> {
-  const since = rows.length > 0 ? Math.min(...rows.map((r) => r.theid)) - 1 : 0;
-  return fillOffloaded(host, rows, (facetName) => facetAfterRaw(host, facetName, since));
-}
-
-/** The facet's own copy of one key, shaped for fillOffloaded. */
-async function facetKeyRaw(host: FacetHost, facetName: string, key: string): Promise<KineRow[]> {
-  const resp = await facetFetch(
-    getFacet(host, facetName),
-    new Request(`http://facet.internal/key${key}?includeDeleted=1`),
-  );
-  const body = await facetJson<{ row?: any }>(resp);
-  return body.row ? [facetRawToKineRow(body.row)] : [];
-}
-
-/** The facet's own copies of everything after a revision, shaped for fillOffloaded. */
-async function facetAfterRaw(
-  host: FacetHost,
-  facetName: string,
-  sinceRevision: number,
-): Promise<KineRow[]> {
-  const resp = await facetFetch(
-    getFacet(host, facetName),
-    new Request(`http://facet.internal/after/${sinceRevision}`),
-  );
-  const body = await facetJson<{ rows?: any[] }>(resp);
-  return (body.rows || []).map(facetRawToKineRow);
+  return fillOffloaded(host, rows);
 }
 
 /**
@@ -181,19 +166,6 @@ function prefixMatches(prefix: string, name: string): boolean {
   return prefix.endsWith("/") ? name.startsWith(prefix) : name === prefix;
 }
 
-async function facetListRaw(
-  host: FacetHost,
-  facetName: string,
-  prefix: string,
-  includeDeleted: boolean,
-): Promise<KineRow[]> {
-  const stub = getFacet(host, facetName);
-  const qs = includeDeleted ? "?includeDeleted=1" : "";
-  const resp = await facetFetch(stub, new Request(`http://facet.internal/list${prefix}${qs}`));
-  const body = await facetJson<{ rows?: any[] }>(resp);
-  return (body.rows || []).map(facetRawToKineRow);
-}
-
 /** Facet-aware replacement for queries.ts's getCurrent(). */
 export async function storeGetCurrent(
   sql: SqlExec,
@@ -204,9 +176,7 @@ export async function storeGetCurrent(
   const rows = sql.exec(GET_SQL(includeDeleted), key).toArray();
   const rev = rows.length > 0 ? rows[0].current_rev : currentRevision(sql);
   if (rows.length === 0) return { rev, event: null };
-  const [filled] = await fillOffloaded(host, rows, (facetName) =>
-    facetKeyRaw(host, facetName, key),
-  );
+  const [filled] = await fillOffloaded(host, rows);
   return { rev, event: rowToEvent(filled) };
 }
 
@@ -287,9 +257,7 @@ export async function storeList(
 ): Promise<{ revision: number; count: number; kvs: KineKV[] }> {
   const rows = parentRows(sql, prefix, limit, revision, false);
   const rev = rows.length > 0 ? rows[0].current_rev : currentRevision(sql);
-  const filled = await fillOffloaded(host, rows, (facetName) =>
-    facetListRaw(host, facetName, prefix, false),
-  );
+  const filled = await fillOffloaded(host, rows);
   const kvs = filled.map((r) => rowToEvent(r).kv);
   return { revision: rev, count: kvs.length, kvs };
 }
@@ -307,9 +275,7 @@ export async function storeListRaw(
   includeDeleted: boolean,
 ): Promise<KineRow[]> {
   const rows = parentRows(sql, prefix, 0, 0, includeDeleted);
-  return fillOffloaded(host, rows, (facetName) =>
-    facetListRaw(host, facetName, prefix, includeDeleted),
-  );
+  return fillOffloaded(host, rows);
 }
 
 /**
@@ -336,9 +302,7 @@ export async function storeReplay(
       .exec(AFTER_SQL, sinceRevision)
       .toArray()
       .filter((r) => prefixMatches(prefix, r.thename));
-    const filled = await fillOffloaded(host, rows, (facetName) =>
-      facetAfterRaw(host, facetName, sinceRevision),
-    );
+    const filled = await fillOffloaded(host, rows);
     return { events: filled.map(rowToEvent), bookmark };
   }
 

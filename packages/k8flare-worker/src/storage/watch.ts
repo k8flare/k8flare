@@ -67,10 +67,12 @@ export async function broadcastEvent(
   // because between the facet's acknowledgement and the parent's trim the row
   // is in both places, and before the acknowledgement it is only in the
   // parent -- so facet-first can find nothing for a write that committed.
-  const rows = (await fillOffloadedRows(host, sql.exec(AFTER_SQL, revision - 1).toArray())).filter(
-    (r) => r.theid === revision,
-  );
-  if (rows.length === 0) return;
+  const committed = sql
+    .exec(AFTER_SQL, revision - 1)
+    .toArray()
+    .filter((r) => r.theid === revision);
+  if (committed.length === 0) return;
+  const rows = await fillOffloadedRows(host, committed);
 
   const events = rows.map(rowToEvent);
   const watchhub = host.env.WATCHHUB;

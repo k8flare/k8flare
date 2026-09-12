@@ -82,6 +82,10 @@ function listSql(extraCondition) {
 
 const AFTER_SQL = "SELECT (SELECT MAX(id) FROM kine) AS current_rev, id AS theid, name AS thename, created, deleted, create_revision, prev_revision, lease, value, old_value FROM kine WHERE id > ?1 ORDER BY id ASC";
 
+function byIdSql(placeholders) {
+  return "SELECT (SELECT MAX(id) FROM kine) AS current_rev, id AS theid, name AS thename, created, deleted, create_revision, prev_revision, lease, value, old_value FROM kine WHERE id IN (" + placeholders + ")";
+}
+
 const APPLY_SQL = "INSERT OR IGNORE INTO kine(id, name, created, deleted, create_revision, prev_revision, lease, value, old_value) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)";
 
 function b64decode(b64) {
@@ -157,6 +161,15 @@ export class Facet extends DurableObject {
         const revRow2 = this.sql.exec("SELECT MAX(id) AS rev FROM kine").one();
         const rev2 = rows2.length > 0 ? rows2[0].current_rev : (revRow2.rev || 0);
         return Response.json({ revision: rev2, rows: rows2.map(rowToRaw) });
+      }
+
+      if (path === "/rows" && request.method === "POST") {
+        const body = await request.json();
+        const ids = (body.ids || []).filter((n) => Number.isInteger(n));
+        if (ids.length === 0) return Response.json({ rows: [] });
+        const placeholders = ids.map((_, i) => "?" + (i + 1)).join(",");
+        const rowsById = this.sql.exec(byIdSql(placeholders), ...ids).toArray();
+        return Response.json({ rows: rowsById.map(rowToRaw) });
       }
 
       if (path.startsWith("/after/")) {

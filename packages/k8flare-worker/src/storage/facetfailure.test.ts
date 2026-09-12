@@ -50,8 +50,10 @@ function sqlite(statements: readonly string[]): SqlExec {
 
 const FacetClass = new Function(
   "DurableObject",
-  FACET_SOURCE.replace('import { DurableObject } from "cloudflare:workers";', "")
-    .replace("export class Facet", "class Facet") + "\nreturn Facet;",
+  FACET_SOURCE.replace('import { DurableObject } from "cloudflare:workers";', "").replace(
+    "export class Facet",
+    "class Facet",
+  ) + "\nreturn Facet;",
 )(class {});
 
 class FakeFacet {
@@ -62,6 +64,8 @@ class FakeFacet {
   /** Apply for real, then lose it to something facetFetch will not retry. */
   loseApplyAckPermanently = false;
   applies = 0;
+  /** Every revision this facet was asked to supply, in order. */
+  rowsRequested: number[][] = [];
   private readonly holds = new Map<string, { blocked: Promise<void>; release: () => void }>();
   private readonly inner: any;
 
@@ -79,10 +83,12 @@ class FakeFacet {
   }
 
   release(key = "*"): void {
-    const held = this.holds.get(key);
+    const held = this.holds.get(key) ?? this.taken.get(key);
     this.holds.delete(key);
+    this.taken.delete(key);
     held?.release();
   }
+  private readonly taken = new Map<string, { blocked: Promise<void>; release: () => void }>();
 
   /** Resolves once the write for `key` has reached its apply, so its row is committed. */
   whenApplyStarted(key: string): Promise<void> {
@@ -96,7 +102,23 @@ class FakeFacet {
   }
 
   async fetch(req: Request): Promise<Response> {
-    const isApply = new URL(req.url).pathname === "/apply";
+    const path = new URL(req.url).pathname;
+    if (path === "/rows") {
+      const text = await req.text();
+      this.rowsRequested.push((JSON.parse(text) as { ids: number[] }).ids);
+      // Holds the FIRST fill only, so a later request in the same test can
+      // still get through and create the interleaving under test.
+      const held = this.holds.get("/rows");
+      if (held) {
+        this.holds.delete("/rows");
+        this.taken.set("/rows", held);
+        await held.blocked;
+      }
+      return this.inner.fetch(
+        new Request(req.url, { method: "POST", headers: req.headers, body: text }),
+      );
+    }
+    const isApply = path === "/apply";
     let forward = req;
     if (isApply) {
       this.applies++;
@@ -172,7 +194,9 @@ describe("a namespaced write whose facet half is slow, fails, or outlives its in
   const body = (v: string) => JSON.stringify({ value: btoa(v) });
 
   function create(key: string, value: string, on: Fetcher = cluster): Promise<Response> {
-    return on.fetch(new Request(`http://do.internal/key${key}`, { method: "PUT", body: body(value) }));
+    return on.fetch(
+      new Request(`http://do.internal/key${key}`, { method: "PUT", body: body(value) }),
+    );
   }
   function update(key: string, value: string, revision: number): Promise<Response> {
     return cluster.fetch(
@@ -186,19 +210,19 @@ describe("a namespaced write whose facet half is slow, fails, or outlives its in
     return cluster.fetch(new Request(`http://do.internal/key${key}`, { method: "DELETE" }));
   }
   async function get(key: string, on: Fetcher = cluster): Promise<any> {
-    return (await on.fetch(new Request(`http://do.internal/key${key}`))).json();
+    return (await on.fetch(new Request(`http://do.internal/key${key}`))).json<any>();
   }
   async function list(prefix: string, on: Fetcher = cluster): Promise<any> {
-    return (await on.fetch(new Request(`http://do.internal/list${prefix}`))).json();
+    return (await on.fetch(new Request(`http://do.internal/list${prefix}`))).json<any>();
   }
   async function replay(prefix: string, revision: number, on: Fetcher = cluster): Promise<any> {
     const url = new URL("/replay", "http://do.internal");
     url.searchParams.set("prefix", prefix);
     url.searchParams.set("revision", String(revision));
-    return (await on.fetch(new Request(url.toString()))).json();
+    return (await on.fetch(new Request(url.toString()))).json<any>();
   }
   async function revisionOf(resp: Response): Promise<number> {
-    return (await resp.json()).revision;
+    return (await resp.json<any>()).revision;
   }
 
   it("stands, and is readable, when the facet refuses it", async () => {
@@ -207,7 +231,9 @@ describe("a namespaced write whose facet half is slow, fails, or outlives its in
 
     expect((await get(POD)).kv.value).toBe(btoa("v1"));
     expect((await list(PREFIX)).kvs.map((k: any) => k.value)).toEqual([btoa("v1")]);
-    expect((await replay(PREFIX, rev - 1)).events.map((e: any) => e.kv.value)).toEqual([btoa("v1")]);
+    expect((await replay(PREFIX, rev - 1)).events.map((e: any) => e.kv.value)).toEqual([
+      btoa("v1"),
+    ]);
   });
 
   it("hands the value to the facet and stops holding it", async () => {
@@ -234,7 +260,9 @@ describe("a namespaced write whose facet half is slow, fails, or outlives its in
     const rev = await revisionOf(await create(POD, "v1"));
 
     expect((await get(POD)).kv.modRevision).toBe(rev);
-    expect((await replay(PREFIX, rev - 1)).events.map((e: any) => e.kv.value)).toEqual([btoa("v1")]);
+    expect((await replay(PREFIX, rev - 1)).events.map((e: any) => e.kv.value)).toEqual([
+      btoa("v1"),
+    ]);
   });
 
   it("survives the retry that follows a platform reset", async () => {
@@ -276,7 +304,9 @@ describe("a namespaced write whose facet half is slow, fails, or outlives its in
     const removed = await revisionOf(await remove("/registry/pods/default/a"));
 
     const delta = await replay(PREFIX, bookmark);
-    const seen = delta.events.map((e: any) => e.kv.modRevision).sort((x: number, y: number) => x - y);
+    const seen = delta.events
+      .map((e: any) => e.kv.modRevision)
+      .sort((x: number, y: number) => x - y);
     expect(seen).toEqual([heldRevision, refused, removed].sort((x, y) => x - y));
     for (const e of delta.events) expect(e.kv.value).not.toBeNull();
   });
@@ -361,8 +391,65 @@ describe("a namespaced write whose facet half is slow, fails, or outlives its in
   });
 
   it("refuses a namespaced row that carries nothing to tell apart from a handed-over one", async () => {
-    await expect(
-      storeInsert(sql, host, POD, true, false, 0, 0, 0, null, null),
-    ).rejects.toThrow(/neither a value nor a previous one/);
+    await expect(storeInsert(sql, host, POD, true, false, 0, 0, 0, null, null)).rejects.toThrow(
+      /neither a value nor a previous one/,
+    );
+  });
+
+  it("reads the revision the parent chose, not the facet's newest", async () => {
+    // The read picks a row from the parent, then asks the facet for it. If it
+    // asked by key instead of by revision, an update landing in that gap
+    // would make the facet answer about a different row and the read would
+    // report the chosen one as lost.
+    const first = await revisionOf(await create(POD, "v1"));
+    facet.hold("/rows");
+    const reading = get(POD);
+    await update(POD, "v2", first);
+    facet.release("/rows");
+
+    const got = await reading;
+    expect(got.kv.value).toBe(btoa("v1"));
+    expect(facet.rowsRequested.flat()).toContain(first);
+  });
+
+  it("lists a past revision as it was", async () => {
+    const first = await revisionOf(await create(POD, "v1"));
+    await update(POD, "v2", first);
+
+    const at = (
+      await cluster.fetch(new Request(`http://do.internal/list${PREFIX}?revision=${first}`))
+    ).json<any>();
+    expect((await at).kvs.map((k: any) => k.value)).toEqual([btoa("v1")]);
+  });
+
+  it("asks a facet only for the rows the caller actually wants", async () => {
+    for (const name of ["a", "b", "c", "d"]) await create(`/registry/pods/default/${name}`, name);
+    facet.rowsRequested = [];
+    const limited = await (
+      await cluster.fetch(new Request(`http://do.internal/list${PREFIX}?limit=2`))
+    ).json<any>();
+    expect(limited.kvs).toHaveLength(2);
+    expect(facet.rowsRequested.flat()).toHaveLength(2);
+  });
+
+  it("broadcasts one revision without dragging in whatever else committed", async () => {
+    // broadcastEvent reads the parent's log from just below the committed
+    // revision, so anything that commits while this write's apply is in
+    // flight lands in the same range. Filling before narrowing pulls those
+    // rows -- from other namespaces, whose facets can fail independently --
+    // into a write that has nothing to do with them.
+    const pod = "/registry/pods/default/held";
+    facet.hold(pod);
+    const started = facet.whenApplyStarted(pod);
+    const held = create(pod, "held");
+    await started;
+
+    const later = await revisionOf(await create("/registry/pods/other/x", "x1"));
+
+    facet.rowsRequested = [];
+    facet.release(pod);
+    expect((await held).status).toBe(201);
+
+    expect(facet.rowsRequested.flat()).not.toContain(later);
   });
 });
