@@ -37,7 +37,6 @@ September 2026 (S31, S34, S39). Assume there are more.
 | No release tag | There is no tagged version. Pin a commit. | Open |
 | The repository clones at 45 MiB | Two compiled binaries were committed by accident and remain in history. They are untracked and ignored now. History was deliberately **not** rewritten: it would save 33 MiB but invalidate the 24 commit SHAs the verification log cites. | Decided, not a defect (`TODO.md` P1-9) |
 | CI is not used | GitHub Actions is deliberately not used (maintainer decision, 2026-09-12, on cost). The conformance gate runs locally instead, in the required `host` variant, on a node that can run pods — `docs/development.md` has the recipe and `docs/platform-verification.md` S63 the current result (required garbage-collector focus, 3 runs, 7/7 each). | By design |
-| A k3s patch bump is unmerged | `deps/k3s-v1.36.4-k3s1` moves the pin from v1.36.3 to v1.36.4. Every local gate passes with current `main` merged in, and it passed the required garbage-collector focus 7/7 in the **required `host` variant** — but on a node that could not start pods, which S54 showed is not a condition the result survives. Re-measure on the fixed harness before merging. The conformance gate itself still cannot be dispatched (row above). | Ready, blocked on CI billing (`TODO.md` P1-8) |
 
 ## Fixed recently, worth knowing about
 

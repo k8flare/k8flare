@@ -648,7 +648,21 @@ supported`, S48), so any spec needing a pod to actually run cannot pass here.
 **The bump changes nothing the local harness can measure.** Chunks rebuilt and
 all five under cap (apiserver has the least headroom at 2388 KiB).
 
-**Still not merged, and the blocker is not technical.** Inviolable rule #1
+**Merged 2026-09-12 after passing the local gate.** Actions は使わない決定
+(冒頭「検証ゲートの変更」)を受け、ローカルの host バリアントで判定した。
+野良プロセスを排除した環境(`harness.sh`)で:
+
+| フォーカス | k3s v1.36.4 |
+|---|---|
+| required GC(7 spec)× 3 回 | **7/7、7/7、7/7** |
+| baseline(11 spec) | **11/11**、354 秒 |
+| `make test`(apiserver / KCM-DW / clusterop / TS 59) | 全緑 |
+| チャンク 5 つ | 全て cap 内(最小余裕 apiserver 2,372 KiB) |
+
+apiserver が `v1.36.4+k8flare` を返す状態で測定。host プロセスは常に
+ちょうど 2 個であることを各実行で確認した。
+
+**取り下げ**: Inviolable rule #1
 makes conformance CI the Definition of Done, and it cannot run: every job on
 the repository fails in 4 seconds with zero steps. The annotation says why —
 *"The job was not started because recent account payments have failed or your
