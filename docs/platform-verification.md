@@ -8321,3 +8321,66 @@ Go 側で `&corev1.Namespace{…}` を組み立てて保存すると TypeMeta �
 kube-proxy)が、トークンを持たずに来ている。ノードは Ready になるので
 致命ではないが、**証明書ベースの identity が一切機能していない**証拠であり、
 P0-8 の「per-node identity が無い」と同じ根。
+
+### S69 (2026-09-13): required GC の orphan spec は 4 割落ちる。TypeMeta は原因ではない
+
+installer 切り替え後のゲート(S68)は GC 7/7 ×3 で緑だったが、その後 5 つの
+コンポーネントを統合して回し直すと **2 回目・3 回目が 6/7** になった。落ちるのは
+常に同じ 1 本、`should orphan pods created by rc if delete options say so`。
+
+#### 何を見ている spec か
+
+RC を ~50 replicas で作り、`propagationPolicy: Orphan` で削除し、**わざと 30 秒
+待って**依存 Pod が残っているかを見る。upstream のコメント自身が
+`to see if the garbage collector mistakenly deletes the pods` と書いている。
+つまり「**GC が orphan 指定を無視して依存を食べていないか**」の検査。
+
+#### 実測した失敗率
+
+| ビルド | 結果 |
+|---|---|
+| HEAD(全コンポーネント) | 3 回中 **1 回失敗**(`got 0 pods`) |
+| TypeMeta stamp を外した | 5 回中 **2 回失敗**(`got 0 pods` ×2) |
+| HEAD、ログ付きで再測 | 4 回中 **2 回失敗**(`got 0 pods` ×2) |
+
+**通算 12 回中 5 回失敗(≈42%)。** この確率なら S68 の「3/3 緑」は 0.58³ ≈ 20%
+で起こるので、**S68 はたまたま通っただけ**と見るのが妥当。統合が原因という
+最初の見立ては成り立たない。
+
+#### 否定できたこと
+
+**TypeMeta の stamp は原因ではない。** 2 箇所の呼び出しを外してビルドし直しても
+同じ頻度で落ちる。stamp は別の実バグ(bootstrap 由来オブジェクトの watch
+イベントに kind が無い)を直しているので戻した。
+
+**orphan finalizer の付与は壊れていない。** kubectl で
+`--cascade=orphan` を実行すると、RC には `["orphan"]` と deletionTimestamp が
+正しく付く。最初 curl で「finalizer が付いていない」と読んだのは、
+`curl -X DELETE -d` が DeleteOptions を意図通り送れていなかったため —
+**計器の側の誤り**で、危うく存在しない回帰を追いかけるところだった。
+
+#### 分かっている事実
+
+失敗した run では、**Pod が 404 になっているのに外向きの DELETE
+リクエストが 1 件も無い**。gc 動的ワーカーは `env.SELF` 経由で呼ぶので
+`wrangler dev` のリクエストログに出ない。よって「GC が内部経由で消した」と
+矛盾しないが、ログからは確定できない。
+
+#### 前例(未解決のまま記録されていた)
+
+`docs/known-issues.md` は 2026-09-11 (S48) からこう書いている:
+
+> The garbage-collector focus passes 7/7 only on a node that *cannot* start
+> pods; with a working node it is **5/7**, and those two failures are
+> **unexplained**.
+
+S63/S65 は「Pod が動くノード」で 3 バリアント × 3 回すべて 7/7 を記録しており、
+これと矛盾する。**どちらかの測定条件が記録より緩い**が、いまは決着できない。
+
+#### 結論
+
+このフレークは **P0-4(コントローラーが pump window の中でしか動かない)の
+症状として説明が付く形**をしている — GC がいつ観測するかで結果が変わる競合。
+`gracefuldelete.go` の 4 ガードはまさにこれを埋めるためにある。**未解決のまま
+記録する。** required ゲートは現状 **「7/7 が出ることもある」**であって
+「7/7 で安定」ではない。
