@@ -662,15 +662,20 @@ required な `host` バリアントでは 1 namespace に **47 個**の distinct
 conformance の spec が落ちる。**host が通っているのは、spec がその瞬間の数しか
 見ないからにすぎない。**
 
-本番では起きない(全 dynamic worker 構成で、`--cascade=orphan` 後に Pod 2 個が
-120 秒安定)。ホストプロセスの controller-manager はこのローカルハーネスでは
-`wrangler dev` に繋いでおり、watch が pump window ごとに切れる。
-replicaset-controller の expectations がそれで壊れている、というのが仮説。
+**訂正済み**: 当初これをホストプロセスの controller-manager に帰属させたが、
+ホストプロセスを 1 つも使わない本番同形の構成(全 dynamic worker)でも
+**18 個**作られた。分かれ目はバリアントではなく**ローカルか本番か**である
+(本番は 2 個、`--cascade=orphan` 後 120 秒安定)。機序は未特定。ローカルには
+Pod を bind するが sandbox を作れないコンテナノードがあり(S48)、本番の
+prodprobe クラスタにはノードが無い——が、`FailedCreatePodSandBox` は Pod を
+Failed にしないので、置き換えの引き金としては説明が足りない。
 
-**Do.** CI が復旧したら、runner 上の `host` 変種で同じ過剰生成が起きるかを
-最初に確認する。`commit` 境界(`PUMP_TRACE=1`)で distinct な Pod 名を数えれば
-よい。起きていれば required gate の信頼度の問題であり、起きていなければ
-ローカルハーネス固有として切り離せる。P1-1 / P1-2 の昇格判断より先に決める。
+**Do.** 二つを順に切り分ける。(1) ローカルでノードを外して(コンテナを止めて)
+同じ spec を回し、過剰生成が消えるか。消えればノード側、消えなければ
+apiserver 側。(2) CI が復旧したら runner 上で `commit` 境界
+(`PUMP_TRACE=1`)の distinct Pod 名を数える。CI のノードは Pod を実際に
+動かせるので、ローカルとの決定的な比較になる。P1-1 / P1-2 の昇格判断より
+先に決める。
 
 **Acceptance.** CI の host 変種で `replicas=2` に対して作られる distinct な
 Pod が 2 個であること、またはそうでない理由が特定されていること。
