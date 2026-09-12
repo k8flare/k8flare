@@ -467,3 +467,35 @@ controllerごとの再実装は守りたいupstream再利用を壊す。一方�
 レビュー時に最初に詰めるべき点は、committed cutの跨facet実現と、upstreamを大幅改造せずに
 handler/GC graph/scheduler cycleまでの処理barrierを置けるかである。そこが未証明なまま
 「watchが再開するのでguardを全撤去できる」とは承認しない。
+
+## 実測: 窓が切れたコントローラーのコスト (2026-09-13)
+
+この設計文書は「informer を窓ごとに張り直すことの代償」を推定で語ってきた。
+**初めて直接測れた。**
+
+ReplicationController を 50 replicas で作り、`--cascade=orphan` で削除して
+1 秒ごとに観測した結果(`docs/platform-verification.md` S69 の訂正その 2):
+
+```
+t=7s   finalizers=["orphan"]  依存 50 個中 still_owned=32   ← GC が 18 個だけ剥がした
+t=8s   finalizers=GONE        still_owned=28               ← 終わったつもりで解放
+t=10s  pods=0                                              ← 28 個が所有者不明のゴミになり回収
+```
+
+**GC は自分の informer が保持していた ~22 個だけを orphan 化し、
+残り 28 個を見ないまま finalizer を外した。** upstream の
+`orphanDependents` は全依存にパッチを当ててから finalizer を消すので、
+この状態は起こり得ない。**起こる理由は informer が窓境界で切れることだけ**で
+ある。
+
+補償なしでのカスケード損失率: **17 回中 7 回(41%)。**
+
+これがこの設計が閉じようとしている穴の大きさである。同じ形の補償が
+`gracefuldelete.go` に 4 つあり、いずれも「コントローラーがいつ見ているか
+保証できない」ことを apiserver 側で埋めている。段階 2(resourceVersion から
+再開できる watch)と段階 3(ストレージ側からの永続的な変更通知)が入れば、
+この 41% は構造的に 0 になり、4 つのガードは消せる。
+
+**補償のコスト**(現状、apiserver 側でガードした場合):
+orphan カスケード 1 回あたり GC への `409 Conflict` が 1 回、および
+その 1 回分の依存 LIST。

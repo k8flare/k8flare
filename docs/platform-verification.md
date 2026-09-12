@@ -8384,3 +8384,101 @@ S63/S65 は「Pod が動くノード」で 3 バリアント × 3 回すべて 7
 `gracefuldelete.go` の 4 ガードはまさにこれを埋めるためにある。**未解決のまま
 記録する。** required ゲートは現状 **「7/7 が出ることもある」**であって
 「7/7 で安定」ではない。
+
+#### 訂正その 2 (同日): 原因が特定できた。**私が入れたバグで、実行され得ない分岐にガードを置いていた**
+
+上の「未解決のまま記録する」は撤回する。原因は P0-4 の症状**そのもの**だが、
+それを埋めるはずのガードが**一度も動いていなかった**ことが本当の欠陥だった。
+
+#### 計測したタイムライン
+
+RC を 50 replicas で作り、`--cascade=orphan` で削除して 1 秒ごとに観測した:
+
+| | 修正前 | 修正後 |
+|---|---|---|
+| t=1〜6s | `["orphan"]` / 50 個とも所有されたまま | `["orphan"]` / 50 個とも保持 |
+| t=7s | **still_owned=32**(GC が 18 個だけ剥がす) | still_owned=50 |
+| t=8s | **finalizer が消える。28 個が所有されたまま** | still_owned=50 |
+| t=9s | pods=10 | **still_owned=0**(全 50 個剥がし終わる) |
+| t=10s | **pods=0** | **finalizer 解放、pods=50 生存** |
+
+**GC は informer キャッシュが持っていた分(~22 個)だけ剥がして、終わったつもりで
+finalizer を外していた。**残り 28 個は所有者不明のゴミになり回収された。
+upstream の GC がこれをやらないのは informer が連続しているからで、
+**これは P0-4 のコストの初めての直接計測**である。
+
+#### 本当の欠陥
+
+`gracefuldelete.go` にはこの取り残しを掃除するガードが 2026-07-11
+(`f17f447`)から存在する。`4e2e34a`(2026-09-13、installer 切り替えの
+後始末)でそれを `Store.BeginUpdate` の finish フックへ移したとき、こう書いた:
+
+```go
+return func(finishCtx context.Context, success bool) {
+    if success && sweep != nil { sweep(finishCtx) }
+}, nil
+```
+
+**この分岐は実行され得ない。** upstream の `Store.Update` は、最後の
+finalizer が消えると `GuaranteedUpdate` が `errEmptiedFinalizers` を返し、
+`deleteWithoutFinalizers` へ分岐する。成功側の `fn(ctx, true)` には到達せず、
+`defer finishUpdate(ctx, false)` だけが走る。つまり `success` は常に false。
+
+計測で確定した: `ORPHANPROBE armed` は出るのに `ORPHANPROBE sweeping` が
+一度も出ない。
+
+そして**その直後の conformance が 3 回連続で通ったので S68 に「7/7 ×3」と
+記録した。41% の失敗率で 3 連続通過は 20% で起こる。** 3 連続は安定性の
+主張にならない。
+
+#### 直し方(3 段、それぞれ理由が違う)
+
+1. **拒否** — `BeginUpdate` の**エラー返却は無条件に尊重される**(store.go
+   751-754)。依存が 1 つでも UID を持つ間は orphan finalizer を外させず
+   `Conflict` を返す。GC は再試行し、その頃には relist 済み
+2. **掃除の移設** — `deleteWithoutFinalizers` が**実際に発火させる**
+   `AfterDelete` へ。その時点で finalizer は消えているので、UID は
+   `BeginUpdate` から per-instance のマップで渡す(DO が単一インスタンスで
+   あることに依存 — outbox の pending 集合と同じ論拠)
+3. **判定の修正** — `blockingDependent` は foreground 用で
+   `BlockOwnerDeletion` を要求していた。orphan は「UID を持つ依存**すべて**」を
+   待たねばならない。`dependentOf(..., requireBlocking bool)` に一般化した。
+   **見落としていたら、拒否したのに参照が残ったまま解放するガードになっていた**
+
+`success` チェックを外す一行修正は**採らなかった**。`defer finishUpdate(ctx,
+false)` は本物の失敗(競合再試行、検証エラー)でも走るので、着地しなかった
+更新に対して 50 個の ownerReference を剥がすことになり、しかも `tryUpdate` は
+再試行されるので複数回走る。
+
+#### 検証
+
+| 構成 | orphan spec |
+|---|---|
+| 修正前 | **17 回中 7 回失敗(41%)** |
+| 修正後 | **15 回中 0 回失敗** |
+| 拒否だけ外す(負の対照) | **5 回中 3 回失敗** |
+
+15 連続通過は、41% の母数なら偶然では 0.02%。全実行でホストプロセス数 2 を
+記録している(S62 型の汚染ではない)。
+
+負の対照の失敗が `got 0` ではなく **`got 31 / 30 pods`** だったことで役割が
+切り分けられた: **掃除の移設は効いていて 50 個中 30 個を救うが遅すぎる。
+拒否が穴を閉じる本体で、掃除は保険。**
+
+#### コスト
+
+orphan カスケード 1 回で GC が受ける `409 Conflict` は **ちょうど 1 回**。
+`dependentOf` の LIST もその 1 回分。短絡用のヒント(`first *ResourceStore`)は
+不要と判断した。
+
+#### required ゲート
+
+**GC 7/7 ×3、baseline 11/11**(host バリアント、Pod が動くノード)。
+
+#### 説明できていないもの
+
+`docs/known-issues.md` の「Pod が動くノードでは 5/7、2 件は原因不明」は
+**この件では説明できない**。ガードは 2026-07-11 から存在し、当時は
+手書き DELETE ハンドラの `finalizeDeleteWithOrphanSweep` が同期的に走って
+いた。私の欠陥は `4e2e34a`(2026-09-13)以降だけなので、それ以前の
+2 件は**別の未解明事象**である。

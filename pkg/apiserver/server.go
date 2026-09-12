@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apiserver/pkg/audit"
 	"k8s.io/apiserver/pkg/endpoints/request"
@@ -194,17 +195,40 @@ func NewServer(cfg ServerConfig) *http.ServeMux {
 			continue
 		}
 		owner := rs
+		// Orphan finalizes in flight on this store, so AfterDelete can tell
+		// "this delete completed a clearing of the orphan finalizer" from any
+		// other delete -- by then the finalizer is gone from the object and
+		// the fact is unrecoverable from it. A plain map is enough: a Durable
+		// Object has one live instance, and both hooks belong to this store.
+		orphanFinalizing := map[types.UID]string{}
+
 		owner.upstream.BeginUpdate = func(ctx context.Context, obj, old runtime.Object, _ *metav1.UpdateOptions) (genericregistry.FinishFunc, error) {
 			if err := RefuseForegroundFinalizeOn(ctx, owner, namespacedStores, old, obj); err != nil {
 				return nil, err
 			}
-			// Orphaning is decided here and done after: the object still
-			// carries the orphan finalizer in `old`, and by the time the
-			// delete has completed it does not.
-			sweep := SweepOrphansOnFinalize(owner, namespacedStores, old, obj)
-			return func(finishCtx context.Context, success bool) {
-				if success && sweep != nil {
-					sweep(finishCtx)
+			// Refused, not swept: a Conflict costs the garbage collector a
+			// retry and by then it has relisted, whereas sweeping from here
+			// cannot work at all -- clearing the last finalizer makes
+			// GuaranteedUpdate return errEmptiedFinalizers, so this hook's
+			// FinishFunc is only ever called with success=false and a
+			// success-gated sweep is a branch that cannot execute. It was
+			// one, from 2026-09-13 until the conformance gate caught it.
+			if err := RefuseOrphanFinalizeOn(ctx, owner, namespacedStores, old, obj); err != nil {
+				return nil, err
+			}
+			m := getObjectMeta(old)
+			if m == nil || !clearsOrphanFinalizer(owner, namespacedStores, old, obj) {
+				return func(context.Context, bool) {}, nil
+			}
+			orphanFinalizing[m.UID] = m.Namespace
+			// Withdrawn again if the write does not land -- AfterDelete is
+			// what removes the entry, and it only runs when the delete
+			// completed. Without this an update that failed after passing
+			// both guards would leave the UID behind for the isolate's life.
+			uid := m.UID
+			return func(_ context.Context, ok bool) {
+				if !ok {
+					delete(orphanFinalizing, uid)
 				}
 			}, nil
 		}
@@ -227,6 +251,16 @@ func NewServer(cfg ServerConfig) *http.ServeMux {
 			m := getObjectMeta(obj)
 			if m == nil {
 				return
+			}
+			// The completion half of the orphan guard. deleteWithoutFinalizers
+			// fires AfterDelete, so this runs exactly when the finalizer clear
+			// actually finished -- and the refusal above has already made the
+			// sweep a formality in the common case.
+			if ns, ok := orphanFinalizing[m.UID]; ok {
+				delete(orphanFinalizing, m.UID)
+				if err := sweepOrphanStragglers(context.Background(), namespacedStores, ns, string(m.UID)); err != nil {
+					klog.ErrorS(err, "sweeping orphaned dependents", "namespace", ns, "owner", m.UID)
+				}
 			}
 			FinishUnblockedForegroundOwners(context.Background(), namespacedStores, owner, m.Namespace, obj)
 		}

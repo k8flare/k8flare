@@ -11,7 +11,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/klog/v2"
 )
 
 // Minimal graceful-deletion lifecycle, exactly deep enough for the real
@@ -133,6 +132,15 @@ func sweepOrphanStragglers(ctx context.Context, namespacedStores []*ResourceStor
 // the common "still blocked" answer come back after one list instead of
 // walking every namespaced resource.
 func blockingDependent(ctx context.Context, namespacedStores []*ResourceStore, namespace, ownerUID string, first *ResourceStore) (string, error) {
+	return dependentOf(ctx, namespacedStores, namespace, ownerUID, first, true)
+}
+
+// dependentOf finds a dependent of ownerUID. requireBlocking selects which
+// question is being asked: foreground deletion waits only for dependents that
+// set blockOwnerDeletion, while orphaning must wait for EVERY dependent that
+// still carries the reference -- one left behind becomes garbage the moment
+// the owner goes.
+func dependentOf(ctx context.Context, namespacedStores []*ResourceStore, namespace, ownerUID string, first *ResourceStore, requireBlocking bool) (string, error) {
 	if ownerUID == "" || namespace == "" {
 		return "", nil
 	}
@@ -155,7 +163,10 @@ func blockingDependent(ctx context.Context, namespacedStores []*ResourceStore, n
 				continue
 			}
 			for _, ref := range m.OwnerReferences {
-				if string(ref.UID) == ownerUID && ref.BlockOwnerDeletion != nil && *ref.BlockOwnerDeletion {
+				if string(ref.UID) != ownerUID {
+					continue
+				}
+				if !requireBlocking || (ref.BlockOwnerDeletion != nil && *ref.BlockOwnerDeletion) {
 					return rs.resource + "/" + m.Name, nil
 				}
 			}
@@ -319,36 +330,50 @@ func hasOwnerUID(refs []metav1.OwnerReference, uid string) bool {
 	return false
 }
 
-// SweepOrphansOnFinalize is finalizeDeleteWithOrphanSweep evaluated against
-// the update that clears the finalizer rather than against a re-read. The
-// object being orphaned still carries the orphan finalizer in `old`; by the
-// time the delete has completed it does not, so the condition has to be read
-// here and the sweep deferred until the write succeeds.
+// RefuseOrphanFinalizeOn refuses to let the orphan finalizer come off while
+// any dependent still carries the owner's UID.
 //
-// Wired into the store's BeginUpdate. It used to run inside the hand-written
-// DELETE handler, and when routing moved to the real installer it was the one
-// graceful-deletion guard of four that was left behind (found by an audit,
-// 2026-09-13).
-func SweepOrphansOnFinalize(rs *ResourceStore, namespacedStores []*ResourceStore, old, next runtime.Object) func(context.Context) {
-	if namespacedStores == nil || rs == nil || !rs.namespaced {
+// The real garbage collector strips those references and only then clears the
+// finalizer. Here it can clear it early, because its informers are torn down
+// at every pump-window boundary and rebuilt on the next poke, so it orphans
+// the dependents its cache happens to hold and considers the job done.
+// Measured 2026-09-13: with 50 pods it cleared the finalizer having stripped
+// 18, and the 32 it left behind were collected the moment the owner went
+// (docs/platform-verification.md S69).
+//
+// Refusing costs the collector a retry, by which time it has relisted. That
+// is the whole guard: the apiserver does not need to know why the cache was
+// short, only that the invariant does not hold yet.
+func RefuseOrphanFinalizeOn(ctx context.Context, rs *ResourceStore, namespacedStores []*ResourceStore, old, next runtime.Object) error {
+	if !clearsOrphanFinalizer(rs, namespacedStores, old, next) {
 		return nil
+	}
+	m := getObjectMeta(old)
+	dependent, err := dependentOf(ctx, namespacedStores, m.Namespace, string(m.UID), nil, false)
+	if err != nil {
+		return err
+	}
+	if dependent == "" {
+		return nil
+	}
+	return apierrors.NewConflict(schema.GroupResource{Resource: rs.resource}, m.Name,
+		fmt.Errorf("orphaning is still waiting on dependent %s", dependent))
+}
+
+// clearsOrphanFinalizer reports whether this update is the one that takes the
+// orphan finalizer off a terminating object.
+func clearsOrphanFinalizer(rs *ResourceStore, namespacedStores []*ResourceStore, old, next runtime.Object) bool {
+	if namespacedStores == nil || rs == nil || !rs.namespaced {
+		return false
 	}
 	oldMeta, nextMeta := getObjectMeta(old), getObjectMeta(next)
 	if oldMeta == nil || nextMeta == nil {
-		return nil
+		return false
 	}
 	if oldMeta.DeletionTimestamp == nil || !containsString(oldMeta.Finalizers, metav1.FinalizerOrphanDependents) {
-		return nil
+		return false
 	}
-	if containsString(nextMeta.Finalizers, metav1.FinalizerOrphanDependents) {
-		return nil
-	}
-	namespace, ownerUID := oldMeta.Namespace, string(oldMeta.UID)
-	return func(ctx context.Context) {
-		if err := sweepOrphanStragglers(ctx, namespacedStores, namespace, ownerUID); err != nil {
-			klog.ErrorS(err, "sweeping orphaned dependents", "namespace", namespace, "owner", ownerUID)
-		}
-	}
+	return !containsString(nextMeta.Finalizers, metav1.FinalizerOrphanDependents)
 }
 
 // RejectCreateWithTerminatingController blocks creating a namespaced

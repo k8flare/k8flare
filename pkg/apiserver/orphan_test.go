@@ -2,6 +2,7 @@ package apiserver_test
 
 import (
 	"context"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -100,10 +101,37 @@ func TestOrphanDependents(t *testing.T) {
 		t.Errorf("expected the ReplicaSet's ownerReference to be untouched (orphaning belongs to the GC), got: %+v", gotRS.OwnerReferences)
 	}
 
-	// Clearing the finalizer must complete the deletion (the write the
-	// real GC performs when it finishes orphaning).
-	gotDeploy.Finalizers = nil
-	if _, err := client.AppsV1().Deployments(ns).Update(ctx, gotDeploy, metav1.UpdateOptions{}); err != nil {
+	// Clearing the finalizer while a dependent still points at this owner
+	// must be REFUSED. The real garbage collector strips every dependent's
+	// ownerReference and only then removes the finalizer; it can get the
+	// order wrong here, because its informers are torn down at every
+	// pump-window boundary, and when it does the dependents it did not see
+	// become garbage the instant the owner goes. Measured at 41% of orphan
+	// cascades before this guard existed (docs/platform-verification.md S69).
+	//
+	// This block used to do the clear directly and call it "the write the
+	// real GC performs when it finishes orphaning" -- which is what the GC
+	// does when it finishes orphaning WRONGLY.
+	stillOwned := gotDeploy.DeepCopy()
+	stillOwned.Finalizers = nil
+	if _, err := client.AppsV1().Deployments(ns).Update(ctx, stillOwned, metav1.UpdateOptions{}); !apierrors.IsConflict(err) {
+		t.Fatalf("clearing the orphan finalizer with a dependent still owned = %v, want Conflict", err)
+	}
+	if _, err := client.AppsV1().Deployments(ns).Get(ctx, deploy.Name, metav1.GetOptions{}); err != nil {
+		t.Fatalf("the refused clear must leave the Deployment alone, got: %v", err)
+	}
+
+	// Once the dependent is orphaned for real, the clear completes the delete.
+	gotRS.OwnerReferences = nil
+	if _, err := client.AppsV1().ReplicaSets(ns).Update(ctx, gotRS, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("stripping the ReplicaSet's ownerReference: %v", err)
+	}
+	current, err := client.AppsV1().Deployments(ns).Get(ctx, deploy.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("re-reading the terminating Deployment: %v", err)
+	}
+	current.Finalizers = nil
+	if _, err := client.AppsV1().Deployments(ns).Update(ctx, current, metav1.UpdateOptions{}); err != nil {
 		t.Fatalf("finalizer-clearing update: %v", err)
 	}
 	if _, err := client.AppsV1().Deployments(ns).Get(ctx, deploy.Name, metav1.GetOptions{}); err == nil {
