@@ -164,6 +164,22 @@ compiles the ~40MB WASM modules in-process. They're the local stand-in for
 the conformance workflow's dynamic-worker variants on machines that can't
 run a Linux kubelet.
 
+## Experiments that start processes
+
+Kill what you started, by PID, and check. A local harness experiment that
+starts a host `kube-controller-manager` or `kube-scheduler` against
+`127.0.0.1:8443` keeps writing to that cluster until it is killed — and
+`pkill -f <name>` silently matches nothing if the binary was built under a
+different name. Sixteen stray controller-managers accumulated across one
+session's experiments and made a `replicas=2` workload look like it churned
+sixty pods; the real controller had created two
+(`docs/platform-verification.md` S62). Separate ports and data directories do
+not help when every process points at the same apiserver.
+
+```sh
+pgrep -fl 'controller-manager|scheduler|wrangler' | grep -v Chrome
+```
+
 ## Experiments that modify source
 
 Run them in a `git worktree`, never in your main checkout. An experiment that
