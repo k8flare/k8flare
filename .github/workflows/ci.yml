@@ -54,6 +54,7 @@ jobs:
         run: |
           node packages/wasm-build/src/gen-k8s-js-mirror.ts
           node packages/wasm-build/src/gen-clientgo-lean-mirror.ts
+          node packages/wasm-build/src/gen-component-base-mirror.ts
 
       # cmd/k8flare-gen's OpenAPI generator (cmd/k8flare-gen/openapi.go)
       # reads api/openapi-spec/swagger.json straight off disk from

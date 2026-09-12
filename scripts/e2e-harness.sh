@@ -73,7 +73,7 @@ start() { # $1 = variant: host | alldw ; $2 = extra --var args
 }
 
 case "$1" in
-  start) start "$2" "$3" ;;
+  start) start "${2:-host}" "${3:-}" ;;
   stop) stop ;;
   status) status ;;
   *) echo "usage: harness.sh start [host|alldw] [extra-vars] | stop | status"; exit 2 ;;
