@@ -11,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/klog/v2"
 )
 
 // Minimal graceful-deletion lifecycle, exactly deep enough for the real
@@ -383,25 +384,36 @@ func hasOwnerUID(refs []metav1.OwnerReference, uid string) bool {
 	return false
 }
 
-// finalizeDeleteWithOrphanSweep runs just before the handler completes
-// a finalize-delete: if the CURRENT stored object (the one whose last
-// finalizer is being cleared) was terminating with the "orphan"
-// finalizer, sweep any dependents the GC's graph missed (see
-// sweepOrphanStragglers). A no-op for foreground/plain finalizer
-// clears and for non-namespaced resources.
-func finalizeDeleteWithOrphanSweep(ctx context.Context, rs *ResourceStore, namespacedStores []*ResourceStore, namespace, name string) error {
-	if namespacedStores == nil || !rs.namespaced {
+// SweepOrphansOnFinalize is finalizeDeleteWithOrphanSweep evaluated against
+// the update that clears the finalizer rather than against a re-read. The
+// object being orphaned still carries the orphan finalizer in `old`; by the
+// time the delete has completed it does not, so the condition has to be read
+// here and the sweep deferred until the write succeeds.
+//
+// Wired into the store's BeginUpdate. It used to run inside the hand-written
+// DELETE handler, and when routing moved to the real installer it was the one
+// graceful-deletion guard of four that was left behind (found by an audit,
+// 2026-09-13).
+func SweepOrphansOnFinalize(rs *ResourceStore, namespacedStores []*ResourceStore, old, next runtime.Object) func(context.Context) {
+	if namespacedStores == nil || rs == nil || !rs.namespaced {
 		return nil
 	}
-	cur, err := rs.Get(ctx, namespace, name)
-	if err != nil {
-		return nil // vanished already; the Delete below reports it properly
-	}
-	m := getObjectMeta(cur)
-	if m == nil || m.DeletionTimestamp == nil || !containsString(m.Finalizers, metav1.FinalizerOrphanDependents) {
+	oldMeta, nextMeta := getObjectMeta(old), getObjectMeta(next)
+	if oldMeta == nil || nextMeta == nil {
 		return nil
 	}
-	return sweepOrphanStragglers(ctx, namespacedStores, namespace, string(m.UID))
+	if oldMeta.DeletionTimestamp == nil || !containsString(oldMeta.Finalizers, metav1.FinalizerOrphanDependents) {
+		return nil
+	}
+	if containsString(nextMeta.Finalizers, metav1.FinalizerOrphanDependents) {
+		return nil
+	}
+	namespace, ownerUID := oldMeta.Namespace, string(oldMeta.UID)
+	return func(ctx context.Context) {
+		if err := sweepOrphanStragglers(ctx, namespacedStores, namespace, ownerUID); err != nil {
+			klog.ErrorS(err, "sweeping orphaned dependents", "namespace", namespace, "owner", ownerUID)
+		}
+	}
 }
 
 // RejectCreateWithTerminatingController blocks creating a namespaced

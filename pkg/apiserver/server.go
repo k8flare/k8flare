@@ -198,7 +198,15 @@ func NewServer(cfg ServerConfig) *http.ServeMux {
 			if err := RefuseForegroundFinalizeOn(ctx, owner, namespacedStores, old, obj); err != nil {
 				return nil, err
 			}
-			return func(context.Context, bool) {}, nil
+			// Orphaning is decided here and done after: the object still
+			// carries the orphan finalizer in `old`, and by the time the
+			// delete has completed it does not.
+			sweep := SweepOrphansOnFinalize(owner, namespacedStores, old, obj)
+			return func(finishCtx context.Context, success bool) {
+				if success && sweep != nil {
+					sweep(finishCtx)
+				}
+			}, nil
 		}
 
 		// ...and the other half: the owner the guard was holding open has to
