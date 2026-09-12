@@ -1,4 +1,4 @@
-# Platform verification spikes (S1–S37)
+# Platform verification spikes (S1–S67)
 
 > **現状サマリ (2026-09-11 時点)。まずここを読むこと。**
 >
@@ -8248,3 +8248,76 @@ create の 2 本目は `prev_revision` を比べる前に「既に存在する�
 なる。変更は残す — 決定的で、「存在しないキーの `storeGetCurrent` は
 I/O を待たない」という偶然の性質に依存しなくなるため。だが**テストは
 これを守っていない**ので、そう書いておく。
+
+### S68 (2026-09-13): installer 切り替え後の conformance を回した。GC 7/7 ×3、baseline 11/11
+
+S65 の記録(2026-09-12 16:52)の約 9.5 時間後に apiserver のルーティングを
+`endpoints.APIGroupVersion.InstallREST` へ切り替えた(27716c4 以降)。
+**ゲートはそれ以来一度も走っていなかった。** テストレーン 4 本が緑なのと、
+このプロジェクトが Definition of Done と呼んでいるものが緑なのは別の主張なので、
+認証(P0-8/P0-9)に着手する前にここを通した。
+
+| フォーカス | 結果 |
+|---|---|
+| required GC(7 spec)· 1 回目 | **7/7** (120.6s) |
+| required GC · 2 回目 | **7/7** |
+| required GC · 3 回目 | **7/7** |
+| baseline(11 spec) | **11/11** |
+
+バリアントは `host`(required)。`--ginkgo.dry-run` が `Will run 7 of 7579 specs`
+を返すことを先に確認している(フォーカス文字列をワークフローから写すときに
+シェルのエスケープを戻し忘れると spec が 1 本落ちる — S42 の訂正)。
+
+#### 資産の再構築で 3 つ詰まった。3 つとも直した
+
+前回の実行で使ったディレクトリは残っていなかったので、e2e バイナリ
+(v1.36.4 / darwin-arm64)、TLS 証明書、kubeconfig、ホストの
+scheduler/controller-manager を一から用意した。そこで出た 3 件:
+
+1. **ハーネス自身のバグ。** `start host` が「ホストプロセスが 2 個のはずが
+   0 個」と言って停止したが、**プロセスは正常に動いていた**。野良検出の
+   パターンが `scratchpad/(cm-now|sched-now|…)` と**ディレクトリ名に
+   ハードコード**されていて、ハーネス自身が別の場所に置いたバイナリを
+   数えられなかった。この数え上げは S62(放置した 16 個の
+   controller-manager が偽の観測を生んだ件)の再発防止なので、
+   **バイナリ名で照合**するよう修正した。**ゲートを守る仕組みが、
+   ゲートを通さない側に壊れていた**のが厄介なところ。
+2. **ノードが信頼する CA の不一致。** 証明書を作り直したので、コンテナに
+   焼いてある `K8FLARE_EXTRA_CA_B64` と合わなくなっていた。新しい CA で
+   作り直し。イメージの ENTRYPOINT は `/entrypoint.sh` なので、素の
+   `docker run … -c <script>` では agent に直接渡って `--server is required`
+   になる(`--entrypoint /bin/sh` が要る)。
+3. **ボリュームの再利用。** `k8flare-e2e-data` に前のクラスタの agent 状態が
+   残っていた。
+
+#### 併せて見つけた、直していないもの
+
+**(a) ブートストラップが作るオブジェクトの watch イベントに `kind` が無い。**
+実測:
+
+| 経路 | `kind` / `apiVersion` |
+|---|---|
+| GET | **あり**(API machinery が出力時に打つ) |
+| API 経由で作ったオブジェクトの watch | **あり**(リクエストボディの TypeMeta が保存されている) |
+| **ブートストラップが作ったオブジェクトの watch** | **無し** |
+
+ホストの kube-scheduler が起動直後に `*v1.Namespace` と `*v1.Service` の
+両方でこう出す:
+
+```
+watch ended with error: unable to decode watch event:
+Object 'Kind' is missing in '{"metadata":{"name":"default",...}}'
+```
+
+Go 側で `&corev1.Namespace{…}` を組み立てて保存すると TypeMeta が空のまま
+入り、TS の watch 経路はその値をそのまま流すため。**致命ではない**
+(reflector は警告を出して relist する)が、起動のたびに全 informer が
+余分な LIST を 1 回払っている。installer 切り替えによる回帰ではなく、
+前からある穴。
+
+**(b) SelfSubjectAccessReview が 401 を返し続ける。**
+`POST /apis/authorization.k8s.io/v1/selfsubjectaccessreviews` が 401。
+クライアント証明書で認証しようとしているコンポーネント(k3s-controller か
+kube-proxy)が、トークンを持たずに来ている。ノードは Ready になるので
+致命ではないが、**証明書ベースの identity が一切機能していない**証拠であり、
+P0-8 の「per-node identity が無い」と同じ根。

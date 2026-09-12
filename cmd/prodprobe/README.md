@@ -139,7 +139,17 @@ off on cost grounds (2026-09-12), so **that workflow no longer runs** and the
 file is kept only as the specification of what a run must assert.
 
 `scripts/prodprobe-local.sh` + `scripts/com.k8flare.prodprobe.plist` schedule
-it from launchd on the maintainer's machine instead:
+it from launchd on the maintainer's machine instead. Three Make targets, and
+none of them need you to edit anything:
+
+```sh
+make probe-install      # render the plist for THIS checkout and load it
+make probe-status       # what launchd actually holds, and how stale it is
+make probe-uninstall    # unload and delete it; logs are left alone
+```
+
+`make probe-install` refuses while the credentials file is missing, prints the
+exact file to write, and touches launchd only once it is there:
 
 ```sh
 mkdir -p ~/.config/k8flare
@@ -150,11 +160,29 @@ CLOUDFLARE_ACCOUNT_ID=...     # optional -- without it, convergence only
 CLOUDFLARE_API_TOKEN=...      # optional -- Account Analytics:Read
 ENV
 chmod 600 ~/.config/k8flare/probe.env
-
-cp scripts/com.k8flare.prodprobe.plist ~/Library/LaunchAgents/
-# edit WorkingDirectory to this checkout, then
-launchctl load ~/Library/LaunchAgents/com.k8flare.prodprobe.plist
 ```
+
+The plist in `scripts/` is a **template**, not a loadable file: it carries
+`__K8FLARE_CHECKOUT__`, `__K8FLARE_PATH__` and `__K8FLARE_LOGDIR__`, which
+`probe-install` substitutes. Two of those are the reason to install it this way
+rather than by hand. launchd runs a job with `PATH=/usr/bin:/bin:/usr/sbin:/sbin`
+and no login shell, so a toolchain under `$HOME` (mise, homebrew) is
+unreachable; install bakes the directory of the `go` on your own PATH into the
+plist. And a plist copied with the placeholder still in it **loads
+successfully** and can never run — launchd validates the XML, not the paths.
+Install also compiles `./cmd/prodprobe` first, because `go.mod`'s replace
+directives point into `.build/*-mirror`: a wiped `.build/` turns every 02:23
+run into an error nobody reads.
+
+`make probe-status` answers, from `launchctl print` rather than from hope:
+whether launchd holds the job, whether it holds a **calendar trigger** for it
+(loaded is not the same as scheduled), what the last run exited with, and how
+old the newest log in `~/Library/Logs/k8flare/` is. It exits non-zero whenever
+the answer is "production is not being observed" — not installed, not
+scheduled, never run, failed, no credentials, or a newest log older than 48
+hours. A week of silence looks different from a run an hour ago that passed.
+Nothing runs at install time (a probe run takes ~25 minutes); force one with
+`launchctl kickstart -p gui/$(id -u)/com.k8flare.prodprobe`.
 
 Runs land in `~/Library/Logs/k8flare/`, with `prodprobe-latest.log` pointing
 at the newest and failures also appended to `prodprobe-failures.log`. A

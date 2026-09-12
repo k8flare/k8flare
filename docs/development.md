@@ -32,9 +32,10 @@ Build WASM step failed on a build that passed locally). Size
 reproducibility depends on the version.
 
 The chunk that gets hurt is whichever is closest to the cap, which today
-is **apiserver** (42.8MB, ~21MB of headroom) — not `gc`, which the
-original note named and which now sits 25MB clear. `make wasm` prints
-every chunk's headroom; trust that over any number written down here.
+is **apiserver** (48,784,426 bytes in a `make wasm` build on 2026-09-13, ~18MB of
+headroom) — not `gc`, which the original note named and which sits 25MB
+clear. `make wasm` prints every chunk's headroom; trust that over any
+number written down here.
 
 ## `make dev`: the two flags that aren't conveniences
 
@@ -108,23 +109,29 @@ write.
 
 ## Test lanes
 
-`make test` runs all three lanes below, in order, in about three minutes.
-They cannot share one `wrangler dev`: the apiserver lane needs the
-controllers off and the other two need them on. Run a single lane by name
-while iterating.
+`make test` runs all four lanes below, in order, in about eight minutes
+(S64 measured 68.9s / 296.2s / 75.3s for the three slow ones). Only
+`test-unit` runs in-process; the other three each start their own
+`wrangler dev`, and they cannot share one, because the apiserver lane needs
+the controllers off and the other two need them on. Run a single lane by
+name while iterating.
 
 | Lane | Runs | Covers |
 |---|---|---|
+| `make test-unit` | `test-cfruntime` (`go test ./pkg/cfruntime/...` as a real `GOOS=js` test binary under node) + `test-ts` (`vp test`) | pump windows, the JS boundary and promise lifetimes, the Controllers DO's poke/park policy, the watch stream's lifecycle — **no wrangler, no WASM chunks** |
 | `make test-apiserver` | `go test ./pkg/apiserver/...`, own `wrangler dev` with `KCM_DISABLED=1` | apiserver, storage, admission, RBAC, tokens — **no controllers** |
 | `make test-kcm` | `TestKCMDynamicWorkerControlPlane`, `-timeout 15m` | real KCM/GC/sched dynamic workers |
 | `make test-clusterop` | `TestClusterOperatorLifecycle`, `-timeout 15m` | cluster provisioning/teardown, with the workload controllers and scheduler off (`CM_DISABLED`/`SCHED_DISABLED`) |
 
-`ci.yml` runs the same three on every pull request. Until 2026-07-31 it
-ran only the first, so the real controllers had no automatic gate at all —
-the job that does exercise them, `cost-gate.yml`, is dispatch-only and a
-fork contributor cannot trigger it.
+**Nothing runs these lanes for you.** `ci.yml` is still wired to run the
+same work as separate steps — the two `test-unit` halves, then the three
+`go test` lanes, each retried once — and until 2026-07-31 it ran only the
+apiserver lane, so the real controllers had no automatic gate before then.
+But GitHub Actions has been off since 2026-09-12, so the lanes now run only
+where you run them; see
+[CONTRIBUTING.md](../CONTRIBUTING.md#ci-there-isnt-any-since-2026-09-12).
 
-**Known flake on these three CI steps, and why wrangler stays on
+**Known flake on the three `wrangler dev` lanes, and why wrangler stays on
 4.106.0**: intermittent `Error: Network connection lost.` failures
 (never reproduced locally) are
 [cloudflare/workers-sdk#14641](https://github.com/cloudflare/workers-sdk/issues/14641) —
@@ -139,11 +146,13 @@ not been observed on the current pin, though one clean run doesn't
 prove it can't happen there too. The hold lives in `pnpm-lock.yaml` —
 `package.json`'s `^4.106.0` range admits newer 4.x — so don't accept
 any wrangler bump without checking which miniflare major it pulls and
-A/B-ing the test lanes on actual CI runners. `ci.yml` and
-`deps-k3s-update.yml` retry each of the three steps once as a safety
-net; a same-lane failure on both attempts is a real failure, not this
+A/B-ing the test lanes — which, with Actions off, means A/B-ing them
+locally and accepting that the flake was only ever observed on CI runners.
+`ci.yml` and `deps-k3s-update.yml` retry each of the three steps once as a
+safety net; a same-lane failure on both attempts is a real failure, not this
 flake. Revisit the pin and the retries once #14641 is fixed and
-miniflare 5 is stable.
+miniflare 5 is stable. (The retries live in workflow files that no longer
+execute; the pin is what still matters locally.)
 
 The KCM and clusterop lanes' client requests are individually bounded
 (`rest.Config{Timeout: 30 * time.Second}` in `kcmdw_test.go` and
@@ -159,10 +168,11 @@ controllers — the tests are written assuming nothing reconciles them. This
 is why "the Pod moves under `make dev` but nothing happens under `make
 test`" is expected behaviour, not a bug.
 
-Both `test-*` lanes pay a large one-time cost on the first poke: workerd
-compiles the ~40MB WASM modules in-process. They're the local stand-in for
-the conformance workflow's dynamic-worker variants on machines that can't
-run a Linux kubelet.
+The `test-kcm` and `test-clusterop` lanes pay a large one-time cost on the
+first poke: workerd
+compiles the ~40MB WASM modules in-process. They're the stand-in for the
+`kcmdw`/`scheddw` conformance variants on a machine that can't run a Linux
+kubelet — a smoke test, not the conformance gate itself.
 
 ## The harness lifecycle script
 
@@ -213,17 +223,27 @@ a test lane.
 
 ## Running upstream conformance locally
 
-The Definition of Done is `e2e-conformance.yml`, which only a maintainer can
-dispatch — and which, as of 2026-09-12, cannot run at all: every job on the
-repository fails in four seconds because the organisation's GitHub billing
-needs attention. The same upstream binary runs on a laptop. Verified on macOS
-(arm64); the garbage-collector focus the required gate uses passes **7/7 in
-90–170 seconds**, in the required `host` variant
-(`docs/platform-verification.md` S48).
+**This is the gate.** Upstream conformance is still the Definition of Done,
+but since 2026-09-12 it runs here, on a laptop, not in CI: the maintainer
+decided not to pay for GitHub Actions (`docs/platform-verification.md` S63),
+nothing is waiting for billing to be restored, and every workflow run stops
+in about four seconds at GitHub's billing gate. `e2e-conformance.yml` is kept
+because its `GC_FOCUS` and `BASELINE_FOCUS` regexes are what the local run
+uses; `scripts/e2e-harness.sh` (see "The harness lifecycle script" above)
+is what starts and stops it.
+
+Verified on macOS (arm64): the garbage-collector focus passes **7/7 in
+90–170 seconds** in the `host` variant (`docs/platform-verification.md` S48),
+and S65 then measured all three variants — `host`, `kcmdw`, `scheddw` — at
+7/7 on `GC_FOCUS` and 11/11 on `BASELINE_FOCUS`.
 
 (An earlier revision of this line said "6/6". That was the focus-extraction
 bug in S42 — the shell escaping described below dropped one spec, and the one
 it dropped was the spec CI had actually been failing.)
+
+Steps 2 and 3 below are what `scripts/e2e-harness.sh start` does for you, on
+its own port and state directory; assemble them by hand only when you are
+debugging the harness itself.
 
 ```sh
 # 1. The upstream e2e binary, at the version go.mod pins.
@@ -245,35 +265,38 @@ docker run -d --name e2e-node --privileged --cgroupns=private \
   --tmpfs /run --tmpfs /var/run -e K3S_TOKEN=k8flare-dev-token \
   k8flare-node:local   # point -server at https://host.docker.internal:<tls port>
 
-# 4. The same focus the required gate uses, lifted from the workflow.
+# 4. The same focus the gate uses, lifted from the workflow.
 ./kubernetes/test/bin/e2e.test --kubeconfig=kubeconfig.yaml \
   --provider=skeleton --num-nodes=1 --disable-log-dump --ginkgo.no-color \
   --ginkgo.focus="$(the GC_FOCUS or BASELINE_FOCUS value in e2e-conformance.yml)"
 ```
 
 **What this harness can and cannot stand in for.** As written above it runs the
-resident WASM controllers, which reproduces the `sched-dw` and `kcm-dw`
-variants — **advisory** in CI, not the `host` variant that is the required
-gate. To reproduce the required variant instead, build `./cmd/scheduler` and
+resident WASM controllers, which reproduces the `scheddw` and `kcmdw`
+variants. These were advisory while CI was the gate; since S65 measured them
+identical to `host` on all 18 specs, the local gate treats all three as
+required. To reproduce the `host` variant, build `./cmd/scheduler` and
 `./cmd/controller-manager`, start `wrangler dev` with
 `--var SCHED_DISABLED:1 --var CM_DISABLED:1 --local` (and
 `--local-protocol https --https-key-path/--https-cert-path`, which removes the
 need for the TLS proxy above), then point both binaries at it with
 `--server=https://127.0.0.1:8443 --token=... --insecure-skip-tls-verify`. That
-passes the required garbage-collector focus 7/7 in about 90 seconds
-(`docs/platform-verification.md` S48). Three of the eleven baseline specs still
-fail there, but for a reason outside the control plane: on Apple Silicon the
-node image's k3s assets are x86-64 and run under emulation, where
-`prctl(PR_SET_SECCOMP, …)` returns EINVAL, so containerd decides seccomp is
-unsupported and refuses to create any pod sandbox (`docs/platform-verification.md`
-S53). Rebuild the node image with arm64 k3s assets to lift that; the required
-garbage-collector focus does not need pods to run and passes as is. For the garbage-collector focus the distinction does not
-matter: the gc dynamic worker runs in every variant, because the host has no
-garbage collector. For anything sig-scheduling it matters a lot — the
+passes the garbage-collector focus 7/7 in about 90 seconds
+(`docs/platform-verification.md` S48). Three of the eleven baseline specs fail
+there **with the stock node image**, but for a reason outside the control
+plane: on Apple Silicon that image's k3s assets are x86-64 and run under
+emulation, where `prctl(PR_SET_SECCOMP, …)` returns EINVAL, so containerd
+decides seccomp is unsupported and refuses to create any pod sandbox
+(`docs/platform-verification.md` S53). Rebuild the node image with arm64 k3s
+assets and it is 11/11 (S64, S65); the garbage-collector focus does not need
+pods to run and passes as is. For the garbage-collector focus the variant
+distinction does not matter: the gc dynamic worker runs in every variant,
+because the host has no garbage collector. For anything sig-scheduling it
+matters a lot — the
 `SchedulerPredicates` specs in `BASELINE_FOCUS` are scheduling-sensitive and a
-single small container node is not the runner CI uses. Treat a local baseline
-failure as "unattributed" until you have run the same focus against `main`
-with the same harness.
+single small container node is not the runner CI used to use. Treat a local
+baseline failure as "unattributed" until you have run the same focus against
+`main` with the same harness.
 
 **Copying the focus out of the workflow has a trap.** `GC_FOCUS` is a
 single-quoted shell string, so the apostrophe in one spec name is written
@@ -285,13 +308,18 @@ first:
 ```sh
 ./kubernetes/test/bin/e2e.test ... --ginkgo.dry-run --ginkgo.focus="$FOCUS" | grep 'Will run'
 # GC_FOCUS must say "Will run 7 of", not 6.
+```
 
 Two things to know before you trust a local run:
 
-- **Pods do not reach Running** on macOS. Nested containerd inside an emulated
-  amd64 container fails with `seccomp is not supported`. The garbage-collector
-  tests examine object lifecycle, not workloads, so they are unaffected — but a
-  focus that needs a Pod to execute will not pass here.
+- **Pods do not reach Running on Apple Silicon until you rebuild the node
+  image.** The stock image ships amd64 k3s assets, and under emulation
+  `prctl(PR_SET_SECCOMP, …)` returns EINVAL, so containerd concludes seccomp
+  is unsupported and refuses to create a sandbox
+  (`docs/platform-verification.md` S53; rebuilding with arm64 assets fixed it,
+  S54). The garbage-collector tests examine object lifecycle, not workloads,
+  so they pass either way — but a focus that needs a Pod to execute needs the
+  rebuilt image.
 - **Without a node, 5 of the 7 GC specs still run.** The other two skip with
   `there are currently no ready, schedulable nodes`, which is a precondition,
   not a failure of this control plane.
@@ -319,11 +347,12 @@ narrow. Background in
 Make skips a chunk whose inputs are unchanged. To force a rebuild:
 
 ```sh
-make clean-wasm wasm    # or: make -B wasm, which is what CI runs
+make clean-wasm wasm    # or: make -B wasm, which is what `npm run build:wasm` does
 ```
 
-CI never relies on Make's mtime check — a fresh `git checkout` doesn't
-preserve timestamps — so it always forces the rebuild.
+Never rely on Make's mtime check after a fresh `git checkout` — it doesn't
+preserve timestamps, which is why `ci.yml` always called
+`npm run build:wasm` rather than `make wasm`.
 
 ## Module mirrors (`.build/`)
 
@@ -350,10 +379,13 @@ make gen    # == go run ./cmd/k8flare-gen
 
 Regenerates `pkg/apiserver/zz_generated_*.go`, the lean client-go stubs
 under `pkg/leanclient/gen/`, `packages/k8flare-worker/src/k8s/gen`, and the
-OpenAPI/discovery documents in `packages/k8flare-worker/assets/`. CI re-runs
-the generator and fails on any diff, so commit the output. Never hand-edit a
-file carrying the `Code generated by k8flare-gen. DO NOT EDIT.` header;
-change `cmd/k8flare-gen` instead.
+OpenAPI/discovery documents in `packages/k8flare-worker/assets/`. Nothing
+re-runs the generator for you any more (`ci.yml` still has the drift check,
+but Actions is off — see
+[CONTRIBUTING.md](../CONTRIBUTING.md#ci-there-isnt-any-since-2026-09-12)), so
+run it yourself, confirm `git status` is clean, and commit the output. Never
+hand-edit a file carrying the `Code generated by k8flare-gen. DO NOT EDIT.`
+header; change `cmd/k8flare-gen` instead.
 
 (Note: `go generate ./...` does nothing here — there are no `//go:generate`
 directives. Use `make gen`.)

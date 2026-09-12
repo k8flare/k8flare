@@ -48,10 +48,14 @@ Key design points:
   "poke pump"), safety-net alarms self-disarm when idle, watches use
   hibernation. The cost rules are codified in
   [docs/cost-model.md](docs/cost-model.md).
-- **Conformance CI is the definition of done.** Official Kubernetes
+- **Upstream conformance is the definition of done.** Official Kubernetes
   e2e tests run against a real `wrangler dev` stack with a real k3s agent
-  (kubelet + containerd): `.github/workflows/e2e-conformance.yml`
-  (currently manual-dispatch only).
+  (kubelet + containerd). Since 2026-09-12 that gate runs **locally, not in
+  CI**: `scripts/e2e-harness.sh` drives the three control-plane variants and
+  the focus sets are lifted from `.github/workflows/e2e-conformance.yml`,
+  which is kept as their reference and no longer executes. The recipe is in
+  [docs/development.md](docs/development.md#running-upstream-conformance-locally);
+  why CI is off is in [CONTRIBUTING.md](CONTRIBUTING.md#ci-there-isnt-any-since-2026-09-12).
 
 ## What works today
 
@@ -103,9 +107,10 @@ open a real Cloudflare proxy session at startup — failing without
 credentials, and quietly using your real account with them.
 
 Chunk sizes are gated at build time against the Worker Loader's 64MiB cap.
-The apiserver chunk currently has roughly 21MB of headroom, so adding a
-dependency to it can fail the build outright; `make wasm` prints the
-remaining headroom for every chunk.
+The tightest chunk is apiserver: 48,784,426 bytes of the 67,108,864-byte
+cap in a local `make wasm` build on 2026-09-13, about 18MB of headroom. Adding a dependency
+to it can fail the build outright; `make wasm` prints the remaining
+headroom for every chunk, and that is the number to trust over this one.
 
 Talk to it with a bearer token (dev fallback: `k8flare-dev-token`):
 
@@ -117,10 +122,14 @@ Real kubectl needs TLS; `go test`-driven clients don't. Run the test
 suites:
 
 ```sh
-make test        # all test lanes (~3 min): real client-go against wrangler dev,
-                 # with and without the real controllers
+make test        # all four lanes (~8 min)
+make test-unit   # seconds: Go/WASM runtime + TypeScript units, no wrangler
 make test-kcm    # control-plane smoke with the real KCM/GC/sched dynamic workers
 ```
+
+`test-unit` runs in-process. The other three (`test-apiserver`,
+`test-kcm`, `test-clusterop`) each start their own `wrangler dev` and drive
+it with real client-go, with and without the real controllers.
 
 ## Joining a node (BYO VM)
 
@@ -173,7 +182,7 @@ posture" section before exposing a deployment.
 
 | Doc | What's in it |
 |---|---|
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Branches, commit rules, the local gates, how CI is triggered |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Branches, commit rules, the local gates, and why the gate is local rather than CI |
 | [SECURITY.md](SECURITY.md) | Reporting a vulnerability, and the honest current auth posture |
 | [docs/adopter-quickstart.md](docs/adopter-quickstart.md) | **Start here if you are evaluating it**: required Cloudflare entitlements, what to change before deploying, security posture, cost, backup/exit |
 | [docs/development.md](docs/development.md) | Local dev: required `wrangler dev` flags, DO state, test lanes, the 64MiB cap |
@@ -181,7 +190,7 @@ posture" section before exposing a deployment.
 | [docs/user-guide.md](docs/user-guide.md) | Cluster user guide: kubeconfig, what works, quirks (Japanese) |
 | [docs/custom-code-inventory.md](docs/custom-code-inventory.md) | Hand-written vs upstream code, generation pipeline |
 | [docs/known-issues.md](docs/known-issues.md) | **What is broken or unproven today.** Read before deciding to run this |
-| [docs/platform-verification.md](docs/platform-verification.md) | Every platform spike + measured finding (S1–S37). Read its current-state summary first |
+| [docs/platform-verification.md](docs/platform-verification.md) | Every platform spike + measured finding (S1–S67). Read its current-state summary first |
 | [docs/cost-model.md](docs/cost-model.md) | Idle/active cost per component, cost invariants |
 | [docs/control-plane-architecture.md](docs/control-plane-architecture.md) | Controllers ↔ Cloudflare primitives mapping |
 | [docs/general-purpose-k8s-plan.md](docs/general-purpose-k8s-plan.md) | Conformance expansion plan |

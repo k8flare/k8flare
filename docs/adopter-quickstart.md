@@ -71,14 +71,21 @@ lose. An existing deployment pulling a *future* destructive tag would
 lose everything, and there is no backup mechanism.
 
 **Guarded since 2026-09-11.** `npm run check:migrations` hashes that block
-and compares it against `packages/k8flare-worker/migrations.sha256`. It runs
-in CI, and `make deploy` / `npm run deploy` run it first and refuse to deploy
-if the block changed. So a `git pull` can no longer carry a destructive tag
-into your deployment unnoticed — accepting one is a separate, deliberate act
+and compares it against `packages/k8flare-worker/migrations.sha256`.
+`make deploy` and `npm run deploy` run it first and refuse to deploy if the
+block changed. So a `git pull` can no longer carry a destructive tag into
+your deployment unnoticed — accepting one is a separate, deliberate act
 (`npm run check:migrations -- --record` and commit, or
 `K8FLARE_ALLOW_MIGRATION_CHANGE=1` for a single deploy you have reviewed).
-The guard does not protect you if you invoke `wrangler deploy` directly; it
-is wired into the project's own deploy paths, not into wrangler.
+
+The guard runs **only** in those two deploy paths. It does not protect you
+if you invoke `wrangler deploy` directly, and nothing runs it
+automatically: `.github/workflows/ci.yml` still has the step, but GitHub
+Actions has been off since 2026-09-12
+([S63](platform-verification.md)), so no run reaches it.
+
+*Corrected 2026-09-13: this paragraph said the guard "runs in CI". It is
+wired into `ci.yml`, but `ci.yml` does not execute.*
 
 **Take a backup anyway.** `cmd/k8flare-backup` dumps every object the
 cluster's discovery serves, in every namespace, and restores them into a
@@ -185,12 +192,23 @@ readiness endpoint, and authentication was never what bounded the cost.
 
 Honest state: **no deployed cluster has been billed yet.** The figures in
 [cost-model.md](cost-model.md) are modeled from published unit prices,
-not observed invoices. What *is* mechanically verified — by
-`.github/workflows/cost-gate.yml` against a real local stack — is the
-*behaviour* the cost model depends on: an idle cluster arms no alarms,
-runs no processes, and produces no Worker invocations; and a cluster with
-work it can never finish (a Deployment with no nodes to schedule on)
-settles to a near-zero write rate instead of billing rows forever.
+not observed invoices.
+
+The *behaviour* the cost model depends on — an idle cluster arms no
+alarms, runs no processes and produces no Worker invocations; a cluster
+with work it can never finish (a Deployment with no nodes to schedule on)
+settles to a near-zero write rate instead of billing rows forever — has a
+mechanical check, `.github/workflows/cost-gate.yml`. **It is not running.**
+That workflow is `workflow_dispatch`-only and has executed exactly twice,
+both on 2026-07-03 — before the 2026-07-06 consolidation into a single
+Worker — and GitHub Actions has been off since 2026-09-12
+([S63](platform-verification.md)). So for the current architecture that
+behaviour is **not mechanically verified**. What exists instead is
+observation: idle parking was confirmed in production four times, 10–58
+minutes after traffic stopped ([S35, S37](platform-verification.md)).
+
+*Corrected 2026-09-13: this section credited `cost-gate.yml` with
+verifying that behaviour, in the present tense.*
 
 Rules of thumb:
 

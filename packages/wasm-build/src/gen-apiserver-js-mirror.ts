@@ -73,7 +73,9 @@ const patch = (rel: string, from: string, to: string) => {
   const file = path.join(DST, rel);
   const before = fs.readFileSync(file, "utf8");
   if (!before.includes(from)) {
-    throw new Error(`gen-apiserver-js-mirror: ${rel} no longer contains the line this patch replaces:\n${from}`);
+    throw new Error(
+      `gen-apiserver-js-mirror: ${rel} no longer contains the line this patch replaces:\n${from}`,
+    );
   }
   fs.writeFileSync(file, before.replace(from, to));
 };

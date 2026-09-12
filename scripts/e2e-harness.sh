@@ -14,7 +14,13 @@ REPO=${HARNESS_REPO:-$(cd "$(dirname "$0")/.." && pwd)}
 PIDS=$SP/harness.pids
 SCHED_BIN=${HARNESS_SCHED:-$SP/sched-now}
 CM_BIN=${HARNESS_CM:-$SP/cm-now}
-STRAY='scratchpad/(cm-now|cm-now2|deps-cm|deps-cm2|deps-sched|k8flare-controller-manager|sched-now|deps-scheduler|k8flare-scheduler)'
+# Match the binary NAME wherever it was built, not a directory one machine
+# happened to use: the count assertion exists to catch host control-plane
+# processes left over from an earlier experiment (S62), and a pattern anchored
+# on scratchpad/ silently counts zero when the harness itself put its binaries
+# somewhere else -- which reads as "REFUSING: expects 2, found 0" against
+# processes that started perfectly.
+STRAY='/(cm-now|cm-now2|deps-cm|deps-cm2|deps-sched|k8flare-controller-manager|sched-now|deps-scheduler|k8flare-scheduler)( |$)'
 
 stop() {
   [ -f $PIDS ] && for p in $(cat $PIDS); do kill -9 $p 2>/dev/null; done
