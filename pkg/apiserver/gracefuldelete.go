@@ -288,12 +288,13 @@ func clearForegroundFinalizer(ctx context.Context, rs *ResourceStore, namespace,
 			kept = nil
 		}
 		m.Finalizers = kept
-		written, err := rs.Update(ctx, namespace, name, obj, nil)
+		// Clearing the last finalizer completes the delete, and the
+		// per-resource effects that follow (a Service's ClusterIP) run from
+		// the store's own AfterDelete -- upstream routes this path through
+		// deleteWithoutFinalizers, which fires the same hook.
+		_, err = rs.Update(ctx, namespace, name, obj, nil)
 		if isStatusReason(err, metav1.StatusReasonConflict) {
 			continue
-		}
-		if err == nil {
-			settleDeletedObject(ctx, rs.storage, written)
 		}
 		return
 	}
