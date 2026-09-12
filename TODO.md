@@ -149,6 +149,14 @@ relist 120)のは実在し、S61 の修正で 0 / 15(ホストプロセスと同
 ことであって、Pod の churn ではない。**
 
 
+## 検証ゲートの変更 (ユーザー決定 2026-09-12)
+
+**GitHub Actions は使わない**(「Actions は使わないでください お金ないので」)。
+不可侵ルール #1 の「conformance CI = Definition of Done」は、**ローカルの
+host バリアントハーネスに置き換わる**(`docs/development.md` のレシピ、
+`docs/platform-verification.md` S48 / S63)。以下で「CI 待ち」と書かれていた
+項目は、すべてローカルで判定する。
+
 ## P1 — needed before the conformance story is credible
 
 ### P1-1 `[ ]` The required gate does not exercise the headline feature
