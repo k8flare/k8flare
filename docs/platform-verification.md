@@ -6840,6 +6840,30 @@ sched-dw の 3 回はすべて失敗したが、**落ちる spec が同じでは
 ただし host と kcm-dw は**同じ壊れたノードで 7/7 通る**ので、「ノードが
 壊れているから落ちる」だけでは sched-dw だけが落ちる説明にならない。
 
+#### 「orphan が全バリアントで壊れている」仮説は否定された
+
+一番怖い読み方は「orphan の経路は全バリアントで壊れていて、sched-dw だけが
+速いので conformance の即時チェックに引っかかる」だった。本番で直接確かめた:
+
+```
+pods before delete: 2; rs: 1
+deployment.apps "od" deleted        (--cascade=orphan)
+  t+2s:   rs=1 pods=2
+  t+10s:  rs=1 pods=2
+  t+30s:  rs=1 pods=2
+  t+60s:  rs=1 pods=2
+  t+120s: rs=1 pods=2
+```
+
+**本番の orphan は正しい。**120 秒経っても ReplicaSet も Pod 2 個も残る。
+しかも本番は kcm / gc / sched の dynamic worker を**すべて**動かしている
+——sched DW が動いているだけで壊れるわけではない。
+
+したがって sched-dw の失敗は、**そのハイブリッド構成に固有**である:
+sched は dynamic worker、workload controller はホストプロセス、という
+組み合わせは CI のテスト構成にしか存在せず、本番にも `host` 構成にも無い。
+採用者に影響する欠陥ではない。
+
 #### P1-1 / P1-2 への含意
 
 昇格の判断は CI でしかできない(不可侵ルール #1)。そのうえで、**kcm-dw と
