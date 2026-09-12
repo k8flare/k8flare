@@ -52,6 +52,7 @@ const pins: Array<[string, string]> = [
   ["pkg/sharding/parser.go", "upstream-parser.go.sha256"],
   ["pkg/storage/cacher/cache_watcher.go", "upstream-cache_watcher.go.sha256"],
   ["pkg/endpoints/installer.go", "upstream-installer.go.sha256"],
+  ["pkg/storageversion/manager.go", "upstream-storageversion-manager.go.sha256"],
 ];
 for (const [rel, pin] of pins) {
   checkPin(

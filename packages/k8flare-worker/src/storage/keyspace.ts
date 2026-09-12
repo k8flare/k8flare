@@ -89,33 +89,3 @@ export function classifyKey(key: string): KeyClass {
   if (!namespace) return { kind: "cluster" }; // malformed -- keep local defensively
   return { kind: "namespace", namespace, facet: namespaceFacet(namespace) };
 }
-
-export type PrefixClass =
-  | { kind: "cluster" } // served entirely by the parent's own log
-  | { kind: "namespace"; namespace: string; facet: string } // one specific facet
-  | { kind: "all-namespaces"; resource: string } // fan out across every namespace facet
-  | { kind: "events"; facet: string }
-  | { kind: "ca-vault"; facet: string }
-  | { kind: "root" }; // "/" itself -- the WatchHub firehose subscription
-
-/** Classify a prefix (list/watch scope), e.g. "/registry/pods/" or "/registry/pods/default/". */
-export function classifyPrefix(prefix: string): PrefixClass {
-  if (prefix === "/") return { kind: "root" };
-  if (prefix.startsWith("/ca/") || prefix.startsWith("/nodepasswords/")) {
-    return { kind: "ca-vault", facet: CA_VAULT_FACET };
-  }
-  if (!prefix.startsWith(REGISTRY_PREFIX)) return { kind: "cluster" };
-
-  const rest = prefix.slice(REGISTRY_PREFIX.length); // "pods/" | "pods/default/" | ""
-  const parts = rest.split("/").filter((p) => p.length > 0);
-  if (parts.length === 0) return { kind: "cluster" };
-
-  const resource = parts[0];
-  if (resource === "events") return { kind: "events", facet: EVENTS_FACET };
-  if (CLUSTER_SCOPED_RESOURCES.has(resource)) return { kind: "cluster" };
-
-  if (parts.length >= 2) {
-    return { kind: "namespace", namespace: parts[1], facet: namespaceFacet(parts[1]) };
-  }
-  return { kind: "all-namespaces", resource };
-}

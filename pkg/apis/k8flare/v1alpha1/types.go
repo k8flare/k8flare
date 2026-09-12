@@ -38,11 +38,6 @@ type ClusterSpec struct {
 	// DisplayName is an optional human-readable label. It has no effect on
 	// routing or identity.
 	DisplayName string `json:"displayName,omitempty"`
-
-	// Suspended, when true, makes the gateway reject this cluster's
-	// requests with 503 instead of routing them. The cluster's state is
-	// left intact.
-	Suspended bool `json:"suspended,omitempty"`
 }
 
 // ClusterStatus is the observed state of a Cluster, written by the
