@@ -95,11 +95,24 @@ func containsString(list []string, s string) bool {
 // is removed in this same request AFTER the sweep, so the GC's
 // dangling-reference live checks only ever see already-stripped
 // dependents.
+var gcIgnoredResources = map[schema.GroupResource]struct{}{
+	{Group: "", Resource: "events"}:              {},
+	{Group: "events.k8s.io", Resource: "events"}: {},
+}
+
+func ignoredByGarbageCollector(rs *ResourceStore) bool {
+	_, ok := gcIgnoredResources[schema.GroupResource{Group: rs.gvk.Group, Resource: rs.resource}]
+	return ok
+}
+
 func sweepOrphanStragglers(ctx context.Context, namespacedStores []*ResourceStore, namespace string, ownerUID string) error {
 	if ownerUID == "" || namespace == "" {
 		return nil
 	}
 	for _, rs := range namespacedStores {
+		if ignoredByGarbageCollector(rs) {
+			continue
+		}
 		listObj, err := rs.List(ctx, namespace, "", "")
 		if err != nil {
 			return fmt.Errorf("orphan sweep: list %s: %w", rs.resource, err)
@@ -149,6 +162,9 @@ func dependentOf(ctx context.Context, namespacedStores []*ResourceStore, namespa
 		ordered = append([]*ResourceStore{first}, namespacedStores...)
 	}
 	for _, rs := range ordered {
+		if ignoredByGarbageCollector(rs) {
+			continue
+		}
 		listObj, err := rs.List(ctx, namespace, "", "")
 		if err != nil {
 			return "", fmt.Errorf("foreground guard: list %s: %w", rs.resource, err)

@@ -8482,3 +8482,77 @@ orphan カスケード 1 回で GC が受ける `409 Conflict` は **ちょう�
 手書き DELETE ハンドラの `finalizeDeleteWithOrphanSweep` が同期的に走って
 いた。私の欠陥は `4e2e34a`(2026-09-13)以降だけなので、それ以前の
 2 件は**別の未解明事象**である。
+
+#### 訂正その 3 (同日): 掃除は**マップ版でも死んでいた**。負の対照の読みを撤回する
+
+訂正その 2 の「掃除の移設は効いていて 50 個中 30 個を救うが遅すぎる」は**誤り**。
+Codex のレビュー(`5f30d6b`)が指摘し、upstream を読んで確認した:
+
+```go
+// .build/apiserver-js-mirror/pkg/registry/generic/registry/store.go 754-758
+finishUpdate = fn
+defer func() { finishUpdate(ctx, false) }()
+...
+// 同 783
+return nil, nil, errEmptiedFinalizers   // ← この return で上の defer が走る
+...
+// 同 805-806
+if err == errEmptiedFinalizers {
+    return e.deleteWithoutFinalizers(...)   // ← AfterDelete はここでやっと発火
+}
+```
+
+`BeginUpdate` の FinishFunc は `deleteWithoutFinalizers` の**前**に `ok=false` で
+呼ばれる。UID を `BeginUpdate` から `AfterDelete` へ運んでいたマップは、
+`AfterDelete` が読む前にそのエントリを自分で消していた。**訂正その 2 で
+「移設した」と書いた掃除は、移設先でも一度も実行されていない。** 実行され得ない
+分岐を、別の実行され得ない分岐に置き換えていた。
+
+したがって負の対照(拒否だけ外す)が測っていたのは「掃除だけが効いた状態」では
+なく**ガードが両方とも無い素の状態**であり、`got 31 / 30 pods` から掃除の効果を
+読み取ることはできない。0〜31 の幅は、GC の informer がその時たまたま保持して
+いた割合のばらつきそのものと見るのが妥当。**掃除が何を救うかは、いまだ測れて
+いない。**
+
+#### 運搬役は最初から要らなかった
+
+`deleteWithoutFinalizers` は `e.Storage.Delete(ctx, key, out, ...)` で**保存済み
+オブジェクトを `out` に取り出して**から `finalizeDelete(ctx, out, ...)` を呼ぶ
+(`KineStorage.Delete` は `pkg/apiserver/upstreamstorage.go`)。その `out` は
+「消そうとしていた finalizer をまだ持っている側」なので、`AfterDelete` が必要と
+する事実はオブジェクト自身に載って届く。マップは**不要であり、かつ壊れていた**。
+
+実測(`AfterDelete` に一時計測を入れ、`make wasm` で再ビルドしてから
+`TestOrphanDependents` を実行):
+
+```
+SWEEPPROBE afterdelete  resource="deployments" name="owner-deploy-orphan" finalizers=["orphan"]
+SWEEPPROBE sweeping     owner="owner-deploy-orphan"
+```
+
+マップを削除し `containsString(m.Finalizers, metav1.FinalizerOrphanDependents)`
+で判定する形にして、**掃除は今日はじめて実際に走った**。
+
+#### もうひとつの P1: Events で orphan が**恒久的に**詰まる
+
+`dependentOf` は「UID を持つ依存」を全 namespaced ストアに問う。しかし実 GC は
+`garbagecollector.DefaultIgnoredResources()`(core と events.k8s.io の Events)を
+**監視しない**ので、owner への ownerReference を持つ Event は永久に orphan されず、
+ガードは `Conflict` を返し続ける。**ガードを入れる前は消せていた owner が、
+誰にも消せなくなる。** フレークではなく決定論的なハングで、foreground 側
+(`blockingDependent`、`blockOwnerDeletion: true` の Event)も同じ穴だった。
+
+`gcIgnoredResources` を導入し、両ガードと掃除がそろって GC と同じ集合を飛ばす。
+`TestGCIgnoredResourcesMatchesUpstream` が upstream の集合との乖離を縛る
+(テストバイナリだけが `garbagecollector` を import するので、apiserver チャンクの
+サイズには影響しない — 実測 48,797,400 bytes、余裕 17,882KiB)。
+
+負の対照(ガードのスキップだけ外し、`make wasm` で再ビルドしてから実行):
+
+```
+clearing the orphan finalizer with only an Event owned =
+  Operation cannot be fulfilled on deployments "owner-deploy-evented":
+  orphaning is still waiting on dependent events/owner-deploy-evented.1
+```
+
+`TestOrphanIsNotWedgedByAnEvent` がこれを回帰として固定する。

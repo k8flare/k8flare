@@ -138,3 +138,73 @@ func TestOrphanDependents(t *testing.T) {
 		t.Errorf("expected the Deployment to be gone after its last finalizer was cleared")
 	}
 }
+
+// TestOrphanIsNotWedgedByAnEvent pins the liveness half of the orphan
+// guard. The guard refuses to clear the finalizer while any dependent
+// still carries the owner's UID -- but the real garbage collector never
+// monitors Events (garbagecollector.DefaultIgnoredResources), so an
+// Event with an explicit ownerReference is never orphaned and the
+// refusal would stand forever. Before gcIgnoredResources the owner
+// below could not be deleted at all, by anyone.
+func TestOrphanIsNotWedgedByAnEvent(t *testing.T) {
+	client := setupWranglerDev(t)
+	ctx := context.Background()
+	ns := "test-gc-orphan-event-ns"
+
+	_ = client.CoreV1().Namespaces().Delete(ctx, ns, metav1.DeleteOptions{})
+	if _, err := client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: ns},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("Create namespace: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = client.CoreV1().Namespaces().Delete(context.Background(), ns, metav1.DeleteOptions{})
+	})
+
+	deploy, err := client.AppsV1().Deployments(ns).Create(ctx, &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "owner-deploy-evented"},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create deployment: %v", err)
+	}
+
+	blocking := true
+	if _, err := client.CoreV1().Events(ns).Create(ctx, &corev1.Event{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "owner-deploy-evented.1",
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "apps/v1", Kind: "Deployment",
+				Name: deploy.Name, UID: deploy.UID,
+				BlockOwnerDeletion: &blocking,
+			}},
+		},
+		InvolvedObject: corev1.ObjectReference{
+			APIVersion: "apps/v1", Kind: "Deployment",
+			Namespace: ns, Name: deploy.Name, UID: deploy.UID,
+		},
+		Reason:  "ScalingReplicaSet",
+		Message: "an event that owns nothing and blocks nothing",
+		Type:    corev1.EventTypeNormal,
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("Create event: %v", err)
+	}
+
+	policy := metav1.DeletePropagationOrphan
+	if err := client.AppsV1().Deployments(ns).Delete(ctx, deploy.Name, metav1.DeleteOptions{
+		PropagationPolicy: &policy,
+	}); err != nil {
+		t.Fatalf("Delete deployment with Orphan policy: %v", err)
+	}
+
+	current, err := client.AppsV1().Deployments(ns).Get(ctx, deploy.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("re-reading the terminating Deployment: %v", err)
+	}
+	current.Finalizers = nil
+	if _, err := client.AppsV1().Deployments(ns).Update(ctx, current, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("clearing the orphan finalizer with only an Event owned = %v, want success", err)
+	}
+	if _, err := client.AppsV1().Deployments(ns).Get(ctx, deploy.Name, metav1.GetOptions{}); err == nil {
+		t.Errorf("expected the Deployment to be gone once its last finalizer was cleared")
+	}
+}

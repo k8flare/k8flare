@@ -194,10 +194,30 @@ carries the UID, sweep from `AfterDelete`, and ask the unfiltered dependent
 question (`blockingDependent` required `blockOwnerDeletion`, which is
 foreground's question, not orphaning's).
 
-## Three things I got wrong this session
+**Codex reviewed that fix and found two more P1s, both the same class as the
+bug being fixed — a hook placed on a path that does not run when expected.**
+They are fixed in `<pending>` and are the most useful thing in this brief:
+
+- The sweep was still dead. The UID travelled from `BeginUpdate` to
+  `AfterDelete` in a map, and `BeginUpdate`'s FinishFunc runs with `ok=false`
+  *before* `deleteWithoutFinalizers` — so the entry was always removed before
+  the consumer read it. **I had replaced one unexecutable branch with
+  another.** The map was also unnecessary: `deleteWithoutFinalizers` hands
+  `AfterDelete` the object it deleted from storage, which still carries the
+  finalizer. Deleting the map fixes the P1 and a dry-run leak together, and
+  the sweep ran for the first time today (measured, S69's third correction).
+- The guard could wedge an owner **forever**. It waited on any dependent
+  carrying the UID, including Events — which the real collector never
+  monitors (`DefaultIgnoredResources`), so that reference is never stripped
+  and the `Conflict` never lifts. Deterministic, not flaky, and an owner that
+  deleted fine before the guard existed. Foreground had the same hole. Both
+  now skip the collector's ignored set, pinned against upstream by a test.
+
+## Four things I got wrong this session
 
 Listed because the pattern is more useful than any single finding, and because
-a fourth one is probably in the diff.
+a fifth one is probably in the diff. Note that #4 was found by a reviewer, in
+the commit that fixed #3 — which is the argument for this document existing.
 
 1. **"The TypeMeta stamp is causing the flake."** Plausible — it changes every
    stored object. Removing both call sites and rebuilding left the failure
@@ -210,7 +230,13 @@ a fourth one is probably in the diff.
    consecutive passes happen one time in five. Recorded as S68 and wrong.
    Three passes is not a stability claim.
 
-A fourth, structural: a negative control returned "pass" because I had not
+4. **"The sweep is a belt-and-suspenders second line."** It had never
+   executed — not in the design the gate caught, and not in the one that
+   replaced it. The negative control I read as "the sweep saves 30 of 50 pods"
+   was measuring a build with no guard at all, so it says nothing about the
+   sweep. Withdrawn; what the sweep saves is still unmeasured.
+
+A fifth, structural: a negative control returned "pass" because I had not
 rebuilt the WASM — the running Worker still had the code I thought I had
 removed. Any measurement in this repo that does not rebuild the chunk is
 measuring the last build.
