@@ -162,10 +162,15 @@ GC でも kubelet でも scheduler でもない。informer は届いている(�
 1%)のに、controller が持つ Pod 集合の像が安定していない。**なぜ像が安定
 しないかは未証明。**
 
-**Do.** `request` 境界で replication-controller の LIST 応答の並びと、その
-直後の POST/DELETE の対応を見る。pump window の閉鎖と relist の境界に相関が
-あれば、Stage 1(欠落のない replay)の直接の証拠になる。切り分けは隔離
-ワークツリーで(S43)。
+**Three candidates eliminated (S56).** 291ms で 24 個作っている窓について:
+dynamic worker の再ロードは **0 回**(expectations が消えたのではない)、
+kcm の `observed` は 24 個目の前に **20 行**(informer は届いている)、
+`pkg/leanclient/informers` の indexer / lister は client-go の生成コードと
+同一(コード読みの範囲で問題なし)。**残る候補は expectations の経路。**
+
+**Do.** 隔離ワークツリーで replication/replicaset controller の expectations に
+ログを入れ、24 回の作成それぞれで `SatisfiedExpectations` が何を返したかを
+見る(S43: main の作業ツリーでは触らない)。
 
 **Acceptance.** ノードを付けた状態で `replicas=2` に対して作られる distinct
 な Pod が 2 個であること。

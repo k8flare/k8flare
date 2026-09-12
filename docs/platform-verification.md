@@ -7292,9 +7292,42 @@ informer は届いている(取りこぼし 1%)。それでも controller が持
 このセッションで機序の仮説を二度撤回しているので、ここで止める。測れたのは
 「誰が」と「どういう形で」までである。
 
-#### 次の一手
+#### バースト profile と、消し込めた候補
 
-`request` 境界は LIST も見える。replication-controller の LIST の応答が
-振動しているかを、`GET /api/v1/namespaces/<ns>/pods?labelSelector=...` の
-並びと、その直後の POST/DELETE の対応で見る。pump window の閉鎖と
-relist の境界に相関があれば、Stage 1(欠落のない replay)の直接の証拠になる。
+同じ `request` 境界で replication-controller の 244 リクエストを時系列に
+並べた:
+
+```
++      0 create
++    106 create   (×14 この 6ms の間に)
++    259 create   (×6)
++    291 create   (×3)   <- ここまで 291ms で 24 個
++   1248 delete
++   1433 delete / create が交互
+```
+
+**replicas=2 の RC に対して、291 ミリ秒で 24 個作っている。** そのあと
+削除と作成が交互に続き、最終的に 2 個へ収束する。同じ実行で
+`PUT .../replicationcontrollers/simpletest.rc/status` を **116 回**出して
+おり、status 更新がまた自分を起こす形になっている。
+
+この 291ms の窓について確かめた:
+
+| 候補 | 測定 | 判定 |
+|---|---|---|
+| dynamic worker が再ロードされて in-memory の expectations が消える | 窓の中の (re)load は **0 回**(実行全体では 8 回) | **否定** |
+| informer がイベントを届けていない | 24 個目の作成より前に kcm の `observed` が **20 行** | **否定** |
+| 自前 informer の indexer / lister が壊れている | `pkg/leanclient/informers` の `namespaceIndexers` は client-go の生成コードと同一で、lister は informer 自身の indexer を使う | **否定**(コード読みの範囲) |
+
+**残る候補は expectations の経路そのもの。** upstream の
+replicaset controller は `SatisfiedExpectations` が false の間 `manageReplicas`
+を呼ばない。24 回連続で作成しているということは、expectations が張られて
+いないか、毎回「満たされた」と判定されている。k8flare は RC を
+`replication.NewReplicationManager`(RC↔RS 変換を挟む upstream の実装)で
+動かしているので、変換層のキーの扱いが関係しうる——**が、これは未検証の
+推測であり、このセッションで機序の仮説を二度撤回しているので、ここでは
+主張しない。**
+
+**次の一手**: 隔離ワークツリーで `replication`/`replicaset` controller の
+expectations にログを入れ、24 回の作成それぞれで `SatisfiedExpectations` が
+何を返したかを見る。S43 の教訓に従い、main の作業ツリーでは触らない。
