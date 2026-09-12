@@ -224,9 +224,12 @@ need for the TLS proxy above), then point both binaries at it with
 `--server=https://127.0.0.1:8443 --token=... --insecure-skip-tls-verify`. That
 passes the required garbage-collector focus 7/7 in about 90 seconds
 (`docs/platform-verification.md` S48). Three of the eleven baseline specs still
-fail there, but for a reason outside the control plane: on Docker Desktop the
-containerised node cannot create a pod sandbox (`seccomp is not supported`), so
-any spec that needs a pod to actually run cannot pass. For the garbage-collector focus the distinction does not
+fail there, but for a reason outside the control plane: on Apple Silicon the
+node image's k3s assets are x86-64 and run under emulation, where
+`prctl(PR_SET_SECCOMP, …)` returns EINVAL, so containerd decides seccomp is
+unsupported and refuses to create any pod sandbox (`docs/platform-verification.md`
+S53). Rebuild the node image with arm64 k3s assets to lift that; the required
+garbage-collector focus does not need pods to run and passes as is. For the garbage-collector focus the distinction does not
 matter: the gc dynamic worker runs in every variant, because the host has no
 garbage collector. For anything sig-scheduling it matters a lot — the
 `SchedulerPredicates` specs in `BASELINE_FOCUS` are scheduling-sensitive and a

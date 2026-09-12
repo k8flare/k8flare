@@ -7008,3 +7008,54 @@ Pod を起動できる状態になるまで、この二つのバリアント差�
 Pod を起動できない。それが原因で、baseline focus の 3 spec と、この
 バリアント比較が信用できない。required GC フォーカス 7/7 は Pod の起動を
 要求しないので有効である。
+
+### S53 (2026-09-12): ローカルノードが Pod を起動できない理由が特定できた
+
+S48 以降ずっと「macOS の Docker Desktop 上のコンテナノードは
+`seccomp is not supported` で Pod サンドボックスを作れない」を限界として
+扱ってきた。原因が分かった。**k8flare の欠陥ではなく、Apple Silicon 上で
+x86-64 バイナリをエミュレーション実行していたため**である。
+
+#### 追い方
+
+containerd v2 の `seccompEnabled()` は
+`prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, 0, 0, 0) != EINVAL` を見るだけで、
+ビルドタグは無い(この点は先に確認し、「seccomp ビルドタグ欠落」という
+最初の仮説は否定した)。そこで同じ prctl を呼ぶだけの小さなプローブを
+両アーキテクチャ向けに作り、**同じコンテナの中で**走らせた:
+
+| プローブのアーキテクチャ | prctl の戻り | containerd の判定 |
+|---|---|---|
+| arm64(ネイティブ) | EFAULT (bad address) | **有効: true** |
+| amd64(エミュレーション) | **EINVAL** | **有効: false** |
+
+つまりエミュレーション下では seccomp フィルタを設定できず、カーネルが
+非対応であるかのように見える。
+
+#### どのバイナリがそれを踏んでいたか
+
+agent を arm64 でビルドし直して入れ替えても直らなかった。**containerd は
+agent の中ではなく別プロセス**(PID 1486)で、k3s が
+`/var/lib/rancher/k3s/data/<hash>/bin/containerd` に展開したものだった。
+ELF の machine フィールドを読むと:
+
+```
+containerd:            3e 00  = x86-64   <- エミュレーション
+/usr/local/bin/k8flare-agent:  b7 00  = aarch64
+```
+
+ノードイメージ(`packages/k8flare-worker/images/node/`)は amd64 の k3s
+アセットを展開しており、それが Apple Silicon 上で emulate されている。
+`make nodes-agent` が `GOARCH=amd64` 固定なのは、Cloudflare Containers が
+x86 だからで、本番としては正しい。**壊れているのはローカルの実験環境だけ。**
+
+#### 何が変わるか
+
+- **k8flare の欠陥ではない。** CI のランナー(linux/amd64)でも BYO VM でも
+  ネイティブなのでこの経路は踏まない。
+- S48 / S51 / S52 で「ノードが Pod を起動できないため信用できない」と
+  限定した結論は、**限定の理由がこれで確定した**。
+- ローカルハーネスを完全なものにするには、ノードイメージを arm64 の k3s
+  アセットで作り直す(Apple Silicon の場合)。そうすれば baseline focus の
+  残り 3 spec と、バリアント間の比較が初めて意味を持つ。required GC
+  フォーカスは Pod の起動を要求しないので、今のままでも有効である。
