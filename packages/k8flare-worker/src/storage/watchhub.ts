@@ -140,6 +140,13 @@ export class WatchHub {
     url.searchParams.set("prefix", prefix);
     url.searchParams.set("revision", String(revision));
     const resp = await this.clusterStub().fetch(new Request(url.toString()));
+    if (!resp.ok) {
+      // Without this the error body parses into {events: undefined}, and the
+      // subscriber is seeded with a watch that carries neither the state it
+      // asked for nor a usable bookmark -- the silently-abandoned-work shape
+      // this repo keeps hitting. Fail the upgrade so the client relists.
+      throw new Error(`replay ${prefix} since ${revision}: ${resp.status} ${await resp.text()}`);
+    }
     return await resp.json();
   }
 

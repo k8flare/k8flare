@@ -399,8 +399,15 @@ export class Cluster {
     const revision = body.revision || 0;
 
     if (revision === 0) {
-      const { rev, event } = await storeGetCurrent(this.sql, this.host, key, true);
-      let prevRevision = rev;
+      const { event } = await storeGetCurrent(this.sql, this.host, key, true);
+      // A key that has never existed gets prev_revision 0, not the current
+      // revision: kine_name_prev_revision_uindex is what makes exactly one
+      // concurrent create win, and it can only do that if both racers derive
+      // the same prev_revision. The current revision moves between their two
+      // reads, so both used to be admitted and the second silently replaced
+      // the first. A re-create after a delete keeps using the tombstone's
+      // revision, which is already the same for everyone and never 0.
+      let prevRevision = 0;
       if (event && !event.delete) return jsonResponse({ error: "key already exists" }, 409);
       if (event) prevRevision = event.kv.modRevision;
       const id = await storeInsert(

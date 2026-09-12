@@ -8044,3 +8044,143 @@ UID / RV で対応付ける必要がある。component を跨ぐ区間は、共�
 
 レビュー時点のコミットは `898de9b` で、**`scripts/e2e-harness.sh` はその後に
 コミットした**(「ハーネスがリポジトリに無い」という指摘はその時点では正しい)。
+
+### S67 (2026-09-12): facet の書き込みが半分だけ成立したとき、クラスタは自力で復帰しない
+
+Codex の NO-GO 指摘のうち最も重い「storage facet failure repair
+unimplemented」を、**再現テストを書いてから**直した。指摘は正しかったが、
+私が最初に見積もった被害範囲は誤っていた。
+
+#### 構造
+
+namespaced なキーの書き込みは 2 つのストレージにまたがる。親 Cluster DO の
+kine 表が採番権威で、値を落とした**封筒行**(value/old_value が NULL)を持つ。
+実体は namespace facet 側に、親が採番したのと同じ id で入る。跨ぐ
+トランザクションは無い。
+
+`storeInsert` は封筒を入れてから facet に `/apply` する。**facet 側が失敗
+すると封筒だけが残る。**
+
+#### 実際に起きること(4 件、すべてテストで再現した)
+
+| # | 症状 | 根拠 |
+|---|---|---|
+| 1 | **そのキーが二度と作れなくなる** | facet キーの `prevRevision` は `storeGetCurrent` 経由で **facet の** `MAX(id)` から来る。失敗した apply はそれを進めないので、再試行は同じ `(name, prev_revision)` を入れ直し、`kine_name_prev_revision_uindex` に当たって **409 "key already exists"** になる。一方 GET は not-found を返す。同じ facet に無関係の書き込みが来るまで復帰しない |
+| 2 | **値の無い watch イベントが配られる** | `replayDelta` が facet に行が無いとき封筒で代用していた(旧コメント: "fall back to the (value-less) envelope if somehow missing")。空のオブジェクトを載せた event が出て、bookmark はその revision を越えて進む |
+| 3 | **成功した書き込みが失敗として報告される** | facet の `APPLY_SQL` が素の `INSERT` だった。`facetFetch` はプラットフォームの "storage caused object to be reset" で再試行するので、**コミット済みで ack だけ失われた** apply の再送が PK 違反になり、500 → `storeInsert` が throw |
+| 4 | **壊れた watch を掴まされる** | WatchHub の `replay()` が `resp.ok` を見ずに `resp.json()` していた。500 のエラーボディが `{events: undefined}` に化け、購読者は状態もブックマークも持たない watch を渡される |
+
+#### 直し方
+
+1. `discardOrphanedEnvelope` — facet が失敗したら封筒を消す。**そのキーの
+   最新行のままである場合に限る**(後続の書き込みが `prev_revision` で
+   この id に鎖を張っていたら、途中の輪を抜くほうが害が大きい)。
+   id は再利用されない(親の `kine.id` は AUTOINCREMENT なので
+   `sqlite_sequence` が常により大きい id を配る)。クラスタの報告する
+   revision は次の書き込みまで 1 つ戻りうるが、同じ理由でイベントは失われない
+2. `replayDelta` — facet が答えたのに行が無い行は**落とす**。`console.warn` を
+   出す
+3. `APPLY_SQL` を `INSERT OR IGNORE` に
+4. WatchHub の `replay()` で `resp.ok` を見て throw する
+
+#### 「落とす」でよい理由(前提の確認)
+
+`AFTER_SQL` は親にも facet にも LIMIT が無く、compaction はどこにも存在
+しない。したがって「facet が応答して、その id の行が無い」は**一意に**
+「`/apply` が完了しなかった」を意味し、そのとき呼び出し側は失敗を受け取って
+いる。replay 全体を失敗させる案は採らなかった: 残骸 1 件がその revision を
+跨ぐ**すべての replay を永久に壊す**毒薬になる。facet が到達不能なら
+`facetFetch` が throw して replay ごと失敗する — これは正しく相手に伝わる。
+
+#### 検証
+
+`packages/k8flare-worker/src/storage/facetfailure.test.ts`(8 ケース)。
+facet は再実装ではなく、**ローダーに配るのと同じ `FACET_SOURCE` 文字列を
+評価して** node:sqlite に載せている。負の対照を 3 本取り、修正を 1 つずつ
+戻すとそれぞれ対応するケースが落ちることを確認した:
+
+| 戻した修正 | 落ちるケース |
+|---|---|
+| `INSERT OR IGNORE` | survives a retry of an apply that had already committed |
+| `replayDelta` の drop | drops a residue envelope it could not remove |
+| `discardOrphanedEnvelope` | lets the client retry the same create / still replays the writes that did land |
+
+#### 訂正
+
+`store.ts` の冒頭コメントは「live broadcast は facet を見る必要がない」と
+書いていたが**誤り**。`broadcastEvent` (watch.ts:71-74) は facet-routed な
+キーで facet に問い合わせている。親の行は値を落とした封筒なので、そうしないと
+値の無いイベントを配ることになる。結果として、facet が失敗した書き込みの
+broadcast が正しく「何も出さない」で済んでいる。コメントを訂正した。
+
+#### 訂正 (同日): 上の「落とす」理由づけは**誤り**だった
+
+外部レビュー(Codex)が反例を出し、実際に再現した。上の節の推論の核心
+
+> 「facet が応答して、その id の行が無い」は**一意に**「`/apply` が完了
+> しなかった」を意味する
+
+は**成り立たない**。欠けている理由はもう一つある: **apply がまだ飛行中**。
+親 DO は facet への `await` で譲るので、その間に別のリクエストが replay を
+走らせると、親のログには id N があり facet には無い状態を正常応答として
+観測する。
+
+そこから 2 つの実害が出る(どちらも今回のテストで再現した):
+
+1. **成功する書き込みを watcher が永久に取り落とす。** 飛行中の N を落として
+   bookmark を N まで進める → watcher が切断 → apply が成功して書き込み元は
+   201 を受け取る → watcher が N から再接続 → `id > N` なのでその成功イベントは
+   二度と来ない
+2. **成立した書き込みを消す。** 「facet が失敗したら封筒を消す」も同じ穴で、
+   facet がコミットした後に ack だけ失われた場合を「未適用」と誤断定する。
+   GET は値を返すのに delta replay からは永久に消える、という分裂状態になる
+
+私が 2 つの保存系にまたがる書き込みの結果を、**片側の 1 回の読みから
+決定できる**と仮定したのが誤りだった。CLAUDE.md の「局所のみで判断」が、
+関数ではなく分散書き込みに対して起きた形。
+
+#### 直した設計
+
+観測ではなく**記録**で分ける。Durable Object は同時に 1 インスタンスしか
+生きないので、「apply が飛行中」はこのインスタンスのメモリにしか存在し得ない
+状態であり、それを持てば「まだ来ていない」と「もう来ない」が区別できる。
+
+| 仕組み | 何を保証するか |
+|---|---|
+| `pendingApplies` (host ごとの `WeakMap`) | いま飛行中の revision。DO が単一インスタンスなので、ここに無い = どのインスタンスからも apply され得ない |
+| `settledRevision()` = `min(MAX(id), 最小 pending − 1)` | 読み手に見せてよい上限。**bookmark も LIST の revision もこれ**。飛行中の revision を跨いだ再開位置を渡さない |
+| `replayDelta` は ceiling **以下**だけを返す | 飛行中の行を飛ばして上の行だけ返すと、watcher が見ていない状態への MODIFIED を受け取る |
+| facet 失敗時は**消す前に問い合わせる** (`facetHasRevision`、id 完全一致) | ack を失っただけの成立した書き込みを消さない。問い合わせ自体が失敗したら封筒を残す(後の読み手が解決する。その時点で apply は飛行し得ない) |
+| create の `prev_revision` は **0 固定** | 競合する 2 つの create が**同じ**トークンを導出しないと `kine_name_prev_revision_uindex` は効かない。「その時点の revision」は 2 つの読みの間で動く |
+
+`storeGetCurrent` は facet ではなく**親のログ**を存在と順序の権威にした
+(設計文書が元々そう書いていた通り)。読み取り時に「親に封筒があり、facet に
+無く、pending でもない」を見つけたらその場で解決する — create は再試行で
+自己修復するが、**update は自分の modRevision を使い続けるので他の何かが
+解除することはない**(Codex 指摘)。
+
+#### 残る穴(直さない、記録する)
+
+親 DO が封筒挿入と facet ack の間で死に、facet 側は RPC を処理してコミット
+した場合。新しいインスタンスの pending は空で、broadcast は一度も走らない。
+GET は値を返すが watcher は relist するまで知らない。**壊れてはいないが古い**
+という穴で、Codex #4(push 失敗)と同じ階級。起動時スキャンでは閉じられない
+(facet がマイクロ秒単位で apply 中かもしれない)。窓は isolate 退避 1 回分。
+
+#### 検証
+
+`facetfailure.test.ts` を 18 ケースに拡張。Codex の反例をそのまま入れてある。
+負の対照 6 本、すべて対応するケースだけが落ちる:
+
+| 戻した仕組み | 落ちるケース |
+|---|---|
+| pending クランプ | bookmark past an apply still in flight (delta / fresh の 2 本) |
+| 問い合わせてから消す | reports success for a write that landed and lost only its acknowledgement |
+| 親を revision の権威に | reports the cluster's revision on a namespaced read |
+| 読み取り時の封筒解決 | unwedges an update whose envelope outlived the isolate that wrote it |
+| replayDelta の ceiling | never replays an event above the bookmark it hands out |
+| create の `prev_revision = 0` | keeps a create's compare-and-swap token still while another apply resolves |
+
+うち 2 ケースは**実物の `Cluster.fetch` を叩いている**(`handlePut` の
+代役ではなく)。テスト側の代役が本物とずれると、まさにこの
+`prev_revision` の指摘を取り逃がすため。

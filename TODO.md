@@ -157,6 +157,28 @@ host バリアントハーネスに置き換わる**(`docs/development.md` の�
 `docs/platform-verification.md` S48 / S63)。以下で「CI 待ち」と書かれていた
 項目は、すべてローカルで判定する。
 
+### P0-8 `[ ]` 一つのトークンが全権で、ノードもそれを持つ
+
+**Problem.** 有効なクラスタトークンは `admin` / `system:masters` として認証され
+(`pkg/apiserver/auth.go:98`)、RBAC を評価前に短絡する
+(`pkg/apiserver/rbac.go:258`)。k3s agent はその**同じトークン**を
+HTTP Basic `node:<token>` で提示する(`auth.go:112-118`)。つまり
+**ノードの設定ファイルを読める者はクラスタ管理者**である。
+
+**さらに**: `X-Remote-User` / `X-Remote-Group` は「TLS 終端プロキシがクライアント
+証明書から設定する」前提で信頼されているが、**受信ヘッダを剥がしている箇所が
+無い**(`packages/k8flare-worker/src/gateway/index.ts:100,117` は読むだけ)。
+今日これは権限昇格ではない — トークン保持者はすでに `system:masters` だから。
+だが**ロールを分けた瞬間に昇格経路になる**: agent 用トークンを Bearer で出し
+`X-Remote-Group: system:masters` を付ければ通ってしまう。ロール分割より先に
+受信 `X-Remote-*` を剥がすこと。
+
+**Do.** (1) gateway で受信 `X-Remote-*` を無条件に削除する。(2) vault の
+`ClusterToken` にロールを持たせ、agent 用トークンは `system:nodes` だけに
+マップする。(3) その先は upstream の実物へ — bootstrap token authenticator /
+Node authorizer / NodeRestriction admission(`pkg/apiserver/auth.go` と
+`rbac.go` の手書きを置き換える方向。独自コード削減と同じ作業になる)。
+
 ## P1 — needed before the conformance story is credible
 
 ### P1-1 `[x]` The required gate does not exercise the headline feature

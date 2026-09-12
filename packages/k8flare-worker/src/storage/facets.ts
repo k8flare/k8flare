@@ -29,7 +29,7 @@
 // cannot carry a DurableObjectNamespace/Stub (DataCloneError), so facets
 // cannot reach any other DO on their own -- this facet class exposes only a
 // plain fetch() contract read/written by its parent DO, never anyone else.
-const FACET_SOURCE = `
+export const FACET_SOURCE = `
 import { DurableObject } from "cloudflare:workers";
 
 function b64encode(buf) {
@@ -82,7 +82,7 @@ function listSql(extraCondition) {
 
 const AFTER_SQL = "SELECT (SELECT MAX(id) FROM kine) AS current_rev, id AS theid, name AS thename, created, deleted, create_revision, prev_revision, lease, value, old_value FROM kine WHERE id > ?1 ORDER BY id ASC";
 
-const APPLY_SQL = "INSERT INTO kine(id, name, created, deleted, create_revision, prev_revision, lease, value, old_value) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)";
+const APPLY_SQL = "INSERT OR IGNORE INTO kine(id, name, created, deleted, create_revision, prev_revision, lease, value, old_value) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)";
 
 function b64decode(b64) {
   if (!b64) return null;
