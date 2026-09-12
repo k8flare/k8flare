@@ -318,19 +318,6 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 			}
 		}
 
-		// Services that don't specify a ClusterIP get one allocated here,
-		// synchronously, before the first write -- see clusterip.go. Not
-		// under dry-run: the allocation is a real persisted write and
-		// there is nothing to release it afterwards, so a dry-run
-		// Service create leaks an address per call. The reply then
-		// carries no ClusterIP, which upstream's would.
-		if svc, ok := rObj.(*corev1.Service); ok && !dryRun {
-			if err := AssignClusterIP(ctx, store.storage, svc); err != nil {
-				writeInternalError(w, fmt.Errorf("allocate ClusterIP: %w", err))
-				return
-			}
-		}
-
 		obj, err := store.Create(ctx, namespace, rObj, &metav1.CreateOptions{DryRun: dryRunOpts})
 		if err != nil {
 			writeResourceError(w, err, resource, name)
@@ -640,17 +627,13 @@ func HandleResource(w http.ResponseWriter, r *http.Request, prefix string, store
 	}
 }
 
-// settleDeletedObject runs the per-resource effects every COMPLETED
-// deletion needs: ClusterIP release for Services. Shared
-// by the DELETE path and finalizeDelete -- before 2026-07-25 the
-// finalizer-completion deletes (PUT/PATCH) skipped the Service
-// effects, leaking the ClusterIP of any Service that finished deleting
-// via a cleared finalizer (found by review).
-func settleDeletedObject(ctx context.Context, storage *Storage, obj runtime.Object) {
-	if svc, ok := obj.(*corev1.Service); ok {
-		ReleaseClusterIP(ctx, storage, svc)
-	}
-}
+// settleDeletedObject used to release a deleted Service's ClusterIP. That
+// now happens in the store's own AfterDelete hook
+// (upstreamregistry.go), which covers both the plain delete and the
+// finalizer-completion path -- upstream's Store.Update routes the latter
+// through deleteWithoutFinalizers, which runs the same hook. Kept as the
+// place for any future per-resource settle that the store cannot express.
+func settleDeletedObject(context.Context, *Storage, runtime.Object) {}
 
 // finalizeDelete completes the deletion of an object whose last
 // finalizer was just cleared (shouldFinalizeDelete): orphan-straggler
