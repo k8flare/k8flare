@@ -73,3 +73,17 @@ kubectl logs <pod>
 
 Pods need `spec.nodeName`: there is no scheduler yet. Services, cluster
 DNS, and kube-proxy are not served yet either; use `dnsPolicy: Default`.
+
+### A stock k3s next to it (comparison)
+
+A second OrbStack VM runs an unmodified k3s server for side-by-side checks:
+
+```
+orb create ubuntu:noble k3s-vanilla
+orb -m k3s-vanilla bash -c 'curl -sfL https://get.k3s.io | sudo sh -s - server --write-kubeconfig-mode 644'
+orb -m k3s-vanilla cat /etc/rancher/k3s/k3s.yaml | sed "s#127.0.0.1#$(orb -m k3s-vanilla hostname -I | cut -d' ' -f1)#" > .build/kubeconfig-k3s.yaml
+KUBECONFIG=$PWD/.build/kubeconfig-k3s.yaml kubectl get nodes
+```
+
+Both kubeconfigs live under `.build/`: `kubeconfig.yaml` for k8flare,
+`kubeconfig-k3s.yaml` for the stock cluster.
