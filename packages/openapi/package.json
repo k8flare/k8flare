@@ -1,0 +1,10 @@
+{
+  "name": "@k8flare/openapi",
+  "private": true,
+  "type": "module",
+  "description": "OpenAPI v2/v3 documents computed from the served routes with kube-openapi, as its own Loader dynamic worker behind the OpenAPI entrypoint.",
+  "scripts": {
+    "build": "cd ../.. && make wasm",
+    "vet": "cd ../.. && GOOS=js GOARCH=wasm go vet ./packages/openapi/..."
+  }
+}

@@ -3,9 +3,11 @@ package apiserver
 import (
 	"encoding/json"
 	"fmt"
+	installer "github.com/k8flare/k8flare/packages/apiserver-installer"
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
 	supervisor "github.com/k8flare/k8flare/packages/apiserver-supervisor"
+	"io"
 	"net/http"
 	"runtime/debug"
 
@@ -26,6 +28,9 @@ type Config struct {
 	JoinToken string
 	// Kubelet is how pods/log reaches a node.
 	Kubelet registry.KubeletProxy
+	// OpenAPI reaches the openapi dynamic worker that computes the
+	// /openapi/v2 and /openapi/v3 documents from the same served routes.
+	OpenAPI *http.Client
 }
 
 var versionInfo = version.Info{Major: "1", Minor: "36", GitVersion: "v1.36.4+k8flare", Platform: "js/wasm", GoVersion: "go1.26", Compiler: "gc"}
@@ -35,7 +40,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	v := supervisor.NewVault(client)
 	tokens := union.New(adminToken(cfg.AdminToken), nodeToken{v})
 	mux := http.NewServeMux()
-	stores, err := installAPI(mux, client, tokens, cfg.Kubelet)
+	stores, _, err := installer.Install(mux, installer.Deps{Kine: client, Tokens: tokens, Kubelet: cfg.Kubelet})
 	if err != nil {
 		return nil, err
 	}
@@ -49,6 +54,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(versionInfo)
 	})
+	mux.Handle("/openapi/", forwardTo(cfg.OpenAPI, "https://openapi.internal"))
 	root := http.NewServeMux()
 	supervisor.New(v, cfg.JoinToken).Register(root)
 	root.Handle("/", withAuth(ensureNamespaces(stores["namespaces"], mux), tokens))
@@ -64,5 +70,29 @@ func recoverPanics(next http.Handler) http.Handler {
 			}
 		}()
 		next.ServeHTTP(w, r)
+	})
+}
+
+func forwardTo(client *http.Client, base string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req, err := http.NewRequestWithContext(r.Context(), r.Method, base+r.URL.RequestURI(), nil)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		for _, h := range []string{"Accept", "If-None-Match"} {
+			req.Header[h] = r.Header[h]
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		for k, v := range resp.Header {
+			w.Header()[k] = v
+		}
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
 	})
 }

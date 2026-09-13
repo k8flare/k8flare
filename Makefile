@@ -31,6 +31,16 @@ endef
 $(BUILD)/apiserver.opt.wasm: $(BUILD)/apiserver.raw.wasm
 	$(OPTIMIZE)
 
+$(BUILD)/openapi.raw.wasm: $(GO_SRC) | mirrors
+	mkdir -p $(BUILD)
+	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/openapi/cmd/openapi-wasm
+
+$(BUILD)/openapi.opt.wasm: $(BUILD)/openapi.raw.wasm
+	$(OPTIMIZE)
+
+$(ASSETS)/openapi.manifest.json: $(BUILD)/openapi.opt.wasm
+	cd scripts && go run ./wasmpack chunk ../$< ../$(ASSETS) openapi
+
 $(BUILD)/printers-%.opt.wasm: $(BUILD)/printers-%.raw.wasm
 	$(OPTIMIZE)
 
@@ -44,10 +54,10 @@ $(ASSETS)/apiserver.manifest.json: $(BUILD)/apiserver.opt.wasm
 $(ASSETS)/printers-%.manifest.json: $(BUILD)/printers-%.opt.wasm
 	cd scripts && go run ./wasmpack chunk ../$< ../$(ASSETS) printers-$*
 
-wasm: $(ASSETS)/wasm_exec.js $(ASSETS)/apiserver.manifest.json $(foreach g,$(GROUPS),$(ASSETS)/printers-$(g).manifest.json)
+wasm: $(ASSETS)/wasm_exec.js $(ASSETS)/apiserver.manifest.json $(ASSETS)/openapi.manifest.json $(foreach g,$(GROUPS),$(ASSETS)/printers-$(g).manifest.json)
 
 gen:
-	cd scripts && go run ./genresources && go run ./genprinters
+	cd scripts && go run ./genresources && go run ./genprinters && go run ./genopenapi
 
 agent: mirrors
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o .build/bin/k8flare-agent-linux-arm64 ./packages/agent

@@ -24,6 +24,12 @@ root, one flat `packages/` directory, tooling under `scripts/`, plans under
   Object's stub to the dynamic worker. `packages/loader-kit` — the Loader
   bootstrap and chunk assembly. `packages/cluster-store` — the Cluster
   Durable Object.
+- `packages/apiserver-installer` — every served route, built with
+  k8s.io/apiserver's API installer; shared by the apiserver and the openapi
+  dynamic workers. `packages/openapi` — the /openapi/v2 and /openapi/v3
+  documents, computed by kube-openapi from those routes in their own
+  dynamic worker behind the `OpenAPI` entrypoint, so CRDs can be added to
+  the input later instead of to a static file.
 - `packages/printers` and `packages/printers-{core,coordination,discovery,node,storage}`
   — upstream's `kubectl get` printers, one dynamic worker per API group
   (all groups in one binary exceed the Loader cap).
@@ -33,7 +39,8 @@ root, one flat `packages/` directory, tooling under `scripts/`, plans under
 - `scripts/` — `mirror` copies pinned upstream modules into `.build/` with
   sha256-pinned overlays that make them build for GOOS=js, `genresources`
   writes the served-resource table, `genprinters` extracts the kubectl
-  table printers per API group, `wasmpack` prepares the binary for
+  table printers per API group, `genopenapi` prunes upstream's OpenAPI
+  model definitions to the served kinds, `wasmpack` prepares the binary for
   Static Assets, `devtls` terminates TLS in front of `wrangler dev`.
 
 ## Local development
@@ -41,7 +48,7 @@ root, one flat `packages/` directory, tooling under `scripts/`, plans under
 ```
 pnpm install
 make wasm            # mirrors + Go WASM + wasm-opt + chunking (size is printed; cap 64MiB)
-make gen             # regenerate the served-resource table and printers after a Kubernetes bump
+make gen             # regenerate the served-resource table, printers and OpenAPI models after a Kubernetes bump
 make test            # client-go tests against a wrangler dev the tests start themselves
 make dev             # wrangler dev on :18787 (see the Makefile for why CLAUDECODE is unset)
 make devtls          # https://localhost:6443 -> :18787, CA in .build/devtls/ca.crt
@@ -73,7 +80,7 @@ With `make dev` and `make devtls` running:
 make kubeconfig                                  # writes .build/kubeconfig.yaml from .dev.vars and the devtls CA
 export KUBECONFIG=$PWD/.build/kubeconfig.yaml
 kubectl get nodes
-kubectl apply -f pod.yaml --validate=false       # no OpenAPI is served yet, hence --validate=false
+kubectl apply -f pod.yaml
 kubectl logs <pod>
 ```
 

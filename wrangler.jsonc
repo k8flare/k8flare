@@ -13,6 +13,9 @@
     "bindings": [{ "name": "CLUSTER", "class_name": "Cluster" }],
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Cluster"] }],
-  "services": [{ "binding": "PRINTERS", "service": "k8flare", "entrypoint": "Printers" }],
+  "services": [
+    { "binding": "PRINTERS", "service": "k8flare", "entrypoint": "Printers" },
+    { "binding": "OPENAPI", "service": "k8flare", "entrypoint": "OpenAPI" },
+  ],
   "observability": { "enabled": true },
 }

@@ -1,4 +1,4 @@
-package apiserver
+package installer
 
 import (
 	"fmt"
@@ -31,11 +31,18 @@ func apiRoot(gv schema.GroupVersion) string {
 	return "/apis"
 }
 
-// installAPI builds every route, and the per-version discovery documents,
+// Install builds every route, and the per-version discovery documents,
 // with k8s.io/apiserver's own API installer. The root discovery documents
 // (/api, /apis) are the only ones added by hand. It returns the stores by
 // resource name.
-func installAPI(mux *http.ServeMux, client *kine.Client, tokens authenticator.Token, kubelet registry.KubeletProxy) (map[string]*genericregistry.Store, error) {
+type Deps struct {
+	Kine    *kine.Client
+	Tokens  authenticator.Token
+	Kubelet registry.KubeletProxy
+}
+
+func Install(mux *http.ServeMux, deps Deps) (map[string]*genericregistry.Store, *restful.Container, error) {
+	client, tokens, kubelet := deps.Kine, deps.Tokens, deps.Kubelet
 	stores := map[string]*genericregistry.Store{}
 	byGV := map[schema.GroupVersion]map[string]rest.Storage{}
 	for _, sgv := range registry.Served {
@@ -50,7 +57,7 @@ func installAPI(mux *http.ServeMux, client *kine.Client, tokens authenticator.To
 			}
 			store, err := registry.NewStore(client, sgv.GV, res, supervisor.ClusterCIDR)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			stores[res.Name] = store
 			storage[res.Name] = registry.WithNames(store, res)
@@ -66,7 +73,7 @@ func installAPI(mux *http.ServeMux, client *kine.Client, tokens authenticator.To
 			case "log":
 				storage[res.Name] = registry.NewLogREST(stores["pods"], stores["nodes"], kubelet)
 			default:
-				return nil, fmt.Errorf("no implementation for subresource %s", res.Name)
+				return nil, nil, fmt.Errorf("no implementation for subresource %s", res.Name)
 			}
 		}
 		byGV[sgv.GV] = storage
@@ -99,7 +106,7 @@ func installAPI(mux *http.ServeMux, client *kine.Client, tokens authenticator.To
 			MinRequestTimeout:           30 * time.Minute,
 		}
 		if _, _, err := group.InstallREST(container); err != nil {
-			return nil, fmt.Errorf("install %s: %w", gv, err)
+			return nil, nil, fmt.Errorf("install %s: %w", gv, err)
 		}
 		if gv.Group != "" {
 			apiGroup := metav1.APIGroup{
@@ -113,7 +120,7 @@ func installAPI(mux *http.ServeMux, client *kine.Client, tokens authenticator.To
 	}
 	container.Add(discovery.NewLegacyRootAPIHandler(addresses, scheme.Codecs, "/api").WebService())
 	container.Add(rootAPIs.WebService())
-	return stores, nil
+	return stores, container, nil
 }
 
 func servedVersions(gv schema.GroupVersion, storage map[string]rest.Storage) map[string][]string {

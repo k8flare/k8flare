@@ -7,6 +7,7 @@ export async function apiserverFetch(env: Env, request: Request): Promise<Respon
   const worker = await loadWasmWorker(env.LOADER, env.ASSETS, "apiserver", {
     STORAGE: env.CLUSTER.get(env.CLUSTER.idFromName("default")),
     PRINTERS: env.PRINTERS,
+    OPENAPI: env.OPENAPI,
     ADMIN_TOKEN: env.ADMIN_TOKEN,
     JOIN_TOKEN: env.JOIN_TOKEN,
     KUBELET_SCHEME: env.KUBELET_SCHEME,

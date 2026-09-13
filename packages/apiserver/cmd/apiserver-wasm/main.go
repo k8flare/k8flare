@@ -43,6 +43,7 @@ func main() {
 	}
 	handler, err := apiserver.NewHandler(apiserver.Config{
 		Kine:       &http.Client{Transport: bridge.BindingTransport{Name: "STORAGE"}},
+		OpenAPI:    &http.Client{Transport: bridge.BindingTransport{Name: "OPENAPI"}},
 		AdminToken: bridge.Getenv("ADMIN_TOKEN"),
 		JoinToken:  bridge.Getenv("JOIN_TOKEN"),
 		Kubelet: registry.KubeletProxy{

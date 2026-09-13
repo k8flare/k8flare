@@ -22,9 +22,14 @@ its log, and removing it again.
   `genericregistry.Store`, and only the defaulters from
   `k8s.io/kubernetes/pkg/apis/*/v1` are linked (+3.5MB).
 - **Size is a gate, not a guideline.** `make wasm` fails above 67,108,864
-  bytes per binary. Current: apiserver 57,495,681; printers-core 43,010,102;
-  the other printer groups 13–27MB each. One printers binary for all groups
-  measured 79.5MB, which is why they are split per group.
+  bytes per binary. Current: apiserver 57,503,611; openapi 64,222,160;
+  printers-core 43,010,102; the other printer groups 13–27MB each. One
+  printers binary for all groups measured 79.5MB, which is why they are
+  split per group. The openapi worker with upstream's full model set
+  measured 71.4MB; `scripts/genopenapi` keeps the 261 models reachable
+  from the served kinds (of 1,381). Its remaining headroom is 2.9MB: the
+  next size lever for both apiserver and openapi is a scheme holding only
+  the served groups instead of client-go's, which links all of k8s.io/api.
 - **One resident Go instance per isolate**, dispatched per request by the
   Loader bootstrap. Watches stream from it (Content-Encoding: identity, or
   the runtime gzips JSON and holds the stream until it closes).
@@ -123,6 +128,13 @@ the kubelet tunnel, RBAC, then the scheduler and controllers.
   from the same served-resource list), reached over a Service Binding RPC
   to the `Printers` entrypoint of the same Worker. Only the served kinds are
   linked; a kind added to `api/discovery` needs `make gen`.
+- `/openapi/v2` and `/openapi/v3` are computed, not static: the apiserver
+  forwards them over the `OPENAPI` Service Binding to the `OpenAPI`
+  entrypoint, whose dynamic worker (`packages/openapi`) runs the same
+  route installer and kube-openapi's builders. The document set is what
+  the installer serves, so CRDs later mean feeding the worker their
+  schemas (apiextensions' openapi builder + kube-openapi's aggregator),
+  not regenerating a file. Not wired yet.
 
 ## Known edge cases / watch-fors
 
