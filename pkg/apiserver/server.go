@@ -231,18 +231,6 @@ func NewServer(cfg ServerConfig) *http.ServeMux {
 			if m == nil {
 				return
 			}
-			// The completion half of the orphan guard. deleteWithoutFinalizers
-			// hands AfterDelete the object it deleted from storage, which is
-			// the one that still carries the finalizer the update was clearing
-			// -- so the fact this needs is on the object, and an earlier
-			// design that carried it in a map across the two hooks was both
-			// unnecessary and, because BeginUpdate's FinishFunc runs first,
-			// broken.
-			if containsString(m.Finalizers, metav1.FinalizerOrphanDependents) {
-				if err := sweepOrphanStragglers(context.Background(), namespacedStores, m.Namespace, string(m.UID)); err != nil {
-					klog.ErrorS(err, "sweeping orphaned dependents", "namespace", m.Namespace, "owner", m.UID)
-				}
-			}
 			FinishUnblockedForegroundOwners(context.Background(), namespacedStores, owner, m.Namespace, obj)
 		}
 	}

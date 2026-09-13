@@ -49,7 +49,7 @@ import (
 // observable behavior (the owner disappears immediately).
 
 // markDeletionRetries bounds the per-object conflict-retry loops in
-// this file (stripOwnerRef).
+// this file.
 const markDeletionRetries = 5
 
 // patchConflictRetries bounds the PATCH handler's re-read-and-reapply
@@ -78,23 +78,6 @@ func containsString(list []string, s string) bool {
 	return false
 }
 
-// sweepOrphanStragglers strips ownerUID from any namespaced dependent
-// still carrying it, tolerating NotFound (a gone dependent is orphaned
-// enough) and retrying conflicts per object. It runs at
-// finalize-delete time for owners whose "orphan" finalizer was just
-// cleared: the real GC's attemptToOrphan strips the dependents ITS
-// GRAPH knows about, but its per-GVR watches have no cross-stream
-// ordering guarantee -- on a slow runner the pod informer can lag the
-// owner's finalizer event, so the GC orphans a subset, clears the
-// finalizer, and the not-yet-observed dependents are later live-read as
-// dangling and cascade-deleted (run 29138332717: "expect 50 pods, got
-// 1" -- exactly one pod, the one the graph knew, survived). Sweeping
-// here is race-free where the old synchronous OrphanDependents wasn't:
-// the owner has carried deletionTimestamp for the whole lifecycle, so
-// its controller is stood down (no re-adopt/back-fill), and the owner
-// is removed in this same request AFTER the sweep, so the GC's
-// dangling-reference live checks only ever see already-stripped
-// dependents.
 var gcIgnoredResources = map[schema.GroupResource]struct{}{
 	{Group: "", Resource: "events"}:              {},
 	{Group: "events.k8s.io", Resource: "events"}: {},
@@ -103,35 +86,6 @@ var gcIgnoredResources = map[schema.GroupResource]struct{}{
 func ignoredByGarbageCollector(rs *ResourceStore) bool {
 	_, ok := gcIgnoredResources[schema.GroupResource{Group: rs.gvk.Group, Resource: rs.resource}]
 	return ok
-}
-
-func sweepOrphanStragglers(ctx context.Context, namespacedStores []*ResourceStore, namespace string, ownerUID string) error {
-	if ownerUID == "" || namespace == "" {
-		return nil
-	}
-	for _, rs := range namespacedStores {
-		if ignoredByGarbageCollector(rs) {
-			continue
-		}
-		listObj, err := rs.List(ctx, namespace, "", "")
-		if err != nil {
-			return fmt.Errorf("orphan sweep: list %s: %w", rs.resource, err)
-		}
-		items, err := meta.ExtractList(listObj)
-		if err != nil {
-			return fmt.Errorf("orphan sweep: extract %s list: %w", rs.resource, err)
-		}
-		for _, item := range items {
-			m := getObjectMeta(item)
-			if m == nil || !hasOwnerUID(m.OwnerReferences, ownerUID) {
-				continue
-			}
-			if err := stripOwnerRef(ctx, rs, namespace, m.Name, ownerUID); err != nil {
-				return fmt.Errorf("orphan sweep: %s %s/%s: %w", rs.resource, namespace, m.Name, err)
-			}
-		}
-	}
-	return nil
 }
 
 // blockingDependent returns "<resource>/<name>" for a namespaced object
@@ -292,58 +246,6 @@ func CountPendingGracefulDeletions(ctx context.Context, namespacedStores []*Reso
 		}
 	}
 	return pending, nil
-}
-
-// stripOwnerRef removes ownerUID from one named object's
-// ownerReferences, re-reading fresh per attempt; NotFound at any point
-// is success and conflicts retry.
-func stripOwnerRef(ctx context.Context, rs *ResourceStore, namespace, name, ownerUID string) error {
-	var lastErr error
-	for attempt := 0; attempt < markDeletionRetries; attempt++ {
-		obj, err := rs.Get(ctx, namespace, name)
-		if isStatusReason(err, metav1.StatusReasonNotFound) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		m := getObjectMeta(obj)
-		if m == nil || !hasOwnerUID(m.OwnerReferences, ownerUID) {
-			return nil
-		}
-		kept := m.OwnerReferences[:0]
-		for _, ref := range m.OwnerReferences {
-			if string(ref.UID) != ownerUID {
-				kept = append(kept, ref)
-			}
-		}
-		if len(kept) == 0 {
-			kept = nil
-		}
-		m.OwnerReferences = kept
-		_, err = rs.Update(ctx, namespace, name, obj, nil)
-		switch {
-		case err == nil:
-			return nil
-		case isStatusReason(err, metav1.StatusReasonNotFound):
-			return nil
-		case isStatusReason(err, metav1.StatusReasonConflict):
-			lastErr = err
-			continue
-		default:
-			return err
-		}
-	}
-	return fmt.Errorf("strip conflicted %d times: %w", markDeletionRetries, lastErr)
-}
-
-func hasOwnerUID(refs []metav1.OwnerReference, uid string) bool {
-	for _, ref := range refs {
-		if string(ref.UID) == uid {
-			return true
-		}
-	}
-	return false
 }
 
 // RefuseOrphanFinalizeOn refuses to let the orphan finalizer come off while

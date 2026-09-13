@@ -499,3 +499,14 @@ t=10s  pods=0                                              ← 28 個が所有�
 **補償のコスト**(現状、apiserver 側でガードした場合):
 orphan カスケード 1 回あたり GC への `409 Conflict` が 1 回、および
 その 1 回分の依存 LIST。
+
+## 2026-09-13: `sweepOrphanStragglers` は削除された
+
+このドキュメントは `sweepOrphanStragglers` を「orphan のデータ保護」として参照し、
+専用の受け入れ基準も置いている。その関数は 2026-09-13 に削除された。理由は
+`docs/platform-verification.md` S70 に書いたが、要点は「`AfterDelete` は所有者の
+storage DELETE が成功した**後**に走るので、掃除は守ろうとしていた窓を実際には
+守れていなかった」こと。上の記述は当時の設計意図の記録として残す。
+
+orphan 側で残っているのは拒否(`RefuseOrphanFinalizeOn`)だけで、その LIST から
+CAS までの窓は開いたままである(`docs/known-issues.md`)。

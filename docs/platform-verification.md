@@ -8594,3 +8594,83 @@ namespaced リソースは 27 種(S41 の「27 resource kinds」と一致)、う
 「欠陥」ではなく**決めるべき設計判断**として次のレビューに出す。拒否だけで穴は
 閉じており(15/15 はいずれも掃除が死んだビルドでの計測)、upstream に相当物は無い
 (不可侵ルール #3)。
+
+### S70 (2026-09-13): Store フックの全数監査 — 掃除を削除し、Service の ClusterIP に 2 件見つけた
+
+S69 で同じ欠陥を 3 回出した(実行され得ない success ゲート、消費者より先に走る
+マップ掃除、そして何もセットしないヘッダーを見ていた watch authorizer)。
+**同じ種類が 4 つ目もある前提**で、`pkg/apiserver/server.go` が設置する
+`genericregistry.Store` のフックを全部、「upstream のどの経路が・いつ発火させるか」
+まで下ろして棚卸しした(Codex に依頼、upstream は自分で照合)。
+
+#### 結論 1: orphan の掃除は削除する
+
+S69 の訂正その 3 で「掃除は一度も走っていなかった」と記録し、その日のうちに実際に
+走るようにした。走らせてみた結果、**残す理由が無い**と判断した。
+
+`AfterDelete` は所有者の storage DELETE が**成功した後**に呼ばれる
+(`store.go:602` → `finalizeDelete`)。つまり掃除が参照を剥がす前に所有者は既に
+消えており、GC の dangling-reference ライブチェックはその窓で依存を回収できる。
+`gracefuldelete.go` にあった
+
+> the owner is removed in this same request AFTER the sweep
+
+というコメントは**実装と逆**だった。これは手書き DELETE ハンドラの
+`finalizeDeleteWithOrphanSweep` が同期的に走っていた頃には正しく、
+`4e2e34a` で `AfterDelete` へ移した時点で偽になっていた。
+
+さらに、orphan finalizer を外しても別の finalizer が残る更新は通常の UPDATE に
+なるので掃除は発火しない。後日最後の finalizer を外す時点では、保存オブジェクトに
+`orphan` はもう無い。**「受理された clear ごとの補償」ですらない。**
+
+対して費用は約 26 DO LIST/回、効果は未計測、失敗はログのみで再試行なし。
+穴を閉じているのは拒否側で、それは 15/15 の計測時点で**掃除が死んでいた**ことから
+単独で効くと分かっている。upstream に相当物は無い(不可侵ルール #3)。
+対象を狭めてもこの時間順序は変わらないので、narrow ではなく **delete**。
+
+**ただし拒否も race-free ではない。** `RefuseOrphanFinalizeOn` は LIST して
+「依存なし」と判断し、CAS はその後に着地する。その間に追加された ownerReference は
+掃除の有無にかかわらずすり抜ける。掃除はこの窓を**塞ごうとしていただけで塞げて
+いなかった**ので、削除しても窓は広がらない。この窓は開いたままであり、
+`RejectCreateWithTerminatingController` は CREATE しか見ないので UPDATE で参照が
+足される経路は塞がない — `docs/known-issues.md` に残す。
+
+削除したもの: `sweepOrphanStragglers` / `stripOwnerRef` / `hasOwnerUID`、および
+`server.go` の `AfterDelete` 分岐(計 111 行)。`dependentOf` の
+`gcIgnoredResources` は拒否側で使い続けるので残る。
+
+#### 結論 2: Service の ClusterIP に 2 件(どちらも今回の差分より古い)
+
+**P1 — dry-run DELETE が生きている Service の ClusterIP を解放する。** storage 層は
+読んで検証して「成功」を返すだけで書かないが、`AfterDelete` は発火する。Service
+ストアのフックは `DeleteOptions` を `_` で捨てていたので、
+`kubectl delete svc --dry-run=server` がアドレスをアロケータに返し、後続の Service
+が同じアドレスを受け取り得た。連鎖側の `server.go` のラッパーは dry-run を弾いて
+いたが、**既存フックはそのラッパーより前に走る**ので効いていない。解放を所有する
+フック自身で弾くのが正しい。
+
+**P2 — create 失敗で先行確保が漏れる。** `BeginCreate` は storage CREATE の前に
+確保し、返す FinishFunc が no-op だった。ClusterIP を省略して既存名の Service を
+POST すると、確保してから AlreadyExists になり、そのアドレスは永久に戻らない。
+`!stored` で返すようにした。
+
+**ここで新しいバグを入れかけた**: 素朴に「FinishFunc で `svc.Spec.ClusterIP` を
+返す」とすると、**自分で ClusterIP を指定した Service の create が失敗したときに、
+そのアドレスを実際に持っている別の Service の割当を解放する**。確保前に
+`serviceNeedsClusterIP` を見て、自分が払い出したときだけ返すようにした。
+負の対照でこれを確認している(ガードを外すと保持者のアドレスが解放される)。
+
+検証は白箱・in-process(`newTestStorage` + `fakeKV`)で、**永続ビットマップを直接
+見る**。`AllocateNext` は /16 をランダム走査するので「もう一度確保して同じアドレスが
+出るか」では判定できない。3 本とも、対応する修正だけを戻すと落ちることを確認した。
+
+server-side apply も `BeginCreate` に入る経路なので実測した: 成功時の確保は
+**1 アドレス**、`createValidation` が拒否した場合の漏れは **0**。CAS 再試行の経路は
+**未計測**(この in-memory KV は書き込み競合を注入できない)。
+
+#### まだ塞いでいない 3 件目(記録のみ)
+
+ユーザーが `spec.clusterIP` を明示した Service は、ビットマップに**予約されない**
+(`serviceNeedsClusterIP` が false → 確保もしない)。upstream の `ipallocator` は
+予約する。つまり明示指定したアドレスが、後から自動割当の Service に配られ得る。
+この監査中に見つけた 3 件目で、このブランチの守備範囲ではない。

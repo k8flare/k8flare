@@ -206,6 +206,15 @@ They are fixed in `e5a5555` and are the most useful thing in this brief:
   `AfterDelete` the object it deleted from storage, which still carries the
   finalizer. Deleting the map fixes the P1 and a dry-run leak together, and
   the sweep ran for the first time today (measured, S69's third correction).
+- **The sweep is now deleted** (`e9…`, see below). Once it ran, the argument
+  for it collapsed: `AfterDelete` fires *after* the owner's storage DELETE
+  succeeds, so it strips references the collector may already have acted on —
+  the comment claiming "the owner is removed AFTER the sweep" was the reverse
+  of the code. It also never fires at all when another finalizer outlives the
+  orphan one. ~26 DO LISTs per accepted clear, unmeasured benefit, no upstream
+  equivalent. **The refusal alone closes the hole, and it is not race-free
+  either** — its own LIST-to-CAS window is open and now recorded in
+  `known-issues.md` rather than covered by machinery that did not cover it.
 - The guard could wedge an owner **forever**. It waited on any dependent
   carrying the UID, including Events — which the real collector never
   monitors (`DefaultIgnoredResources`), so that reference is never stripped
@@ -267,3 +276,8 @@ nothing schedules it and nothing in this repository will. Stated plainly in
   parses, that the conformance focus does not cover.
 - An agent-role token reaching an administrator identity by a path
   `handleTokenReview` and `AuthMiddleware` do not cover.
+- A fourth instance of the hook-on-the-wrong-path class. Three shipped on this
+  branch; the audit in `docs/platform-verification.md` S70 enumerates every
+  `Store` hook with the upstream path that fires it, and found two more
+  (older) defects that way — a dry-run DELETE freeing a live Service's
+  ClusterIP, and a failed create leaking one. Attack that table.
