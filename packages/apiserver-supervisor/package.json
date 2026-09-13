@@ -1,0 +1,9 @@
+{
+  "name": "@k8flare/apiserver-supervisor",
+  "private": true,
+  "type": "module",
+  "description": "The k3s supervisor protocol a k3s agent joins through, the CA vault, and node passwords.",
+  "scripts": {
+    "vet": "cd ../.. && go vet ./packages/apiserver-supervisor/..."
+  }
+}

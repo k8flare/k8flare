@@ -1,0 +1,9 @@
+{
+  "name": "@k8flare/worker-bridge",
+  "private": true,
+  "type": "module",
+  "description": "Bridges a Go http.Handler to the Worker Loader bootstrap, with streamed responses and WebSocket clients.",
+  "scripts": {
+    "vet": "cd ../.. && GOOS=js GOARCH=wasm go vet ./packages/worker-bridge/..."
+  }
+}

@@ -2,5 +2,11 @@
   "name": "@k8flare/cluster-store",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/cluster.ts" }
+  "description": "The Cluster Durable Object: a kine-style revisioned key-value log with watch fan-out.",
+  "exports": {
+    ".": "./src/cluster.ts"
+  },
+  "scripts": {
+    "check": "cd ../.. && pnpm exec tsc --noEmit"
+  }
 }

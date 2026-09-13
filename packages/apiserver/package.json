@@ -1,0 +1,11 @@
+{
+  "name": "@k8flare/apiserver",
+  "private": true,
+  "type": "module",
+  "description": "The Kubernetes apiserver as a Go WASM Loader dynamic worker: k8s.io/apiserver's installer, authentication, the supervisor mount, and the entrypoint in cmd/apiserver-wasm.",
+  "scripts": {
+    "build": "cd ../.. && make wasm",
+    "test": "cd ../.. && go test -count=1 ./packages/apiserver/...",
+    "vet": "cd ../.. && go vet ./packages/apiserver/... && GOOS=js GOARCH=wasm go vet ./packages/apiserver/..."
+  }
+}

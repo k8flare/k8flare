@@ -1,0 +1,9 @@
+{
+  "name": "@k8flare/apiserver-kine",
+  "private": true,
+  "type": "module",
+  "description": "storage.Interface over the Cluster Durable Object's revisioned key-value log.",
+  "scripts": {
+    "vet": "cd ../.. && go vet ./packages/apiserver-kine/..."
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "@k8flare/agent",
+  "private": true,
+  "type": "module",
+  "description": "The k3s agent embedded unchanged but for the kubeconfig hook; runs on the node.",
+  "scripts": {
+    "build": "cd ../.. && make agent",
+    "vet": "cd ../.. && GOOS=linux GOARCH=arm64 go vet ./packages/agent/..."
+  }
+}

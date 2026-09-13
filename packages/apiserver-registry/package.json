@@ -1,0 +1,10 @@
+{
+  "name": "@k8flare/apiserver-registry",
+  "private": true,
+  "type": "module",
+  "description": "One generic store per served resource; the served resources are generated from upstream's discovery documents.",
+  "scripts": {
+    "gen": "cd ../../scripts && go run ./genresources",
+    "vet": "cd ../.. && go vet ./packages/apiserver-registry/..."
+  }
+}
