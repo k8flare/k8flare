@@ -206,7 +206,7 @@ They are fixed in `e5a5555` and are the most useful thing in this brief:
   `AfterDelete` the object it deleted from storage, which still carries the
   finalizer. Deleting the map fixes the P1 and a dry-run leak together, and
   the sweep ran for the first time today (measured, S69's third correction).
-- **The sweep is now deleted** (`e9…`, see below). Once it ran, the argument
+- **The sweep is now deleted** (`5c64e3e`). Once it ran, the argument
   for it collapsed: `AfterDelete` fires *after* the owner's storage DELETE
   succeeds, so it strips references the collector may already have acted on —
   the comment claiming "the owner is removed AFTER the sweep" was the reverse
