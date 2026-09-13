@@ -19,6 +19,7 @@ replace (
 	github.com/opencontainers/runc => github.com/opencontainers/runc v1.4.2
 	github.com/opencontainers/selinux => github.com/opencontainers/selinux v1.13.1
 	github.com/prometheus/client_golang => github.com/prometheus/client_golang v1.23.2
+	github.com/rancher/remotedialer => ./.build/remotedialer-mirror
 	github.com/prometheus/common => github.com/prometheus/common v0.67.5
 	github.com/spegel-org/spegel => github.com/k3s-io/spegel v0.7.2-k3s1
 	go.etcd.io/etcd/api/v3 => github.com/k3s-io/etcd/api/v3 v3.6.14-k3s1

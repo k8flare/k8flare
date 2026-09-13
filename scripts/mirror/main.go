@@ -53,7 +53,7 @@ var mirrors = []mirror{
 		name:    "k3s",
 		module:  "github.com/k3s-io/k3s",
 		version: "v1.36.5-0.20260821152713-4dedb15be780",
-		pins:    []string{"pkg/daemons/control/deps/deps.go"},
+		pins:    []string{"pkg/daemons/control/deps/deps.go", "pkg/agent/tunnel/tunnel.go"},
 		ops: []op{
 			patch("pkg/daemons/control/deps/deps.go",
 				"func KubeConfig(dest, url, caCert, clientCert, clientKey string) error {\n",
@@ -64,6 +64,61 @@ var mirrors = []mirror{
 // that never sees client certificates, so packages/agent writes bearer-token
 // kubeconfigs instead of the certificate ones above. Added by scripts/mirror.
 var KubeConfigOverride func(dest, url, caCert, clientCert, clientKey string) (handled bool, err error)
+`),
+			patch("pkg/agent/tunnel/tunnel.go",
+				"import (\n\t\"context\"\n\t\"crypto/tls\"\n\t\"fmt\"\n\t\"net\"\n\t\"os\"\n\t\"strconv\"\n\t\"time\"\n",
+				"import (\n\t\"context\"\n\t\"crypto/tls\"\n\t\"fmt\"\n\t\"net\"\n\t\"net/http\"\n\t\"os\"\n\t\"strconv\"\n\t\"time\"\n"),
+			patch("pkg/agent/tunnel/tunnel.go",
+				"err := remotedialer.ConnectToProxyWithDialer(ctx, wsURL, nil, auth, ws, a.dialContext, onConnect)",
+				"err := remotedialer.ConnectToProxyWithDialer(ctx, wsURL, tunnelHeaders(), auth, ws, a.dialContext, onConnect)"),
+			appendText("pkg/agent/tunnel/tunnel.go", `
+// TunnelHeaderOverride lets an embedding program authenticate the
+// remotedialer connect request. k8flare's control plane never sees the
+// agent's TLS client certificate, so packages/agent sends the node's
+// bearer token here instead. Added by scripts/mirror.
+var TunnelHeaderOverride func() http.Header
+
+func tunnelHeaders() http.Header {
+	if TunnelHeaderOverride != nil {
+		return TunnelHeaderOverride()
+	}
+	return nil
+}
+`),
+		},
+	},
+	{
+		name:    "remotedialer",
+		module:  "github.com/rancher/remotedialer",
+		version: "v0.6.0-rc.1.0.20250916111157-f160aa32568d",
+		pins:    []string{"server.go"},
+		ops: []op{
+			patch("server.go",
+				"import (\n\t\"net/http\"\n\t\"sync\"\n\t\"time\"\n",
+				"import (\n\t\"context\"\n\t\"math/rand\"\n\t\"net/http\"\n\t\"sync\"\n\t\"time\"\n"),
+			appendText("server.go", `
+// ServeConn registers clientKey's session from an already-open conn instead
+// of upgrading an *http.Request, which is what a Durable Object needs: the
+// socket comes from the Workers runtime's hibernatable WebSocket API, not
+// from an http.Hijacker. It runs the session (as ServeHTTP does after its
+// own upgrade) and removes it on exit. Added by scripts/mirror.
+func (s *Server) ServeConn(clientKey string, conn wsConn) error {
+	sessionKey := rand.Int63()
+	session := newSession(sessionKey, clientKey, conn)
+	session.auth = s.ClientConnectAuthorizer
+
+	s.sessions.Lock()
+	s.sessions.clients[clientKey] = append(s.sessions.clients[clientKey], session)
+	for l := range s.sessions.listeners {
+		l.sessionAdded(clientKey, session.sessionKey)
+	}
+	s.sessions.Unlock()
+
+	defer s.sessions.remove(session)
+
+	_, err := session.Serve(context.Background())
+	return err
+}
 `),
 		},
 	},
@@ -85,10 +140,15 @@ var KubeConfigOverride func(dest, url, caCert, clientCert, clientKey string) (ha
 			"pkg/scheduler/backend/queue/testing.go",
 			"pkg/kubelet/types/types.go",
 			"pkg/scheduler/backend/queue/scheduling_queue.go",
+			"plugin/pkg/auth/authorizer/rbac/bootstrappolicy/controller_policy.go",
 		},
 		ops: []op{
 			replaceJS("pkg/scheduler/backend/cache/debugger/signal.go", "kubernetes/signal.go"),
 			hostOnly("pkg/scheduler/backend/queue/testing.go"),
+			patchJS("plugin/pkg/auth/authorizer/rbac/bootstrappolicy/controller_policy.go", []op{
+				patch("", "\t\"k8s.io/kubernetes/pkg/controlplane/controller/legacytokentracking\"\n", ""),
+				patch("", "legacytokentracking.ConfigMapName", `"kube-apiserver-legacy-service-account-token-tracking"`),
+			}),
 			patchJS("pkg/kubelet/types/types.go", []op{
 				patch("", "\t\"k8s.io/cri-client/pkg/logs\"\n", ""),
 				patch("", "logs.RFC3339NanoLenient", "\"2006-01-02T15:04:05.999999999Z07:00\""),

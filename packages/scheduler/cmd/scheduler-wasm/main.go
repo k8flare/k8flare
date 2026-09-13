@@ -26,21 +26,24 @@ func main() {
 		Transport:   bridge.BindingTransport{Name: "APISERVER"},
 	}
 	var (
-		once  sync.Once
+		mu    sync.Mutex
 		sched *scheduler.Scheduler
-		err   error
 	)
 	bridge.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		once.Do(func() {
+		mu.Lock()
+		if sched == nil {
 			ctx := context.Background()
-			if sched, err = scheduler.New(ctx, cfg); err == nil {
-				go sched.Run(ctx)
+			created, err := scheduler.New(ctx, cfg)
+			if err != nil {
+				mu.Unlock()
+				println("scheduler: start failed:", err.Error())
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
 			}
-		})
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			sched = created
+			go sched.Run(ctx)
 		}
+		mu.Unlock()
 		deadline := time.After(pokeWindow)
 		idle := 0
 		for idle < idleChecks {

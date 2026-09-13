@@ -11,9 +11,9 @@ export class APIGroups extends WorkerEntrypoint<Env> {
       STORAGE: this.env.CLUSTER.get(this.env.CLUSTER.idFromName("default")),
       PRINTERS: this.env.PRINTERS,
       SCHEDULER: this.env.SCHEDULER,
+      TUNNEL: this.env.TUNNEL,
       ADMIN_TOKEN: this.env.ADMIN_TOKEN,
-      KUBELET_SCHEME: this.env.KUBELET_SCHEME,
-      KUBELET_PORT: this.env.KUBELET_PORT,
+      READONLY_TOKEN: this.env.READONLY_TOKEN,
     }, 5_000);
     return worker.fetch(request);
   }

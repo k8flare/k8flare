@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
-	"net/http"
 	"net/url"
 
 	corev1 "k8s.io/api/core/v1"
@@ -15,8 +14,6 @@ import (
 	genericrest "k8s.io/apiserver/pkg/registry/generic/rest"
 	"k8s.io/apiserver/pkg/registry/rest"
 	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/transport"
-	nodeutil "k8s.io/kubernetes/pkg/util/node"
 )
 
 type logREST struct {
@@ -56,27 +53,20 @@ func (r *logREST) Get(ctx context.Context, name string, opts runtime.Object) (ru
 		}
 		logOpts.Container = pod.Spec.Containers[0].Name
 	}
-	nodeObj, err := r.nodes.Get(ctx, pod.Spec.NodeName, &metav1.GetOptions{})
-	if err != nil {
-		return nil, err
-	}
-	host, err := nodeutil.GetPreferredNodeAddress(nodeObj.(*corev1.Node), []corev1.NodeAddressType{corev1.NodeInternalIP})
-	if err != nil {
-		return nil, apierrors.NewServiceUnavailable(err.Error())
-	}
 	query, err := scheme.ParameterCodec.EncodeParameters(logOpts, corev1.SchemeGroupVersion)
 	if err != nil {
 		return nil, err
 	}
 	query.Del("container")
+	base, err := url.Parse(r.proxy.Base)
+	if err != nil {
+		return nil, apierrors.NewServiceUnavailable(err.Error())
+	}
+	base.Path = fmt.Sprintf("/node/%s/containerLogs/%s/%s/%s", pod.Spec.NodeName, pod.Namespace, pod.Name, logOpts.Container)
+	base.RawQuery = query.Encode()
 	return &genericrest.LocationStreamer{
-		Location: &url.URL{
-			Scheme:   r.proxy.Scheme,
-			Host:     fmt.Sprintf("%s:%d", host, r.proxy.Port),
-			Path:     fmt.Sprintf("/containerLogs/%s/%s/%s", pod.Namespace, pod.Name, logOpts.Container),
-			RawQuery: query.Encode(),
-		},
-		Transport:       transport.NewBearerAuthRoundTripper(r.proxy.Token, http.DefaultTransport),
+		Location:        base,
+		Transport:       r.proxy.Transport,
 		ContentType:     "text/plain",
 		Flush:           logOpts.Follow,
 		ResponseChecker: genericrest.NewGenericHttpResponseChecker(corev1.Resource("pods/log"), name),

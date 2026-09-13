@@ -13,6 +13,7 @@ func main() {
 	handler, err := apiserver.NewHandler(apiserver.Config{
 		Kine:            &http.Client{Transport: bridge.BindingTransport{Name: "STORAGE"}},
 		AdminToken:      bridge.Getenv("ADMIN_TOKEN"),
+		ReadonlyToken:   bridge.Getenv("READONLY_TOKEN"),
 		JoinToken:       bridge.Getenv("JOIN_TOKEN"),
 		Groups:          &http.Client{Transport: bridge.BindingTransport{Name: "APIGROUPS"}},
 		OpenAPI:         &http.Client{Transport: bridge.BindingTransport{Name: "OPENAPI"}},

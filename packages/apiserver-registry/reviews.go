@@ -6,7 +6,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/registry/rest"
 	"k8s.io/client-go/kubernetes/scheme"
 )
@@ -19,9 +18,9 @@ type reviewREST struct {
 
 var _ rest.Creater = (*reviewREST)(nil)
 
-func Review(create func(tokens authenticator.Token) func(context.Context, runtime.Object) runtime.Object) func(schema.GroupVersion, metav1.APIResource, Deps) rest.Storage {
+func Review(create func(deps Deps) func(context.Context, runtime.Object) runtime.Object) func(schema.GroupVersion, metav1.APIResource, Deps) rest.Storage {
 	return func(gv schema.GroupVersion, res metav1.APIResource, deps Deps) rest.Storage {
-		return &reviewREST{gvk: gv.WithKind(res.Kind), singular: res.SingularName, create: create(deps.Tokens)}
+		return &reviewREST{gvk: gv.WithKind(res.Kind), singular: res.SingularName, create: create(deps)}
 	}
 }
 

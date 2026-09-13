@@ -5,7 +5,8 @@
   "description": "The Worker: routing, the Loader bootstrap that hosts the apiserver, and the parked k3s tunnel.",
   "dependencies": {
     "@k8flare/cluster-store": "workspace:*",
-    "@k8flare/loader-kit": "workspace:*"
+    "@k8flare/loader-kit": "workspace:*",
+    "@k8flare/node-tunnel": "workspace:*"
   },
   "scripts": {
     "dev": "cd ../.. && make dev",

@@ -38,7 +38,7 @@ func (c tableConvertor) ConvertToTable(ctx context.Context, obj runtime.Object, 
 	if TableSource == nil {
 		return c.fallback.ConvertToTable(ctx, obj, tableOptions)
 	}
-	group := strings.TrimSuffix(c.gv.Group, ".k8s.io")
+	group, _, _ := strings.Cut(c.gv.Group, ".")
 	if group == "" {
 		group = "core"
 	}

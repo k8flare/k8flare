@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -429,6 +430,14 @@ func (s *Storage) Watch(ctx context.Context, key string, opts storage.ListOption
 				var ev kineEvent
 				if err := json.Unmarshal(msg, &ev); err != nil {
 					continue
+				}
+				if ev.Type == "compacted" {
+					expired := apierrors.NewResourceExpired(fmt.Sprintf("resource version %d is older than the compacted revision %d", rv, ev.Rev))
+					select {
+					case events <- watch.Event{Type: watch.Error, Object: &expired.ErrStatus}:
+					case <-w.StopChan():
+					}
+					return
 				}
 				if ev.Type == "snapshot-end" {
 					if opts.SendInitialEvents == nil || !*opts.SendInitialEvents {

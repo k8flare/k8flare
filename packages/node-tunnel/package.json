@@ -1,0 +1,12 @@
+{
+  "name": "@k8flare/node-tunnel",
+  "private": true,
+  "type": "module",
+  "description": "The NodeTunnel Durable Object: holds a k3s agent's remotedialer session and proxies kubelet requests through it.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "check": "cd ../.. && pnpm exec tsc --noEmit"
+  }
+}

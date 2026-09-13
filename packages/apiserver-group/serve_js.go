@@ -5,7 +5,6 @@ package group
 import (
 	"context"
 	"net/http"
-	"strconv"
 
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
@@ -38,17 +37,12 @@ func Serve(groupVersion string) {
 			}
 		}
 	}
-	kubelet := registry.KubeletProxy{Scheme: "https", Port: 10250, Token: bridge.Getenv("ADMIN_TOKEN")}
-	if v := bridge.Getenv("KUBELET_SCHEME"); v != "" {
-		kubelet.Scheme = v
-	}
-	if v, err := strconv.Atoi(bridge.Getenv("KUBELET_PORT")); err == nil {
-		kubelet.Port = v
-	}
+	kubelet := registry.KubeletProxy{Transport: bridge.BindingTransport{Name: "TUNNEL"}, Base: "https://nodetunnel.internal"}
 	handler, err := NewHandler(gv, Config{
-		Kine:       &http.Client{Transport: bridge.BindingTransport{Name: "STORAGE"}},
-		AdminToken: bridge.Getenv("ADMIN_TOKEN"),
-		Kubelet:    kubelet,
+		Kine:          &http.Client{Transport: bridge.BindingTransport{Name: "STORAGE"}},
+		AdminToken:    bridge.Getenv("ADMIN_TOKEN"),
+		ReadonlyToken: bridge.Getenv("READONLY_TOKEN"),
+		Kubelet:       kubelet,
 	})
 	if err != nil {
 		panic(err)

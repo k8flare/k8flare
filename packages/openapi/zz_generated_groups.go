@@ -11,6 +11,7 @@ import (
 	_ "github.com/k8flare/k8flare/packages/apiserver-discovery"
 	_ "github.com/k8flare/k8flare/packages/apiserver-node"
 	_ "github.com/k8flare/k8flare/packages/apiserver-policy"
+	_ "github.com/k8flare/k8flare/packages/apiserver-rbac"
 	_ "github.com/k8flare/k8flare/packages/apiserver-resource"
 	_ "github.com/k8flare/k8flare/packages/apiserver-storage"
 )

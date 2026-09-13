@@ -22,8 +22,9 @@ its log, and removing it again.
   `genericregistry.Store`, and only the defaulters from
   `k8s.io/kubernetes/pkg/apis/*/v1` are linked (+3.5MB).
 - **Size is a gate, not a guideline.** `make wasm` fails above 67,108,864
-  bytes per binary. Current: front 25.4MB; group workers 28.6–38.6MB;
-  openapi 50.0MB; customresources 57.3MB; scheduler 55.1MB (109.9MB before the lean clientset and informer factory overlays and the two files that dragged the fake clientset and cri-client in);
+  bytes per binary. Current: front 39.0MB (with the RBAC authorizer);
+  group workers 28.7–43.0MB; openapi 57.6MB; customresources 59.1MB;
+  node-tunnel 14.4MB (bundled into the shell); scheduler 55.1MB (109.9MB before the lean clientset and informer factory overlays and the two files that dragged the fake clientset and cri-client in);
   printers-core 43.0MB, the other printer groups 13–27MB. Before the
   clientset-scheme / APF / StorageVersion overlays the one-binary apiserver
   was 57.5MB and the CRD handler 73.5MB; `k8s.io/api` alone was 21.4MB of
@@ -73,7 +74,7 @@ its log, and removing it again.
   CSR signing, node passwords, CAs in the DO under `/vault`.
 - `packages/worker-bridge`: the Go↔Loader bridge (streamed responses, WebSocket client).
 - `packages/cluster-store`: the Cluster DO; `packages/control-plane-worker`:
-  bootstrap, chunk assembly, routing and the parked tunnel. The DO stub is
+  bootstrap, chunk assembly, routing and the tunnel hand-off. The DO stub is
   handed to the dynamic worker's env directly; the old finding that a
   Loader env cannot carry a DO covered namespaces, not stubs.
 - `scripts/mirror/main.go`: the overlays (apiserver storage factory, tracing
@@ -119,7 +120,7 @@ Next:
    (plans/repository-layout.md). Done 2026-09-13.
 
 Next: see Known limitations, in this order — compaction of the DO log,
-the kubelet tunnel, RBAC, then the scheduler and controllers.
+the controllers (kube-controller-manager) and the production deploy check.
 
 ## Known limitations
 
@@ -137,22 +138,37 @@ the kubelet tunnel, RBAC, then the scheduler and controllers.
   informers in that isolate for a bounded window per wake-up; nothing keeps
   it alive at idle. A poke holds its request until the active and backoff
   queues drain (20s at most) and answers 202 while work remains, which the
-  entrypoint turns into the next poke; only Pod writes poke, so a Pod
-  created before any Node exists waits for the next Pod write (follow-up:
-  poke on Node writes too). The scheduler's informers are why apps/v1, policy/v1,
+  entrypoint turns into the next poke. Pod writes without a node and every
+  Node write poke it, so a Pod created before its Node is retried when the
+  Node arrives. The scheduler's informers are why apps/v1, policy/v1,
   resource.k8s.io/v1 and replicationcontrollers are served: an informer
   on an unserved resource never syncs and the scheduler never starts. Controllers, Services, kube-proxy and cluster DNS are
   still absent; Pods need `dnsPolicy: Default`.
-- **CRD OpenAPI is not published**: `kubectl explain` on a custom resource
-  has no schema and `kubectl apply` of one validates server-side only.
-  Conversion webhooks are untested.
-- **`pods/log` reaches the kubelet on its InternalIP over plain HTTP**
-  (`--kubelet-plain-port`), which only works while the Worker runs on the
-  same machine as the VM. The `/v1-k3s/connect` tunnel is accepted and
-  parked; nothing dials back through it.
-- **Authorization is allow-all** for any authenticated identity.
-- **The Cluster DO never compacts**: every write appends a row, and `list`
-  and the watch snapshot scan the whole history of a prefix.
+- **CRD OpenAPI v3 is published** by the customresources worker
+  (upstream's openapiv3 controller); the front merges its `/openapi/v3`
+  root with the openapi worker's and routes group documents by group.
+  `/openapi/v2` still covers built-in groups only. Conversion webhooks are
+  untested.
+- **Kubelet access goes through the k3s tunnel.** The agent's
+  remotedialer WebSocket to `/v1-k3s/connect` is authenticated with its
+  node token and handed to the node's `NodeTunnel` Durable Object, which
+  runs remotedialer's server (packages/node-tunnel, a wasm module bundled
+  into the shell Worker) and proxies `/node/<name>/<kubelet path>` through
+  the session. `pods/log` uses it; exec/attach/port-forward and a
+  vault-signed kubelet client certificate (today: bearer token +
+  InsecureSkipVerify inside the tunnel) are the follow-ups. After
+  hibernation the DO closes the agent's socket so k3s reconnects.
+- **Authorization is RBAC** (`packages/apiserver-authz`): `system:masters`
+  passes unconditionally, everyone else is checked against Roles,
+  RoleBindings, ClusterRoles, and ClusterRoleBindings read live from kine,
+  unioned with upstream's bootstrap policy. There is no Node authorizer,
+  so `system:node` is statically bound to the `system:nodes` group.
+- **The Cluster DO compacts on write**: once the log is 1,000 revisions
+  past the last compaction the write deletes every older row that is not
+  the latest for its key (and every older tombstone) in one statement, so
+  the table stays at live keys plus the last 1,000 revisions. A watch from
+  a revision below the compaction point gets 410 `Expired` and client-go
+  relists; lists always read the latest state.
 - **`Content-Encoding: identity`** is verified against workerd and wrangler
   dev only; the production edge is untested.
 - `kubectl get` columns come from upstream's printers, one dynamic worker
@@ -172,6 +188,10 @@ the kubelet tunnel, RBAC, then the scheduler and controllers.
 
 ## Known edge cases / watch-fors
 
+- `TestSchedulerWakesOnNode` once failed with "connection reset by peer"
+  on the Node create only when the whole lane ran; it passes alone (3/3).
+  Not understood yet; watch for it and do not retry it away.
+
 - A `k3s` binary must have run once on the node: the agent uses the
   containerd, runc and CNI binaries it unpacks. The VM's stock binary is
   v1.36.2+k3s1; the agent is built against the v1.36.5-dev pin.
@@ -187,8 +207,6 @@ the kubelet tunnel, RBAC, then the scheduler and controllers.
 - Static PodCIDR allocation in the apiserver instead of the real nodeipam
   controller, until controllers run.
 - Hand-written review APIs (SSAR/SAR/TokenReview always allow) until RBAC.
-- The kubelet log proxy will move onto the k3s tunnel (remotedialer) once
-  the server side of `/v1-k3s/connect` exists.
 - Edge mTLS with a Cloudflare-managed CA (forwarding the agent's CSR to the
   client-certificate API) remains the candidate that would remove the
   kubeconfig hook entirely; it needs a zone hostname and cannot be tested

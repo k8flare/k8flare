@@ -9,16 +9,24 @@
     "run_worker_first": ["/wasm/*"],
   },
   "worker_loaders": [{ "binding": "LOADER" }],
+  "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"] }],
   "durable_objects": {
-    "bindings": [{ "name": "CLUSTER", "class_name": "Cluster" }],
+    "bindings": [
+      { "name": "CLUSTER", "class_name": "Cluster" },
+      { "name": "NODE_TUNNEL", "class_name": "NodeTunnel" },
+    ],
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Cluster"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Cluster"] },
+    { "tag": "v2", "new_sqlite_classes": ["NodeTunnel"] },
+  ],
   "services": [
     { "binding": "PRINTERS", "service": "k8flare", "entrypoint": "Printers" },
     { "binding": "OPENAPI", "service": "k8flare", "entrypoint": "OpenAPI" },
     { "binding": "CUSTOMRESOURCES", "service": "k8flare", "entrypoint": "CustomResources" },
     { "binding": "APIGROUPS", "service": "k8flare", "entrypoint": "APIGroups" },
     { "binding": "SCHEDULER", "service": "k8flare", "entrypoint": "Scheduler" },
+    { "binding": "TUNNEL", "service": "k8flare", "entrypoint": "NodeTunnels" },
     { "binding": "APISERVER", "service": "k8flare" },
   ],
   "observability": { "enabled": true },

@@ -4,6 +4,9 @@ package apiserver_test
 
 import (
 	"context"
+	"encoding/json"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -137,6 +140,52 @@ func TestCustomResources(t *testing.T) {
 	}
 	if strings.Join(cols, ",") != "Name,Size" {
 		t.Errorf("widget table columns: %v", cols)
+	}
+
+	var discovery struct {
+		Paths map[string]struct {
+			ServerRelativeURL string `json:"serverRelativeURL"`
+		} `json:"paths"`
+	}
+	if err := wait.PollUntilContextTimeout(c, 500*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
+		body, err := cs.CoreV1().RESTClient().Get().AbsPath("/openapi/v3").SetHeader("Accept", "application/json").DoRaw(ctx)
+		if err != nil {
+			return false, err
+		}
+		discovery.Paths = nil
+		if err := json.Unmarshal(body, &discovery); err != nil {
+			return false, err
+		}
+		_, hasCRDGroup := discovery.Paths["apis/test.k8flare.dev/v1"]
+		return hasCRDGroup, nil
+	}); err != nil {
+		t.Fatalf("openapi/v3 never listed apis/test.k8flare.dev/v1: %v", err)
+	}
+	if _, ok := discovery.Paths["api/v1"]; !ok {
+		t.Error("/openapi/v3 does not list api/v1")
+	}
+
+	widgetDoc := discovery.Paths["apis/test.k8flare.dev/v1"]
+	docBody, err := cs.CoreV1().RESTClient().Get().RequestURI(widgetDoc.ServerRelativeURL).SetHeader("Accept", "application/json").DoRaw(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Components struct {
+			Schemas map[string]json.RawMessage `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(docBody, &doc); err != nil {
+		t.Fatal(err)
+	}
+	widgetSchema := false
+	for name := range doc.Components.Schemas {
+		if strings.HasSuffix(name, ".v1.Widget") {
+			widgetSchema = true
+		}
+	}
+	if !widgetSchema {
+		t.Errorf("openapi v3 doc for test.k8flare.dev/v1 has no *.v1.Widget schema, got %v", slices.Sorted(maps.Keys(doc.Components.Schemas)))
 	}
 
 	if err := ext.ApiextensionsV1().CustomResourceDefinitions().Delete(c, "widgets.test.k8flare.dev", metav1.DeleteOptions{}); err != nil {

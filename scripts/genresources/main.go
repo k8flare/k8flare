@@ -83,7 +83,8 @@ func groupName(gv string) string {
 	if !ok {
 		return "core"
 	}
-	return strings.TrimSuffix(group, ".k8s.io")
+	name, _, _ := strings.Cut(group, ".")
+	return name
 }
 
 func writeGroups(root string) error {

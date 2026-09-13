@@ -54,10 +54,12 @@ func WithNames(store *genericregistry.Store, res metav1.APIResource) rest.Storag
 	return storeWithNames{store, res.ShortNames, res.Categories}
 }
 
+// KubeletProxy is where pods/log and friends reach the kubelet: through the
+// TUNNEL binding's NodeTunnel Durable Object, which holds the node's
+// remotedialer session, rather than dialing the node's address directly.
 type KubeletProxy struct {
-	Scheme string
-	Port   int
-	Token  string
+	Transport http.RoundTripper
+	Base      string
 }
 
 type storeWithNames struct {

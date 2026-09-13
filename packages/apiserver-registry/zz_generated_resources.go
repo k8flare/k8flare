@@ -64,4 +64,10 @@ var Served = []ServedGroupVersion{
 		{Name: "selfsubjectaccessreviews", SingularName: "selfsubjectaccessreview", Namespaced: false, Kind: "SelfSubjectAccessReview", Verbs: metav1.Verbs{"create"}, ShortNames: nil, Categories: nil},
 		{Name: "subjectaccessreviews", SingularName: "subjectaccessreview", Namespaced: false, Kind: "SubjectAccessReview", Verbs: metav1.Verbs{"create"}, ShortNames: nil, Categories: nil},
 	}},
+	{GV: schema.GroupVersion{Group: "rbac.authorization.k8s.io", Version: "v1"}, Resources: []metav1.APIResource{
+		{Name: "clusterrolebindings", SingularName: "clusterrolebinding", Namespaced: false, Kind: "ClusterRoleBinding", Verbs: metav1.Verbs{"create", "delete", "deletecollection", "get", "list", "patch", "update", "watch"}, ShortNames: nil, Categories: nil},
+		{Name: "clusterroles", SingularName: "clusterrole", Namespaced: false, Kind: "ClusterRole", Verbs: metav1.Verbs{"create", "delete", "deletecollection", "get", "list", "patch", "update", "watch"}, ShortNames: nil, Categories: nil},
+		{Name: "rolebindings", SingularName: "rolebinding", Namespaced: true, Kind: "RoleBinding", Verbs: metav1.Verbs{"create", "delete", "deletecollection", "get", "list", "patch", "update", "watch"}, ShortNames: nil, Categories: nil},
+		{Name: "roles", SingularName: "role", Namespaced: true, Kind: "Role", Verbs: metav1.Verbs{"create", "delete", "deletecollection", "get", "list", "patch", "update", "watch"}, ShortNames: nil, Categories: nil},
+	}},
 }

@@ -29,6 +29,7 @@ var Served = []ServedGroupVersion{
 	{"storage.k8s.io/v1", []string{"csidrivers", "csinodes"}},
 	{"authentication.k8s.io/v1", []string{"tokenreviews"}},
 	{"authorization.k8s.io/v1", []string{"selfsubjectaccessreviews", "subjectaccessreviews"}},
+	{"rbac.authorization.k8s.io/v1", []string{"clusterrolebindings", "clusterroles", "rolebindings", "roles"}},
 }
 
 type APIResource struct {

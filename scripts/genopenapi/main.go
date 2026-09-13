@@ -134,7 +134,8 @@ func rootModels(d *definitions, dir string) ([]string, error) {
 		if version == "" {
 			group, version = "core", group
 		}
-		alias, ok := d.aliases["k8s.io/api/"+strings.TrimSuffix(group, ".k8s.io")+"/"+version]
+		apiGroup, _, _ := strings.Cut(group, ".")
+		alias, ok := d.aliases["k8s.io/api/"+apiGroup+"/"+version]
 		if !ok {
 			return nil, fmt.Errorf("%s: no import for its API package", s.GV)
 		}

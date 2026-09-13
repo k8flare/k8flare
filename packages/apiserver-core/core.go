@@ -30,7 +30,10 @@ func init() {
 			if err := assignPodCIDR(ctx, store.Storage.Storage, obj.(*corev1.Node), deps.ClusterCIDR); err != nil {
 				return nil, err
 			}
-			return func(context.Context, bool) {}, nil
+			return pokeScheduler, nil
+		}
+		store.BeginUpdate = func(context.Context, runtime.Object, runtime.Object, *metav1.UpdateOptions) (genericregistry.FinishFunc, error) {
+			return pokeScheduler, nil
 		}
 	}
 	registry.Subresources["pods/log"] = func(stores map[string]*registry.Store, deps registry.Deps) rest.Storage {
@@ -40,15 +43,22 @@ func init() {
 		return bindingREST{stores["pods"]}
 	}
 	registry.Middleware = append(registry.Middleware, func(stores map[string]*registry.Store) func(http.Handler) http.Handler {
-		return func(next http.Handler) http.Handler { return ensureNamespaces(stores["namespaces"], next) }
+		return func(next http.Handler) http.Handler {
+			return bootstrapCluster(stores["namespaces"], stores["services"], next)
+		}
 	})
 }
 
 func pokeSchedulerFor(obj runtime.Object) genericregistry.FinishFunc {
-	return func(ctx context.Context, success bool) {
-		if success && registry.Poke != nil && obj.(*corev1.Pod).Spec.NodeName == "" {
-			registry.Poke(ctx)
-		}
+	if obj.(*corev1.Pod).Spec.NodeName != "" {
+		return func(context.Context, bool) {}
+	}
+	return pokeScheduler
+}
+
+func pokeScheduler(ctx context.Context, success bool) {
+	if success && registry.Poke != nil {
+		registry.Poke(ctx)
 	}
 }
 

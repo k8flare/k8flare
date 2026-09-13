@@ -19,9 +19,37 @@ importers:
 
   packages/apiserver: {}
 
+  packages/apiserver-apps: {}
+
+  packages/apiserver-auth: {}
+
+  packages/apiserver-authentication: {}
+
+  packages/apiserver-authorization: {}
+
+  packages/apiserver-coordination: {}
+
+  packages/apiserver-core: {}
+
+  packages/apiserver-discovery: {}
+
+  packages/apiserver-group: {}
+
+  packages/apiserver-installer: {}
+
   packages/apiserver-kine: {}
 
+  packages/apiserver-node: {}
+
+  packages/apiserver-policy: {}
+
+  packages/apiserver-rbac: {}
+
   packages/apiserver-registry: {}
+
+  packages/apiserver-resource: {}
+
+  packages/apiserver-storage: {}
 
   packages/apiserver-supervisor: {}
 
@@ -35,10 +63,21 @@ importers:
       '@k8flare/loader-kit':
         specifier: workspace:*
         version: link:../loader-kit
+      '@k8flare/node-tunnel':
+        specifier: workspace:*
+        version: link:../node-tunnel
+
+  packages/customresources: {}
 
   packages/loader-kit: {}
 
+  packages/node-tunnel: {}
+
+  packages/openapi: {}
+
   packages/printers: {}
+
+  packages/printers-apps: {}
 
   packages/printers-coordination: {}
 
@@ -48,7 +87,15 @@ importers:
 
   packages/printers-node: {}
 
+  packages/printers-policy: {}
+
+  packages/printers-rbac: {}
+
+  packages/printers-resource: {}
+
   packages/printers-storage: {}
+
+  packages/scheduler: {}
 
   packages/worker-bridge: {}
 

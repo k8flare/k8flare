@@ -19,6 +19,7 @@ import (
 	"k8s.io/apiextensions-apiserver/pkg/controller/establish"
 	"k8s.io/apiextensions-apiserver/pkg/controller/finalizer"
 	"k8s.io/apiextensions-apiserver/pkg/controller/nonstructuralschema"
+	"k8s.io/apiextensions-apiserver/pkg/controller/openapiv3"
 	"k8s.io/apiextensions-apiserver/pkg/controller/status"
 	"k8s.io/apiextensions-apiserver/pkg/registry/customresourcedefinition"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -36,12 +37,14 @@ import (
 	"k8s.io/apiserver/pkg/endpoints/handlers/responsewriters"
 	"k8s.io/apiserver/pkg/registry/generic"
 	registryrest "k8s.io/apiserver/pkg/registry/rest"
+	kmux "k8s.io/apiserver/pkg/server/mux"
 	"k8s.io/apiserver/pkg/storage"
 	"k8s.io/apiserver/pkg/storage/storagebackend"
 	"k8s.io/apiserver/pkg/storage/storagebackend/factory"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
+	"k8s.io/kube-openapi/pkg/handler3"
 )
 
 type Config struct {
@@ -123,8 +126,18 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	discoverySynced := make(chan struct{})
 	go discoveryController.Run(ctx.Done(), discoverySynced)
 
+	openAPIV3Service := handler3.NewOpenAPIService()
+	openAPIV3Mux := kmux.NewPathRecorderMux("customresources-openapi")
+	if err := openAPIV3Service.RegisterOpenAPIV3VersionedService("/openapi/v3", openAPIV3Mux); err != nil {
+		return nil, err
+	}
+	openAPIV3Controller := openapiv3.NewController(crdInformer)
+	go openAPIV3Controller.Run(openAPIV3Service, ctx.Done())
+
 	mux.Handle("/apis", rootAPIs(crdInformer.Lister(), codecs))
 	mux.Handle("/apis/", afterSync(discoverySynced, crdHandler))
+	mux.Handle("/openapi/v3", openAPIV3Mux)
+	mux.Handle("/openapi/v3/", openAPIV3Mux)
 	return handler, nil
 }
 

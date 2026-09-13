@@ -14,7 +14,7 @@ so a request pays only for the binary it needs:
   supervisor endpoints, root discovery, and routing. `/api/*` and
   `/apis/<group>/*` go to that group's worker, unknown groups to
   `customresources`, `/openapi/*` to `openapi`.
-- `packages/apiserver-{core,coordination,discovery,node,storage,authentication,authorization,apps,policy,resource}`
+- `packages/apiserver-{core,coordination,discovery,node,storage,authentication,authorization,apps,policy,resource,rbac}`
   — one worker per served API group: k8s.io/apiserver's API installer over
   generic stores for that group only, so each links only its own types.
   The group list and each group's scheme registration are generated from
@@ -23,8 +23,10 @@ so a request pays only for the binary it needs:
   also holds the pod, node, and namespace specifics and wakes the
   scheduler when a Pod without a node is written.
 - `packages/apiserver-installer`, `packages/apiserver-registry`,
-  `packages/apiserver-auth` — the installer, the generic store with its
-  per-resource hooks, and the authenticators and request filters.
+  `packages/apiserver-auth`, `packages/apiserver-authz` — the installer,
+  the generic store with its per-resource hooks, the authenticators and
+  request filters, and the RBAC authorizer built from kine-backed roles
+  and bindings unioned with upstream's bootstrap policy.
 - `packages/apiserver-kine` — `storage.Interface` over the Cluster
   Durable Object's revisioned key-value log.
 - `packages/apiserver-supervisor` — the k3s supervisor protocol the agent
@@ -70,6 +72,7 @@ make gen             # regenerate the served-resource table, printers and OpenAP
 make test            # client-go tests against a wrangler dev the tests start themselves
 make dev             # wrangler dev on :18787 (see the Makefile for why CLAUDECODE is unset)
 make devtls          # https://localhost:6443 -> :18787, CA in .build/devtls/ca.crt
+make e2e SET=required   # upstream e2e.test, narrowed focus; needs make dev, make devtls, a joined node
 ```
 
 Tokens for dev live in `.dev.vars` next to `wrangler.jsonc` (copy
@@ -82,13 +85,14 @@ make agent
 orb -m <vm> sudo update-ca-certificates   # after copying .build/devtls/ca.crt to /usr/local/share/ca-certificates/
 orb -m <vm> sudo systemd-run --unit k8flare-agent --collect --property=KillMode=mixed \
   /usr/local/bin/k8flare-agent --server https://host.orb.internal:6443 --token <JOIN_TOKEN> \
-  --node-name <vm> --kubelet-plain-port 10255
+  --node-name <vm>
 ```
 
 The VM needs the stock `k3s` binary run once (it unpacks containerd, runc
 and the CNI plugins the agent uses), and must not be connected to WARP.
-`--kubelet-plain-port` exists because `kubectl logs` reaches the kubelet
-through a Worker fetch that cannot verify the kubelet's certificate.
+`kubectl logs` reaches the kubelet through the NodeTunnel Durable Object's
+remotedialer session, not the VM's address, so the VM does not need to be
+reachable from the Worker.
 
 ### kubectl
 

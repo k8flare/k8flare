@@ -1,0 +1,7 @@
+{
+  "name": "@k8flare/apiserver-rbac",
+  "private": true,
+  "type": "module",
+  "description": "The rbac.authorization API group as its own Loader dynamic worker, loaded by the front apiserver when a request for the group arrives.",
+  "scripts": { "build": "cd ../.. && make wasm" }
+}

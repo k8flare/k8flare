@@ -48,6 +48,7 @@ var served = []struct {
 	{"discovery", "discovery", []string{"EndpointSlice"}},
 	{"node", "nodeapi", []string{"RuntimeClass"}},
 	{"storage", "storage", []string{"CSIDriver", "CSINode"}},
+	{"rbac", "rbac", []string{"Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding"}},
 }
 
 type upstream struct {

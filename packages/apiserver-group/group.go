@@ -13,16 +13,17 @@ import (
 )
 
 type Config struct {
-	Kine       *http.Client
-	AdminToken string
-	Kubelet    registry.KubeletProxy
+	Kine          *http.Client
+	AdminToken    string
+	ReadonlyToken string
+	Kubelet       registry.KubeletProxy
 }
 
 func NewHandler(gv schema.GroupVersion, cfg Config) (http.Handler, error) {
 	client := &kine.Client{HTTP: cfg.Kine}
 	deps := registry.Deps{
 		Kine:        client,
-		Tokens:      union.New(auth.AdminToken(cfg.AdminToken), auth.NodeToken{Vault: supervisor.NewVault(client)}),
+		Tokens:      union.New(auth.AdminToken(cfg.AdminToken), auth.ReadonlyToken(cfg.ReadonlyToken), auth.NodeToken{Vault: supervisor.NewVault(client)}),
 		Kubelet:     cfg.Kubelet,
 		ClusterCIDR: supervisor.ClusterCIDR,
 	}

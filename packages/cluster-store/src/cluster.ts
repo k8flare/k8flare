@@ -5,6 +5,8 @@ import { DurableObject } from "cloudflare:workers";
 // bootstrap row makes the first revision 1, as in kine, because a resource
 // version of 0 is illegal for a list. Watchers are hibernatable WebSockets
 // tagged with the key prefix they asked for.
+const RETAINED_REVISIONS = 1000;
+
 export class Cluster extends DurableObject<Env> {
   private watchers = new Map<WebSocket, Watcher>();
 
@@ -18,6 +20,7 @@ export class Cluster extends DurableObject<Env> {
         value BLOB
       )`);
       ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS kine_name_id ON kine (name, id)`);
+      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)`);
       ctx.storage.sql.exec(
         `INSERT INTO kine (name, deleted, value) SELECT '/k8flare/bootstrap', 0, X'' WHERE NOT EXISTS (SELECT 1 FROM kine)`,
       );
@@ -26,6 +29,22 @@ export class Cluster extends DurableObject<Env> {
 
   private revision(): number {
     return this.ctx.storage.sql.exec("SELECT COALESCE(MAX(id), 0) AS rev FROM kine").one().rev as number;
+  }
+
+  private compactRevision(): number {
+    const rows = this.ctx.storage.sql.exec("SELECT value FROM meta WHERE key = 'compact_revision'").toArray();
+    return rows.length === 0 ? 0 : (rows[0].value as number);
+  }
+
+  private compactBefore(target: number): void {
+    this.ctx.storage.sql.exec(
+      "DELETE FROM kine WHERE id <= ? AND (deleted = 1 OR id NOT IN (SELECT MAX(id) FROM kine GROUP BY name))",
+      target,
+    );
+    this.ctx.storage.sql.exec(
+      "INSERT INTO meta (key, value) VALUES ('compact_revision', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      target,
+    );
   }
 
   private current(name: string): KV | null {
@@ -58,6 +77,12 @@ export class Cluster extends DurableObject<Env> {
     switch (`${request.method} ${url.pathname}`) {
       case "GET /revision":
         return Response.json({ revision: this.revision() });
+      case "GET /stats":
+        return Response.json({
+          revision: this.revision(),
+          compactRevision: this.compactRevision(),
+          rows: this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM kine").one().n as number,
+        });
       case "GET /kv": {
         const kv = this.current(url.searchParams.get("key") ?? "");
         return Response.json({ revision: this.revision(), kv: kv && encodeKV(kv) });
@@ -98,6 +123,7 @@ export class Cluster extends DurableObject<Env> {
         value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength),
       )
       .one().id as number;
+    if (rev - this.compactRevision() >= RETAINED_REVISIONS) this.compactBefore(rev - RETAINED_REVISIONS);
     const type = deleted ? "deleted" : prev ? "modified" : "created";
     this.restoreWatchers();
     const targets = [...this.watchers].filter(([, w]) => (w.exact ? name === w.prefix : name.startsWith(w.prefix)));
@@ -129,13 +155,21 @@ export class Cluster extends DurableObject<Env> {
       exact: url.searchParams.get("exact") === "1",
     };
     const since = Number(url.searchParams.get("since") ?? "0");
+    const initial = url.searchParams.get("initial") === "1";
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
+    const compacted = this.compactRevision();
+    if (!initial && since > 0 && since < compacted) {
+      server.accept();
+      server.send(JSON.stringify({ rev: compacted, type: "compacted", key: "", value: "", prev: "" }));
+      server.close(1000, "compacted");
+      return new Response(null, { status: 101, webSocket: client });
+    }
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment(watcher);
     this.restoreWatchers();
     this.watchers.set(server, watcher);
-    if (url.searchParams.get("initial") === "1") {
+    if (initial) {
       for (const kv of this.latest(watcher.prefix, watcher.exact, watcher.prefix, -1)) {
         server.send(JSON.stringify({ rev: kv.modRevision, type: "created", key: kv.key, value: toBase64(kv.value), prev: "" }));
       }

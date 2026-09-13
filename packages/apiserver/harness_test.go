@@ -21,8 +21,9 @@ import (
 )
 
 const (
-	devToken  = "k8flare-dev-token"
-	joinToken = "k8flare-dev-join"
+	devToken         = "k8flare-dev-token"
+	joinToken        = "k8flare-dev-join"
+	readonlyDevToken = "k8flare-dev-readonly"
 )
 
 // startDev runs `wrangler dev` for the worker with a throwaway state
@@ -34,15 +35,17 @@ func startDev(t *testing.T) *kubernetes.Clientset {
 	return cs
 }
 
+var devState string
+
 func startDevURL(t *testing.T) (string, *kubernetes.Clientset) {
 	t.Helper()
 	_, file, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(file), "../..")
 	workers := []string{"apiserver", "openapi", "customresources", "scheduler"}
-	for _, g := range []string{"core", "coordination", "discovery", "node", "storage", "authentication", "authorization", "apps", "policy", "resource"} {
+	for _, g := range []string{"core", "coordination", "discovery", "node", "storage", "authentication", "authorization", "apps", "policy", "resource", "rbac"} {
 		workers = append(workers, "apiserver-"+g)
 	}
-	for _, g := range []string{"core", "coordination", "discovery", "node", "storage", "apps", "policy", "resource"} {
+	for _, g := range []string{"core", "coordination", "discovery", "node", "storage", "apps", "policy", "resource", "rbac"} {
 		workers = append(workers, "printers-"+g)
 	}
 	for _, w := range workers {
@@ -53,11 +56,13 @@ func startDevURL(t *testing.T) (string, *kubernetes.Clientset) {
 	}
 	port := freePort(t)
 	state := t.TempDir()
+	devState = state
 	cmd := exec.Command("pnpm", "exec", "wrangler", "dev", "--local",
 		"-c", "wrangler.jsonc",
-		"--persist-to", state, "--port", fmt.Sprint(port), "--inspector-port", "0")
+		"--persist-to", state, "--port", fmt.Sprint(port), "--inspector-port", "0",
+		"--var", "ADMIN_TOKEN:"+devToken, "--var", "READONLY_TOKEN:"+readonlyDevToken, "--var", "JOIN_TOKEN:"+joinToken)
 	cmd.Dir = root
-	cmd.Env = append(devEnv(), "ADMIN_TOKEN="+devToken, "JOIN_TOKEN="+joinToken)
+	cmd.Env = devEnv()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	logFile, err := os.Create(filepath.Join(state, "wrangler.log"))
 	if err != nil {

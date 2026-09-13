@@ -1,13 +1,16 @@
 package apiserver
 
 import (
+	"crypto/sha512"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"runtime/debug"
+	"strconv"
 	"strings"
 
 	auth "github.com/k8flare/k8flare/packages/apiserver-auth"
+	authz "github.com/k8flare/k8flare/packages/apiserver-authz"
 	installer "github.com/k8flare/k8flare/packages/apiserver-installer"
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
@@ -26,6 +29,7 @@ import (
 type Config struct {
 	Kine            *http.Client
 	AdminToken      string
+	ReadonlyToken   string
 	JoinToken       string
 	Groups          *http.Client
 	OpenAPI         *http.Client
@@ -44,7 +48,8 @@ var versionInfo = version.Info{Major: "1", Minor: "36", GitVersion: "v1.36.4+k8f
 func NewHandler(cfg Config) (http.Handler, error) {
 	client := &kine.Client{HTTP: cfg.Kine}
 	v := supervisor.NewVault(client)
-	tokens := union.New(auth.AdminToken(cfg.AdminToken), auth.NodeToken{Vault: v})
+	tokens := union.New(auth.AdminToken(cfg.AdminToken), auth.ReadonlyToken(cfg.ReadonlyToken), auth.NodeToken{Vault: v})
+	authorizer := authz.New(client)
 	mux := http.NewServeMux()
 	for _, p := range []string{"/healthz", "/readyz", "/livez"} {
 		mux.HandleFunc(p, func(w http.ResponseWriter, _ *http.Request) {
@@ -61,17 +66,21 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	mux.Handle("/api/", forwardTo(cfg.Groups, groupsBase, "apiserver-core"))
 	mux.Handle("/apis", rootAPIs(addresses, cfg.CustomResources))
 	mux.Handle("/apis/", groupRouter(cfg))
-	mux.Handle("/openapi/", forwardTo(cfg.OpenAPI, openAPIBase, ""))
+	mux.Handle("/openapi/v2", forwardTo(cfg.OpenAPI, openAPIBase, ""))
+	mux.Handle("/openapi/v2/", forwardTo(cfg.OpenAPI, openAPIBase, ""))
+	mux.Handle("/openapi/v3", openAPIV3Root(cfg))
+	mux.Handle("/openapi/v3/", openAPIV3Router(cfg))
 	root := http.NewServeMux()
 	supervisor.New(v, cfg.JoinToken).Register(root)
-	root.Handle("/", auth.WithAuth(auth.WithRequestInfo(mux), tokens))
+	root.Handle("/", auth.WithAuth(auth.WithRequestInfo(auth.WithAuthorization(mux, authorizer)), tokens))
 	return recoverPanics(root), nil
 }
 
 func groupRouter(cfg Config) http.Handler {
 	workers := map[string]string{}
 	for _, sgv := range registry.Served {
-		workers[sgv.GV.Group] = "apiserver-" + strings.TrimSuffix(sgv.GV.Group, ".k8s.io")
+		group, _, _ := strings.Cut(sgv.GV.Group, ".")
+		workers[sgv.GV.Group] = "apiserver-" + group
 	}
 	custom := forwardTo(cfg.CustomResources, customResourcesBase, "")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -81,6 +90,95 @@ func groupRouter(cfg Config) http.Handler {
 			return
 		}
 		custom.ServeHTTP(w, r)
+	})
+}
+
+func openAPIV3GroupFromPath(path string) (group string, ok bool) {
+	rest := strings.TrimPrefix(path, "/openapi/v3/")
+	switch {
+	case rest == "api/v1" || strings.HasPrefix(rest, "api/v1/"):
+		return "", true
+	case strings.HasPrefix(rest, "apis/"):
+		parts := strings.SplitN(strings.TrimPrefix(rest, "apis/"), "/", 2)
+		if len(parts) < 2 {
+			return "", false
+		}
+		return parts[0], true
+	default:
+		return "", false
+	}
+}
+
+func openAPIV3Router(cfg Config) http.Handler {
+	served := map[string]bool{}
+	for _, sgv := range registry.Served {
+		served[sgv.GV.Group] = true
+	}
+	openAPIWorker := forwardTo(cfg.OpenAPI, openAPIBase, "")
+	customWorker := forwardTo(cfg.CustomResources, customResourcesBase, "")
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		group, ok := openAPIV3GroupFromPath(r.URL.Path)
+		if ok && served[group] {
+			openAPIWorker.ServeHTTP(w, r)
+			return
+		}
+		customWorker.ServeHTTP(w, r)
+	})
+}
+
+func openAPIV3Root(cfg Config) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths := map[string]json.RawMessage{}
+		sources := []struct {
+			client *http.Client
+			base   string
+		}{{cfg.OpenAPI, openAPIBase}}
+		if cfg.CustomResources != nil {
+			sources = append(sources, struct {
+				client *http.Client
+				base   string
+			}{cfg.CustomResources, customResourcesBase})
+		}
+		for _, src := range sources {
+			req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, src.base+"/openapi/v3", nil)
+			if err != nil {
+				responsewriters.InternalError(w, r, err)
+				return
+			}
+			req.Header.Set("Accept", "application/json")
+			resp, err := src.client.Do(req)
+			if err != nil {
+				responsewriters.InternalError(w, r, err)
+				return
+			}
+			var discovery struct {
+				Paths map[string]json.RawMessage `json:"paths"`
+			}
+			decodeErr := json.NewDecoder(resp.Body).Decode(&discovery)
+			resp.Body.Close()
+			if decodeErr != nil {
+				responsewriters.InternalError(w, r, fmt.Errorf("%s /openapi/v3: %w", src.base, decodeErr))
+				return
+			}
+			for k, v := range discovery.Paths {
+				paths[k] = v
+			}
+		}
+		body, err := json.Marshal(struct {
+			Paths map[string]json.RawMessage `json:"paths"`
+		}{Paths: paths})
+		if err != nil {
+			responsewriters.InternalError(w, r, err)
+			return
+		}
+		etag := fmt.Sprintf("%x", sha512.Sum512(body))
+		w.Header().Set("Etag", strconv.Quote(etag))
+		if r.Header.Get("If-None-Match") == strconv.Quote(etag) {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
 	})
 }
 
