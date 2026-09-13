@@ -9,13 +9,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"reflect"
 	"strconv"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/conversion"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/apiserver/pkg/storage"
@@ -30,10 +28,9 @@ type KineClient struct {
 const kineBase = "http://cluster.internal"
 
 type kineKV struct {
-	Key            string `json:"key"`
-	Value          string `json:"value"`
-	CreateRevision int64  `json:"createRevision"`
-	ModRevision    int64  `json:"modRevision"`
+	Key         string `json:"key"`
+	Value       string `json:"value"`
+	ModRevision int64  `json:"modRevision"`
 }
 
 type kineResponse struct {
@@ -143,27 +140,29 @@ func (c *KineClient) Revision(ctx context.Context) (int64, error) {
 
 // KineStorage is the storage.Interface genericregistry.Store runs on.
 type KineStorage struct {
-	client    *KineClient
-	codec     runtime.Codec
-	newFunc   func() runtime.Object
-	versioner storage.Versioner
+	client  *KineClient
+	codec   runtime.Codec
+	newFunc func() runtime.Object
 }
 
-var _ storage.Interface = (*KineStorage)(nil)
+var (
+	_         storage.Interface = (*KineStorage)(nil)
+	versioner storage.Versioner = storage.APIObjectVersioner{}
+)
 
 const registryPrefix = "/registry"
 
 func NewKineStorage(client *KineClient, codec runtime.Codec, newFunc func() runtime.Object) *KineStorage {
-	return &KineStorage{client: client, codec: codec, newFunc: newFunc, versioner: storage.APIObjectVersioner{}}
+	return &KineStorage{client: client, codec: codec, newFunc: newFunc}
 }
 
-func (s *KineStorage) Versioner() storage.Versioner { return s.versioner }
+func (s *KineStorage) Versioner() storage.Versioner { return versioner }
 
 func (s *KineStorage) decodeInto(data []byte, rev int64, into runtime.Object) error {
 	if _, _, err := s.codec.Decode(data, nil, into); err != nil {
 		return err
 	}
-	return s.versioner.UpdateObject(into, uint64(rev))
+	return versioner.UpdateObject(into, uint64(rev))
 }
 
 func (s *KineStorage) decodeKV(kv *kineKV, into runtime.Object) ([]byte, error) {
@@ -175,7 +174,7 @@ func (s *KineStorage) decodeKV(kv *kineKV, into runtime.Object) ([]byte, error) 
 }
 
 func (s *KineStorage) encode(obj runtime.Object) ([]byte, error) {
-	if err := s.versioner.PrepareObjectForStorage(obj); err != nil {
+	if err := versioner.PrepareObjectForStorage(obj); err != nil {
 		return nil, err
 	}
 	return runtime.Encode(s.codec, obj)
@@ -215,14 +214,6 @@ func (s *KineStorage) Get(ctx context.Context, key string, opts storage.GetOptio
 }
 
 func (s *KineStorage) GetList(ctx context.Context, key string, opts storage.ListOptions, listObj runtime.Object) error {
-	listPtr, err := meta.GetItemsPtr(listObj)
-	if err != nil {
-		return err
-	}
-	v, err := conversion.EnforcePtr(listPtr)
-	if err != nil {
-		return err
-	}
 	prefix := registryPrefix + key
 	if opts.Recursive && !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
@@ -235,16 +226,38 @@ func (s *KineStorage) GetList(ctx context.Context, key string, opts storage.List
 		}
 		from = fromKey
 	}
-	var kvs []kineKV
+	limit := opts.Predicate.Limit
+	var items []runtime.Object
 	var rev int64
+	next := ""
+	collect := func(kvs []kineKV) error {
+		for i := range kvs {
+			if limit > 0 && int64(len(items)) >= limit {
+				next = kvs[i].Key
+				return nil
+			}
+			obj := s.newFunc()
+			if _, err := s.decodeKV(&kvs[i], obj); err != nil {
+				return err
+			}
+			if ok, err := opts.Predicate.Matches(obj); err != nil {
+				return err
+			} else if ok {
+				items = append(items, obj)
+			}
+		}
+		return nil
+	}
 	if opts.Recursive {
-		for {
+		for next == "" {
 			page, r, more, err := s.client.List(ctx, prefix, from, 500)
 			if err != nil {
 				return err
 			}
 			rev = r
-			kvs = append(kvs, page...)
+			if err := collect(page); err != nil {
+				return err
+			}
 			if !more || len(page) == 0 {
 				break
 			}
@@ -254,44 +267,24 @@ func (s *KineStorage) GetList(ctx context.Context, key string, opts storage.List
 		kv, r, err := s.client.Get(ctx, prefix)
 		rev = r
 		if err == nil {
-			kvs = []kineKV{*kv}
+			if err := collect([]kineKV{*kv}); err != nil {
+				return err
+			}
 		} else if err != errKineNotFound {
 			return err
 		}
 	}
-	limit := opts.Predicate.Limit
-	var next string
-	itemIsPtr := v.Type().Elem().Kind() == reflect.Ptr
-	for i := range kvs {
-		if limit > 0 && int64(v.Len()) >= limit {
-			next = kvs[i].Key
-			break
-		}
-		obj := s.newFunc()
-		if _, err := s.decodeKV(&kvs[i], obj); err != nil {
-			return err
-		}
-		ok, err := opts.Predicate.Matches(obj)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			continue
-		}
-		item := reflect.ValueOf(obj)
-		if !itemIsPtr {
-			item = item.Elem()
-		}
-		v.Set(reflect.Append(v, item))
+	if err := meta.SetList(listObj, items); err != nil {
+		return err
 	}
 	continueToken := ""
 	if next != "" {
-		continueToken, err = storage.EncodeContinue(next, prefix, rev)
-		if err != nil {
+		var err error
+		if continueToken, err = storage.EncodeContinue(next, prefix, rev); err != nil {
 			return err
 		}
 	}
-	return s.versioner.UpdateList(listObj, uint64(rev), continueToken, nil)
+	return versioner.UpdateList(listObj, uint64(rev), continueToken, nil)
 }
 
 func (s *KineStorage) GuaranteedUpdate(ctx context.Context, key string, destination runtime.Object, ignoreNotFound bool, preconditions *storage.Preconditions, tryUpdate storage.UpdateFunc, _ runtime.Object) error {
@@ -404,7 +397,7 @@ func (s *KineStorage) Watch(ctx context.Context, key string, opts storage.ListOp
 		q.Set("exact", "1")
 	}
 	q.Set("prefix", prefix)
-	rv, err := s.versioner.ParseResourceVersion(opts.ResourceVersion)
+	rv, err := versioner.ParseResourceVersion(opts.ResourceVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -445,7 +438,7 @@ func (s *KineStorage) Watch(ctx context.Context, key string, opts storage.ListOp
 					if m, err := meta.Accessor(bookmark); err == nil {
 						m.SetAnnotations(map[string]string{metav1.InitialEventsAnnotationKey: "true"})
 					}
-					if err := s.versioner.UpdateObject(bookmark, uint64(ev.Rev)); err != nil {
+					if err := versioner.UpdateObject(bookmark, uint64(ev.Rev)); err != nil {
 						continue
 					}
 					select {

@@ -1,11 +1,9 @@
 package apiserver
 
 import (
-	"context"
 	"crypto/subtle"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -24,6 +22,9 @@ type supervisor struct {
 	joinToken string
 }
 
+// k3sControlConfig is the subset of k3s's config.Control the agent reads
+// from /v1-k3s/config, with the same field names and types so the JSON
+// matches. The real type does not build for js (it imports kine's sqlite).
 type k3sControlConfig struct {
 	HTTPSPort          int
 	SupervisorPort     int
@@ -35,17 +36,17 @@ type k3sControlConfig struct {
 	ClusterDNSs        []net.IP
 	ClusterDomain      string
 	FlannelBackend     string
-	FlannelIPv6Masq    bool
-	FlannelExternalIP  bool
 	DisableKubeProxy   bool
 	DisableNPC         bool
 	DisableCCM         bool
 	EgressSelectorMode string
-	SupervisorMetrics  bool
-	EmbeddedRegistry   bool
-	MinTLSVersion      string
-	CipherSuites       []string
 }
+
+var (
+	clusterCIDR = mustCIDR("10.42.0.0/16")
+	serviceCIDR = mustCIDR("10.43.0.0/16")
+	clusterDNS  = net.ParseIP("10.43.0.10")
+)
 
 func mustCIDR(s string) *net.IPNet {
 	_, n, err := net.ParseCIDR(s)
@@ -62,13 +63,11 @@ func (s *supervisor) config(r *http.Request) k3sControlConfig {
 			port = n
 		}
 	}
-	cluster, service := mustCIDR("10.42.0.0/16"), mustCIDR("10.43.0.0/16")
-	dns := net.ParseIP("10.43.0.10")
 	return k3sControlConfig{
 		HTTPSPort: port, SupervisorPort: port,
-		ClusterIPRange: cluster, ServiceIPRange: service,
-		ClusterIPRanges: []*net.IPNet{cluster}, ServiceIPRanges: []*net.IPNet{service},
-		ClusterDNS: dns, ClusterDNSs: []net.IP{dns}, ClusterDomain: "cluster.local",
+		ClusterIPRange: clusterCIDR, ServiceIPRange: serviceCIDR,
+		ClusterIPRanges: []*net.IPNet{clusterCIDR}, ServiceIPRanges: []*net.IPNet{serviceCIDR},
+		ClusterDNS: clusterDNS, ClusterDNSs: []net.IP{clusterDNS}, ClusterDomain: "cluster.local",
 		FlannelBackend: "vxlan", DisableKubeProxy: true, DisableNPC: true, DisableCCM: true,
 		EgressSelectorMode: "agent",
 	}
@@ -205,25 +204,3 @@ func clientCertTemplate(cn string, orgs ...string) *x509.Certificate {
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 }
-
-// nodeAuthenticator accepts the token cmd/agent writes into the kubelet's
-// kubeconfig: "node:<name>:<node password>", the same secret the
-// supervisor verified when it signed the node's certificates.
-func nodeAuthenticator(v *vault) Authenticator {
-	return func(ctx context.Context, token string) *user.DefaultInfo {
-		rest, ok := strings.CutPrefix(token, "node:")
-		if !ok {
-			return nil
-		}
-		name, password, ok := strings.Cut(rest, ":")
-		if !ok || name == "" || password == "" {
-			return nil
-		}
-		if err := v.checkNodePassword(ctx, name, password); err != nil {
-			return nil
-		}
-		return &user.DefaultInfo{Name: "system:node:" + name, Groups: []string{user.NodesGroup, user.AllAuthenticated}}
-	}
-}
-
-func decodeBase64(s string) ([]byte, error) { return base64.StdEncoding.DecodeString(s) }

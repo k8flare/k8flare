@@ -3,7 +3,6 @@
 package apiserver_test
 
 import (
-	"os"
 	"testing"
 	"time"
 
@@ -20,7 +19,7 @@ import (
 // must sync, which needs the initial-events-end bookmark, and must see a
 // later create.
 func TestInformerWatchList(t *testing.T) {
-	os.Setenv("KUBE_FEATURE_WatchListClient", "true")
+	t.Setenv("KUBE_FEATURE_WatchListClient", "true")
 	base, protobufClient := startDevURL(t)
 	jsonClient, err := kubernetes.NewForConfig(&rest.Config{Host: base, BearerToken: devToken, ContentConfig: rest.ContentConfig{ContentType: "application/json", AcceptContentTypes: "application/json"}})
 	if err != nil {

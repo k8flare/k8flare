@@ -18,7 +18,6 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -120,11 +119,6 @@ func serveKubeletPlain(port int) {
 // distribution unpacks into its data directory on PATH. The stock k3s
 // binary must have run once on this machine.
 func useBundledBinaries(dataDir string) error {
-	if k3s, err := exec.LookPath("k3s"); err == nil {
-		cmd := exec.Command(k3s, "check-config")
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-		_ = cmd.Run()
-	}
 	bin := filepath.Join(dataDir, "data/current/bin")
 	if _, err := os.Stat(bin); err != nil {
 		return fmt.Errorf("%s not found: run the k3s binary once to unpack it", bin)

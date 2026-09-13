@@ -5,6 +5,13 @@ import (
 	"fmt"
 	"net/http"
 	"runtime/debug"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/version"
+	"k8s.io/apiserver/pkg/authentication/token/union"
+	"k8s.io/apiserver/pkg/endpoints/handlers/responsewriters"
+	"k8s.io/client-go/kubernetes/scheme"
 )
 
 type Config struct {
@@ -18,17 +25,15 @@ type Config struct {
 	Kubelet KubeletProxy
 }
 
-var versionInfo = map[string]string{
-	"major": "1", "minor": "36", "gitVersion": "v1.36.4+k8flare",
-	"platform": "js/wasm", "goVersion": "go1.26", "compiler": "gc",
-}
+var versionInfo = version.Info{Major: "1", Minor: "36", GitVersion: "v1.36.4+k8flare", Platform: "js/wasm", GoVersion: "go1.26", Compiler: "gc"}
 
 func NewHandler(cfg Config) (http.Handler, error) {
 	kine := &KineClient{HTTP: cfg.Kine}
 	v := newVault(kine)
-	authenticators := []Authenticator{adminAuthenticator(cfg.AdminToken), nodeAuthenticator(v)}
+	tokens := union.New(adminToken(cfg.AdminToken), nodeToken{v})
 	mux := http.NewServeMux()
-	if err := installAPI(mux, kine, authenticators, cfg.Kubelet); err != nil {
+	stores, err := installAPI(mux, kine, tokens, cfg.Kubelet)
+	if err != nil {
 		return nil, err
 	}
 	for _, p := range []string{"/healthz", "/readyz", "/livez"} {
@@ -43,7 +48,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	})
 	root := http.NewServeMux()
 	(&supervisor{vault: v, joinToken: cfg.JoinToken}).register(root)
-	root.Handle("/", withAuth(ensureNamespaces(kine, mux), authenticators...))
+	root.Handle("/", withAuth(ensureNamespaces(stores["namespaces"], mux), tokens))
 	return recoverPanics(root), nil
 }
 
@@ -52,7 +57,7 @@ func recoverPanics(next http.Handler) http.Handler {
 		defer func() {
 			if rec := recover(); rec != nil {
 				println("apiserver: panic serving", r.Method, r.URL.Path, ":", fmt.Sprint(rec), "\n", string(debug.Stack()))
-				writeStatus(w, http.StatusInternalServerError, "InternalError", "internal server error")
+				responsewriters.ErrorNegotiated(apierrors.NewInternalError(fmt.Errorf("%v", rec)), scheme.Codecs, schema.GroupVersion{}, w, r)
 			}
 		}()
 		next.ServeHTTP(w, r)

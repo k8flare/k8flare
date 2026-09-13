@@ -5,11 +5,7 @@ import (
 	"fmt"
 	"net"
 
-	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
-	discoveryv1 "k8s.io/api/discovery/v1"
-	nodev1 "k8s.io/api/node/v1"
-	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
@@ -23,58 +19,27 @@ import (
 	"k8s.io/apiserver/pkg/storage"
 	"k8s.io/apiserver/pkg/storage/names"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/kubernetes/pkg/controller/nodeipam/ipam/cidrset"
 )
 
-// Kind is one served resource. The table below is the whole API surface.
-type Kind struct {
-	GV          schema.GroupVersion
-	Resource    string
-	Singular    string
-	Kind        string
-	Namespaced  bool
-	Status      bool
-	ShortNames  []string
-	NewFunc     func() runtime.Object
-	NewListFunc func() runtime.Object
-}
-
-var Kinds = []Kind{
-	{corev1.SchemeGroupVersion, "namespaces", "namespace", "Namespace", false, true, []string{"ns"}, func() runtime.Object { return &corev1.Namespace{} }, func() runtime.Object { return &corev1.NamespaceList{} }},
-	{corev1.SchemeGroupVersion, "nodes", "node", "Node", false, true, []string{"no"}, func() runtime.Object { return &corev1.Node{} }, func() runtime.Object { return &corev1.NodeList{} }},
-	{corev1.SchemeGroupVersion, "pods", "pod", "Pod", true, true, []string{"po"}, func() runtime.Object { return &corev1.Pod{} }, func() runtime.Object { return &corev1.PodList{} }},
-	{corev1.SchemeGroupVersion, "services", "service", "Service", true, true, []string{"svc"}, func() runtime.Object { return &corev1.Service{} }, func() runtime.Object { return &corev1.ServiceList{} }},
-	{corev1.SchemeGroupVersion, "configmaps", "configmap", "ConfigMap", true, false, []string{"cm"}, func() runtime.Object { return &corev1.ConfigMap{} }, func() runtime.Object { return &corev1.ConfigMapList{} }},
-	{corev1.SchemeGroupVersion, "secrets", "secret", "Secret", true, false, nil, func() runtime.Object { return &corev1.Secret{} }, func() runtime.Object { return &corev1.SecretList{} }},
-	{corev1.SchemeGroupVersion, "serviceaccounts", "serviceaccount", "ServiceAccount", true, false, []string{"sa"}, func() runtime.Object { return &corev1.ServiceAccount{} }, func() runtime.Object { return &corev1.ServiceAccountList{} }},
-	{corev1.SchemeGroupVersion, "events", "event", "Event", true, false, []string{"ev"}, func() runtime.Object { return &corev1.Event{} }, func() runtime.Object { return &corev1.EventList{} }},
-	{coordinationv1.SchemeGroupVersion, "leases", "lease", "Lease", true, false, nil, func() runtime.Object { return &coordinationv1.Lease{} }, func() runtime.Object { return &coordinationv1.LeaseList{} }},
-	{discoveryv1.SchemeGroupVersion, "endpointslices", "endpointslice", "EndpointSlice", true, false, nil, func() runtime.Object { return &discoveryv1.EndpointSlice{} }, func() runtime.Object { return &discoveryv1.EndpointSliceList{} }},
-	{nodev1.SchemeGroupVersion, "runtimeclasses", "runtimeclass", "RuntimeClass", false, false, nil, func() runtime.Object { return &nodev1.RuntimeClass{} }, func() runtime.Object { return &nodev1.RuntimeClassList{} }},
-	{storagev1.SchemeGroupVersion, "csidrivers", "csidriver", "CSIDriver", false, false, nil, func() runtime.Object { return &storagev1.CSIDriver{} }, func() runtime.Object { return &storagev1.CSIDriverList{} }},
-	{storagev1.SchemeGroupVersion, "csinodes", "csinode", "CSINode", false, false, nil, func() runtime.Object { return &storagev1.CSINode{} }, func() runtime.Object { return &storagev1.CSINodeList{} }},
+type servedGroupVersion struct {
+	gv        schema.GroupVersion
+	resources []metav1.APIResource
 }
 
 type strategy struct {
 	runtime.ObjectTyper
 	names.NameGenerator
-	kind Kind
+	namespaced bool
 }
 
-func (s strategy) NamespaceScoped() bool { return s.kind.Namespaced }
-
-func (s strategy) PrepareForCreate(_ context.Context, obj runtime.Object) {
-	obj.GetObjectKind().SetGroupVersionKind(s.kind.GV.WithKind(s.kind.Kind))
-}
-
-func (strategy) Validate(context.Context, runtime.Object) field.ErrorList  { return nil }
-func (strategy) WarningsOnCreate(context.Context, runtime.Object) []string { return nil }
-func (strategy) Canonicalize(runtime.Object)                               {}
-func (strategy) AllowCreateOnUpdate() bool                                 { return false }
-
-func (s strategy) PrepareForUpdate(_ context.Context, obj, _ runtime.Object) {
-	obj.GetObjectKind().SetGroupVersionKind(s.kind.GV.WithKind(s.kind.Kind))
-}
-
+func (s strategy) NamespaceScoped() bool                                          { return s.namespaced }
+func (strategy) PrepareForCreate(context.Context, runtime.Object)                 {}
+func (strategy) Validate(context.Context, runtime.Object) field.ErrorList         { return nil }
+func (strategy) WarningsOnCreate(context.Context, runtime.Object) []string        { return nil }
+func (strategy) Canonicalize(runtime.Object)                                      {}
+func (strategy) AllowCreateOnUpdate() bool                                        { return false }
+func (strategy) PrepareForUpdate(context.Context, runtime.Object, runtime.Object) {}
 func (strategy) ValidateUpdate(context.Context, runtime.Object, runtime.Object) field.ErrorList {
 	return nil
 }
@@ -83,9 +48,10 @@ func (strategy) WarningsOnUpdate(context.Context, runtime.Object, runtime.Object
 }
 func (strategy) AllowUnconditionalUpdate() bool { return true }
 
-// podStrategy adds upstream's graceful deletion rule: a scheduled, still
-// running Pod is only marked for deletion, and the kubelet removes it with
-// gracePeriodSeconds=0 once its containers are gone.
+// podStrategy is upstream's graceful deletion rule, which lives on the
+// internal Pod type upstream: a scheduled, still running Pod is only marked
+// for deletion, and the kubelet removes it with gracePeriodSeconds=0 once
+// its containers are gone.
 type podStrategy struct{ strategy }
 
 func (podStrategy) CheckGracefulDelete(_ context.Context, obj runtime.Object, options *metav1.DeleteOptions) bool {
@@ -112,23 +78,47 @@ func (podStrategy) CheckGracefulDelete(_ context.Context, obj runtime.Object, op
 	return true
 }
 
-func newStore(kine *KineClient, k Kind) *genericregistry.Store {
-	var strat rest.RESTDeleteStrategy = strategy{ObjectTyper: scheme.Scheme, NameGenerator: names.SimpleNameGenerator, kind: k}
-	if k.Resource == "pods" {
-		strat = podStrategy{strat.(strategy)}
+// storeWithNames lets the installer's discovery see upstream's short names
+// and categories for a resource.
+type storeWithNames struct {
+	*genericregistry.Store
+	shortNames []string
+	categories []string
+}
+
+func (s storeWithNames) ShortNames() []string { return s.shortNames }
+func (s storeWithNames) Categories() []string { return s.categories }
+
+func newStore(kine *KineClient, gv schema.GroupVersion, res metav1.APIResource) (*genericregistry.Store, error) {
+	gvk := gv.WithKind(res.Kind)
+	newFunc := func() runtime.Object {
+		obj, _ := scheme.Scheme.New(gvk)
+		return obj
 	}
-	prefix := "/" + k.Resource
-	gr := k.GV.WithResource(k.Resource).GroupResource()
-	codec := scheme.Codecs.LegacyCodec(k.GV)
-	kineStorage := NewKineStorage(kine, codec, k.NewFunc)
+	newListFunc := func() runtime.Object {
+		obj, _ := scheme.Scheme.New(gv.WithKind(res.Kind + "List"))
+		return obj
+	}
+	if newFunc() == nil || newListFunc() == nil {
+		return nil, fmt.Errorf("%s %s is not registered in the scheme", gv, res.Kind)
+	}
+	strat := strategy{ObjectTyper: scheme.Scheme, NameGenerator: names.SimpleNameGenerator, namespaced: res.Namespaced}
+	var deleteStrategy rest.RESTDeleteStrategy = strat
+	if res.Name == "pods" {
+		deleteStrategy = podStrategy{strat}
+	}
+	prefix := "/" + res.Name
+	gr := gv.WithResource(res.Name).GroupResource()
+	codec := scheme.Codecs.LegacyCodec(gv)
+	kineStorage := NewKineStorage(kine, codec, newFunc)
 	store := &genericregistry.Store{
-		NewFunc:                   k.NewFunc,
-		NewListFunc:               k.NewListFunc,
+		NewFunc:                   newFunc,
+		NewListFunc:               newListFunc,
 		DefaultQualifiedResource:  gr,
-		SingularQualifiedResource: k.GV.WithResource(k.Singular).GroupResource(),
-		CreateStrategy:            strat.(rest.RESTCreateStrategy),
-		UpdateStrategy:            strat.(rest.RESTUpdateStrategy),
-		DeleteStrategy:            strat,
+		SingularQualifiedResource: gv.WithResource(res.SingularName).GroupResource(),
+		CreateStrategy:            strat,
+		UpdateStrategy:            strat,
+		DeleteStrategy:            deleteStrategy,
 		ReturnDeletedObject:       true,
 		TableConvertor:            rest.NewDefaultTableConvertor(gr),
 		ObjectNameFunc: func(obj runtime.Object) (string, error) {
@@ -139,7 +129,7 @@ func newStore(kine *KineClient, k Kind) *genericregistry.Store {
 			return a.GetName(), nil
 		},
 		KeyRootFunc: func(ctx context.Context) string {
-			if k.Namespaced {
+			if res.Namespaced {
 				if ns, ok := genericapirequest.NamespaceFrom(ctx); ok && ns != "" {
 					return prefix + "/" + ns
 				}
@@ -147,23 +137,17 @@ func newStore(kine *KineClient, k Kind) *genericregistry.Store {
 			return prefix
 		},
 		KeyFunc: func(ctx context.Context, name string) (string, error) {
-			if k.Namespaced {
+			if res.Namespaced {
 				return genericregistry.NamespaceKeyFunc(ctx, prefix, name)
 			}
 			return genericregistry.NoNamespaceKeyFunc(ctx, prefix, name)
 		},
-		PredicateFunc: func(label labels.Selector, f fields.Selector) storage.SelectionPredicate {
-			return storage.SelectionPredicate{Label: label, Field: f, GetAttrs: func(obj runtime.Object) (labels.Set, fields.Set, error) {
-				a, err := meta.Accessor(obj)
-				if err != nil {
-					return nil, nil, err
-				}
-				return a.GetLabels(), selectableFields(obj), nil
-			}}
+		PredicateFunc: func(label labels.Selector, field fields.Selector) storage.SelectionPredicate {
+			return storage.SelectionPredicate{Label: label, Field: field, GetAttrs: attrsFor(field)}
 		},
 		Storage: genericregistry.DryRunnableStorage{Storage: kineStorage, Codec: codec},
 	}
-	if k.Resource == "nodes" {
+	if res.Name == "nodes" {
 		store.BeginCreate = func(ctx context.Context, obj runtime.Object, _ *metav1.CreateOptions) (genericregistry.FinishFunc, error) {
 			if err := assignPodCIDR(ctx, kineStorage, obj.(*corev1.Node)); err != nil {
 				return nil, err
@@ -171,11 +155,12 @@ func newStore(kine *KineClient, k Kind) *genericregistry.Store {
 			return func(context.Context, bool) {}, nil
 		}
 	}
-	return store
+	return store, nil
 }
 
-// assignPodCIDR gives a new Node the lowest free 10.42.N.0/24. The real
-// nodeipam controller is not running here; a single writer is assumed.
+// assignPodCIDR stands in for the nodeipam controller until controllers run
+// here: a new Node gets the lowest free /24 of the cluster CIDR. It assumes
+// one writer.
 func assignPodCIDR(ctx context.Context, s *KineStorage, node *corev1.Node) error {
 	if node.Spec.PodCIDR != "" {
 		return nil
@@ -184,17 +169,22 @@ func assignPodCIDR(ctx context.Context, s *KineStorage, node *corev1.Node) error
 	if err := s.GetList(ctx, "/nodes", storage.ListOptions{Recursive: true, Predicate: storage.Everything}, list); err != nil {
 		return err
 	}
-	used := map[string]bool{}
-	for _, n := range list.Items {
-		used[n.Spec.PodCIDR] = true
+	set, err := cidrset.NewCIDRSet(clusterCIDR, 24)
+	if err != nil {
+		return err
 	}
-	for i := 0; i < 256; i++ {
-		cidr := (&net.IPNet{IP: net.IPv4(10, 42, byte(i), 0), Mask: net.CIDRMask(24, 32)}).String()
-		if !used[cidr] {
-			node.Spec.PodCIDR = cidr
-			node.Spec.PodCIDRs = []string{cidr}
-			return nil
+	for _, n := range list.Items {
+		if _, used, err := net.ParseCIDR(n.Spec.PodCIDR); err == nil {
+			if err := set.Occupy(used); err != nil {
+				return err
+			}
 		}
 	}
-	return fmt.Errorf("no free pod CIDR")
+	cidr, err := set.AllocateNext()
+	if err != nil {
+		return err
+	}
+	node.Spec.PodCIDR = cidr.String()
+	node.Spec.PodCIDRs = []string{cidr.String()}
+	return nil
 }

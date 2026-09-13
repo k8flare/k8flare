@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -212,28 +211,10 @@ func checkPin(src, rel, pinFile string, write bool) error {
 }
 
 func copyTree(src, dst string) error {
-	return filepath.WalkDir(src, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(src, p)
-		target := filepath.Join(dst, rel)
-		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		in, err := os.Open(p)
-		if err != nil {
-			return err
-		}
-		defer in.Close()
-		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-		if err != nil {
-			return err
-		}
-		defer out.Close()
-		_, err = io.Copy(out, in)
+	if err := os.MkdirAll(dst, 0o755); err != nil {
 		return err
-	})
+	}
+	return os.CopyFS(dst, os.DirFS(src))
 }
 
 const hostTag = "//go:build !js\n\n"
@@ -243,33 +224,25 @@ func jsName(path string) string {
 	return strings.TrimSuffix(path, ".go") + "_js.go"
 }
 
-func hostName(path string) string {
-	return strings.TrimSuffix(path, ".go") + "_notjs.go"
-}
-
-func moveHostOnly(dst, path string) ([]byte, error) {
+// keepHostOnly constrains the upstream file to every target but js and
+// returns its original content.
+func keepHostOnly(dst, path string) ([]byte, error) {
 	target := filepath.Join(dst, path)
 	data, err := os.ReadFile(target)
 	if err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(filepath.Join(dst, hostName(path)), append([]byte(hostTag), data...), 0o644); err != nil {
-		return nil, err
-	}
-	return data, os.Remove(target)
+	return data, os.WriteFile(target, append([]byte(hostTag), data...), 0o644)
 }
 
 func apply(dst, overlays string, o op) error {
 	target := filepath.Join(dst, o.path)
 	switch o.kind {
 	case "hostOnly":
-		data, err := os.ReadFile(target)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(target, append([]byte(hostTag), data...), 0o644)
+		_, err := keepHostOnly(dst, o.path)
+		return err
 	case "replaceJS":
-		if _, err := moveHostOnly(dst, o.path); err != nil {
+		if _, err := keepHostOnly(dst, o.path); err != nil {
 			return err
 		}
 		data, err := os.ReadFile(filepath.Join(overlays, o.overlay))
@@ -281,7 +254,7 @@ func apply(dst, overlays string, o op) error {
 		}
 		return os.WriteFile(filepath.Join(dst, jsName(o.path)), data, 0o644)
 	case "patchJS":
-		data, err := moveHostOnly(dst, o.path)
+		data, err := keepHostOnly(dst, o.path)
 		if err != nil {
 			return err
 		}

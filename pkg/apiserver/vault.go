@@ -10,6 +10,7 @@ import (
 	"crypto/subtle"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -23,9 +24,10 @@ import (
 // vault keeps the cluster's certificate authorities and node passwords in
 // the Cluster DO, outside the /registry keyspace kubectl can reach.
 type vault struct {
-	kine *KineClient
-	mu   sync.Mutex
-	cas  map[string]*ca
+	kine     *KineClient
+	mu       sync.Mutex
+	cas      map[string]*ca
+	verified map[string]string
 }
 
 type ca struct {
@@ -42,7 +44,7 @@ type caRecord struct {
 var errNodePasswordMismatch = errors.New("node password does not match the stored one")
 
 func newVault(kine *KineClient) *vault {
-	return &vault{kine: kine, cas: map[string]*ca{}}
+	return &vault{kine: kine, cas: map[string]*ca{}, verified: map[string]string{}}
 }
 
 func (v *vault) ca(ctx context.Context, name string) (*ca, error) {
@@ -77,7 +79,7 @@ func (v *vault) ca(ctx context.Context, name string) (*ca, error) {
 }
 
 func parseCA(kv *kineKV) (*ca, error) {
-	data, err := decodeBase64(kv.Value)
+	data, err := base64.StdEncoding.DecodeString(kv.Value)
 	if err != nil {
 		return nil, err
 	}
@@ -171,8 +173,17 @@ func (v *vault) registerNodePassword(ctx context.Context, node, password string)
 }
 
 // checkNodePassword verifies a password against a node that has joined and
-// never registers one.
+// never registers one. A password is immutable once registered, so a hash
+// that verified once is kept for the isolate's lifetime and the kubelet's
+// heartbeats do not each cost a store read.
 func (v *vault) checkNodePassword(ctx context.Context, node, password string) error {
+	want := hashPassword(password)
+	v.mu.Lock()
+	cached, ok := v.verified[node]
+	v.mu.Unlock()
+	if ok && subtle.ConstantTimeCompare([]byte(cached), []byte(want)) == 1 {
+		return nil
+	}
 	kv, _, err := v.kine.Get(ctx, "/vault/node/"+node)
 	if err == errKineNotFound {
 		return errNodeUnknown
@@ -180,12 +191,15 @@ func (v *vault) checkNodePassword(ctx context.Context, node, password string) er
 	if err != nil {
 		return err
 	}
-	stored, err := decodeBase64(kv.Value)
+	stored, err := base64.StdEncoding.DecodeString(kv.Value)
 	if err != nil {
 		return err
 	}
-	if subtle.ConstantTimeCompare(stored, []byte(hashPassword(password))) != 1 {
+	if subtle.ConstantTimeCompare(stored, []byte(want)) != 1 {
 		return errNodePasswordMismatch
 	}
+	v.mu.Lock()
+	v.verified[node] = want
+	v.mu.Unlock()
 	return nil
 }

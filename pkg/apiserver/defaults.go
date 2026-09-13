@@ -6,17 +6,19 @@ import (
 	coordinationv1 "k8s.io/kubernetes/pkg/apis/coordination/v1"
 	corev1 "k8s.io/kubernetes/pkg/apis/core/v1"
 	discoveryv1 "k8s.io/kubernetes/pkg/apis/discovery/v1"
+	nodev1 "k8s.io/kubernetes/pkg/apis/node/v1"
 	storagev1 "k8s.io/kubernetes/pkg/apis/storage/v1"
 )
 
-// The real upstream defaulting functions, applied by the codecs on every
-// decode. The kubelet relies on them: it refuses to start a container from
-// a Pod whose spec.enableServiceLinks was never defaulted.
+// Upstream's own registrations for the served groups: the defaulting
+// functions the kubelet depends on, the field label conversions behind
+// selectors such as spec.nodeName, and the query-parameter conversions for
+// PodLogOptions. These packages hold no internal types themselves.
 func init() {
-	for _, register := range []func(*runtime.Scheme) error{
-		corev1.RegisterDefaults, coordinationv1.RegisterDefaults, discoveryv1.RegisterDefaults, storagev1.RegisterDefaults,
+	for _, add := range []func(*runtime.Scheme) error{
+		corev1.AddToScheme, coordinationv1.AddToScheme, discoveryv1.AddToScheme, nodev1.AddToScheme, storagev1.AddToScheme,
 	} {
-		if err := register(scheme.Scheme); err != nil {
+		if err := add(scheme.Scheme); err != nil {
 			panic(err)
 		}
 	}

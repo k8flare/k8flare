@@ -16,10 +16,58 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"syscall/js"
 )
 
 type envKey struct{}
+
+// Callbacks handed to JS are shared functions bound to an id, so nothing
+// ever calls a released js.Func: a released function reached from JS (a
+// close event after an error event, a stream cancel racing its close)
+// ends the Go program.
+var (
+	callbacksMu sync.Mutex
+	callbacks   = map[int]any{}
+	nextID      int
+	shared      = map[string]js.Func{}
+)
+
+func register(v any) int {
+	callbacksMu.Lock()
+	defer callbacksMu.Unlock()
+	nextID++
+	callbacks[nextID] = v
+	return nextID
+}
+
+func lookup(id int) any {
+	callbacksMu.Lock()
+	defer callbacksMu.Unlock()
+	return callbacks[id]
+}
+
+func unregister(id int) {
+	callbacksMu.Lock()
+	defer callbacksMu.Unlock()
+	delete(callbacks, id)
+}
+
+// bound returns the shared JS function `name` bound to id as its first
+// argument.
+func bound(name string, id int, fn func(id int, args []js.Value)) js.Value {
+	callbacksMu.Lock()
+	f, ok := shared[name]
+	if !ok {
+		f = js.FuncOf(func(_ js.Value, args []js.Value) any {
+			fn(args[0].Int(), args[1:])
+			return nil
+		})
+		shared[name] = f
+	}
+	callbacksMu.Unlock()
+	return f.Call("bind", js.Null(), id)
+}
 
 func Env(ctx context.Context) js.Value {
 	if ctx != nil {
@@ -54,10 +102,16 @@ func Serve(handler http.Handler) {
 			defer executor.Release()
 			resolve, reject := p[0], p[1]
 			go func() {
+				defer func() {
+					if rec := recover(); rec != nil {
+						println("wasmhttp: panic in dispatch:", fmt.Sprint(rec))
+						reject.Invoke(js.Global().Get("Error").New(fmt.Sprint(rec)))
+					}
+					yieldToEventLoop()
+				}()
 				if err := dispatch(handler, reqObj, env, func(v js.Value) { resolve.Invoke(v) }); err != nil {
 					reject.Invoke(js.Global().Get("Error").New(err.Error()))
 				}
-				yieldToEventLoop()
 			}()
 			return js.Undefined()
 		})
@@ -95,6 +149,7 @@ type responseWriter struct {
 	started    func(js.Value)
 	cancel     context.CancelFunc
 	closed     chan bool
+	id         int
 }
 
 func (r *responseWriter) Header() http.Header { return r.header }
@@ -109,11 +164,16 @@ func (r *responseWriter) WriteHeader(code int) {
 	}
 }
 
-func (r *responseWriter) Write(b []byte) (int, error) {
+func (r *responseWriter) Write(b []byte) (n int, err error) {
 	r.WriteHeader(http.StatusOK)
 	if !r.streaming {
 		return r.buf.Write(b)
 	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			n, err = 0, fmt.Errorf("wasmhttp: stream closed: %v", rec)
+		}
+	}()
 	r.controller.Call("enqueue", toUint8Array(b))
 	return len(b), nil
 }
@@ -130,27 +190,27 @@ func (r *responseWriter) Flush() {
 	})
 	defer start.Release()
 	src.Set("start", start)
-	var cancelFn js.Func
-	cancelFn = js.FuncOf(func(js.Value, []js.Value) any {
-		defer cancelFn.Release()
-		select {
-		case r.closed <- true:
-		default:
+	r.id = register(r)
+	src.Set("cancel", bound("stream-cancel", r.id, func(id int, _ []js.Value) {
+		if w, ok := lookup(id).(*responseWriter); ok {
+			select {
+			case w.closed <- true:
+			default:
+			}
+			w.cancel()
 		}
-		r.cancel()
-		return nil
-	})
-	src.Set("cancel", cancelFn)
+	}))
 	stream := js.Global().Get("ReadableStream").New(src)
 	r.streaming = true
 	if r.header.Get("Content-Encoding") == "" {
 		r.header.Set("Content-Encoding", "identity")
 	}
-	if r.buf.Len() > 0 {
-		r.controller.Call("enqueue", toUint8Array(r.buf.Bytes()))
-		r.buf.Reset()
-	}
+	pending := r.buf.Bytes()
+	r.buf = bytes.Buffer{}
 	r.started(r.response(stream))
+	if len(pending) > 0 {
+		_, _ = r.Write(pending)
+	}
 }
 
 func (r *responseWriter) finish() {
@@ -159,6 +219,7 @@ func (r *responseWriter) finish() {
 			defer func() { recover() }()
 			r.controller.Call("close")
 		}()
+		unregister(r.id)
 		return
 	}
 	r.WriteHeader(http.StatusOK)
@@ -179,6 +240,12 @@ func toUint8Array(b []byte) js.Value {
 	return arr
 }
 
+func fromUint8Array(v js.Value) []byte {
+	b := make([]byte, v.Get("byteLength").Int())
+	js.CopyBytesToGo(b, v)
+	return b
+}
+
 func dispatch(handler http.Handler, reqObj, env js.Value, started func(js.Value)) (err error) {
 	u, err := url.Parse(reqObj.Get("url").String())
 	if err != nil {
@@ -186,8 +253,7 @@ func dispatch(handler http.Handler, reqObj, env js.Value, started func(js.Value)
 	}
 	var body []byte
 	if raw := reqObj.Get("body"); !raw.IsNull() && !raw.IsUndefined() {
-		body = make([]byte, raw.Get("byteLength").Int())
-		js.CopyBytesToGo(body, raw)
+		body = fromUint8Array(raw)
 	}
 	req := &http.Request{
 		Method:        reqObj.Get("method").String(),
@@ -204,14 +270,7 @@ func dispatch(handler http.Handler, reqObj, env js.Value, started func(js.Value)
 	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), envKey{}, env))
 	defer cancel()
 	req = req.WithContext(ctx)
-	rw := &responseWriter{header: http.Header{}, cancel: cancel, closed: make(chan bool, 1)}
-	once := false
-	rw.started = func(v js.Value) {
-		if !once {
-			once = true
-			started(v)
-		}
-	}
+	rw := &responseWriter{header: http.Header{}, cancel: cancel, closed: make(chan bool, 1), started: started}
 	handler.ServeHTTP(rw, req)
 	rw.finish()
 	return nil
@@ -240,6 +299,8 @@ func headerToPairs(h http.Header) js.Value {
 
 // BindingTransport is an http.RoundTripper that sends each request through
 // the named Fetcher on the current request's env (a service or DO binding).
+// Plain HTTP needs no transport of its own: net/http's default transport is
+// fetch-based on GOOS=js and streams response bodies.
 type BindingTransport struct {
 	Name string
 }
@@ -249,17 +310,6 @@ func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if binding.IsUndefined() || binding.IsNull() {
 		return nil, fmt.Errorf("wasmhttp: binding %q is not in env", t.Name)
 	}
-	return fetchVia(binding, req)
-}
-
-// FetchTransport sends requests through the global fetch.
-type FetchTransport struct{}
-
-func (FetchTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	return fetchVia(js.Global(), req)
-}
-
-func fetchVia(binding js.Value, req *http.Request) (*http.Response, error) {
 	opts := js.Global().Get("Object").New()
 	opts.Set("method", req.Method)
 	opts.Set("headers", headerToPairs(req.Header))
@@ -270,9 +320,7 @@ func fetchVia(binding js.Value, req *http.Request) (*http.Response, error) {
 			return nil, err
 		}
 		if len(body) > 0 {
-			jsBody := js.Global().Get("Uint8Array").New(len(body))
-			js.CopyBytesToJS(jsBody, body)
-			opts.Set("body", jsBody)
+			opts.Set("body", toUint8Array(body))
 		}
 	}
 	jsReq := js.Global().Get("Request").New(req.URL.String(), opts)
@@ -284,15 +332,8 @@ func fetchVia(binding js.Value, req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	u8 := js.Global().Get("Uint8Array").New(buf)
-	body := make([]byte, u8.Get("byteLength").Int())
-	js.CopyBytesToGo(body, u8)
-	header := http.Header{}
-	entries := js.Global().Get("Array").Call("from", jsResp.Get("headers").Call("entries"))
-	for i := 0; i < entries.Length(); i++ {
-		p := entries.Index(i)
-		header.Add(p.Index(0).String(), p.Index(1).String())
-	}
+	body := fromUint8Array(js.Global().Get("Uint8Array").New(buf))
+	header := headerFromPairs(js.Global().Get("Array").Call("from", jsResp.Get("headers").Call("entries")))
 	status := jsResp.Get("status").Int()
 	return &http.Response{
 		Status:        fmt.Sprintf("%d %s", status, http.StatusText(status)),
@@ -344,7 +385,9 @@ func await(promise js.Value) (js.Value, error) {
 type WebSocket struct {
 	ws       js.Value
 	Messages <-chan []byte
+	msgs     chan []byte
 	closed   chan struct{}
+	id       int
 }
 
 func DialWebSocket(ctx context.Context, bindingName, rawURL string) (*WebSocket, error) {
@@ -362,34 +405,32 @@ func DialWebSocket(ctx context.Context, bindingName, rawURL string) (*WebSocket,
 		return nil, fmt.Errorf("wasmhttp: websocket %s: status %d", rawURL, resp.Get("status").Int())
 	}
 	msgs := make(chan []byte, 256)
-	c := &WebSocket{ws: ws, Messages: msgs, closed: make(chan struct{})}
-	var closeOnce func()
-	closeOnce = func() {
-		select {
-		case <-c.closed:
-		default:
-			close(c.closed)
-			close(msgs)
+	c := &WebSocket{ws: ws, Messages: msgs, msgs: msgs, closed: make(chan struct{})}
+	c.id = register(c)
+	ws.Call("addEventListener", "message", bound("ws-message", c.id, func(id int, args []js.Value) {
+		w, ok := lookup(id).(*WebSocket)
+		if !ok {
+			return
 		}
-	}
-	ws.Call("addEventListener", "message", js.FuncOf(func(_ js.Value, args []js.Value) any {
 		data := args[0].Get("data")
 		var b []byte
 		if data.Type() == js.TypeString {
 			b = []byte(data.String())
 		} else {
-			u8 := js.Global().Get("Uint8Array").New(data)
-			b = make([]byte, u8.Get("byteLength").Int())
-			js.CopyBytesToGo(b, u8)
+			b = fromUint8Array(js.Global().Get("Uint8Array").New(data))
 		}
 		select {
-		case msgs <- b:
-		case <-c.closed:
+		case w.msgs <- b:
+		case <-w.closed:
 		}
-		return nil
 	}))
-	ws.Call("addEventListener", "close", js.FuncOf(func(js.Value, []js.Value) any { closeOnce(); return nil }))
-	ws.Call("addEventListener", "error", js.FuncOf(func(js.Value, []js.Value) any { closeOnce(); return nil }))
+	onClose := bound("ws-close", c.id, func(id int, _ []js.Value) {
+		if w, ok := lookup(id).(*WebSocket); ok {
+			w.finish()
+		}
+	})
+	ws.Call("addEventListener", "close", onClose)
+	ws.Call("addEventListener", "error", onClose)
 	ws.Call("accept")
 	go func() {
 		select {
@@ -399,6 +440,16 @@ func DialWebSocket(ctx context.Context, bindingName, rawURL string) (*WebSocket,
 		}
 	}()
 	return c, nil
+}
+
+func (c *WebSocket) finish() {
+	select {
+	case <-c.closed:
+	default:
+		close(c.closed)
+		close(c.msgs)
+		unregister(c.id)
+	}
 }
 
 func (c *WebSocket) Close() {

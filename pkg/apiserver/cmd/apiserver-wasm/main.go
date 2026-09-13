@@ -38,7 +38,6 @@ func main() {
 		AdminToken: wasmhttp.Getenv("ADMIN_TOKEN"),
 		JoinToken:  wasmhttp.Getenv("JOIN_TOKEN"),
 		Kubelet: apiserver.KubeletProxy{
-			HTTP:   &http.Client{Transport: wasmhttp.FetchTransport{}},
 			Scheme: envDefault("KUBELET_SCHEME", "https"),
 			Port:   envInt("KUBELET_PORT", 10250),
 			Token:  wasmhttp.Getenv("ADMIN_TOKEN"),

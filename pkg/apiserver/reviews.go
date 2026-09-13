@@ -8,7 +8,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/registry/rest"
+	"k8s.io/client-go/kubernetes/scheme"
 )
 
 // reviewREST is a create-only virtual resource served through the API
@@ -16,14 +18,21 @@ import (
 // same content negotiation and discovery as everything else. Every
 // authenticated caller is allowed everything for now.
 type reviewREST struct {
+	gvk      schema.GroupVersionKind
 	singular string
-	newFunc  func() runtime.Object
 	create   func(ctx context.Context, obj runtime.Object) runtime.Object
 }
 
 var _ rest.Creater = (*reviewREST)(nil)
 
-func (r *reviewREST) New() runtime.Object     { return r.newFunc() }
+func newReviewREST(gvk schema.GroupVersionKind, singular string, create func(context.Context, runtime.Object) runtime.Object) *reviewREST {
+	return &reviewREST{gvk: gvk, singular: singular, create: create}
+}
+
+func (r *reviewREST) New() runtime.Object {
+	obj, _ := scheme.Scheme.New(r.gvk)
+	return obj
+}
 func (r *reviewREST) Destroy()                {}
 func (r *reviewREST) NamespaceScoped() bool   { return false }
 func (r *reviewREST) GetSingularName() string { return r.singular }
@@ -31,52 +40,30 @@ func (r *reviewREST) Create(ctx context.Context, obj runtime.Object, _ rest.Vali
 	return r.create(ctx, obj), nil
 }
 
-type reviewKind struct {
-	gv       schema.GroupVersion
-	resource string
-	kind     string
-	rest     *reviewREST
-}
-
-func reviewKinds(authenticators []Authenticator) []reviewKind {
-	authz := authorizationv1.SchemeGroupVersion
-	authn := authenticationv1.SchemeGroupVersion
-	return []reviewKind{
-		{authz, "selfsubjectaccessreviews", "SelfSubjectAccessReview", &reviewREST{
-			singular: "selfsubjectaccessreview",
-			newFunc:  func() runtime.Object { return &authorizationv1.SelfSubjectAccessReview{} },
-			create: func(_ context.Context, obj runtime.Object) runtime.Object {
-				review := obj.(*authorizationv1.SelfSubjectAccessReview)
-				review.Status = authorizationv1.SubjectAccessReviewStatus{Allowed: true}
-				return review
-			},
-		}},
-		{authz, "subjectaccessreviews", "SubjectAccessReview", &reviewREST{
-			singular: "subjectaccessreview",
-			newFunc:  func() runtime.Object { return &authorizationv1.SubjectAccessReview{} },
-			create: func(_ context.Context, obj runtime.Object) runtime.Object {
-				review := obj.(*authorizationv1.SubjectAccessReview)
-				review.Status = authorizationv1.SubjectAccessReviewStatus{Allowed: true}
-				return review
-			},
-		}},
-		{authn, "tokenreviews", "TokenReview", &reviewREST{
-			singular: "tokenreview",
-			newFunc:  func() runtime.Object { return &authenticationv1.TokenReview{} },
-			create: func(ctx context.Context, obj runtime.Object) runtime.Object {
-				review := obj.(*authenticationv1.TokenReview)
-				for _, a := range authenticators {
-					if u := a(ctx, review.Spec.Token); u != nil {
-						review.Status = authenticationv1.TokenReviewStatus{
-							Authenticated: true,
-							User:          authenticationv1.UserInfo{Username: u.Name, UID: u.UID, Groups: u.Groups},
-						}
-						return review
-					}
-				}
+func reviewCreators(tokens authenticator.Token) map[string]func(context.Context, runtime.Object) runtime.Object {
+	return map[string]func(context.Context, runtime.Object) runtime.Object{
+		"selfsubjectaccessreviews": func(_ context.Context, obj runtime.Object) runtime.Object {
+			review := obj.(*authorizationv1.SelfSubjectAccessReview)
+			review.Status = authorizationv1.SubjectAccessReviewStatus{Allowed: true}
+			return review
+		},
+		"subjectaccessreviews": func(_ context.Context, obj runtime.Object) runtime.Object {
+			review := obj.(*authorizationv1.SubjectAccessReview)
+			review.Status = authorizationv1.SubjectAccessReviewStatus{Allowed: true}
+			return review
+		},
+		"tokenreviews": func(ctx context.Context, obj runtime.Object) runtime.Object {
+			review := obj.(*authenticationv1.TokenReview)
+			resp, ok, err := tokens.AuthenticateToken(ctx, review.Spec.Token)
+			if err != nil || !ok {
 				review.Status = authenticationv1.TokenReviewStatus{Error: "token not recognized"}
 				return review
-			},
-		}},
+			}
+			review.Status = authenticationv1.TokenReviewStatus{
+				Authenticated: true,
+				User:          authenticationv1.UserInfo{Username: resp.User.GetName(), UID: resp.User.GetUID(), Groups: resp.User.GetGroups()},
+			}
+			return review
+		},
 	}
 }

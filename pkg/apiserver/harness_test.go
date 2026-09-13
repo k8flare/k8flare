@@ -103,10 +103,6 @@ func ctx(t *testing.T) context.Context {
 	return c
 }
 
-func contains(s, sub string) bool { return strings.Contains(s, sub) }
-
-func mustIP(s string) net.IP { return net.ParseIP(s) }
-
 // devEnv drops the variables that put wrangler dev into its AI-agent
 // mode, whose observability capture buffers application/json streaming
 // responses until they close and so stalls every JSON watch.

@@ -3,16 +3,17 @@ package apiserver
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/emicklei/go-restful/v3"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/managedfields"
 	"k8s.io/apiserver/pkg/admission"
+	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/endpoints"
 	"k8s.io/apiserver/pkg/endpoints/discovery"
 	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
@@ -27,52 +28,53 @@ func apiRoot(gv schema.GroupVersion) string {
 	return "/apis"
 }
 
-// installAPI builds every route with k8s.io/apiserver's own API installer
-// and the discovery documents kubectl and client-go read.
-func installAPI(mux *http.ServeMux, kine *KineClient, authenticators []Authenticator, kubelet KubeletProxy) error {
-	byGV := map[schema.GroupVersion]map[string]rest.Storage{}
-	resources := map[schema.GroupVersion][]metav1.APIResource{}
-	var order []schema.GroupVersion
+// installAPI builds every route, and the per-version discovery documents,
+// with k8s.io/apiserver's own API installer. The root discovery documents
+// (/api, /apis) are the only ones added by hand. It returns the stores by
+// resource name.
+func installAPI(mux *http.ServeMux, kine *KineClient, tokens authenticator.Token, kubelet KubeletProxy) (map[string]*genericregistry.Store, error) {
 	stores := map[string]*genericregistry.Store{}
-	for _, k := range Kinds {
-		if byGV[k.GV] == nil {
-			byGV[k.GV] = map[string]rest.Storage{}
-			order = append(order, k.GV)
+	byGV := map[schema.GroupVersion]map[string]rest.Storage{}
+	for _, sgv := range servedResources {
+		storage := map[string]rest.Storage{}
+		for _, res := range sgv.resources {
+			if strings.Contains(res.Name, "/") {
+				continue
+			}
+			if create, ok := reviewCreators(tokens)[res.Name]; ok {
+				storage[res.Name] = newReviewREST(sgv.gv.WithKind(res.Kind), res.SingularName, create)
+				continue
+			}
+			store, err := newStore(kine, sgv.gv, res)
+			if err != nil {
+				return nil, err
+			}
+			stores[res.Name] = store
+			storage[res.Name] = storeWithNames{store, res.ShortNames, res.Categories}
 		}
-		store := newStore(kine, k)
-		stores[k.Resource] = store
-		byGV[k.GV][k.Resource] = store
-		resources[k.GV] = append(resources[k.GV], metav1.APIResource{
-			Name: k.Resource, SingularName: k.Singular, Namespaced: k.Namespaced, Kind: k.Kind, ShortNames: k.ShortNames,
-			Verbs: metav1.Verbs{"create", "delete", "deletecollection", "get", "list", "patch", "update", "watch"},
-		})
-		if k.Status {
-			byGV[k.GV][k.Resource+"/status"] = newStatusREST(store)
-			resources[k.GV] = append(resources[k.GV], metav1.APIResource{
-				Name: k.Resource + "/status", SingularName: "", Namespaced: k.Namespaced, Kind: k.Kind,
-				Verbs: metav1.Verbs{"get", "patch", "update"},
-			})
+		for _, res := range sgv.resources {
+			parent, sub, ok := strings.Cut(res.Name, "/")
+			if !ok {
+				continue
+			}
+			switch sub {
+			case "status":
+				storage[res.Name] = newStatusREST(stores[parent])
+			case "log":
+				storage[res.Name] = &logREST{pods: stores["pods"], nodes: stores["nodes"], proxy: kubelet}
+			default:
+				return nil, fmt.Errorf("no implementation for subresource %s", res.Name)
+			}
 		}
-	}
-	core := corev1.SchemeGroupVersion
-	byGV[core]["pods/log"] = &logREST{pods: stores["pods"], nodes: stores["nodes"], proxy: kubelet}
-	resources[core] = append(resources[core], metav1.APIResource{Name: "pods/log", Namespaced: true, Kind: "Pod", Verbs: metav1.Verbs{"get"}})
-	for _, rk := range reviewKinds(authenticators) {
-		if byGV[rk.gv] == nil {
-			byGV[rk.gv] = map[string]rest.Storage{}
-			order = append(order, rk.gv)
-		}
-		byGV[rk.gv][rk.resource] = rk.rest
-		resources[rk.gv] = append(resources[rk.gv], metav1.APIResource{
-			Name: rk.resource, SingularName: rk.rest.singular, Namespaced: false, Kind: rk.kind, Verbs: metav1.Verbs{"create"},
-		})
+		byGV[sgv.gv] = storage
 	}
 	container := restful.NewContainer()
 	container.ServeMux = mux
 	container.Router(restful.CurlyRouter{})
 	addresses := discovery.DefaultAddresses{DefaultAddress: "k8flare"}
 	rootAPIs := discovery.NewRootAPIsHandler(addresses, scheme.Codecs)
-	for _, gv := range order {
+	for _, sgv := range servedResources {
+		gv := sgv.gv
 		group := &endpoints.APIGroupVersion{
 			Storage:                     byGV[gv],
 			Root:                        apiRoot(gv),
@@ -94,11 +96,8 @@ func installAPI(mux *http.ServeMux, kine *KineClient, authenticators []Authentic
 			MinRequestTimeout:           30 * time.Minute,
 		}
 		if _, _, err := group.InstallREST(container); err != nil {
-			return fmt.Errorf("install %s: %w", gv, err)
+			return nil, fmt.Errorf("install %s: %w", gv, err)
 		}
-		list := resources[gv]
-		versionHandler := discovery.NewAPIVersionHandler(scheme.Codecs, gv, discovery.APIResourceListerFunc(func() []metav1.APIResource { return list }))
-		versionHandler.AddToWebService(webServiceFor(container, apiRoot(gv)+"/"+gv.String()))
 		if gv.Group != "" {
 			apiGroup := metav1.APIGroup{
 				Name:             gv.Group,
@@ -111,16 +110,7 @@ func installAPI(mux *http.ServeMux, kine *KineClient, authenticators []Authentic
 	}
 	container.Add(discovery.NewLegacyRootAPIHandler(addresses, scheme.Codecs, "/api").WebService())
 	container.Add(rootAPIs.WebService())
-	return nil
-}
-
-func webServiceFor(container *restful.Container, root string) *restful.WebService {
-	for _, ws := range container.RegisteredWebServices() {
-		if ws.RootPath() == root {
-			return ws
-		}
-	}
-	panic("no web service installed at " + root)
+	return stores, nil
 }
 
 func servedVersions(gv schema.GroupVersion, storage map[string]rest.Storage) map[string][]string {

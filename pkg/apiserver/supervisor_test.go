@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -126,7 +127,7 @@ func TestSupervisorJoin(t *testing.T) {
 		t.Fatalf("serving-kubelet.crt: %d %s", resp.StatusCode, data)
 	}
 	serving := firstCert(t, data)
-	if serving.Subject.CommonName != "n1" || len(serving.IPAddresses) != 3 || !serving.IPAddresses[2].Equal(mustIP("192.168.1.10")) {
+	if serving.Subject.CommonName != "n1" || len(serving.IPAddresses) != 3 || !serving.IPAddresses[2].Equal(net.ParseIP("192.168.1.10")) {
 		t.Fatalf("serving cert: CN=%s IPs=%v DNS=%v", serving.Subject.CommonName, serving.IPAddresses, serving.DNSNames)
 	}
 	if err := serving.CheckSignatureFrom(firstCert(t, caPEM)); err != nil {

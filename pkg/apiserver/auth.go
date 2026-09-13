@@ -3,62 +3,69 @@ package apiserver
 import (
 	"context"
 	"crypto/subtle"
-	"encoding/json"
 	"net/http"
 	"strings"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apiserver/pkg/audit"
+	"k8s.io/apiserver/pkg/authentication/authenticator"
+	"k8s.io/apiserver/pkg/authentication/request/bearertoken"
 	"k8s.io/apiserver/pkg/authentication/user"
+	"k8s.io/apiserver/pkg/endpoints/handlers/responsewriters"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
+	"k8s.io/client-go/kubernetes/scheme"
 )
 
-// Authenticator resolves a bearer token to a user, or nil when unknown.
-type Authenticator func(ctx context.Context, token string) *user.DefaultInfo
+// adminToken authenticates kubectl.
+type adminToken string
 
-func adminAuthenticator(adminToken string) Authenticator {
-	return func(_ context.Context, token string) *user.DefaultInfo {
-		if adminToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(adminToken)) == 1 {
-			return &user.DefaultInfo{Name: "admin", Groups: []string{user.SystemPrivilegedGroup, user.AllAuthenticated}}
-		}
-		return nil
+func (t adminToken) AuthenticateToken(_ context.Context, token string) (*authenticator.Response, bool, error) {
+	if t == "" || subtle.ConstantTimeCompare([]byte(token), []byte(t)) != 1 {
+		return nil, false, nil
 	}
+	return &authenticator.Response{User: &user.DefaultInfo{Name: "admin", Groups: []string{user.SystemPrivilegedGroup, user.AllAuthenticated}}}, true, nil
 }
 
-func writeStatus(w http.ResponseWriter, code int, reason, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"kind": "Status", "apiVersion": "v1", "metadata": map[string]any{}, "status": "Failure",
-		"message": message, "reason": reason, "code": code,
-	})
+// nodeToken accepts the token cmd/agent writes into the kubelet's
+// kubeconfig, "node:<name>:<node password>": the same secret the supervisor
+// verified when it signed the node's certificates. It never registers a
+// node; only the supervisor does.
+type nodeToken struct{ vault *vault }
+
+func (n nodeToken) AuthenticateToken(ctx context.Context, token string) (*authenticator.Response, bool, error) {
+	rest, ok := strings.CutPrefix(token, "node:")
+	if !ok {
+		return nil, false, nil
+	}
+	name, password, ok := strings.Cut(rest, ":")
+	if !ok || name == "" || password == "" {
+		return nil, false, nil
+	}
+	if err := n.vault.checkNodePassword(ctx, name, password); err != nil {
+		return nil, false, nil
+	}
+	return &authenticator.Response{User: &user.DefaultInfo{Name: "system:node:" + name, Groups: []string{user.NodesGroup, user.AllAuthenticated}}}, true, nil
 }
 
-// withAuth requires a bearer token every authenticator knows. Every
+// withAuth requires a bearer token one of the authenticators knows. Every
 // authenticated user is authorized for everything; RBAC comes later.
-func withAuth(next http.Handler, authenticators ...Authenticator) http.Handler {
+func withAuth(next http.Handler, tokens authenticator.Token) http.Handler {
+	requests := bearertoken.New(tokens)
 	resolver := &genericapirequest.RequestInfoFactory{APIPrefixes: sets.NewString("api", "apis"), GrouplessAPIPrefixes: sets.NewString("api")}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !ok || token == "" {
-			writeStatus(w, http.StatusUnauthorized, "Unauthorized", "Unauthorized")
+		resp, ok, err := requests.AuthenticateRequest(r)
+		if err != nil || !ok {
+			responsewriters.ErrorNegotiated(apierrors.NewUnauthorized("Unauthorized"), scheme.Codecs, schema.GroupVersion{}, w, r)
 			return
 		}
-		for _, a := range authenticators {
-			u := a(r.Context(), token)
-			if u == nil {
-				continue
-			}
-			info, err := resolver.NewRequestInfo(r)
-			if err != nil {
-				writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
-				return
-			}
-			ctx := genericapirequest.WithRequestInfo(genericapirequest.WithUser(r.Context(), u), info)
-			ctx = audit.WithAuditContext(ctx)
-			next.ServeHTTP(w, r.WithContext(ctx))
+		info, err := resolver.NewRequestInfo(r)
+		if err != nil {
+			responsewriters.ErrorNegotiated(apierrors.NewBadRequest(err.Error()), scheme.Codecs, schema.GroupVersion{}, w, r)
 			return
 		}
-		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "Unauthorized")
+		ctx := genericapirequest.WithRequestInfo(genericapirequest.WithUser(r.Context(), resp.User), info)
+		next.ServeHTTP(w, r.WithContext(audit.WithAuditContext(ctx)))
 	})
 }

@@ -37,9 +37,10 @@ its log, and removing it again.
 
 ## Current-state anchors
 
-- `pkg/apiserver/registry.go` `Kinds`: the served surface. 13 kinds, external
-  types, generic strategy; pods get upstream's graceful-delete rule, nodes a
-  static PodCIDR in `BeginCreate`.
+- `pkg/apiserver/zz_generated_resources.go` (from `hack/genresources`): the
+  served surface, filtered from upstream's discovery documents.
+  `registry.go` builds a generic store for each; pods get upstream's
+  graceful-delete rule, nodes a static PodCIDR in `BeginCreate`.
 - `pkg/apiserver/kine.go`: `storage.Interface` over the Cluster DO's
   revisioned key-value log; `Watch` dials the DO over a WebSocket and emits
   the WatchList bookmark at the end of the snapshot.
@@ -81,16 +82,24 @@ Done, on `feat/minimal-rewrite`:
 
 Next:
 
-7. Apply the `/simplify` review (see plans/repository-layout.md for the move
-   that follows it).
-8. Repository layout: root `wrangler.jsonc`, `packages/{component}-{part}`.
+7. The `/simplify` review: upstream registrations instead of hand-written
+   conversions, generated resource table, shared JS callbacks, the DO's
+   single-insert write path.
+
+Next:
+
+8. Repository layout: root `wrangler.jsonc`, `packages/{component}-{part}`
+   (plans/repository-layout.md).
 
 ## Known limitations
 
-- **Per-kind code that contradicts the glue principle**: the `Kinds` table
-  is typed by hand; `fieldlabels.go` and `logoptions.go` hand-mirror upstream
-  conversions; `podStrategy` and `assignPodCIDR` are `if resource == ...`
-  branches. Candidates for a small generator or for upstream data.
+- **Per-kind code that remains**: `podStrategy` (upstream's graceful-delete
+  rule, which upstream keeps on the internal Pod type) and `assignPodCIDR`
+  (the nodeipam controller's job until controllers run) are the two
+  `if resource == ...` branches left. The served resources themselves are
+  generated from upstream's discovery documents (`hack/genresources`), and
+  field labels, defaults and PodLogOptions come from upstream's
+  `AddToScheme`.
 - **No scheduler, controllers, Services, kube-proxy, or cluster DNS.** Pods
   need `spec.nodeName` and `dnsPolicy: Default`.
 - **`pods/log` reaches the kubelet on its InternalIP over plain HTTP**
