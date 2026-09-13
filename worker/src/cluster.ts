@@ -35,6 +35,9 @@ export class Cluster extends DurableObject<Env> {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname === "/watch" && request.headers.get("Upgrade") === "websocket") {
+      return this.watch(url);
+    }
     switch (`${request.method} ${url.pathname}`) {
       case "GET /revision":
         return Response.json({ revision: this.revision() });
@@ -64,7 +67,7 @@ export class Cluster extends DurableObject<Env> {
         const prefix = url.searchParams.get("prefix") ?? "";
         const from = url.searchParams.get("from") ?? prefix;
         const limit = Number(url.searchParams.get("limit") ?? "0");
-        const end = prefix.slice(0, -1) + String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1);
+        const end = prefixEnd(prefix);
         const rows = this.ctx.storage.sql
           .exec(
             `SELECT kv.id, kv.name, kv.deleted, kv.create_revision, kv.value FROM kine AS kv
@@ -83,6 +86,7 @@ export class Cluster extends DurableObject<Env> {
 
   private insert(name: string, deleted: number, createRevision: number, value: Uint8Array): number {
     const sql = this.ctx.storage.sql;
+    const prev = this.current(name);
     sql.exec(
       "INSERT INTO kine (name, deleted, create_revision, value) VALUES (?, ?, ?, ?)",
       name,
@@ -94,8 +98,98 @@ export class Cluster extends DurableObject<Env> {
     if (createRevision === 0) {
       sql.exec("UPDATE kine SET create_revision = ? WHERE id = ?", rev, rev);
     }
+    const type = deleted ? "deleted" : createRevision === 0 ? "created" : "modified";
+    this.broadcast({ rev, type, key: name, value: b64(value), prev: prev && type === "modified" ? b64(prev.value) : "" });
     return rev;
   }
+
+  // Watchers are hibernatable WebSockets tagged with the key prefix they
+  // asked for. Each is first caught up from `since` (or given the current
+  // state when `initial` is set), then receives every later write.
+  private watch(url: URL): Response {
+    const prefix = url.searchParams.get("prefix") ?? "/";
+    const exact = url.searchParams.get("exact") === "1";
+    const since = Number(url.searchParams.get("since") ?? "0");
+    const initial = url.searchParams.get("initial") === "1";
+    const pair = new WebSocketPair();
+    const [client, server] = [pair[0], pair[1]];
+    this.ctx.acceptWebSocket(server);
+    server.serializeAttachment({ prefix, exact });
+    const sql = this.ctx.storage.sql;
+    const end = prefixEnd(prefix);
+    if (initial) {
+      const rows = sql
+        .exec(
+          `SELECT kv.id, kv.name, kv.deleted, kv.create_revision, kv.value FROM kine AS kv
+           JOIN (SELECT MAX(id) AS id FROM kine WHERE name >= ? AND name < ? GROUP BY name) AS latest ON latest.id = kv.id
+           WHERE kv.deleted = 0 ORDER BY kv.id ASC`,
+          exact ? prefix : prefix,
+          exact ? prefix + "\u0000" : end,
+        )
+        .toArray();
+      for (const r of rows) {
+        const kv = rowToKV(r);
+        server.send(JSON.stringify({ rev: kv.modRevision, type: "created", key: kv.key, value: b64(kv.value), prev: "" }));
+      }
+    } else {
+      const rows = sql
+        .exec(
+          "SELECT id, name, deleted, create_revision, value FROM kine WHERE id > ? AND name >= ? AND name < ? ORDER BY id ASC",
+          since,
+          prefix,
+          exact ? prefix + "\u0000" : end,
+        )
+        .toArray();
+      for (const r of rows) {
+        const kv = rowToKV(r);
+        const type = r.deleted ? "deleted" : kv.createRevision === kv.modRevision ? "created" : "modified";
+        let prev = "";
+        if (type === "modified") {
+          const p = sql
+            .exec("SELECT value FROM kine WHERE name = ? AND id < ? ORDER BY id DESC LIMIT 1", kv.key, kv.modRevision)
+            .toArray();
+          if (p.length) prev = b64(new Uint8Array(p[0].value as ArrayBuffer));
+        }
+        server.send(JSON.stringify({ rev: kv.modRevision, type, key: kv.key, value: b64(kv.value), prev }));
+      }
+    }
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  private broadcast(ev: { rev: number; type: string; key: string; value: string; prev: string }) {
+    const msg = JSON.stringify(ev);
+    for (const ws of this.ctx.getWebSockets()) {
+      const att = ws.deserializeAttachment() as { prefix: string; exact: boolean } | null;
+      if (!att) continue;
+      if (att.exact ? ev.key === att.prefix : ev.key.startsWith(att.prefix)) {
+        try {
+          ws.send(msg);
+        } catch {
+          ws.close(1011, "send failed");
+        }
+      }
+    }
+  }
+
+  async webSocketMessage(): Promise<void> {}
+
+  async webSocketClose(ws: WebSocket): Promise<void> {
+    ws.close();
+  }
+
+  async webSocketError(ws: WebSocket): Promise<void> {
+    ws.close();
+  }
+}
+
+function prefixEnd(prefix: string): string {
+  return prefix.slice(0, -1) + String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1);
+}
+
+function b64(bytes: Uint8Array): string {
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
 }
 
 interface KV {
@@ -115,9 +209,7 @@ function rowToKV(row: Record<string, SqlStorageValue>): KV {
 }
 
 function encodeKV(kv: KV) {
-  let bin = "";
-  for (const b of kv.value) bin += String.fromCharCode(b);
-  return { key: kv.key, value: btoa(bin), createRevision: kv.createRevision, modRevision: kv.modRevision };
+  return { key: kv.key, value: b64(kv.value), createRevision: kv.createRevision, modRevision: kv.modRevision };
 }
 
 function conflict(revision: number, error: string): Response {

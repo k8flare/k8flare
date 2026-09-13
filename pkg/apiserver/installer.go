@@ -3,6 +3,7 @@ package apiserver
 import (
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/emicklei/go-restful/v3"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -73,6 +74,7 @@ func installAPI(mux *http.ServeMux, kine *KineClient) error {
 			EquivalentResourceRegistry:  runtime.NewEquivalentResourceRegistry(),
 			TypeConverter:               managedfields.NewDeducedTypeConverter(),
 			Admit:                       admission.NewChainHandler(),
+			MinRequestTimeout:           30 * time.Minute,
 		}
 		if _, _, err := group.InstallREST(container); err != nil {
 			return fmt.Errorf("install %s: %w", gv, err)

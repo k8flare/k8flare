@@ -54,11 +54,8 @@ func Serve(handler http.Handler) {
 			defer executor.Release()
 			resolve, reject := p[0], p[1]
 			go func() {
-				resp, err := dispatch(handler, reqObj, env)
-				if err != nil {
+				if err := dispatch(handler, reqObj, env, func(v js.Value) { resolve.Invoke(v) }); err != nil {
 					reject.Invoke(js.Global().Get("Error").New(err.Error()))
-				} else {
-					resolve.Invoke(resp)
 				}
 				yieldToEventLoop()
 			}()
@@ -82,21 +79,104 @@ func yieldToEventLoop() {
 	<-done
 }
 
-type recorder struct {
-	header http.Header
-	status int
-	body   bytes.Buffer
+// responseWriter buffers until the handler flushes; from the first Flush
+// on, the response is delivered early with a ReadableStream body that the
+// rest of the handler's writes are enqueued into. That is what lets an
+// upstream watch handler stream from a resident instance.
+type responseWriter struct {
+	header     http.Header
+	status     int
+	buf        bytes.Buffer
+	streaming  bool
+	controller js.Value
+	started    func(js.Value)
+	cancel     context.CancelFunc
+	closed     chan bool
 }
 
-func (r *recorder) Header() http.Header         { return r.header }
-func (r *recorder) Write(b []byte) (int, error) { return r.body.Write(b) }
-func (r *recorder) WriteHeader(code int)        { r.status = code }
-func (r *recorder) Flush()                      {}
+func (r *responseWriter) Header() http.Header { return r.header }
 
-func dispatch(handler http.Handler, reqObj, env js.Value) (js.Value, error) {
+// CloseNotify marks this writer as HTTP/1 for k8s.io/apiserver's
+// ResponseWriterDelegator, which otherwise hides Flush from the watch
+// handler. The channel fires when the client cancels the stream.
+func (r *responseWriter) CloseNotify() <-chan bool { return r.closed }
+func (r *responseWriter) WriteHeader(code int) {
+	if r.status == 0 {
+		r.status = code
+	}
+}
+
+func (r *responseWriter) Write(b []byte) (int, error) {
+	r.WriteHeader(http.StatusOK)
+	if !r.streaming {
+		return r.buf.Write(b)
+	}
+	r.controller.Call("enqueue", toUint8Array(b))
+	return len(b), nil
+}
+
+func (r *responseWriter) Flush() {
+	r.WriteHeader(http.StatusOK)
+	if r.streaming {
+		return
+	}
+	src := js.Global().Get("Object").New()
+	start := js.FuncOf(func(_ js.Value, args []js.Value) any {
+		r.controller = args[0]
+		return nil
+	})
+	defer start.Release()
+	src.Set("start", start)
+	var cancelFn js.Func
+	cancelFn = js.FuncOf(func(js.Value, []js.Value) any {
+		defer cancelFn.Release()
+		select {
+		case r.closed <- true:
+		default:
+		}
+		r.cancel()
+		return nil
+	})
+	src.Set("cancel", cancelFn)
+	stream := js.Global().Get("ReadableStream").New(src)
+	r.streaming = true
+	if r.buf.Len() > 0 {
+		r.controller.Call("enqueue", toUint8Array(r.buf.Bytes()))
+		r.buf.Reset()
+	}
+	r.started(r.response(stream))
+}
+
+func (r *responseWriter) finish() {
+	if r.streaming {
+		func() {
+			defer func() { recover() }()
+			r.controller.Call("close")
+		}()
+		return
+	}
+	r.WriteHeader(http.StatusOK)
+	r.started(r.response(toUint8Array(r.buf.Bytes())))
+}
+
+func (r *responseWriter) response(body js.Value) js.Value {
+	out := js.Global().Get("Object").New()
+	out.Set("status", r.status)
+	out.Set("headers", headerToPairs(r.header))
+	out.Set("body", body)
+	return out
+}
+
+func toUint8Array(b []byte) js.Value {
+	arr := js.Global().Get("Uint8Array").New(len(b))
+	js.CopyBytesToJS(arr, b)
+	return arr
+}
+
+func dispatch(handler http.Handler, reqObj, env js.Value, started func(js.Value)) (err error) {
 	u, err := url.Parse(reqObj.Get("url").String())
 	if err != nil {
-		return js.Value{}, err
+		return err
 	}
 	var body []byte
 	if raw := reqObj.Get("body"); !raw.IsNull() && !raw.IsUndefined() {
@@ -115,16 +195,20 @@ func dispatch(handler http.Handler, reqObj, env js.Value) (js.Value, error) {
 		Host:          u.Host,
 		RequestURI:    u.RequestURI(),
 	}
-	req = req.WithContext(context.WithValue(context.Background(), envKey{}, env))
-	rec := &recorder{header: http.Header{}, status: http.StatusOK}
-	handler.ServeHTTP(rec, req)
-	out := js.Global().Get("Object").New()
-	out.Set("status", rec.status)
-	out.Set("headers", headerToPairs(rec.header))
-	jsBody := js.Global().Get("Uint8Array").New(rec.body.Len())
-	js.CopyBytesToJS(jsBody, rec.body.Bytes())
-	out.Set("body", jsBody)
-	return out, nil
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), envKey{}, env))
+	defer cancel()
+	req = req.WithContext(ctx)
+	rw := &responseWriter{header: http.Header{}, cancel: cancel, closed: make(chan bool, 1)}
+	once := false
+	rw.started = func(v js.Value) {
+		if !once {
+			once = true
+			started(v)
+		}
+	}
+	handler.ServeHTTP(rw, req)
+	rw.finish()
+	return nil
 }
 
 func headerFromPairs(pairs js.Value) http.Header {
@@ -236,4 +320,73 @@ func await(promise js.Value) (js.Value, error) {
 	promise.Call("then", onOK, onErr)
 	<-done
 	return result, err
+}
+
+// WebSocket is a client connection opened through a binding's fetch with
+// an Upgrade header, the only way a Worker dials a WebSocket.
+type WebSocket struct {
+	ws       js.Value
+	Messages <-chan []byte
+	closed   chan struct{}
+}
+
+func DialWebSocket(ctx context.Context, bindingName, rawURL string) (*WebSocket, error) {
+	binding := Binding(ctx, bindingName)
+	opts := js.Global().Get("Object").New()
+	headers := js.Global().Get("Object").New()
+	headers.Set("Upgrade", "websocket")
+	opts.Set("headers", headers)
+	resp, err := await(binding.Call("fetch", js.Global().Get("Request").New(rawURL, opts)))
+	if err != nil {
+		return nil, fmt.Errorf("wasmhttp: websocket %s: %w", rawURL, err)
+	}
+	ws := resp.Get("webSocket")
+	if ws.IsNull() || ws.IsUndefined() {
+		return nil, fmt.Errorf("wasmhttp: websocket %s: status %d", rawURL, resp.Get("status").Int())
+	}
+	msgs := make(chan []byte, 256)
+	c := &WebSocket{ws: ws, Messages: msgs, closed: make(chan struct{})}
+	var closeOnce func()
+	closeOnce = func() {
+		select {
+		case <-c.closed:
+		default:
+			close(c.closed)
+			close(msgs)
+		}
+	}
+	ws.Call("addEventListener", "message", js.FuncOf(func(_ js.Value, args []js.Value) any {
+		data := args[0].Get("data")
+		var b []byte
+		if data.Type() == js.TypeString {
+			b = []byte(data.String())
+		} else {
+			u8 := js.Global().Get("Uint8Array").New(data)
+			b = make([]byte, u8.Get("byteLength").Int())
+			js.CopyBytesToGo(b, u8)
+		}
+		select {
+		case msgs <- b:
+		case <-c.closed:
+		}
+		return nil
+	}))
+	ws.Call("addEventListener", "close", js.FuncOf(func(js.Value, []js.Value) any { closeOnce(); return nil }))
+	ws.Call("addEventListener", "error", js.FuncOf(func(js.Value, []js.Value) any { closeOnce(); return nil }))
+	ws.Call("accept")
+	go func() {
+		select {
+		case <-ctx.Done():
+			c.Close()
+		case <-c.closed:
+		}
+	}()
+	return c, nil
+}
+
+func (c *WebSocket) Close() {
+	func() {
+		defer func() { recover() }()
+		c.ws.Call("close", 1000, "done")
+	}()
 }

@@ -377,8 +377,128 @@ func (s *KineStorage) Delete(ctx context.Context, key string, out runtime.Object
 	}
 }
 
-func (s *KineStorage) Watch(context.Context, string, storage.ListOptions) (watch.Interface, error) {
-	return nil, fmt.Errorf("watch is not served by this storage")
+// WatchDialer opens the Cluster DO's event stream. It is set by the wasm
+// entrypoint; host builds have none.
+var WatchDialer func(ctx context.Context, rawURL string) (<-chan []byte, func(), error)
+
+type kineEvent struct {
+	Rev   int64  `json:"rev"`
+	Type  string `json:"type"`
+	Key   string `json:"key"`
+	Value string `json:"value"`
+	Prev  string `json:"prev"`
+}
+
+func (s *KineStorage) Watch(ctx context.Context, key string, opts storage.ListOptions) (watch.Interface, error) {
+	if WatchDialer == nil {
+		return nil, fmt.Errorf("watch is not available in this build")
+	}
+	prefix := registryPrefix + key
+	q := url.Values{}
+	if opts.Recursive {
+		if !strings.HasSuffix(prefix, "/") {
+			prefix += "/"
+		}
+	} else {
+		q.Set("exact", "1")
+	}
+	q.Set("prefix", prefix)
+	rv, err := s.versioner.ParseResourceVersion(opts.ResourceVersion)
+	if err != nil {
+		return nil, err
+	}
+	q.Set("since", strconv.FormatUint(rv, 10))
+	if rv == 0 {
+		q.Set("initial", "1")
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	msgs, closeFn, err := WatchDialer(ctx, kineBase+"/watch?"+q.Encode())
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	events := make(chan watch.Event, 64)
+	w := watch.NewProxyWatcher(events)
+	go func() {
+		defer cancel()
+		defer closeFn()
+		defer close(events)
+		for {
+			select {
+			case <-w.StopChan():
+				return
+			case msg, ok := <-msgs:
+				if !ok {
+					return
+				}
+				var ev kineEvent
+				if err := json.Unmarshal(msg, &ev); err != nil {
+					continue
+				}
+				out, ok := s.watchEvent(ev, opts.Predicate)
+				if !ok {
+					continue
+				}
+				select {
+				case events <- out:
+				case <-w.StopChan():
+					return
+				}
+			}
+		}
+	}()
+	return w, nil
+}
+
+func (s *KineStorage) decodeValue(b64 string, rev int64) (runtime.Object, bool) {
+	if b64 == "" {
+		return nil, false
+	}
+	data, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return nil, false
+	}
+	obj := s.newFunc()
+	if err := s.decodeInto(data, rev, obj); err != nil {
+		return nil, false
+	}
+	return obj, true
+}
+
+// watchEvent applies upstream's filtering rule: an object that stops
+// matching the predicate is reported as deleted, one that starts matching
+// as added.
+func (s *KineStorage) watchEvent(ev kineEvent, pred storage.SelectionPredicate) (watch.Event, bool) {
+	cur, hasCur := s.decodeValue(ev.Value, ev.Rev)
+	prev, hasPrev := s.decodeValue(ev.Prev, ev.Rev)
+	matches := func(obj runtime.Object, ok bool) bool {
+		if !ok {
+			return false
+		}
+		m, err := pred.Matches(obj)
+		return err == nil && m
+	}
+	curMatch, prevMatch := matches(cur, hasCur), matches(prev, hasPrev)
+	switch ev.Type {
+	case "deleted":
+		if curMatch {
+			return watch.Event{Type: watch.Deleted, Object: cur}, true
+		}
+	case "created":
+		if curMatch {
+			return watch.Event{Type: watch.Added, Object: cur}, true
+		}
+	case "modified":
+		switch {
+		case curMatch && prevMatch:
+			return watch.Event{Type: watch.Modified, Object: cur}, true
+		case curMatch:
+			return watch.Event{Type: watch.Added, Object: cur}, true
+		case prevMatch:
+			return watch.Event{Type: watch.Deleted, Object: cur}, true
+		}
+	}
+	return watch.Event{}, false
 }
 
 func (s *KineStorage) GetCurrentResourceVersion(ctx context.Context) (uint64, error) {

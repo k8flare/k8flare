@@ -1,3 +1,5 @@
+//go:build !js
+
 package apiserver_test
 
 import (
