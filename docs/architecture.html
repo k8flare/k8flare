@@ -1,0 +1,166 @@
+<title>k8flare Architecture</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+JP:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --bg: #f3f5f7;
+    --surface: #ffffff;
+    --ink: #1b2430;
+    --ink-2: #4a5967;
+    --ink-3: #7d8a96;
+    --line: #d5dbe1;
+    --go: #1f7a8c;
+    --ts: #6b5ca5;
+    --do: #b8641b;
+    --cut: #c9472b;
+    --cut-bg: #fbe9e4;
+    --ok-bg: #e4f2ee;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: "IBM Plex Sans JP", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #151a20; --surface: #1d242c; --ink: #e6ebf0; --ink-2: #b3bec9; --ink-3: #7f8b97; --line: #313b46;
+      --go: #5fb8c9; --ts: #a99ad9; --do: #e0954a; --cut: #ee7c62; --cut-bg: #3a231e; --ok-bg: #1e3630;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #151a20; --surface: #1d242c; --ink: #e6ebf0; --ink-2: #b3bec9; --ink-3: #7f8b97; --line: #313b46;
+    --go: #5fb8c9; --ts: #a99ad9; --do: #e0954a; --cut: #ee7c62; --cut-bg: #3a231e; --ok-bg: #1e3630;
+  }
+  body { background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 15px; line-height: 1.7; margin: 0; }
+  main { max-width: 1040px; margin: 0 auto; padding: 40px 24px 80px; }
+  h1 { font-size: 28px; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 6px; text-wrap: balance; }
+  h2 { font-size: 19px; font-weight: 600; margin: 48px 0 12px; padding-top: 16px; border-top: 1px solid var(--line); text-wrap: balance; }
+  h3 { font-size: 15px; font-weight: 600; margin: 20px 0 6px; }
+  p, li { max-width: 68ch; }
+  .lede { color: var(--ink-2); margin: 0 0 8px; }
+  .meta { font-family: var(--mono); font-size: 12px; color: var(--ink-3); letter-spacing: 0.02em; }
+  code { font-family: var(--mono); font-size: 0.92em; background: var(--surface); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; color: var(--ink-2); margin: 8px 0 14px; }
+  .legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+  .legend .go::before { background: var(--go); } .legend .ts::before { background: var(--ts); } .legend .do::before { background: var(--do); } .legend .cut::before { background: var(--cut); }
+  .diagram { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px; }
+  svg { display: block; font-family: var(--sans); }
+  svg .box { fill: var(--surface); stroke: var(--line); stroke-width: 1.2; }
+  svg .go { stroke: var(--go); } svg .ts { stroke: var(--ts); } svg .do { stroke: var(--do); }
+  svg .cut { stroke: var(--cut); stroke-dasharray: 5 4; fill: var(--cut-bg); }
+  svg .lbl { fill: var(--ink); font-size: 13px; font-weight: 600; }
+  svg .sub { fill: var(--ink-2); font-size: 11.5px; }
+  svg .mono { font-family: var(--mono); font-size: 11px; fill: var(--ink-2); }
+  svg .arrow { stroke: var(--ink-2); stroke-width: 1.4; fill: none; marker-end: url(#a); }
+  svg .arrow.cut { stroke: var(--cut); fill: none; }
+  svg .arrow.alt { stroke: var(--go); stroke-dasharray: 3 3; fill: none; }
+  svg .note { fill: var(--cut); font-size: 11.5px; font-weight: 600; }
+  svg .lane { fill: var(--ink-3); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+  svg .lanebg { fill: var(--bg); }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 11.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; background: var(--bg); }
+  tr:last-child td { border-bottom: 0; }
+  td.num, th.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.pkg { font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
+  .tag { display: inline-block; font-size: 10.5px; font-weight: 600; letter-spacing: 0.05em; padding: 1px 6px; border-radius: 3px; color: var(--surface); margin-right: 6px; vertical-align: 1px; }
+  .tag.go { background: var(--go); } .tag.ts { background: var(--ts); } .tag.do { background: var(--do); }
+  .tablewrap { overflow-x: auto; }
+  .bars { display: grid; gap: 10px; margin: 12px 0; }
+  .bar { display: grid; grid-template-columns: 220px 1fr 130px; gap: 12px; align-items: center; font-size: 13px; }
+  .bar .track { height: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 3px; position: relative; overflow: hidden; }
+  .bar .fill { position: absolute; inset: 0 auto 0 0; background: var(--go); }
+  .bar .fill.cap { background: transparent; border-right: 2px solid var(--cut); }
+  .bar .v { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; color: var(--ink-2); }
+  .bar .k { color: var(--ink-2); }
+  .cuts { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+  .cutcard { background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--cut); border-radius: 4px; padding: 12px 14px; font-size: 13.5px; }
+  .cutcard h3 { margin: 0 0 4px; }
+  .cutcard .sz { font-family: var(--mono); font-size: 12px; color: var(--ink-3); }
+  .cutcard p { margin: 4px 0; max-width: none; }
+  .verify { background: var(--ok-bg); border-radius: 4px; padding: 2px 6px; font-size: 12px; }
+  ol.path { padding-left: 1.2em; }
+  ol.path li { margin: 4px 0; }
+</style>
+<main>
+  <p class="meta">feat/minimal-rewrite · 2026-09-13 · k3s-io/kubernetes v1.36.4-k3s1 · Go 1.26.7</p>
+  <h1>k8flare Architecture</h1>
+  <p class="lede">kubectl と k3s agent からの経路、各パッケージの役割、ビルド後のサイズ。削れる箇所は赤の破線で示す。</p>
+  <div class="legend"><span class="go">Go(WASM / linux)</span><span class="ts">TypeScript(Worker)</span><span class="do">Durable Object</span><span class="cut">削除候補</span></div>
+
+  <h2>1. kubectl / kubelet からリクエストが辿る経路</h2>
+  <div class="diagram">
+  <svg viewBox="0 0 980 470" width="980" height="470" role="img" aria-label="Request path from kubectl to the Cluster Durable Object">
+    <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="context-stroke"/></marker></defs>
+    <!-- lanes -->
+    <rect class="lanebg" x="0" y="40" width="980" height="90" rx="4"/><text class="lane" x="10" y="58">Client</text>
+    <rect class="lanebg" x="0" y="150" width="980" height="120" rx="4"/><text class="lane" x="10" y="168">Worker (control-plane-worker)</text>
+    <rect class="lanebg" x="0" y="290" width="980" height="90" rx="4"/><text class="lane" x="10" y="308">Loader dynamic worker (apiserver, resident Go)</text>
+    <rect class="lanebg" x="0" y="400" width="980" height="60" rx="4"/><text class="lane" x="10" y="418">Durable Object</text>
+    <!-- client boxes -->
+    <rect class="box" x="30" y="70" width="150" height="46" rx="4"/><text class="lbl" x="44" y="90">kubectl</text><text class="sub" x="44" y="106">Bearer admin token</text>
+    <rect class="box" x="210" y="70" width="170" height="46" rx="4"/><text class="lbl" x="224" y="90">k3s agent / kubelet</text><text class="sub" x="224" y="106">node:&lt;name&gt;:&lt;password&gt;</text>
+    <rect class="box" x="420" y="70" width="190" height="46" rx="4"/><text class="lbl" x="434" y="90">TLS 終端</text><text class="sub" x="434" y="106">dev: scripts/devtls · prod: edge</text>
+    <path class="arrow" d="M180 93 H210"/><path class="arrow" d="M380 93 H420"/>
+    <!-- worker boxes -->
+    <rect class="box ts" x="420" y="180" width="190" height="70" rx="4"/><text class="lbl" x="434" y="200">index.ts</text><text class="sub" x="434" y="216">/v1-k3s/connect → accept &amp; park</text><text class="sub" x="434" y="232">それ以外 → apiserverFetch()</text>
+    <path class="arrow" d="M515 116 V180"/>
+    <rect class="box ts" x="650" y="180" width="200" height="70" rx="4"/><text class="lbl" x="664" y="200">loader.ts</text><text class="sub" x="664" y="216">ASSETS の 3 チャンクを結合</text><text class="sub" x="664" y="232">LOADER.get(apiserver@sha256)</text>
+    <path class="arrow" d="M610 215 H650"/>
+    <rect class="box cut" x="30" y="180" width="200" height="70" rx="4"/><text class="lbl" x="44" y="200">ClusterLoopback</text><text class="sub" x="44" y="216">WorkerEntrypoint(自己 service binding)</text><text class="sub" x="44" y="232">STORAGE → CLUSTER.get("default")</text>
+    <!-- DW boxes -->
+    <rect class="box go" x="420" y="320" width="430" height="48" rx="4"/><text class="lbl" x="434" y="340">bridge.Serve → apiserver.NewHandler</text><text class="sub" x="434" y="356">installer(k8s.io/apiserver)→ genericregistry.Store → kine.Storage · supervisor · auth</text>
+    <path class="arrow" d="M750 250 V320"/><text class="mono" x="758" y="290">handleRequest(req, env)</text>
+    <!-- DO -->
+    <rect class="box do" x="420" y="425" width="430" height="30" rx="4"/><text class="lbl" x="434" y="445">Cluster DO(cluster-store)</text><text class="mono" x="640" y="445">/kv · /list · /revision · /watch(WebSocket)</text>
+    <!-- storage path via loopback -->
+    <path class="arrow cut" d="M430 344 H130 V250"/><text class="note" x="140" y="300">env.STORAGE.fetch()</text><text class="sub" x="140" y="316">DW には DO namespace を渡せない(S2)</text>
+    <path class="arrow cut" d="M130 250 V440 H420"/>
+    <!-- alternative -->
+    <path class="arrow alt" d="M860 344 Q930 344 930 440 Q930 456 900 456 L850 456"/><text class="mono" x="870" y="395">案: env に DO stub を</text><text class="mono" x="870" y="409">直接渡す(要検証)</text>
+  </svg>
+  </div>
+  <ol class="path">
+    <li><strong>認証と TLS。</strong>kubectl も kubelet も Bearer トークン。TLS はエッジ(dev では devtls)で終端するので、クライアント証明書は届かない。kubelet の kubeconfig は agent が <code>node:&lt;name&gt;:&lt;password&gt;</code> のトークンで書く。</li>
+    <li><strong>シェル Worker</strong> は 2 分岐のみ。k3s の remotedialer 用 <code>/v1-k3s/connect</code> は WebSocket を受けて放置、残りは全て Loader の apiserver へ。</li>
+    <li><strong>Loader</strong> は sha256 をキーに常駐 Go インスタンスを 1 つ持ち、ASSETS から 25 MiB × 3 のチャンクを結合して起動する。</li>
+    <li><strong>Go apiserver</strong> は upstream の API installer がルーティングし、<code>genericregistry.Store</code> が CRUD を、<code>kine.Storage</code> が DO への読み書きを担う。watch は DO への WebSocket をそのままストリーム応答にする。</li>
+    <li><strong>DO への経路</strong>が唯一の遠回り。dynamic worker の env には Fetcher しか渡せない(旧リポジトリ S2 で実測)ため、自分自身への service binding <code>STORAGE</code> の named entrypoint <code>ClusterLoopback</code> を経由して <code>CLUSTER.get("default")</code> に届く。</li>
+  </ol>
+
+  <h2>2. ClusterLoopback は外せるか</h2>
+  <p>外せる見込みはある。S2 で確認されたのは「DO <em>namespace</em> は Loader の env に渡せない」で、<em>stub</em>(<code>env.CLUSTER.get(id)</code> の戻り値)は試されていない。stub は <code>fetch()</code> を持つ Fetcher なので、loader.ts の factory で <code>STORAGE: env.CLUSTER.get(env.CLUSTER.idFromName("default"))</code> と渡せれば、Go 側の <code>bridge.BindingTransport{Name: "STORAGE"}</code> はそのまま使え、<code>services</code> binding・<code>ClusterLoopback</code> クラス・<code>WorkerEntrypoint</code> import が消える。</p>
+  <p><span class="verify">検証手順</span> loader.ts の env を stub に替えて <code>make test</code>。失敗するなら理由は Loader の env 検証(Fetcher 以外を拒否)か、DW isolate の寿命と stub の request-scoped I/O の不一致(旧 S24 の "Cannot perform I/O on behalf of a different request")のどちらか。後者なら factory 時に作った stub は最初のリクエストにしか使えず、案は成立しない。</p>
+
+  <h2>3. パッケージの役割</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>パッケージ</th><th>役割</th><th>依存先</th><th class="num">手書き行</th><th class="num">生成</th><th class="num">テスト</th></tr></thead>
+    <tbody>
+      <tr><td class="pkg"><span class="tag ts">TS</span>control-plane-worker</td><td>唯一の Worker。ルーティング、Loader bootstrap(JS 文字列)、チャンク結合、トンネルのスタブ、ClusterLoopback。</td><td>cluster-store, LOADER, ASSETS</td><td class="num">118</td><td class="num">–</td><td class="num">–</td></tr>
+      <tr><td class="pkg"><span class="tag do">DO</span>cluster-store</td><td>Cluster Durable Object。kine 風の revision 付き KV ログ(SQLite)と、hibernatable WebSocket への watch 配信。</td><td>–</td><td class="num">231</td><td class="num">–</td><td class="num">–</td></tr>
+      <tr><td class="pkg"><span class="tag go">Go</span>apiserver</td><td>エントリ。installer の配線、認証(bearertoken + union)、review 系リソース、既定 namespace、<code>cmd/apiserver-wasm</code>。</td><td>registry, kine, supervisor, worker-bridge</td><td class="num">419</td><td class="num">–</td><td class="num">644</td></tr>
+      <tr><td class="pkg"><span class="tag go">Go</span>apiserver-registry</td><td>提供リソースごとの <code>genericregistry.Store</code>。表は upstream の discovery 文書から生成。pods の graceful delete、nodes の PodCIDR、status、pods/log。</td><td>kine, k8s.io/apiserver, k8s.io/kubernetes/pkg/apis/*/v1</td><td class="num">465</td><td class="num">47</td><td class="num">–</td></tr>
+      <tr><td class="pkg"><span class="tag go">Go</span>apiserver-kine</td><td><code>storage.Interface</code> の実装。DO の HTTP/WebSocket プロトコルを話し、WatchList の bookmark を発行。</td><td>k8s.io/apiserver/pkg/storage</td><td class="num">526</td><td class="num">–</td><td class="num">–</td></tr>
+      <tr><td class="pkg"><span class="tag go">Go</span>apiserver-supervisor</td><td>k3s の join プロトコル(/cacerts, /v1-k3s/*)、CSR 署名、CA vault、ノードパスワード。</td><td>kine</td><td class="num">418</td><td class="num">–</td><td class="num">–</td></tr>
+      <tr><td class="pkg"><span class="tag go">Go</span>worker-bridge</td><td>Go <code>http.Handler</code> ↔ Loader bootstrap。ストリーム応答(ReadableStream)、binding 経由 fetch、WebSocket クライアント。</td><td>syscall/js</td><td class="num">460</td><td class="num">–</td><td class="num">–</td></tr>
+      <tr><td class="pkg"><span class="tag go">Go</span>agent</td><td>k3s agent の埋め込み。変更は <code>deps.KubeConfigOverride</code> フック 1 点(ミラーで注入)と kubelet plain-HTTP ポート。</td><td>k3s(mirror)</td><td class="num">127</td><td class="num">–</td><td class="num">–</td></tr>
+      <tr><td class="pkg">scripts/*</td><td>mirror(sha256 ピン付きオーバーレイ)、genresources、wasmpack(wasm_exec パッチ + チャンク化)、devtls。</td><td>依存なし</td><td class="num">830</td><td class="num">111 overlay</td><td class="num">–</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2>4. ビルド後のサイズ</h2>
+  <div class="bars">
+    <div class="bar"><span class="k">apiserver.wasm(raw)</span><div class="track"><div class="fill" style="width:100%"></div></div><span class="v">70,036,659 B</span></div>
+    <div class="bar"><span class="k">apiserver.opt.wasm(wasm-opt -Oz)</span><div class="track"><div class="fill" style="width:82%"></div><div class="fill cap" style="width:95.8%"></div></div><span class="v">57,474,909 B</span></div>
+    <div class="bar"><span class="k">Loader cap(赤線)</span><div class="track"><div class="fill cap" style="width:95.8%"></div></div><span class="v">67,108,864 B</span></div>
+    <div class="bar"><span class="k">チャンク(ASSETS, ≤ 25 MiB)</span><div class="track"><div class="fill" style="width:36%; background: var(--ts)"></div><div class="fill" style="left:36.5%; width:36%; background: var(--ts)"></div><div class="fill" style="left:73%; width:10%; background: var(--ts)"></div></div><span class="v">25,165,824 ×2 + 7,143,261</span></div>
+    <div class="bar"><span class="k">wasm_exec.js(パッチ済)</span><div class="track"><div class="fill" style="width:0.03%"></div></div><span class="v">17,347 B</span></div>
+    <div class="bar"><span class="k">k8flare-agent(linux/arm64)</span><div class="track"><div class="fill" style="width:100%; background: var(--ink-3)"></div></div><span class="v">244,499,662 B</span></div>
+  </div>
+  <p class="meta">apiserver は 867 パッケージをリンク。余裕 9,633,955 B。過去の実測: filters パッケージ +20 MB、実レジストリ(内部型)+35 MB、upstream AddToScheme +37 KB。</p>
+
+  <h2>5. どこを削れるか</h2>
+  <div class="cuts">
+    <div class="cutcard"><h3>ClusterLoopback(control-plane-worker)</h3><p class="sz">TS 12 行 + wrangler の services binding</p><p>DO stub を Loader env に直接渡せば不要。上記の検証で決まる。</p></div>
+    <div class="cutcard"><h3>wasm_exec.js のパッチ(scripts/wasmpack exec)</h3><p class="sz">Go 側 bridge の <code>context</code> 依存 + JS Proxy</p><p>常駐インスタンスは env を毎 dispatch で受け取るので、起動時の context は不要。bootstrap が <code>globalThis.k8flare = {binding, ready}</code> を置けば upstream の wasm_exec.js を無改変で使え、<code>wasmpack exec</code> と Proxy が消える。<span class="verify">実装 1 時間・低リスク</span></p></div>
+    <div class="cutcard"><h3>pods/log の plain-HTTP 経路(agent の --kubelet-plain-port)</h3><p class="sz">agent 15 行 + KUBELET_SCHEME/PORT</p><p>dev 専用の回り道。k3s トンネル(/v1-k3s/connect)のサーバー側を Go で持てば本来の経路になるが、remotedialer 実装が要る。今は削らず、経路を 1 本にする側で解消。</p></div>
+    <div class="cutcard"><h3>scripts/devtls</h3><p class="sz">Go 150 行、dev 専用</p><p><code>wrangler dev --local-protocol https</code> で置き換えられる可能性。CA を VM に配る手順は残る。未検証。</p></div>
+    <div class="cutcard"><h3>削れないもの</h3><p>チャンク化(ASSETS 25 MiB 上限)、mirror のオーバーレイ 5 件(etcd factory・OTLP exporter・CEL・installer の hub version・k3s の kubeconfig フック)、supervisor の 9 エンドポイント(k3s agent が要求)。</p></div>
+  </div>
+</main>
