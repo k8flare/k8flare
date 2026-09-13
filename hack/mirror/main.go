@@ -25,10 +25,10 @@ type op struct {
 	text    string
 }
 
-func del(path string) op                { return op{kind: "delete", path: path} }
-func replace(path, overlay string) op   { return op{kind: "replace", path: path, overlay: overlay} }
-func patch(path, from, to string) op    { return op{kind: "patch", path: path, from: from, to: to} }
-func appendText(path, text string) op   { return op{kind: "append", path: path, text: text} }
+func del(path string) op              { return op{kind: "delete", path: path} }
+func replace(path, overlay string) op { return op{kind: "replace", path: path, overlay: overlay} }
+func patch(path, from, to string) op  { return op{kind: "patch", path: path, from: from, to: to} }
+func appendText(path, text string) op { return op{kind: "append", path: path, text: text} }
 
 type mirror struct {
 	name    string
@@ -57,6 +57,7 @@ var mirrors = []mirror{
 			"pkg/storage/storagebackend/factory/factory.go",
 			"pkg/storage/feature/feature_support_checker.go",
 			"pkg/sharding/parser.go",
+			"pkg/endpoints/installer.go",
 		},
 		ops: []op{
 			del("pkg/storage/storagebackend/factory/etcd3.go"),
@@ -68,6 +69,22 @@ var mirrors = []mirror{
 			replace("pkg/storage/feature/feature_support_checker.go", "apiserver/feature_support_checker.go"),
 			del("pkg/sharding/parser_test.go"),
 			replace("pkg/sharding/parser.go", "apiserver/sharding_parser.go"),
+			patch("pkg/endpoints/installer.go",
+				"\t\tHubGroupVersion: schema.GroupVersion{Group: fqKindToRegister.Group, Version: runtime.APIVersionInternal},",
+				"\t\tHubGroupVersion: hubGroupVersionFor(a.group.Typer, a.group.GroupVersion, fqKindToRegister),"),
+			appendText("pkg/endpoints/installer.go", `
+// hubGroupVersionFor is the version a PATCH body is decoded to before the
+// merge is applied: the internal version when the scheme has one, the served
+// version otherwise. This apiserver registers external types only, and
+// upstream hardcodes the internal hub. Added by hack/mirror.
+func hubGroupVersionFor(typer runtime.ObjectTyper, served schema.GroupVersion, kind schema.GroupVersionKind) schema.GroupVersion {
+	internal := schema.GroupVersion{Group: kind.Group, Version: runtime.APIVersionInternal}
+	if typer != nil && typer.Recognizes(internal.WithKind(kind.Kind)) {
+		return internal
+	}
+	return served
+}
+`),
 			patch("pkg/storage/storagebackend/config.go", "\t\"k8s.io/apiserver/pkg/server/egressselector\"\n", ""),
 			patch("pkg/storage/storagebackend/config.go", "\t\"k8s.io/apiserver/pkg/storage/etcd3\"\n", ""),
 			patch("pkg/storage/storagebackend/config.go", "\tEgressLookup egressselector.Lookup\n", ""),
@@ -98,7 +115,7 @@ func main() {
 		src, err := moduleDir(m.module, m.version)
 		check(err)
 		dst := filepath.Join(root, ".build", m.name+"-mirror")
-		overlays := filepath.Join(root, "hack/mirror/overlays")
+		overlays := filepath.Join(root, "hack/mirror/_overlays")
 		for _, rel := range m.pins {
 			check(checkPin(src, rel, filepath.Join(overlays, m.name, pinName(rel)), writePins))
 		}

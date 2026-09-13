@@ -9,3 +9,4 @@ dist/
 /kubeconfig.yaml
 .DS_Store
 /bin/
+worker/worker-configuration.d.ts
