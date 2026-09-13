@@ -20,12 +20,21 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-const devToken = "k8flare-dev-token"
+const (
+	devToken  = "k8flare-dev-token"
+	joinToken = "k8flare-dev-join"
+)
 
 // startDev runs `wrangler dev` for the worker with a throwaway state
 // directory and returns a clientset for it. The wasm assets must already be
 // built (make wasm).
 func startDev(t *testing.T) *kubernetes.Clientset {
+	t.Helper()
+	_, cs := startDevURL(t)
+	return cs
+}
+
+func startDevURL(t *testing.T) (string, *kubernetes.Clientset) {
 	t.Helper()
 	_, file, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(file), "../..")
@@ -37,7 +46,7 @@ func startDev(t *testing.T) *kubernetes.Clientset {
 	cmd := exec.Command("pnpm", "exec", "wrangler", "dev", "--local",
 		"--persist-to", state, "--port", fmt.Sprint(port), "--inspector-port", "0")
 	cmd.Dir = filepath.Join(root, "worker")
-	cmd.Env = append(os.Environ(), "ADMIN_TOKEN="+devToken)
+	cmd.Env = append(os.Environ(), "ADMIN_TOKEN="+devToken, "JOIN_TOKEN="+joinToken)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	logFile, err := os.Create(filepath.Join(state, "wrangler.log"))
 	if err != nil {
@@ -76,7 +85,7 @@ func startDev(t *testing.T) *kubernetes.Clientset {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return cs
+	return base, cs
 }
 
 func freePort(t *testing.T) int {
@@ -95,3 +104,5 @@ func ctx(t *testing.T) context.Context {
 }
 
 func contains(s, sub string) bool { return strings.Contains(s, sub) }
+
+func mustIP(s string) net.IP { return net.ParseIP(s) }

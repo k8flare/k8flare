@@ -12,6 +12,8 @@ type Config struct {
 	Kine *http.Client
 	// AdminToken authenticates kubectl.
 	AdminToken string
+	// JoinToken is what a k3s agent presents to the supervisor endpoints.
+	JoinToken string
 }
 
 var versionInfo = map[string]string{
@@ -21,8 +23,10 @@ var versionInfo = map[string]string{
 
 func NewHandler(cfg Config) (http.Handler, error) {
 	kine := &KineClient{HTTP: cfg.Kine}
+	v := newVault(kine)
+	authenticators := []Authenticator{adminAuthenticator(cfg.AdminToken), nodeAuthenticator(v)}
 	mux := http.NewServeMux()
-	if err := installAPI(mux, kine); err != nil {
+	if err := installAPI(mux, kine, authenticators); err != nil {
 		return nil, err
 	}
 	for _, p := range []string{"/healthz", "/readyz", "/livez"} {
@@ -35,7 +39,10 @@ func NewHandler(cfg Config) (http.Handler, error) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(versionInfo)
 	})
-	return recoverPanics(withAuth(mux, adminAuthenticator(cfg.AdminToken))), nil
+	root := http.NewServeMux()
+	(&supervisor{vault: v, joinToken: cfg.JoinToken}).register(root)
+	root.Handle("/", withAuth(ensureNamespaces(kine, mux), authenticators...))
+	return recoverPanics(root), nil
 }
 
 func recoverPanics(next http.Handler) http.Handler {

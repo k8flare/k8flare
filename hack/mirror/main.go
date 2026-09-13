@@ -23,11 +23,22 @@ type op struct {
 	from    string
 	to      string
 	text    string
+	edits   []op
 }
 
-func del(path string) op              { return op{kind: "delete", path: path} }
-func replace(path, overlay string) op { return op{kind: "replace", path: path, overlay: overlay} }
-func patch(path, from, to string) op  { return op{kind: "patch", path: path, from: from, to: to} }
+func patch(path, from, to string) op { return op{kind: "patch", path: path, from: from, to: to} }
+
+// hostOnly keeps the upstream file for every target but js.
+func hostOnly(path string) op { return op{kind: "hostOnly", path: path} }
+
+// replaceJS keeps the upstream file for host builds and adds the overlay
+// (which carries its own //go:build js constraint) beside it.
+func replaceJS(path, overlay string) op { return op{kind: "replaceJS", path: path, overlay: overlay} }
+
+// patchJS keeps the upstream file for host builds and adds a js-only copy
+// with the given replacements applied and text appended.
+func patchJS(path string, edits []op) op { return op{kind: "patchJS", path: path, edits: edits} }
+
 func appendText(path, text string) op { return op{kind: "append", path: path, text: text} }
 
 type mirror struct {
@@ -40,12 +51,30 @@ type mirror struct {
 
 var mirrors = []mirror{
 	{
+		name:    "k3s",
+		module:  "github.com/k3s-io/k3s",
+		version: "v1.36.5-0.20260821152713-4dedb15be780",
+		pins:    []string{"pkg/daemons/control/deps/deps.go"},
+		ops: []op{
+			patch("pkg/daemons/control/deps/deps.go",
+				"func KubeConfig(dest, url, caCert, clientCert, clientKey string) error {\n",
+				"func KubeConfig(dest, url, caCert, clientCert, clientKey string) error {\n\tif KubeConfigOverride != nil {\n\t\tif handled, err := KubeConfigOverride(dest, url, caCert, clientCert, clientKey); handled || err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n"),
+			appendText("pkg/daemons/control/deps/deps.go", `
+// KubeConfigOverride lets an embedding program write the agent's
+// kubeconfigs itself. k8flare's control plane sits behind a TLS terminator
+// that never sees client certificates, so cmd/agent writes bearer-token
+// kubeconfigs instead of the certificate ones above. Added by hack/mirror.
+var KubeConfigOverride func(dest, url, caCert, clientCert, clientKey string) (handled bool, err error)
+`),
+		},
+	},
+	{
 		name:    "component-base",
 		module:  "github.com/k3s-io/kubernetes/staging/src/k8s.io/component-base",
 		version: "v1.36.4-k3s1",
 		pins:    []string{"tracing/utils.go"},
 		ops: []op{
-			replace("tracing/utils.go", "component-base/tracing_utils.go"),
+			replaceJS("tracing/utils.go", "component-base/tracing_utils.go"),
 		},
 	},
 	{
@@ -60,15 +89,30 @@ var mirrors = []mirror{
 			"pkg/endpoints/installer.go",
 		},
 		ops: []op{
-			del("pkg/storage/storagebackend/factory/etcd3.go"),
-			del("pkg/storage/storagebackend/factory/etcd3_test.go"),
-			del("pkg/storage/storagebackend/factory/factory_test.go"),
-			del("pkg/storage/storagebackend/factory/tls_test.go"),
-			replace("pkg/storage/storagebackend/factory/factory.go", "apiserver/factory.go"),
-			del("pkg/storage/feature/feature_support_checker_test.go"),
-			replace("pkg/storage/feature/feature_support_checker.go", "apiserver/feature_support_checker.go"),
-			del("pkg/sharding/parser_test.go"),
-			replace("pkg/sharding/parser.go", "apiserver/sharding_parser.go"),
+			hostOnly("pkg/storage/storagebackend/factory/etcd3.go"),
+			replaceJS("pkg/storage/storagebackend/factory/factory.go", "apiserver/factory.go"),
+			replaceJS("pkg/storage/feature/feature_support_checker.go", "apiserver/feature_support_checker.go"),
+			replaceJS("pkg/sharding/parser.go", "apiserver/sharding_parser.go"),
+			patchJS("pkg/storage/storagebackend/config.go", []op{
+				patch("", "\t\"k8s.io/apiserver/pkg/server/egressselector\"\n", ""),
+				patch("", "\t\"k8s.io/apiserver/pkg/storage/etcd3\"\n", ""),
+				patch("", "\tEgressLookup egressselector.Lookup\n", ""),
+				patch("", "\tLeaseManagerConfig etcd3.LeaseManagerConfig\n", "\tLeaseManagerConfig LeaseManagerConfig\n"),
+				patch("", "etcd3.NewDefaultLeaseManagerConfig()", "NewDefaultLeaseManagerConfig()"),
+				appendText("", `
+// Local copy of etcd3.LeaseManagerConfig so that this package does not link
+// the etcd3 storage implementation and the etcd client, which do not build
+// for GOOS=js. Added by hack/mirror.
+type LeaseManagerConfig struct {
+	ReuseDurationSeconds int64
+	MaxObjectCount       int64
+}
+
+func NewDefaultLeaseManagerConfig() LeaseManagerConfig {
+	return LeaseManagerConfig{ReuseDurationSeconds: 60, MaxObjectCount: 1000}
+}
+`),
+			}),
 			patch("pkg/endpoints/installer.go",
 				"\t\tHubGroupVersion: schema.GroupVersion{Group: fqKindToRegister.Group, Version: runtime.APIVersionInternal},",
 				"\t\tHubGroupVersion: hubGroupVersionFor(a.group.Typer, a.group.GroupVersion, fqKindToRegister),"),
@@ -83,24 +127,6 @@ func hubGroupVersionFor(typer runtime.ObjectTyper, served schema.GroupVersion, k
 		return internal
 	}
 	return served
-}
-`),
-			patch("pkg/storage/storagebackend/config.go", "\t\"k8s.io/apiserver/pkg/server/egressselector\"\n", ""),
-			patch("pkg/storage/storagebackend/config.go", "\t\"k8s.io/apiserver/pkg/storage/etcd3\"\n", ""),
-			patch("pkg/storage/storagebackend/config.go", "\tEgressLookup egressselector.Lookup\n", ""),
-			patch("pkg/storage/storagebackend/config.go", "\tLeaseManagerConfig etcd3.LeaseManagerConfig\n", "\tLeaseManagerConfig LeaseManagerConfig\n"),
-			patch("pkg/storage/storagebackend/config.go", "etcd3.NewDefaultLeaseManagerConfig()", "NewDefaultLeaseManagerConfig()"),
-			appendText("pkg/storage/storagebackend/config.go", `
-// Local copy of etcd3.LeaseManagerConfig so that this package does not link
-// the etcd3 storage implementation and the etcd client, which do not build
-// for GOOS=js. Added by hack/mirror.
-type LeaseManagerConfig struct {
-	ReuseDurationSeconds int64
-	MaxObjectCount       int64
-}
-
-func NewDefaultLeaseManagerConfig() LeaseManagerConfig {
-	return LeaseManagerConfig{ReuseDurationSeconds: 60, MaxObjectCount: 1000}
 }
 `),
 		},
@@ -210,17 +236,67 @@ func copyTree(src, dst string) error {
 	})
 }
 
+const hostTag = "//go:build !js\n\n"
+const jsTag = "//go:build js\n\n"
+
+func jsName(path string) string {
+	return strings.TrimSuffix(path, ".go") + "_js.go"
+}
+
+func hostName(path string) string {
+	return strings.TrimSuffix(path, ".go") + "_notjs.go"
+}
+
+func moveHostOnly(dst, path string) ([]byte, error) {
+	target := filepath.Join(dst, path)
+	data, err := os.ReadFile(target)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(dst, hostName(path)), append([]byte(hostTag), data...), 0o644); err != nil {
+		return nil, err
+	}
+	return data, os.Remove(target)
+}
+
 func apply(dst, overlays string, o op) error {
 	target := filepath.Join(dst, o.path)
 	switch o.kind {
-	case "delete":
-		return os.Remove(target)
-	case "replace":
+	case "hostOnly":
+		data, err := os.ReadFile(target)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, append([]byte(hostTag), data...), 0o644)
+	case "replaceJS":
+		if _, err := moveHostOnly(dst, o.path); err != nil {
+			return err
+		}
 		data, err := os.ReadFile(filepath.Join(overlays, o.overlay))
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(target, data, 0o644)
+		if !bytes.HasPrefix(data, []byte("//go:build js")) {
+			return fmt.Errorf("%s: overlay must start with a //go:build js constraint", o.overlay)
+		}
+		return os.WriteFile(filepath.Join(dst, jsName(o.path)), data, 0o644)
+	case "patchJS":
+		data, err := moveHostOnly(dst, o.path)
+		if err != nil {
+			return err
+		}
+		for _, e := range o.edits {
+			switch e.kind {
+			case "patch":
+				if !bytes.Contains(data, []byte(e.from)) {
+					return fmt.Errorf("%s no longer contains the text this patch replaces:\n%s", o.path, e.from)
+				}
+				data = bytes.Replace(data, []byte(e.from), []byte(e.to), 1)
+			case "append":
+				data = append(data, e.text...)
+			}
+		}
+		return os.WriteFile(filepath.Join(dst, jsName(o.path)), append([]byte(jsTag), data...), 0o644)
 	case "patch":
 		data, err := os.ReadFile(target)
 		if err != nil {

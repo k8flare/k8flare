@@ -1,0 +1,180 @@
+package apiserver
+
+import (
+	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/hex"
+	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"math/big"
+	"sync"
+	"time"
+)
+
+// vault keeps the cluster's certificate authorities and node passwords in
+// the Cluster DO, outside the /registry keyspace kubectl can reach.
+type vault struct {
+	kine *KineClient
+	mu   sync.Mutex
+	cas  map[string]*ca
+}
+
+type ca struct {
+	cert    *x509.Certificate
+	key     crypto.Signer
+	certPEM []byte
+}
+
+type caRecord struct {
+	Cert string `json:"cert"`
+	Key  string `json:"key"`
+}
+
+var errNodePasswordMismatch = errors.New("node password does not match the stored one")
+
+func newVault(kine *KineClient) *vault {
+	return &vault{kine: kine, cas: map[string]*ca{}}
+}
+
+func (v *vault) ca(ctx context.Context, name string) (*ca, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if c, ok := v.cas[name]; ok {
+		return c, nil
+	}
+	key := "/vault/ca/" + name
+	for {
+		kv, _, err := v.kine.Get(ctx, key)
+		if err == nil {
+			c, err := parseCA(kv)
+			if err != nil {
+				return nil, err
+			}
+			v.cas[name] = c
+			return c, nil
+		}
+		if err != errKineNotFound {
+			return nil, err
+		}
+		record, err := generateCA("k8flare-" + name)
+		if err != nil {
+			return nil, err
+		}
+		data, _ := json.Marshal(record)
+		if _, err := v.kine.Put(ctx, key, data, 0); err != nil && err != errKineConflict {
+			return nil, err
+		}
+	}
+}
+
+func parseCA(kv *kineKV) (*ca, error) {
+	data, err := decodeBase64(kv.Value)
+	if err != nil {
+		return nil, err
+	}
+	var record caRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return nil, err
+	}
+	certBlock, _ := pem.Decode([]byte(record.Cert))
+	keyBlock, _ := pem.Decode([]byte(record.Key))
+	if certBlock == nil || keyBlock == nil {
+		return nil, fmt.Errorf("vault: malformed CA record")
+	}
+	cert, err := x509.ParseCertificate(certBlock.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	key, err := x509.ParseECPrivateKey(keyBlock.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	return &ca{cert: cert, key: key, certPEM: []byte(record.Cert)}, nil
+}
+
+func generateCA(cn string) (caRecord, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return caRecord{}, err
+	}
+	now := time.Now()
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(now.UnixNano()),
+		Subject:               pkix.Name{CommonName: fmt.Sprintf("%s@%d", cn, now.Unix())},
+		NotBefore:             now.Add(-time.Hour),
+		NotAfter:              now.Add(10 * 365 * 24 * time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return caRecord{}, err
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return caRecord{}, err
+	}
+	return caRecord{
+		Cert: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
+		Key:  string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})),
+	}, nil
+}
+
+// sign issues a certificate for the CSR's public key. The subject and the
+// usages come from the server, never from the CSR, as in k3s.
+func (c *ca) sign(csr *x509.CertificateRequest, tmpl *x509.Certificate) ([]byte, error) {
+	tmpl.SerialNumber = big.NewInt(time.Now().UnixNano())
+	tmpl.NotBefore = time.Now().Add(-time.Hour)
+	if tmpl.NotAfter.IsZero() {
+		tmpl.NotAfter = time.Now().Add(365 * 24 * time.Hour)
+	}
+	tmpl.BasicConstraintsValid = true
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, c.cert, csr.PublicKey, c.key)
+	if err != nil {
+		return nil, err
+	}
+	out := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	return append(out, c.certPEM...), nil
+}
+
+func hashPassword(password string) string {
+	sum := sha256.Sum256([]byte(password))
+	return hex.EncodeToString(sum[:])
+}
+
+// verifyNodePassword records a node's password on first sight and rejects
+// a different one afterwards, which is what stops a second machine from
+// taking over an existing node name.
+func (v *vault) verifyNodePassword(ctx context.Context, node, password string) error {
+	key := "/vault/node/" + node
+	want := hashPassword(password)
+	for {
+		kv, _, err := v.kine.Get(ctx, key)
+		if err == nil {
+			stored, err := decodeBase64(kv.Value)
+			if err != nil {
+				return err
+			}
+			if subtle.ConstantTimeCompare(stored, []byte(want)) != 1 {
+				return errNodePasswordMismatch
+			}
+			return nil
+		}
+		if err != errKineNotFound {
+			return err
+		}
+		if _, err := v.kine.Put(ctx, key, []byte(want), 0); err != nil && err != errKineConflict {
+			return err
+		}
+	}
+}

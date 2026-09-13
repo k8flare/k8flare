@@ -1,3 +1,5 @@
+//go:build js
+
 // GOOS=js overlay of k8s.io/component-base/tracing/utils.go.
 //
 // Upstream imports the OTLP gRPC exporter at package scope, so any importer

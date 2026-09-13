@@ -1,3 +1,5 @@
+//go:build js
+
 // GOOS=js overlay: the etcd3-backed storage factory does not build for wasm
 // (etcd client, go-systemd) and k8flare supplies its own storage.Interface.
 package factory

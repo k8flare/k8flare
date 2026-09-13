@@ -1,6 +1,7 @@
 package apiserver
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"net/http"
@@ -13,10 +14,10 @@ import (
 )
 
 // Authenticator resolves a bearer token to a user, or nil when unknown.
-type Authenticator func(r *http.Request, token string) *user.DefaultInfo
+type Authenticator func(ctx context.Context, token string) *user.DefaultInfo
 
 func adminAuthenticator(adminToken string) Authenticator {
-	return func(_ *http.Request, token string) *user.DefaultInfo {
+	return func(_ context.Context, token string) *user.DefaultInfo {
 		if adminToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(adminToken)) == 1 {
 			return &user.DefaultInfo{Name: "admin", Groups: []string{user.SystemPrivilegedGroup, user.AllAuthenticated}}
 		}
@@ -44,7 +45,7 @@ func withAuth(next http.Handler, authenticators ...Authenticator) http.Handler {
 			return
 		}
 		for _, a := range authenticators {
-			u := a(r, token)
+			u := a(r.Context(), token)
 			if u == nil {
 				continue
 			}

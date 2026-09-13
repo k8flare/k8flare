@@ -1,3 +1,5 @@
+//go:build js
+
 // GOOS=js overlay: upstream embeds a CEL parser for ShardSelector
 // expressions. Nothing here sets a ShardSelector.
 package sharding

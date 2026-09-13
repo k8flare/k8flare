@@ -1,3 +1,5 @@
+//go:build js
+
 // GOOS=js overlay: upstream polls etcd endpoints for feature support and
 // links the etcd client. There is no etcd here.
 package feature

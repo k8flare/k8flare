@@ -21,6 +21,7 @@ func main() {
 	handler, err := apiserver.NewHandler(apiserver.Config{
 		Kine:       &http.Client{Transport: wasmhttp.BindingTransport{Name: "STORAGE"}},
 		AdminToken: wasmhttp.Getenv("ADMIN_TOKEN"),
+		JoinToken:  wasmhttp.Getenv("JOIN_TOKEN"),
 	})
 	if err != nil {
 		panic(err)

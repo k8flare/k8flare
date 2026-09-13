@@ -27,7 +27,7 @@ func apiRoot(gv schema.GroupVersion) string {
 
 // installAPI builds every route with k8s.io/apiserver's own API installer
 // and the discovery documents kubectl and client-go read.
-func installAPI(mux *http.ServeMux, kine *KineClient) error {
+func installAPI(mux *http.ServeMux, kine *KineClient, authenticators []Authenticator) error {
 	byGV := map[schema.GroupVersion]map[string]rest.Storage{}
 	resources := map[schema.GroupVersion][]metav1.APIResource{}
 	var order []schema.GroupVersion
@@ -49,6 +49,16 @@ func installAPI(mux *http.ServeMux, kine *KineClient) error {
 				Verbs: metav1.Verbs{"get", "patch", "update"},
 			})
 		}
+	}
+	for _, rk := range reviewKinds(authenticators) {
+		if byGV[rk.gv] == nil {
+			byGV[rk.gv] = map[string]rest.Storage{}
+			order = append(order, rk.gv)
+		}
+		byGV[rk.gv][rk.resource] = rk.rest
+		resources[rk.gv] = append(resources[rk.gv], metav1.APIResource{
+			Name: rk.resource, SingularName: rk.rest.singular, Namespaced: false, Kind: rk.kind, Verbs: metav1.Verbs{"create"},
+		})
 	}
 	container := restful.NewContainer()
 	container.ServeMux = mux

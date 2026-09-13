@@ -72,7 +72,7 @@ export async function apiserverFetch(env: Env, request: Request): Promise<Respon
       "wasm_exec.js": await (await asset(env, "wasm_exec.js")).text(),
       "app.wasm": { wasm: (await assemble(env, m)).buffer as ArrayBuffer },
     },
-    env: { STORAGE: env.STORAGE, ADMIN_TOKEN: env.ADMIN_TOKEN ?? "k8flare-dev-token" },
+    env: { STORAGE: env.STORAGE, ADMIN_TOKEN: env.ADMIN_TOKEN, JOIN_TOKEN: env.JOIN_TOKEN },
   }));
   return worker.getEntrypoint().fetch(request);
 }
