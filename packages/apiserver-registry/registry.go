@@ -3,9 +3,9 @@ package registry
 import (
 	"context"
 	"fmt"
-	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
-	"net"
 	"net/http"
+
+	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -51,7 +51,11 @@ func (strategy) WarningsOnUpdate(context.Context, runtime.Object, runtime.Object
 func (strategy) AllowUnconditionalUpdate() bool { return true }
 
 func WithNames(store *genericregistry.Store, res metav1.APIResource) rest.Storage {
-	return storeWithNames{store, res.ShortNames, res.Categories}
+	var deleter rest.GracefulDeleter
+	if build, ok := Deleters[res.Name]; ok {
+		deleter = build(store)
+	}
+	return storeWithNames{store, res.ShortNames, res.Categories, deleter}
 }
 
 // KubeletProxy is where pods/log and friends reach the kubelet: through the
@@ -66,27 +70,56 @@ type storeWithNames struct {
 	*genericregistry.Store
 	shortNames []string
 	categories []string
+	deleter    rest.GracefulDeleter
 }
 
 func (s storeWithNames) ShortNames() []string { return s.shortNames }
 func (s storeWithNames) Categories() []string { return s.categories }
 
+func (s storeWithNames) Delete(ctx context.Context, name string, deleteValidation rest.ValidateObjectFunc, options *metav1.DeleteOptions) (runtime.Object, bool, error) {
+	if s.deleter != nil {
+		return s.deleter.Delete(ctx, name, deleteValidation, options)
+	}
+	return s.Store.Delete(ctx, name, deleteValidation, options)
+}
+
 type Deps struct {
-	Kine        *kine.Client
-	Tokens      authenticator.Token
-	Kubelet     KubeletProxy
-	ClusterCIDR *net.IPNet
+	Kine    *kine.Client
+	Tokens  authenticator.Token
+	Kubelet KubeletProxy
 }
 
 type Store = genericregistry.Store
 
 var (
-	Resources    = map[string]func(gv schema.GroupVersion, res metav1.APIResource, deps Deps) rest.Storage{}
-	Customizers  = map[string]func(store *Store, deps Deps){}
-	Subresources = map[string]func(stores map[string]*Store, deps Deps) rest.Storage{}
-	Middleware   []func(stores map[string]*Store) func(http.Handler) http.Handler
-	Poke         func(ctx context.Context)
+	Resources       = map[string]func(gv schema.GroupVersion, res metav1.APIResource, deps Deps) rest.Storage{}
+	Customizers     = map[string]func(store *Store, deps Deps){}
+	Deleters        = map[string]func(store *Store) rest.GracefulDeleter{}
+	Subresources    = map[string]func(stores map[string]*Store, deps Deps) rest.Storage{}
+	Middleware      []func(stores map[string]*Store) func(http.Handler) http.Handler
+	Poke            func(ctx context.Context)
+	PokeControllers func(ctx context.Context)
 )
+
+func PokeControllersOn(store *Store) {
+	store.BeginCreate = func(context.Context, runtime.Object, *metav1.CreateOptions) (genericregistry.FinishFunc, error) {
+		return pokeControllers, nil
+	}
+	store.BeginUpdate = func(context.Context, runtime.Object, runtime.Object, *metav1.UpdateOptions) (genericregistry.FinishFunc, error) {
+		return pokeControllers, nil
+	}
+	store.AfterDelete = func(runtime.Object, *metav1.DeleteOptions) {
+		if PokeControllers != nil {
+			PokeControllers(context.Background())
+		}
+	}
+}
+
+func pokeControllers(ctx context.Context, success bool) {
+	if success && PokeControllers != nil {
+		PokeControllers(ctx)
+	}
+}
 
 func NewStore(client *kine.Client, gv schema.GroupVersion, res metav1.APIResource) (*genericregistry.Store, error) {
 	gvk := gv.WithKind(res.Kind)

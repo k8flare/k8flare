@@ -4,14 +4,15 @@ package tables
 
 import (
 	"fmt"
+	"strings"
+	"time"
+
 	rbacv1beta1 "k8s.io/api/rbac/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/duration"
 	"k8s.io/kubernetes/pkg/apis/rbac"
 	"k8s.io/kubernetes/pkg/printers"
-	"strings"
-	"time"
 )
 
 func AddHandlers(h printers.PrintHandler) {

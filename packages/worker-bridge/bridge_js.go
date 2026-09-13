@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"syscall/js"
+	"time"
 )
 
 type envKey struct{}
@@ -311,7 +312,8 @@ func headerToPairs(h http.Header) js.Value {
 // Plain HTTP needs no transport of its own: net/http's default transport is
 // fetch-based on GOOS=js and streams response bodies.
 type BindingTransport struct {
-	Name string
+	Name          string
+	WatchLifetime time.Duration
 }
 
 func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -346,18 +348,31 @@ func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		ProtoMajor:    1,
 		ProtoMinor:    1,
 		Header:        header,
-		Body:          streamBody(jsResp.Get("body")),
+		Body:          streamBody(jsResp.Get("body"), t.bodyLifetime(req)),
 		ContentLength: -1,
 		Request:       req,
 	}, nil
 }
 
-func streamBody(stream js.Value) io.ReadCloser {
+func (t BindingTransport) bodyLifetime(req *http.Request) time.Duration {
+	if req.URL.Query().Get("watch") == "true" {
+		return t.WatchLifetime
+	}
+	return 0
+}
+
+func streamBody(stream js.Value, lifetime time.Duration) io.ReadCloser {
 	if stream.IsNull() || stream.IsUndefined() {
 		return io.NopCloser(bytes.NewReader(nil))
 	}
 	reader := stream.Call("getReader")
 	pr, pw := io.Pipe()
+	if lifetime > 0 {
+		time.AfterFunc(lifetime, func() {
+			pw.Close()
+			reader.Call("cancel")
+		})
+	}
 	go func() {
 		for {
 			chunk, err := await(reader.Call("read"))

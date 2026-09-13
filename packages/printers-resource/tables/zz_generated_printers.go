@@ -3,14 +3,15 @@
 package tables
 
 import (
+	"strings"
+	"time"
+
 	resourceapi "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/duration"
 	"k8s.io/kubernetes/pkg/apis/resource"
 	"k8s.io/kubernetes/pkg/printers"
-	"strings"
-	"time"
 )
 
 func AddHandlers(h printers.PrintHandler) {

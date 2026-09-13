@@ -20,9 +20,13 @@ type statusREST struct {
 
 // NewStatusREST serves /status over parent.
 func NewStatusREST(parent *genericregistry.Store) *statusREST {
-	statusStore := *parent
-	statusStore.UpdateStrategy = statusOnlyStrategy{parent.UpdateStrategy}
-	return &statusREST{store: &statusStore}
+	return NewUpdateOnlyREST(parent, statusOnlyStrategy{parent.UpdateStrategy})
+}
+
+func NewUpdateOnlyREST(parent *genericregistry.Store, strategy rest.RESTUpdateStrategy) *statusREST {
+	store := *parent
+	store.UpdateStrategy = strategy
+	return &statusREST{store: &store}
 }
 
 func (r *statusREST) New() runtime.Object { return r.store.New() }

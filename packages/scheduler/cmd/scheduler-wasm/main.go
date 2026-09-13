@@ -14,36 +14,47 @@ import (
 )
 
 const (
-	pokeWindow  = 20 * time.Second
-	idleChecks  = 3
-	checkPeriod = 500 * time.Millisecond
+	pokeWindow    = 20 * time.Second
+	idleChecks    = 3
+	checkPeriod   = 500 * time.Millisecond
+	watchLifetime = 15 * time.Second
 )
 
 func main() {
 	cfg := &rest.Config{
 		Host:        "https://k8flare.internal",
 		BearerToken: bridge.Getenv("ADMIN_TOKEN"),
-		Transport:   bridge.BindingTransport{Name: "APISERVER"},
+		Transport:   bridge.BindingTransport{Name: "APISERVER", WatchLifetime: watchLifetime},
 	}
 	var (
-		mu    sync.Mutex
-		sched *scheduler.Scheduler
+		mu      sync.Mutex
+		holding bool
+		sched   *scheduler.Scheduler
 	)
 	bridge.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
+		if holding {
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		holding = true
+		mu.Unlock()
+		defer func() {
+			mu.Lock()
+			holding = false
+			mu.Unlock()
+		}()
 		if sched == nil {
-			ctx := context.Background()
-			created, err := scheduler.New(ctx, cfg)
+			started, err := scheduler.New(context.Background(), cfg)
 			if err != nil {
-				mu.Unlock()
 				println("scheduler: start failed:", err.Error())
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			sched = created
-			go sched.Run(ctx)
+			sched = started
+			go sched.Run(context.Background())
 		}
-		mu.Unlock()
 		deadline := time.After(pokeWindow)
 		idle := 0
 		for idle < idleChecks {

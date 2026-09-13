@@ -26,6 +26,7 @@ import (
 func main() {
 	set := flag.String("set", "required", "test set to run: required, advisory, or all")
 	focus := flag.String("focus", "", "override the built-in focus regex")
+	procs := flag.Int("procs", 4, "parallel ginkgo processes; [Serial] specs still run alone")
 	flag.Parse()
 
 	root, err := upstream.RepoRoot()
@@ -48,7 +49,7 @@ func main() {
 		reportDir := filepath.Join(root, ".build/e2e/report", s)
 		check(os.MkdirAll(reportDir, 0o755))
 		fmt.Printf("=== e2e set %q ===\n", s)
-		err := runE2E(e2eTest, kubeconfig, regex, reportDir)
+		err := runE2E(e2eTest, kubeconfig, regex, reportDir, *procs)
 		if err != nil && s == "required" {
 			log.Fatalf("required e2e set failed: %v", err)
 		}
@@ -179,20 +180,23 @@ func extractE2ETest(tarGzPath, dir string) error {
 	return nil
 }
 
-func runE2E(e2eTest, kubeconfig, focus, reportDir string) error {
+func runE2E(e2eTest, kubeconfig, focus, reportDir string, procs int) error {
 	absKubeconfig, err := filepath.Abs(kubeconfig)
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(e2eTest,
+	cmd := exec.Command(filepath.Join(filepath.Dir(e2eTest), "ginkgo"),
+		"--no-color",
+		fmt.Sprintf("--procs=%d", procs),
+		"--focus="+focus,
+		"--junit-report="+filepath.Join(reportDir, "junit.xml"),
+		e2eTest,
+		"--",
 		"--kubeconfig", absKubeconfig,
 		"--provider=skeleton",
 		"--num-nodes=1",
 		"--disable-log-dump",
-		"--ginkgo.no-color",
-		"--ginkgo.focus="+focus,
 		"--report-dir", reportDir,
-		"--ginkgo.junit-report", filepath.Join(reportDir, "junit.xml"),
 	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

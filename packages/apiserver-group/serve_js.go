@@ -28,12 +28,23 @@ func Serve(groupVersion string) {
 		if !bridge.HasBinding(ctx, "PRINTERS") {
 			return nil, registry.ErrNoTableSource
 		}
-		return bridge.CallBytes(ctx, "PRINTERS", "convertToTable", group, object)
+		table, err := bridge.CallBytes(ctx, "PRINTERS", "convertToTable", group, object)
+		if err == nil && len(table) == 0 {
+			return nil, registry.ErrNoTableSource
+		}
+		return table, err
 	}
 	registry.Poke = func(ctx context.Context) {
 		if bridge.HasBinding(ctx, "SCHEDULER") {
 			if _, err := bridge.Call(ctx, "SCHEDULER", "poke"); err != nil {
 				println("scheduler poke:", err.Error())
+			}
+		}
+	}
+	registry.PokeControllers = func(ctx context.Context) {
+		if bridge.HasBinding(ctx, "CONTROLLERS") {
+			if _, err := bridge.Call(ctx, "CONTROLLERS", "poke"); err != nil {
+				println("controllers poke:", err.Error())
 			}
 		}
 	}

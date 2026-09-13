@@ -41,11 +41,11 @@ func startDevURL(t *testing.T) (string, *kubernetes.Clientset) {
 	t.Helper()
 	_, file, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(file), "../..")
-	workers := []string{"apiserver", "openapi", "customresources", "scheduler"}
-	for _, g := range []string{"core", "coordination", "discovery", "node", "storage", "authentication", "authorization", "apps", "policy", "resource", "rbac"} {
+	workers := []string{"apiserver", "openapi", "customresources", "scheduler", "controllers"}
+	for _, g := range []string{"core", "coordination", "discovery", "node", "storage", "authentication", "authorization", "apps", "policy", "resource", "rbac", "batch"} {
 		workers = append(workers, "apiserver-"+g)
 	}
-	for _, g := range []string{"core", "coordination", "discovery", "node", "storage", "apps", "policy", "resource", "rbac"} {
+	for _, g := range []string{"core", "coordination", "discovery", "node", "storage", "apps", "policy", "resource", "rbac", "batch"} {
 		workers = append(workers, "printers-"+g)
 	}
 	for _, w := range workers {
@@ -97,11 +97,15 @@ func startDevURL(t *testing.T) (string, *kubernetes.Clientset) {
 		}
 		time.Sleep(time.Second)
 	}
-	cs, err := kubernetes.NewForConfig(&rest.Config{Host: base, BearerToken: devToken})
+	cs, err := kubernetes.NewForConfig(devConfig(base, devToken))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return base, cs
+}
+
+func devConfig(base, token string) *rest.Config {
+	return &rest.Config{Host: base, BearerToken: token, Transport: &http.Transport{IdleConnTimeout: 2 * time.Second}}
 }
 
 func freePort(t *testing.T) int {

@@ -95,3 +95,54 @@ func TestWatch(t *testing.T) {
 		t.Fatal("labeled watch sent nothing")
 	}
 }
+
+func TestWatchSelectorTransitions(t *testing.T) {
+	cs := startDev(t)
+	c := ctx(t)
+	cms := cs.CoreV1().ConfigMaps("default")
+	cm, err := cms.Create(c, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "selected", Labels: map[string]string{"watch": "yes"}}}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := cms.Watch(c, metav1.ListOptions{LabelSelector: "watch=yes", ResourceVersion: cm.ResourceVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Stop()
+	expect := func(want watch.EventType) {
+		t.Helper()
+		select {
+		case ev, ok := <-w.ResultChan():
+			if !ok {
+				t.Fatalf("watch closed while waiting for %s", want)
+			}
+			if ev.Type != want {
+				t.Fatalf("got %s, want %s", ev.Type, want)
+			}
+		case <-time.After(20 * time.Second):
+			t.Fatalf("no %s event", want)
+		}
+	}
+	cm.Labels["watch"] = "no"
+	if cm, err = cms.Update(c, cm, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	expect(watch.Deleted)
+	cm.Labels["watch"] = "yes"
+	if _, err = cms.Update(c, cm, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	expect(watch.Added)
+}
+
+func TestNodeFieldSelectorDefaults(t *testing.T) {
+	cs := startDev(t)
+	c := ctx(t)
+	if _, err := cs.CoreV1().Nodes().Create(c, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "f1"}}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	nodes, err := cs.CoreV1().Nodes().List(c, metav1.ListOptions{FieldSelector: "spec.unschedulable=false"})
+	if err != nil || len(nodes.Items) != 1 {
+		t.Fatalf("spec.unschedulable=false should match a node without the field: %v %d", err, len(nodes.Items))
+	}
+}

@@ -26,6 +26,7 @@
     { "binding": "CUSTOMRESOURCES", "service": "k8flare", "entrypoint": "CustomResources" },
     { "binding": "APIGROUPS", "service": "k8flare", "entrypoint": "APIGroups" },
     { "binding": "SCHEDULER", "service": "k8flare", "entrypoint": "Scheduler" },
+    { "binding": "CONTROLLERS", "service": "k8flare", "entrypoint": "Controllers" },
     { "binding": "TUNNEL", "service": "k8flare", "entrypoint": "NodeTunnels" },
     { "binding": "APISERVER", "service": "k8flare" },
   ],

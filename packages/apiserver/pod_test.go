@@ -3,7 +3,10 @@
 package apiserver_test
 
 import (
+	"context"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -14,13 +17,25 @@ func TestNodePodCIDRAndPodLifecycle(t *testing.T) {
 	cs := startDev(t)
 	c := ctx(t)
 
-	n1, err := cs.CoreV1().Nodes().Create(c, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "n1"}}, metav1.CreateOptions{})
-	if err != nil || n1.Spec.PodCIDR != "10.42.0.0/24" || len(n1.Spec.PodCIDRs) != 1 {
-		t.Fatalf("first node: %v %+v", err, n1.Spec)
+	for _, name := range []string{"n1", "n2"} {
+		if _, err := cs.CoreV1().Nodes().Create(c, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name}}, metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
 	}
-	n2, err := cs.CoreV1().Nodes().Create(c, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "n2"}}, metav1.CreateOptions{})
-	if err != nil || n2.Spec.PodCIDR != "10.42.1.0/24" {
-		t.Fatalf("second node: %v %+v", err, n2.Spec)
+	cidrs := map[string]bool{}
+	if err := wait.PollUntilContextTimeout(c, time.Second, 90*time.Second, true, func(ctx context.Context) (bool, error) {
+		nodes, err := cs.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return false, err
+		}
+		for _, n := range nodes.Items {
+			if n.Spec.PodCIDR != "" {
+				cidrs[n.Name] = true
+			}
+		}
+		return len(cidrs) == 2, nil
+	}); err != nil {
+		t.Fatalf("nodeipam did not assign PodCIDRs to both nodes: %v", err)
 	}
 
 	pods := cs.CoreV1().Pods("default")

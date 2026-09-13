@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -32,7 +33,11 @@ func Handler(addHandlers func(upstream.PrintHandler)) http.Handler {
 		}
 		table, err := convertor.ConvertToTable(r.Context(), obj, &metav1.TableOptions{})
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			status := http.StatusInternalServerError
+			if strings.HasPrefix(err.Error(), "no table handler registered") {
+				status = http.StatusNotFound
+			}
+			http.Error(w, err.Error(), status)
 			return
 		}
 		for i := range table.Rows {

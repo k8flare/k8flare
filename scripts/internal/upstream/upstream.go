@@ -19,8 +19,9 @@ type ServedGroupVersion struct {
 }
 
 var Served = []ServedGroupVersion{
-	{"v1", []string{"configmaps", "events", "namespaces", "nodes", "pods", "pods/binding", "pods/log", "replicationcontrollers", "secrets", "serviceaccounts", "services"}},
-	{"apps/v1", []string{"replicasets", "statefulsets"}},
+	{"v1", []string{"configmaps", "endpoints", "events", "limitranges", "namespaces", "namespaces/finalize", "namespaces/status", "nodes", "persistentvolumeclaims", "pods", "pods/binding", "pods/log", "replicationcontrollers", "secrets", "serviceaccounts", "services"}},
+	{"apps/v1", []string{"controllerrevisions", "daemonsets", "deployments", "replicasets", "statefulsets"}},
+	{"batch/v1", []string{"cronjobs", "jobs"}},
 	{"policy/v1", []string{"poddisruptionbudgets"}},
 	{"resource.k8s.io/v1", []string{"deviceclasses", "resourceclaims", "resourceclaimtemplates", "resourceslices"}},
 	{"coordination.k8s.io/v1", []string{"leases"}},

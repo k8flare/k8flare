@@ -4,15 +4,16 @@ package tables
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/duration"
 	"k8s.io/kubernetes/pkg/apis/discovery"
 	"k8s.io/kubernetes/pkg/printers"
-	"strconv"
-	"strings"
-	"time"
 )
 
 func AddHandlers(h printers.PrintHandler) {

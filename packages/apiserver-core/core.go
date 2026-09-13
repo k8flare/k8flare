@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"net"
 	"net/http"
 
 	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
@@ -11,30 +10,40 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
 	"k8s.io/apiserver/pkg/registry/rest"
-	"k8s.io/apiserver/pkg/storage"
-	"k8s.io/kubernetes/pkg/controller/nodeipam/ipam/cidrset"
 )
 
 func init() {
 	registry.Customizers["pods"] = func(store *registry.Store, _ registry.Deps) {
 		store.DeleteStrategy = podStrategy{store.DeleteStrategy}
+		registry.PokeControllersOn(store)
 		store.BeginCreate = func(ctx context.Context, obj runtime.Object, _ *metav1.CreateOptions) (genericregistry.FinishFunc, error) {
-			return pokeSchedulerFor(obj), nil
+			return pokeBothFor(obj), nil
 		}
 		store.BeginUpdate = func(ctx context.Context, obj, _ runtime.Object, _ *metav1.UpdateOptions) (genericregistry.FinishFunc, error) {
-			return pokeSchedulerFor(obj), nil
+			return pokeBothFor(obj), nil
 		}
 	}
-	registry.Customizers["nodes"] = func(store *registry.Store, deps registry.Deps) {
-		store.BeginCreate = func(ctx context.Context, obj runtime.Object, _ *metav1.CreateOptions) (genericregistry.FinishFunc, error) {
-			if err := assignPodCIDR(ctx, store.Storage.Storage, obj.(*corev1.Node), deps.ClusterCIDR); err != nil {
-				return nil, err
-			}
-			return pokeScheduler, nil
+	registry.Customizers["nodes"] = func(store *registry.Store, _ registry.Deps) {
+		registry.PokeControllersOn(store)
+		store.BeginCreate = func(context.Context, runtime.Object, *metav1.CreateOptions) (genericregistry.FinishFunc, error) {
+			return pokeBoth, nil
 		}
 		store.BeginUpdate = func(context.Context, runtime.Object, runtime.Object, *metav1.UpdateOptions) (genericregistry.FinishFunc, error) {
-			return pokeScheduler, nil
+			return pokeBoth, nil
 		}
+	}
+	for _, resource := range []string{"services", "endpoints", "replicationcontrollers", "serviceaccounts"} {
+		registry.Customizers[resource] = func(store *registry.Store, _ registry.Deps) { registry.PokeControllersOn(store) }
+	}
+	registry.Customizers["namespaces"] = func(store *registry.Store, _ registry.Deps) {
+		registry.PokeControllersOn(store)
+		store.CreateStrategy = namespaceCreateStrategy{store.CreateStrategy}
+		store.UpdateStrategy = namespaceUpdateStrategy{store.UpdateStrategy}
+		store.ShouldDeleteDuringUpdate = shouldDeleteNamespaceDuringUpdate
+	}
+	registry.Deleters["namespaces"] = func(store *registry.Store) rest.GracefulDeleter { return namespaceDeleter{store} }
+	registry.Subresources["namespaces/finalize"] = func(stores map[string]*registry.Store, _ registry.Deps) rest.Storage {
+		return registry.NewUpdateOnlyREST(stores["namespaces"], namespaceFinalizeStrategy{stores["namespaces"].UpdateStrategy})
 	}
 	registry.Subresources["pods/log"] = func(stores map[string]*registry.Store, deps registry.Deps) rest.Storage {
 		return NewLogREST(stores["pods"], stores["nodes"], deps.Kubelet)
@@ -49,16 +58,23 @@ func init() {
 	})
 }
 
-func pokeSchedulerFor(obj runtime.Object) genericregistry.FinishFunc {
+func pokeBothFor(obj runtime.Object) genericregistry.FinishFunc {
 	if obj.(*corev1.Pod).Spec.NodeName != "" {
-		return func(context.Context, bool) {}
+		return pokeControllersOnly
 	}
-	return pokeScheduler
+	return pokeBoth
 }
 
-func pokeScheduler(ctx context.Context, success bool) {
+func pokeBoth(ctx context.Context, success bool) {
 	if success && registry.Poke != nil {
 		registry.Poke(ctx)
+	}
+	pokeControllersOnly(ctx, success)
+}
+
+func pokeControllersOnly(ctx context.Context, success bool) {
+	if success && registry.PokeControllers != nil {
+		registry.PokeControllers(ctx)
 	}
 }
 
@@ -86,31 +102,4 @@ func (podStrategy) CheckGracefulDelete(_ context.Context, obj runtime.Object, op
 	}
 	options.GracePeriodSeconds = &period
 	return true
-}
-func assignPodCIDR(ctx context.Context, s storage.Interface, node *corev1.Node, clusterCIDR *net.IPNet) error {
-	if node.Spec.PodCIDR != "" {
-		return nil
-	}
-	list := &corev1.NodeList{}
-	if err := s.GetList(ctx, "/nodes", storage.ListOptions{Recursive: true, Predicate: storage.Everything}, list); err != nil {
-		return err
-	}
-	set, err := cidrset.NewCIDRSet(clusterCIDR, 24)
-	if err != nil {
-		return err
-	}
-	for _, n := range list.Items {
-		if _, used, err := net.ParseCIDR(n.Spec.PodCIDR); err == nil {
-			if err := set.Occupy(used); err != nil {
-				return err
-			}
-		}
-	}
-	cidr, err := set.AllocateNext()
-	if err != nil {
-		return err
-	}
-	node.Spec.PodCIDR = cidr.String()
-	node.Spec.PodCIDRs = []string{cidr.String()}
-	return nil
 }

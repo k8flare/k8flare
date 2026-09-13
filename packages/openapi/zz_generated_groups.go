@@ -6,6 +6,7 @@ import (
 	_ "github.com/k8flare/k8flare/packages/apiserver-apps"
 	_ "github.com/k8flare/k8flare/packages/apiserver-authentication"
 	_ "github.com/k8flare/k8flare/packages/apiserver-authorization"
+	_ "github.com/k8flare/k8flare/packages/apiserver-batch"
 	_ "github.com/k8flare/k8flare/packages/apiserver-coordination"
 	_ "github.com/k8flare/k8flare/packages/apiserver-core"
 	_ "github.com/k8flare/k8flare/packages/apiserver-discovery"

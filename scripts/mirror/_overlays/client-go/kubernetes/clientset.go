@@ -8,7 +8,10 @@ import (
 
 	discovery "k8s.io/client-go/discovery"
 	appsv1 "k8s.io/client-go/kubernetes/typed/apps/v1"
+	batchv1 "k8s.io/client-go/kubernetes/typed/batch/v1"
+	coordinationv1 "k8s.io/client-go/kubernetes/typed/coordination/v1"
 	corev1 "k8s.io/client-go/kubernetes/typed/core/v1"
+	discoveryv1 "k8s.io/client-go/kubernetes/typed/discovery/v1"
 	eventsv1 "k8s.io/client-go/kubernetes/typed/events/v1"
 	policyv1 "k8s.io/client-go/kubernetes/typed/policy/v1"
 	resourcev1 "k8s.io/client-go/kubernetes/typed/resource/v1"
@@ -23,6 +26,9 @@ type Interface interface {
 	Discovery() discovery.DiscoveryInterface
 	CoreV1() corev1.CoreV1Interface
 	AppsV1() appsv1.AppsV1Interface
+	BatchV1() batchv1.BatchV1Interface
+	CoordinationV1() coordinationv1.CoordinationV1Interface
+	DiscoveryV1() discoveryv1.DiscoveryV1Interface
 	StorageV1() storagev1.StorageV1Interface
 	ResourceV1() resourcev1.ResourceV1Interface
 	ResourceV1beta2() resourcev1beta2.ResourceV1beta2Interface
@@ -35,6 +41,9 @@ type Clientset struct {
 	*discovery.DiscoveryClient
 	corev1             *corev1.CoreV1Client
 	appsv1             *appsv1.AppsV1Client
+	batchv1            *batchv1.BatchV1Client
+	coordinationv1     *coordinationv1.CoordinationV1Client
+	discoveryv1        *discoveryv1.DiscoveryV1Client
 	storagev1          *storagev1.StorageV1Client
 	resourcev1         *resourcev1.ResourceV1Client
 	resourcev1beta2    *resourcev1beta2.ResourceV1beta2Client
@@ -49,6 +58,18 @@ func (c *Clientset) CoreV1() corev1.CoreV1Interface {
 
 func (c *Clientset) AppsV1() appsv1.AppsV1Interface {
 	return c.appsv1
+}
+
+func (c *Clientset) BatchV1() batchv1.BatchV1Interface {
+	return c.batchv1
+}
+
+func (c *Clientset) CoordinationV1() coordinationv1.CoordinationV1Interface {
+	return c.coordinationv1
+}
+
+func (c *Clientset) DiscoveryV1() discoveryv1.DiscoveryV1Interface {
+	return c.discoveryv1
 }
 
 func (c *Clientset) StorageV1() storagev1.StorageV1Interface {
@@ -112,6 +133,18 @@ func NewForConfigAndClient(c *rest.Config, httpClient *http.Client) (*Clientset,
 	if err != nil {
 		return nil, err
 	}
+	cs.batchv1, err = batchv1.NewForConfigAndClient(&configShallowCopy, httpClient)
+	if err != nil {
+		return nil, err
+	}
+	cs.coordinationv1, err = coordinationv1.NewForConfigAndClient(&configShallowCopy, httpClient)
+	if err != nil {
+		return nil, err
+	}
+	cs.discoveryv1, err = discoveryv1.NewForConfigAndClient(&configShallowCopy, httpClient)
+	if err != nil {
+		return nil, err
+	}
 	cs.storagev1, err = storagev1.NewForConfigAndClient(&configShallowCopy, httpClient)
 	if err != nil {
 		return nil, err
@@ -155,6 +188,9 @@ func New(c rest.Interface) *Clientset {
 	var cs Clientset
 	cs.corev1 = corev1.New(c)
 	cs.appsv1 = appsv1.New(c)
+	cs.batchv1 = batchv1.New(c)
+	cs.coordinationv1 = coordinationv1.New(c)
+	cs.discoveryv1 = discoveryv1.New(c)
 	cs.storagev1 = storagev1.New(c)
 	cs.resourcev1 = resourcev1.New(c)
 	cs.resourcev1beta2 = resourcev1beta2.New(c)

@@ -22,10 +22,9 @@ type Config struct {
 func NewHandler(gv schema.GroupVersion, cfg Config) (http.Handler, error) {
 	client := &kine.Client{HTTP: cfg.Kine}
 	deps := registry.Deps{
-		Kine:        client,
-		Tokens:      union.New(auth.AdminToken(cfg.AdminToken), auth.ReadonlyToken(cfg.ReadonlyToken), auth.NodeToken{Vault: supervisor.NewVault(client)}),
-		Kubelet:     cfg.Kubelet,
-		ClusterCIDR: supervisor.ClusterCIDR,
+		Kine:    client,
+		Tokens:  union.New(auth.AdminToken(cfg.AdminToken), auth.ReadonlyToken(cfg.ReadonlyToken), auth.NodeToken{Vault: supervisor.NewVault(client)}),
+		Kubelet: cfg.Kubelet,
 	}
 	mux := http.NewServeMux()
 	installed, err := installer.Install(mux, deps, gv)

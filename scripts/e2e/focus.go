@@ -6,11 +6,12 @@ var sets = map[string][]string{
 		`[sig-scheduling] SchedulerPredicates [Serial] validates that NodeSelector is respected if not matching`,
 		`[sig-scheduling] SchedulerPredicates [Serial] validates resource limits of pods that are allowed to run`,
 		`[sig-scheduling] SchedulerPredicates [Serial] validates that there is no conflict between pods with same hostPort but different hostIP and protocol`,
-		`[sig-scheduling] LimitRange`,
+		`[sig-scheduling] LimitRange should list, patch and delete a LimitRange by collection`,
 		`[sig-api-machinery] Watchers`,
 		`[sig-api-machinery] CustomResourceDefinition resources [Privileged:ClusterAdmin]`,
 	},
 	"advisory": {
+		`[sig-scheduling] LimitRange should create a LimitRange with defaults and ensure pod has those defaults applied.`,
 		`[sig-api-machinery] Garbage collector should delete pods created by rc when not orphaning`,
 		`[sig-api-machinery] Garbage collector should orphan pods created by rc if delete options say so`,
 		`[sig-api-machinery] Garbage collector should delete RS created by deployment when not orphaning`,

@@ -5,8 +5,8 @@ export GOTOOLCHAIN := auto
 ASSETS := packages/control-plane-worker/assets/wasm
 BUILD := .build/wasm
 CAP := 67108864
-GROUPS := core coordination discovery node storage apps policy resource rbac
-API_GROUPS := core coordination discovery node storage authentication authorization apps policy resource rbac
+GROUPS := core coordination discovery node storage apps policy resource rbac batch
+API_GROUPS := core coordination discovery node storage authentication authorization apps policy resource rbac batch
 WASM_OPT := wasm-opt -Oz --strip-debug --strip-producers --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals
 
 .PHONY: mirrors wasm gen agent dev devtls kubeconfig check vet test clean e2e
@@ -73,6 +73,16 @@ $(BUILD)/scheduler.opt.wasm: $(BUILD)/scheduler.raw.wasm
 $(ASSETS)/scheduler.manifest.json: $(BUILD)/scheduler.opt.wasm
 	cd scripts && go run ./wasmpack chunk ../$< ../$(ASSETS) scheduler
 
+$(BUILD)/controllers.raw.wasm: $(GO_SRC) | mirrors
+	mkdir -p $(BUILD)
+	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/controllers/cmd/controllers-wasm
+
+$(BUILD)/controllers.opt.wasm: $(BUILD)/controllers.raw.wasm
+	$(OPTIMIZE)
+
+$(ASSETS)/controllers.manifest.json: $(BUILD)/controllers.opt.wasm
+	cd scripts && go run ./wasmpack chunk ../$< ../$(ASSETS) controllers
+
 $(BUILD)/printers-%.opt.wasm: $(BUILD)/printers-%.raw.wasm
 	$(OPTIMIZE)
 
@@ -102,7 +112,7 @@ $(NODE_TUNNEL_WASM): $(BUILD)/node-tunnel.opt.wasm
 	mkdir -p $(dir $@)
 	cp $< $@
 
-wasm: $(ASSETS)/wasm_exec.js $(ASSETS)/apiserver.manifest.json $(foreach g,$(API_GROUPS),$(ASSETS)/apiserver-$(g).manifest.json) $(ASSETS)/openapi.manifest.json $(ASSETS)/customresources.manifest.json $(ASSETS)/scheduler.manifest.json $(foreach g,$(GROUPS),$(ASSETS)/printers-$(g).manifest.json) $(NODE_TUNNEL_WASM)
+wasm: $(ASSETS)/wasm_exec.js $(ASSETS)/apiserver.manifest.json $(foreach g,$(API_GROUPS),$(ASSETS)/apiserver-$(g).manifest.json) $(ASSETS)/openapi.manifest.json $(ASSETS)/customresources.manifest.json $(ASSETS)/scheduler.manifest.json $(ASSETS)/controllers.manifest.json $(foreach g,$(GROUPS),$(ASSETS)/printers-$(g).manifest.json) $(NODE_TUNNEL_WASM)
 
 gen:
 	cd scripts && go run ./genresources && go run ./genprinters && go run ./genopenapi
@@ -136,7 +146,7 @@ vet: mirrors
 	GOOS=js GOARCH=wasm go vet ./packages/...
 
 e2e:
-	cd scripts && go run ./e2e -set $(or $(SET),required)
+	cd scripts && go run ./e2e -set $(or $(SET),required) -procs $(or $(PROCS),4)
 	cd scripts && go vet ./...
 
 test: wasm

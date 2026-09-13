@@ -15,10 +15,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"go/ast"
-	"go/format"
 	"go/parser"
 	"go/printer"
 	"go/token"
+	"golang.org/x/tools/imports"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,8 +40,9 @@ var served = []struct {
 	alias string
 	kinds []string
 }{
-	{"core", "api", []string{"Pod", "Node", "Namespace", "Service", "ConfigMap", "Secret", "ServiceAccount", "Event", "ReplicationController"}},
-	{"apps", "apps", []string{"ReplicaSet", "StatefulSet"}},
+	{"core", "api", []string{"Pod", "Node", "Namespace", "Service", "ConfigMap", "Secret", "ServiceAccount", "Event", "ReplicationController", "Endpoints", "PersistentVolumeClaim", "LimitRange"}},
+	{"apps", "apps", []string{"ReplicaSet", "StatefulSet", "Deployment", "DaemonSet", "ControllerRevision"}},
+	{"batch", "batch", []string{"Job", "CronJob"}},
 	{"policy", "policy", []string{"PodDisruptionBudget"}},
 	{"resource", "resource", []string{"DeviceClass", "ResourceClaim", "ResourceClaimTemplate", "ResourceSlice"}},
 	{"coordination", "coordination", []string{"Lease"}},
@@ -307,7 +308,7 @@ func generate(up *upstream, alias string, kinds []string) ([]byte, error) {
 	}
 	out.WriteString(")\n\n")
 	out.Write(body.Bytes())
-	return format.Source(out.Bytes())
+	return imports.Process("", out.Bytes(), nil)
 }
 
 func tableHandlerFunc(st ast.Stmt) string {

@@ -5,14 +5,19 @@ package tables
 import (
 	"bytes"
 	"fmt"
+	"strings"
+	"time"
+
 	appsv1 "k8s.io/api/apps/v1"
+	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/duration"
 	"k8s.io/kubernetes/pkg/apis/apps"
 	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/printers"
-	"time"
 )
 
 func AddHandlers(h printers.PrintHandler) {
@@ -28,6 +33,21 @@ func AddHandlers(h printers.PrintHandler) {
 	}
 	_ = h.TableHandler(replicaSetColumnDefinitions, printReplicaSet)
 	_ = h.TableHandler(replicaSetColumnDefinitions, printReplicaSetList)
+	daemonSetColumnDefinitions := []metav1.TableColumnDefinition{
+		{Name: "Name", Type: "string", Format: "name", Description: metav1.ObjectMeta{}.SwaggerDoc()["name"]},
+		{Name: "Desired", Type: "integer", Description: appsv1.DaemonSetStatus{}.SwaggerDoc()["desiredNumberScheduled"]},
+		{Name: "Current", Type: "integer", Description: appsv1.DaemonSetStatus{}.SwaggerDoc()["currentNumberScheduled"]},
+		{Name: "Ready", Type: "integer", Description: appsv1.DaemonSetStatus{}.SwaggerDoc()["numberReady"]},
+		{Name: "Up-to-date", Type: "integer", Description: appsv1.DaemonSetStatus{}.SwaggerDoc()["updatedNumberScheduled"]},
+		{Name: "Available", Type: "integer", Description: appsv1.DaemonSetStatus{}.SwaggerDoc()["numberAvailable"]},
+		{Name: "Node Selector", Type: "string", Description: apiv1.PodSpec{}.SwaggerDoc()["nodeSelector"]},
+		{Name: "Age", Type: "string", Description: metav1.ObjectMeta{}.SwaggerDoc()["creationTimestamp"]},
+		{Name: "Containers", Type: "string", Priority: 1, Description: "Names of each container in the template."},
+		{Name: "Images", Type: "string", Priority: 1, Description: "Images referenced by each container in the template."},
+		{Name: "Selector", Type: "string", Priority: 1, Description: appsv1.DaemonSetSpec{}.SwaggerDoc()["selector"]},
+	}
+	_ = h.TableHandler(daemonSetColumnDefinitions, printDaemonSet)
+	_ = h.TableHandler(daemonSetColumnDefinitions, printDaemonSetList)
 	statefulSetColumnDefinitions := []metav1.TableColumnDefinition{
 		{Name: "Name", Type: "string", Format: "name", Description: metav1.ObjectMeta{}.SwaggerDoc()["name"]},
 		{Name: "Ready", Type: "string", Description: "Number of the pod with ready state"},
@@ -37,6 +57,26 @@ func AddHandlers(h printers.PrintHandler) {
 	}
 	_ = h.TableHandler(statefulSetColumnDefinitions, printStatefulSet)
 	_ = h.TableHandler(statefulSetColumnDefinitions, printStatefulSetList)
+	deploymentColumnDefinitions := []metav1.TableColumnDefinition{
+		{Name: "Name", Type: "string", Format: "name", Description: metav1.ObjectMeta{}.SwaggerDoc()["name"]},
+		{Name: "Ready", Type: "string", Description: "Number of the pod with ready state"},
+		{Name: "Up-to-date", Type: "string", Description: appsv1.DeploymentStatus{}.SwaggerDoc()["updatedReplicas"]},
+		{Name: "Available", Type: "string", Description: appsv1.DeploymentStatus{}.SwaggerDoc()["availableReplicas"]},
+		{Name: "Age", Type: "string", Description: metav1.ObjectMeta{}.SwaggerDoc()["creationTimestamp"]},
+		{Name: "Containers", Type: "string", Priority: 1, Description: "Names of each container in the template."},
+		{Name: "Images", Type: "string", Priority: 1, Description: "Images referenced by each container in the template."},
+		{Name: "Selector", Type: "string", Priority: 1, Description: appsv1.DeploymentSpec{}.SwaggerDoc()["selector"]},
+	}
+	_ = h.TableHandler(deploymentColumnDefinitions, printDeployment)
+	_ = h.TableHandler(deploymentColumnDefinitions, printDeploymentList)
+	controllerRevisionColumnDefinition := []metav1.TableColumnDefinition{
+		{Name: "Name", Type: "string", Format: "name", Description: metav1.ObjectMeta{}.SwaggerDoc()["name"]},
+		{Name: "Controller", Type: "string", Description: "Controller of the object"},
+		{Name: "Revision", Type: "string", Description: appsv1.ControllerRevision{}.SwaggerDoc()["revision"]},
+		{Name: "Age", Type: "string", Description: metav1.ObjectMeta{}.SwaggerDoc()["creationTimestamp"]},
+	}
+	_ = h.TableHandler(controllerRevisionColumnDefinition, printControllerRevision)
+	_ = h.TableHandler(controllerRevisionColumnDefinition, printControllerRevisionList)
 }
 
 // translateTimestampSince returns the elapsed time since timestamp in
@@ -105,6 +145,74 @@ func printStatefulSetList(list *apps.StatefulSetList, options printers.GenerateO
 	return rows, nil
 }
 
+func printDaemonSet(obj *apps.DaemonSet, options printers.GenerateOptions) ([]metav1.TableRow, error) {
+	row := metav1.TableRow{
+		Object: runtime.RawExtension{Object: obj},
+	}
+
+	desiredScheduled := obj.Status.DesiredNumberScheduled
+	currentScheduled := obj.Status.CurrentNumberScheduled
+	numberReady := obj.Status.NumberReady
+	numberUpdated := obj.Status.UpdatedNumberScheduled
+	numberAvailable := obj.Status.NumberAvailable
+
+	row.Cells = append(row.Cells, obj.Name, int64(desiredScheduled), int64(currentScheduled), int64(numberReady), int64(numberUpdated), int64(numberAvailable), labels.FormatLabels(obj.Spec.Template.Spec.NodeSelector), translateTimestampSince(obj.CreationTimestamp))
+	if options.Wide {
+		names, images := layoutContainerCells(obj.Spec.Template.Spec.Containers)
+		row.Cells = append(row.Cells, names, images, metav1.FormatLabelSelector(obj.Spec.Selector))
+	}
+	return []metav1.TableRow{row}, nil
+}
+
+func printDaemonSetList(list *apps.DaemonSetList, options printers.GenerateOptions) ([]metav1.TableRow, error) {
+	rows := make([]metav1.TableRow, 0, len(list.Items))
+	for i := range list.Items {
+		r, err := printDaemonSet(&list.Items[i], options)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, r...)
+	}
+	return rows, nil
+}
+
+func printDeployment(obj *apps.Deployment, options printers.GenerateOptions) ([]metav1.TableRow, error) {
+	row := metav1.TableRow{
+		Object: runtime.RawExtension{Object: obj},
+	}
+	desiredReplicas := obj.Spec.Replicas
+	updatedReplicas := obj.Status.UpdatedReplicas
+	readyReplicas := obj.Status.ReadyReplicas
+	availableReplicas := obj.Status.AvailableReplicas
+	age := translateTimestampSince(obj.CreationTimestamp)
+	containers := obj.Spec.Template.Spec.Containers
+	selector, err := metav1.LabelSelectorAsSelector(obj.Spec.Selector)
+	selectorString := ""
+	if err != nil {
+		selectorString = "<invalid>"
+	} else {
+		selectorString = selector.String()
+	}
+	row.Cells = append(row.Cells, obj.Name, fmt.Sprintf("%d/%d", int64(readyReplicas), int64(desiredReplicas)), int64(updatedReplicas), int64(availableReplicas), age)
+	if options.Wide {
+		containers, images := layoutContainerCells(containers)
+		row.Cells = append(row.Cells, containers, images, selectorString)
+	}
+	return []metav1.TableRow{row}, nil
+}
+
+func printDeploymentList(list *apps.DeploymentList, options printers.GenerateOptions) ([]metav1.TableRow, error) {
+	rows := make([]metav1.TableRow, 0, len(list.Items))
+	for i := range list.Items {
+		r, err := printDeployment(&list.Items[i], options)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, r...)
+	}
+	return rows, nil
+}
+
 // Lay out all the containers on one line if use wide output.
 func layoutContainerCells(containers []api.Container) (names string, images string) {
 	var namesBuffer bytes.Buffer
@@ -119,4 +227,48 @@ func layoutContainerCells(containers []api.Container) (names string, images stri
 		}
 	}
 	return namesBuffer.String(), imagesBuffer.String()
+}
+
+func printControllerRevision(obj *apps.ControllerRevision, options printers.GenerateOptions) ([]metav1.TableRow, error) {
+	row := metav1.TableRow{
+		Object: runtime.RawExtension{Object: obj},
+	}
+
+	controllerRef := metav1.GetControllerOf(obj)
+	controllerName := "<none>"
+	if controllerRef != nil {
+		withKind := true
+		gv, err := schema.ParseGroupVersion(controllerRef.APIVersion)
+		if err != nil {
+			return nil, err
+		}
+		gvk := gv.WithKind(controllerRef.Kind)
+		controllerName = formatResourceName(gvk.GroupKind(), controllerRef.Name, withKind)
+	}
+	revision := obj.Revision
+	age := translateTimestampSince(obj.CreationTimestamp)
+	row.Cells = append(row.Cells, obj.Name, controllerName, revision, age)
+	return []metav1.TableRow{row}, nil
+}
+
+func printControllerRevisionList(list *apps.ControllerRevisionList, options printers.GenerateOptions) ([]metav1.TableRow, error) {
+	rows := make([]metav1.TableRow, 0, len(list.Items))
+	for i := range list.Items {
+		r, err := printControllerRevision(&list.Items[i], options)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, r...)
+	}
+	return rows, nil
+}
+
+// formatResourceName receives a resource kind, name, and boolean specifying
+// whether or not to update the current name to "kind/name"
+func formatResourceName(kind schema.GroupKind, name string, withKind bool) string {
+	if !withKind || kind.Empty() {
+		return name
+	}
+
+	return strings.ToLower(kind.String()) + "/" + name
 }

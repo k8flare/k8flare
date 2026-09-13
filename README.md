@@ -14,7 +14,7 @@ so a request pays only for the binary it needs:
   supervisor endpoints, root discovery, and routing. `/api/*` and
   `/apis/<group>/*` go to that group's worker, unknown groups to
   `customresources`, `/openapi/*` to `openapi`.
-- `packages/apiserver-{core,coordination,discovery,node,storage,authentication,authorization,apps,policy,resource,rbac}`
+- `packages/apiserver-{core,coordination,discovery,node,storage,authentication,authorization,apps,policy,resource,rbac,batch}`
   — one worker per served API group: k8s.io/apiserver's API installer over
   generic stores for that group only, so each links only its own types.
   The group list and each group's scheme registration are generated from
@@ -40,6 +40,11 @@ so a request pays only for the binary it needs:
 - `packages/scheduler` — the real kube-scheduler behind the `Scheduler`
   entrypoint, started on the first wake-up and pumped for a bounded window
   per wake-up.
+- `packages/controllers` — fifteen of kube-controller-manager's controllers
+  (replication, replicaset, deployment, daemonset, statefulset, job,
+  cronjob, endpoints, endpointslice, nodeipam, nodelifecycle,
+  tainteviction, serviceaccount, root-ca-cert-publisher, namespace) behind the `Controllers` entrypoint, woken by writes to the
+  resources they reconcile and held only while their workqueues are busy.
 - `packages/printers` and `packages/printers-{core,coordination,discovery,node,storage,apps,policy,resource}`
   — upstream's `kubectl get` printers, one worker per API group.
 - `packages/worker-bridge` — the bridge between a Go `http.Handler` and the
@@ -72,7 +77,7 @@ make gen             # regenerate the served-resource table, printers and OpenAP
 make test            # client-go tests against a wrangler dev the tests start themselves
 make dev             # wrangler dev on :18787 (see the Makefile for why CLAUDECODE is unset)
 make devtls          # https://localhost:6443 -> :18787, CA in .build/devtls/ca.crt
-make e2e SET=required   # upstream e2e.test, narrowed focus; needs make dev, make devtls, a joined node
+make e2e SET=required   # upstream e2e.test via ginkgo (PROCS=4 parallel; [Serial] specs run alone); needs make dev, make devtls, a joined node
 ```
 
 Tokens for dev live in `.dev.vars` next to `wrangler.jsonc` (copy

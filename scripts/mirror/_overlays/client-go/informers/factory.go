@@ -14,7 +14,10 @@ import (
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	wait "k8s.io/apimachinery/pkg/util/wait"
 	apps "k8s.io/client-go/informers/apps"
+	batch "k8s.io/client-go/informers/batch"
+	coordination "k8s.io/client-go/informers/coordination"
 	core "k8s.io/client-go/informers/core"
+	discovery "k8s.io/client-go/informers/discovery"
 	internalinterfaces "k8s.io/client-go/informers/internalinterfaces"
 	policy "k8s.io/client-go/informers/policy"
 	resource "k8s.io/client-go/informers/resource"
@@ -219,6 +222,9 @@ type SharedInformerFactory interface {
 	InformerFor(obj runtime.Object, newFunc internalinterfaces.NewInformerFunc) cache.SharedIndexInformer
 
 	Apps() apps.Interface
+	Batch() batch.Interface
+	Coordination() coordination.Interface
+	Discovery() discovery.Interface
 	Core() core.Interface
 	Policy() policy.Interface
 	Resource() resource.Interface
@@ -228,6 +234,18 @@ type SharedInformerFactory interface {
 
 func (f *sharedInformerFactory) Apps() apps.Interface {
 	return apps.New(f, f.namespace, f.tweakListOptions)
+}
+
+func (f *sharedInformerFactory) Batch() batch.Interface {
+	return batch.New(f, f.namespace, f.tweakListOptions)
+}
+
+func (f *sharedInformerFactory) Coordination() coordination.Interface {
+	return coordination.New(f, f.namespace, f.tweakListOptions)
+}
+
+func (f *sharedInformerFactory) Discovery() discovery.Interface {
+	return discovery.New(f, f.namespace, f.tweakListOptions)
 }
 
 func (f *sharedInformerFactory) Core() core.Interface {

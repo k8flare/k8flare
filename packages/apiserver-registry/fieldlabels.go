@@ -42,7 +42,11 @@ func attrsFor(selector fields.Selector) storage.AttrFunc {
 			if alias, ok := fieldAliases[path]; ok {
 				path = alias
 			}
-			set[r.Field] = lookupField(u, strings.Split(path, "."))
+			value := lookupField(u, strings.Split(path, "."))
+			if value == "" && (r.Value == "true" || r.Value == "false") {
+				value = "false"
+			}
+			set[r.Field] = value
 		}
 		return m.GetLabels(), set, nil
 	}

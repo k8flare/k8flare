@@ -5,6 +5,11 @@ package tables
 import (
 	"bytes"
 	"fmt"
+	"net"
+	"strconv"
+	"strings"
+	"time"
+
 	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -14,12 +19,10 @@ import (
 	podutil "k8s.io/kubernetes/pkg/api/pod"
 	podutilv1 "k8s.io/kubernetes/pkg/api/v1/pod"
 	api "k8s.io/kubernetes/pkg/apis/core"
+	"k8s.io/kubernetes/pkg/apis/core/helper"
 	"k8s.io/kubernetes/pkg/printers"
 	"k8s.io/kubernetes/pkg/util/node"
 	"k8s.io/utils/ptr"
-	"strconv"
-	"strings"
-	"time"
 )
 
 func AddHandlers(h printers.PrintHandler) {
@@ -59,6 +62,13 @@ func AddHandlers(h printers.PrintHandler) {
 	}
 	_ = h.TableHandler(serviceColumnDefinitions, printService)
 	_ = h.TableHandler(serviceColumnDefinitions, printServiceList)
+	endpointColumnDefinitions := []metav1.TableColumnDefinition{
+		{Name: "Name", Type: "string", Format: "name", Description: metav1.ObjectMeta{}.SwaggerDoc()["name"]},
+		{Name: "Endpoints", Type: "string", Description: apiv1.Endpoints{}.SwaggerDoc()["subsets"]},
+		{Name: "Age", Type: "string", Description: metav1.ObjectMeta{}.SwaggerDoc()["creationTimestamp"]},
+	}
+	_ = h.TableHandler(endpointColumnDefinitions, printEndpoints)
+	_ = h.TableHandler(endpointColumnDefinitions, printEndpointsList)
 	nodeColumnDefinitions := []metav1.TableColumnDefinition{
 		{Name: "Name", Type: "string", Format: "name", Description: metav1.ObjectMeta{}.SwaggerDoc()["name"]},
 		{Name: "Status", Type: "string", Description: "The status of the node"},
@@ -108,6 +118,19 @@ func AddHandlers(h printers.PrintHandler) {
 	}
 	_ = h.TableHandler(serviceAccountColumnDefinitions, printServiceAccount)
 	_ = h.TableHandler(serviceAccountColumnDefinitions, printServiceAccountList)
+	persistentVolumeClaimColumnDefinitions := []metav1.TableColumnDefinition{
+		{Name: "Name", Type: "string", Format: "name", Description: metav1.ObjectMeta{}.SwaggerDoc()["name"]},
+		{Name: "Status", Type: "string", Description: apiv1.PersistentVolumeClaimStatus{}.SwaggerDoc()["phase"]},
+		{Name: "Volume", Type: "string", Description: apiv1.PersistentVolumeClaimSpec{}.SwaggerDoc()["volumeName"]},
+		{Name: "Capacity", Type: "string", Description: apiv1.PersistentVolumeClaimStatus{}.SwaggerDoc()["capacity"]},
+		{Name: "Access Modes", Type: "string", Description: apiv1.PersistentVolumeClaimStatus{}.SwaggerDoc()["accessModes"]},
+		{Name: "StorageClass", Type: "string", Description: "StorageClass of the pvc"},
+		{Name: "VolumeAttributesClass", Type: "string", Description: "VolumeAttributesClass of the pvc"},
+		{Name: "Age", Type: "string", Description: metav1.ObjectMeta{}.SwaggerDoc()["creationTimestamp"]},
+		{Name: "VolumeMode", Type: "string", Priority: 1, Description: apiv1.PersistentVolumeClaimSpec{}.SwaggerDoc()["volumeMode"]},
+	}
+	_ = h.TableHandler(persistentVolumeClaimColumnDefinitions, printPersistentVolumeClaim)
+	_ = h.TableHandler(persistentVolumeClaimColumnDefinitions, printPersistentVolumeClaimList)
 	configMapColumnDefinitions := []metav1.TableColumnDefinition{
 		{Name: "Name", Type: "string", Format: "name", Description: metav1.ObjectMeta{}.SwaggerDoc()["name"]},
 		{Name: "Data", Type: "string", Description: apiv1.ConfigMap{}.SwaggerDoc()["data"]},
@@ -127,6 +150,57 @@ const (
 	// nodeLabelRole specifies the role of a node
 	nodeLabelRole = "kubernetes.io/role"
 )
+
+// Pass ports=nil for all ports.
+func formatEndpoints(endpoints *api.Endpoints, ports sets.String) string {
+	if len(endpoints.Subsets) == 0 {
+		return "<none>"
+	}
+	list := []string{}
+	max := 3
+	more := false
+	count := 0
+	for i := range endpoints.Subsets {
+		ss := &endpoints.Subsets[i]
+		if len(ss.Ports) == 0 {
+
+			count += len(ss.Addresses)
+			for i := range ss.Addresses {
+				if len(list) == max {
+					more = true
+
+					break
+				}
+				list = append(list, ss.Addresses[i].IP)
+			}
+
+			continue
+		}
+
+		for i := range ss.Ports {
+			port := &ss.Ports[i]
+			if ports == nil || ports.Has(port.Name) {
+				count += len(ss.Addresses)
+				for i := range ss.Addresses {
+					if len(list) == max {
+						more = true
+
+						break
+					}
+					addr := &ss.Addresses[i]
+					hostPort := net.JoinHostPort(addr.IP, strconv.Itoa(int(port.Port)))
+					list = append(list, hostPort)
+				}
+			}
+		}
+	}
+
+	ret := strings.Join(list, ",")
+	if more {
+		return fmt.Sprintf("%s + %d more...", ret, count-max)
+	}
+	return ret
+}
 
 // translateMicroTimestampSince returns the elapsed time since timestamp in
 // human-readable approximation.
@@ -495,6 +569,26 @@ func printServiceList(list *api.ServiceList, options printers.GenerateOptions) (
 	return rows, nil
 }
 
+func printEndpoints(obj *api.Endpoints, options printers.GenerateOptions) ([]metav1.TableRow, error) {
+	row := metav1.TableRow{
+		Object: runtime.RawExtension{Object: obj},
+	}
+	row.Cells = append(row.Cells, obj.Name, formatEndpoints(obj, nil), translateTimestampSince(obj.CreationTimestamp))
+	return []metav1.TableRow{row}, nil
+}
+
+func printEndpointsList(list *api.EndpointsList, options printers.GenerateOptions) ([]metav1.TableRow, error) {
+	rows := make([]metav1.TableRow, 0, len(list.Items))
+	for i := range list.Items {
+		r, err := printEndpoints(&list.Items[i], options)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, r...)
+	}
+	return rows, nil
+}
+
 func printNamespace(obj *api.Namespace, options printers.GenerateOptions) ([]metav1.TableRow, error) {
 	row := metav1.TableRow{
 		Object: runtime.RawExtension{Object: obj},
@@ -656,6 +750,53 @@ func printNodeList(list *api.NodeList, options printers.GenerateOptions) ([]meta
 	rows := make([]metav1.TableRow, 0, len(list.Items))
 	for i := range list.Items {
 		r, err := printNode(&list.Items[i], options)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, r...)
+	}
+	return rows, nil
+}
+
+func printPersistentVolumeClaim(obj *api.PersistentVolumeClaim, options printers.GenerateOptions) ([]metav1.TableRow, error) {
+	row := metav1.TableRow{
+		Object: runtime.RawExtension{Object: obj},
+	}
+
+	phase := obj.Status.Phase
+	if obj.ObjectMeta.DeletionTimestamp != nil {
+		phase = "Terminating"
+	}
+
+	volumeAttributeClass := "<unset>"
+	storage := obj.Spec.Resources.Requests[api.ResourceStorage]
+	capacity := ""
+	accessModes := ""
+	volumeMode := "<unset>"
+
+	if obj.Spec.VolumeAttributesClassName != nil {
+		volumeAttributeClass = *obj.Spec.VolumeAttributesClassName
+	}
+
+	if obj.Spec.VolumeName != "" {
+		accessModes = helper.GetAccessModesAsString(obj.Status.AccessModes)
+		storage = obj.Status.Capacity[api.ResourceStorage]
+		capacity = storage.String()
+	}
+
+	if obj.Spec.VolumeMode != nil {
+		volumeMode = string(*obj.Spec.VolumeMode)
+	}
+
+	row.Cells = append(row.Cells, obj.Name, string(phase), obj.Spec.VolumeName, capacity, accessModes,
+		helper.GetPersistentVolumeClaimClass(obj), volumeAttributeClass, translateTimestampSince(obj.CreationTimestamp), volumeMode)
+	return []metav1.TableRow{row}, nil
+}
+
+func printPersistentVolumeClaimList(list *api.PersistentVolumeClaimList, options printers.GenerateOptions) ([]metav1.TableRow, error) {
+	rows := make([]metav1.TableRow, 0, len(list.Items))
+	for i := range list.Items {
+		r, err := printPersistentVolumeClaim(&list.Items[i], options)
 		if err != nil {
 			return nil, err
 		}

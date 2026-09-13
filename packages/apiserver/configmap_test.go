@@ -11,6 +11,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
+const notRootCA = "metadata.name!=kube-root-ca.crt"
+
 func TestConfigMapVerbs(t *testing.T) {
 	cs := startDev(t)
 	c := ctx(t)
@@ -60,7 +62,7 @@ func TestConfigMapVerbs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	list, err := cms.List(c, metav1.ListOptions{})
+	list, err := cms.List(c, metav1.ListOptions{FieldSelector: notRootCA})
 	if err != nil || len(list.Items) != 4 || list.ResourceVersion == "" {
 		t.Fatalf("list: %v items=%d rv=%q", err, len(list.Items), list.ResourceVersion)
 	}
@@ -72,18 +74,18 @@ func TestConfigMapVerbs(t *testing.T) {
 	if err != nil || len(list.Items) != 1 {
 		t.Fatalf("list by field: %v items=%d", err, len(list.Items))
 	}
-	page1, err := cms.List(c, metav1.ListOptions{Limit: 3})
+	page1, err := cms.List(c, metav1.ListOptions{Limit: 3, FieldSelector: notRootCA})
 	if err != nil || len(page1.Items) != 3 || page1.Continue == "" {
 		t.Fatalf("page 1: %v items=%d continue=%q", err, len(page1.Items), page1.Continue)
 	}
-	page2, err := cms.List(c, metav1.ListOptions{Limit: 3, Continue: page1.Continue})
+	page2, err := cms.List(c, metav1.ListOptions{Limit: 3, Continue: page1.Continue, FieldSelector: notRootCA})
 	if err != nil || len(page2.Items) != 1 || page2.Continue != "" {
 		t.Fatalf("page 2: %v items=%d continue=%q", err, len(page2.Items), page2.Continue)
 	}
 	if _, err := cs.CoreV1().ConfigMaps("other").Create(c, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "a"}}, metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	all, err := cs.CoreV1().ConfigMaps("").List(c, metav1.ListOptions{})
+	all, err := cs.CoreV1().ConfigMaps("").List(c, metav1.ListOptions{FieldSelector: notRootCA})
 	if err != nil || len(all.Items) != 5 {
 		t.Fatalf("list all namespaces: %v items=%d", err, len(all.Items))
 	}
@@ -97,7 +99,7 @@ func TestConfigMapVerbs(t *testing.T) {
 	if err := cms.DeleteCollection(c, metav1.DeleteOptions{}, metav1.ListOptions{LabelSelector: "group=x"}); err != nil {
 		t.Fatalf("deletecollection: %v", err)
 	}
-	list, err = cms.List(c, metav1.ListOptions{})
+	list, err = cms.List(c, metav1.ListOptions{FieldSelector: notRootCA})
 	if err != nil || len(list.Items) != 0 {
 		t.Fatalf("list after deletecollection: %v items=%d", err, len(list.Items))
 	}

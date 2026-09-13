@@ -7,6 +7,7 @@ export { OpenAPI } from "./openapi.ts";
 export { CustomResources } from "./customresources.ts";
 export { APIGroups } from "./apigroups.ts";
 export { Scheduler } from "./scheduler.ts";
+export { Controllers } from "./controllers.ts";
 export { NodeTunnels } from "./nodetunnel.ts";
 async function acceptTunnel(request: Request, env: Env): Promise<Response> {
   if (request.headers.get("Upgrade") !== "websocket") {
