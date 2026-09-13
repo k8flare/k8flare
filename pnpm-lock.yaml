@@ -32,6 +32,23 @@ importers:
       '@k8flare/cluster-store':
         specifier: workspace:*
         version: link:../cluster-store
+      '@k8flare/loader-kit':
+        specifier: workspace:*
+        version: link:../loader-kit
+
+  packages/loader-kit: {}
+
+  packages/printers: {}
+
+  packages/printers-coordination: {}
+
+  packages/printers-core: {}
+
+  packages/printers-discovery: {}
+
+  packages/printers-node: {}
+
+  packages/printers-storage: {}
 
   packages/worker-bridge: {}
 

@@ -38,12 +38,15 @@ func startDevURL(t *testing.T) (string, *kubernetes.Clientset) {
 	t.Helper()
 	_, file, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(file), "../..")
-	if _, err := os.Stat(filepath.Join(root, "packages/control-plane-worker/assets/wasm/apiserver.manifest.json")); err != nil {
-		t.Fatalf("wasm assets missing; run make wasm: %v", err)
+	for _, m := range []string{"packages/control-plane-worker/assets/wasm/apiserver.manifest.json", "packages/control-plane-worker/assets/wasm/printers-core.manifest.json"} {
+		if _, err := os.Stat(filepath.Join(root, m)); err != nil {
+			t.Fatalf("wasm assets missing; run make wasm: %v", err)
+		}
 	}
 	port := freePort(t)
 	state := t.TempDir()
 	cmd := exec.Command("pnpm", "exec", "wrangler", "dev", "--local",
+		"-c", "wrangler.jsonc",
 		"--persist-to", state, "--port", fmt.Sprint(port), "--inspector-port", "0")
 	cmd.Dir = root
 	cmd.Env = append(devEnv(), "ADMIN_TOKEN="+devToken, "JOIN_TOKEN="+joinToken)

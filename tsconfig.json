@@ -7,7 +7,12 @@
     "noEmit": true,
     "strict": true,
     "types": [],
-    "lib": ["es2022"]
+    "lib": [
+      "es2022"
+    ]
   },
-  "include": ["packages/*/src", "worker-configuration.d.ts"]
+  "include": [
+    "packages/*/src",
+    "worker-configuration.d.ts"
+  ]
 }

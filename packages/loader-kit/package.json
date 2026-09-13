@@ -1,0 +1,7 @@
+{
+  "name": "@k8flare/loader-kit",
+  "private": true,
+  "type": "module",
+  "description": "Loads a Go WASM binary from Static Assets parts as a Worker Loader dynamic worker.",
+  "exports": { ".": "./src/index.ts" }
+}

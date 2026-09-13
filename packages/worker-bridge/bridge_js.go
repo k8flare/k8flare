@@ -458,3 +458,36 @@ func (c *WebSocket) Close() {
 		c.ws.Call("close", 1000, "done")
 	}()
 }
+
+// Call invokes an RPC method on a service binding in the request's env and
+// returns the resolved value. []byte arguments cross as Uint8Array.
+func Call(ctx context.Context, bindingName, method string, args ...any) (js.Value, error) {
+	binding := Binding(ctx, bindingName)
+	if binding.IsUndefined() || binding.IsNull() {
+		return js.Value{}, fmt.Errorf("bridge: binding %q is not in env", bindingName)
+	}
+	jsArgs := make([]any, len(args))
+	for i, a := range args {
+		if b, ok := a.([]byte); ok {
+			jsArgs[i] = toUint8Array(b)
+		} else {
+			jsArgs[i] = a
+		}
+	}
+	return await(binding.Call(method, jsArgs...))
+}
+
+// CallBytes is Call for methods that return bytes.
+func CallBytes(ctx context.Context, bindingName, method string, args ...any) ([]byte, error) {
+	v, err := Call(ctx, bindingName, method, args...)
+	if err != nil {
+		return nil, err
+	}
+	return fromUint8Array(js.Global().Get("Uint8Array").New(v)), nil
+}
+
+// HasBinding reports whether the request's env carries a binding.
+func HasBinding(ctx context.Context, name string) bool {
+	b := Binding(ctx, name)
+	return !b.IsUndefined() && !b.IsNull()
+}

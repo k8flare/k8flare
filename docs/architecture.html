@@ -129,15 +129,17 @@
   <div class="tablewrap"><table>
     <thead><tr><th>パッケージ</th><th>役割</th><th>依存先</th><th class="num">手書き行</th><th class="num">生成</th><th class="num">テスト</th></tr></thead>
     <tbody>
-      <tr><td class="pkg"><span class="tag ts">TS</span>control-plane-worker</td><td>唯一の Worker。ルーティング、Loader bootstrap(JS 文字列)、チャンク結合、トンネルのスタブ。DO stub を Loader の env に渡す。</td><td>cluster-store, LOADER, ASSETS</td><td class="num">104</td><td class="num">–</td><td class="num">–</td></tr>
+      <tr><td class="pkg"><span class="tag ts">TS</span>control-plane-worker</td><td>唯一の Worker。ルーティング、トンネルのスタブ、<code>Printers</code> RPC エントリポイント(自己 Service Binding)。DO stub を Loader の env に渡す。</td><td>cluster-store, loader-kit, LOADER, ASSETS, PRINTERS</td><td class="num">51</td><td class="num">–</td><td class="num">–</td></tr>
+      <tr><td class="pkg"><span class="tag ts">TS</span>loader-kit</td><td>Loader bootstrap(JS 文字列)、manifest キャッシュ、チャンク結合。<code>loadWasmWorker(name)</code> で apiserver / printers-* を同じ経路でロード。</td><td>LOADER, ASSETS</td><td class="num">88</td><td class="num">–</td><td class="num">–</td></tr>
       <tr><td class="pkg"><span class="tag do">DO</span>cluster-store</td><td>Cluster Durable Object。kine 風の revision 付き KV ログ(SQLite)と、hibernatable WebSocket への watch 配信。</td><td>–</td><td class="num">231</td><td class="num">–</td><td class="num">–</td></tr>
       <tr><td class="pkg"><span class="tag go">Go</span>apiserver</td><td>エントリ。installer の配線、認証(bearertoken + union)、review 系リソース、既定 namespace、<code>cmd/apiserver-wasm</code>。</td><td>registry, kine, supervisor, worker-bridge</td><td class="num">419</td><td class="num">–</td><td class="num">644</td></tr>
       <tr><td class="pkg"><span class="tag go">Go</span>apiserver-registry</td><td>提供リソースごとの <code>genericregistry.Store</code>。表は upstream の discovery 文書から生成。pods の graceful delete、nodes の PodCIDR、status、pods/log。</td><td>kine, k8s.io/apiserver, k8s.io/kubernetes/pkg/apis/*/v1</td><td class="num">465</td><td class="num">47</td><td class="num">–</td></tr>
+      <tr><td class="pkg"><span class="tag go">Go</span>printers / printers-*</td><td>upstream の <code>pkg/printers</code> を API グループ単位に切り出した Dynamic Worker(core, coordination, discovery, node, storage)。POST /table で Table を返す。apiserver からは <code>PRINTERS.convertToTable</code> RPC 経由。</td><td>k8s.io/kubernetes/pkg/printers(生成抜粋)</td><td class="num">44</td><td class="num">1,086</td><td class="num">–</td></tr>
       <tr><td class="pkg"><span class="tag go">Go</span>apiserver-kine</td><td><code>storage.Interface</code> の実装。DO の HTTP/WebSocket プロトコルを話し、WatchList の bookmark を発行。</td><td>k8s.io/apiserver/pkg/storage</td><td class="num">526</td><td class="num">–</td><td class="num">–</td></tr>
       <tr><td class="pkg"><span class="tag go">Go</span>apiserver-supervisor</td><td>k3s の join プロトコル(/cacerts, /v1-k3s/*)、CSR 署名、CA vault、ノードパスワード。</td><td>kine</td><td class="num">418</td><td class="num">–</td><td class="num">–</td></tr>
       <tr><td class="pkg"><span class="tag go">Go</span>worker-bridge</td><td>Go <code>http.Handler</code> ↔ Loader bootstrap。ストリーム応答(ReadableStream)、binding 経由 fetch、WebSocket クライアント。</td><td>syscall/js</td><td class="num">460</td><td class="num">–</td><td class="num">–</td></tr>
       <tr><td class="pkg"><span class="tag go">Go</span>agent</td><td>k3s agent の埋め込み。変更は <code>deps.KubeConfigOverride</code> フック 1 点(ミラーで注入)と kubelet plain-HTTP ポート。</td><td>k3s(mirror)</td><td class="num">127</td><td class="num">–</td><td class="num">–</td></tr>
-      <tr><td class="pkg">scripts/*</td><td>mirror(sha256 ピン付きオーバーレイ)、genresources、wasmpack(wasm_exec パッチ + チャンク化)、devtls。</td><td>依存なし</td><td class="num">830</td><td class="num">111 overlay</td><td class="num">–</td></tr>
+      <tr><td class="pkg">scripts/*</td><td>mirror(sha256 ピン付きオーバーレイ)、genresources、genprinters(AST で到達可能な printer 関数だけ抽出)、wasmpack(wasm_exec パッチ + チャンク化)、devtls。</td><td>依存なし</td><td class="num">1,206</td><td class="num">111 overlay</td><td class="num">–</td></tr>
     </tbody>
   </table></div>
 
@@ -147,6 +149,9 @@
     <div class="bar"><span class="k">apiserver.opt.wasm(wasm-opt -Oz)</span><div class="track"><div class="fill" style="width:82%"></div><div class="fill cap" style="width:95.8%"></div></div><span class="v">57,474,909 B</span></div>
     <div class="bar"><span class="k">Loader cap(赤線)</span><div class="track"><div class="fill cap" style="width:95.8%"></div></div><span class="v">67,108,864 B</span></div>
     <div class="bar"><span class="k">チャンク(ASSETS, ≤ 25 MiB)</span><div class="track"><div class="fill" style="width:36%; background: var(--ts)"></div><div class="fill" style="left:36.5%; width:36%; background: var(--ts)"></div><div class="fill" style="left:73%; width:10%; background: var(--ts)"></div></div><span class="v">25,165,824 ×2 + 7,143,261</span></div>
+    <div class="bar"><span class="k">printers-core.opt.wasm</span><div class="track"><div class="fill" style="width:61%"></div><div class="fill cap" style="width:95.8%"></div></div><span class="v">43,010,102 B</span></div>
+    <div class="bar"><span class="k">printers-storage / discovery / node / coordination</span><div class="track"><div class="fill" style="width:38%"></div></div><span class="v">26.5 / 18.0 / 17.9 / 13.1 MB</span></div>
+    <div class="bar"><span class="k">printers 全グループ 1 バイナリ(不採用)</span><div class="track"><div class="fill" style="width:100%; background: var(--cut)"></div></div><span class="v">79.5 MB &gt; cap</span></div>
     <div class="bar"><span class="k">wasm_exec.js(パッチ済)</span><div class="track"><div class="fill" style="width:0.03%"></div></div><span class="v">17,347 B</span></div>
     <div class="bar"><span class="k">k8flare-agent(linux/arm64)</span><div class="track"><div class="fill" style="width:100%; background: var(--ink-3)"></div></div><span class="v">244,499,662 B</span></div>
   </div>

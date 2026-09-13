@@ -35,6 +35,12 @@ func main() {
 		}
 		return ws.Messages, ws.Close, nil
 	}
+	registry.TableSource = func(ctx context.Context, group string, object []byte) ([]byte, error) {
+		if !bridge.HasBinding(ctx, "PRINTERS") {
+			return nil, registry.ErrNoTableSource
+		}
+		return bridge.CallBytes(ctx, "PRINTERS", "convertToTable", group, object)
+	}
 	handler, err := apiserver.NewHandler(apiserver.Config{
 		Kine:       &http.Client{Transport: bridge.BindingTransport{Name: "STORAGE"}},
 		AdminToken: bridge.Getenv("ADMIN_TOKEN"),

@@ -128,7 +128,7 @@ func NewStore(client *kine.Client, gv schema.GroupVersion, res metav1.APIResourc
 		UpdateStrategy:            strat,
 		DeleteStrategy:            deleteStrategy,
 		ReturnDeletedObject:       true,
-		TableConvertor:            rest.NewDefaultTableConvertor(gr),
+		TableConvertor:            newTableConvertor(gv, gr, codec),
 		ObjectNameFunc: func(obj runtime.Object) (string, error) {
 			a, err := meta.Accessor(obj)
 			if err != nil {

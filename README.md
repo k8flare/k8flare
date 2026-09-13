@@ -19,15 +19,21 @@ root, one flat `packages/` directory, tooling under `scripts/`, plans under
   joins through, the CA vault, and node passwords.
 - `packages/worker-bridge` — the bridge between a Go `http.Handler` and the
   Worker Loader bootstrap, with streaming responses and WebSocket clients.
-- `packages/control-plane-worker` — the Worker: routing and the Loader
-  bootstrap, which hands the Cluster Durable Object's stub to the dynamic
-  worker. `packages/cluster-store` — the Cluster Durable Object.
+- `packages/control-plane-worker` — the Worker: routing, the `Printers`
+  RPC entrypoint, and the Loader call that hands the Cluster Durable
+  Object's stub to the dynamic worker. `packages/loader-kit` — the Loader
+  bootstrap and chunk assembly. `packages/cluster-store` — the Cluster
+  Durable Object.
+- `packages/printers` and `packages/printers-{core,coordination,discovery,node,storage}`
+  — upstream's `kubectl get` printers, one dynamic worker per API group
+  (all groups in one binary exceed the Loader cap).
 - `packages/agent` — the k3s agent, embedded unchanged but for one hook
   that lets it write bearer-token kubeconfigs (TLS terminates at the edge,
   so client certificates never reach the control plane).
 - `scripts/` — `mirror` copies pinned upstream modules into `.build/` with
   sha256-pinned overlays that make them build for GOOS=js, `genresources`
-  writes the served-resource table, `wasmpack` prepares the binary for
+  writes the served-resource table, `genprinters` extracts the kubectl
+  table printers per API group, `wasmpack` prepares the binary for
   Static Assets, `devtls` terminates TLS in front of `wrangler dev`.
 
 ## Local development
@@ -35,7 +41,7 @@ root, one flat `packages/` directory, tooling under `scripts/`, plans under
 ```
 pnpm install
 make wasm            # mirrors + Go WASM + wasm-opt + chunking (size is printed; cap 64MiB)
-make gen             # regenerate the served-resource table after a Kubernetes bump
+make gen             # regenerate the served-resource table and printers after a Kubernetes bump
 make test            # client-go tests against a wrangler dev the tests start themselves
 make dev             # wrangler dev on :18787 (see the Makefile for why CLAUDECODE is unset)
 make devtls          # https://localhost:6443 -> :18787, CA in .build/devtls/ca.crt

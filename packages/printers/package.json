@@ -1,0 +1,9 @@
+{
+  "name": "@k8flare/printers",
+  "private": true,
+  "type": "module",
+  "description": "The HTTP surface a printers dynamic worker serves: POST /table with an object, get its metav1.Table.",
+  "scripts": {
+    "vet": "cd ../.. && GOOS=js GOARCH=wasm go vet ./packages/printers/..."
+  }
+}
