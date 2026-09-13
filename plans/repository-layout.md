@@ -41,7 +41,7 @@ packages/
 ## Commit sequence (one commit)
 
 1. `git mv` every file; update import paths, `wrangler.jsonc` paths,
-   Makefile paths, the test harness's paths, README.
+   Makefile paths, the test harness's paths, README. Done 2026-09-13.
 2. `make vet`, `make check`, `make test` green before committing.
 
 ## Known limitations

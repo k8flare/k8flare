@@ -1,0 +1,55 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gofmt:*)",
+      "Bash(go vet:*)",
+      "Bash(go build:*)",
+      "Bash(go test:*)",
+      "Bash(go generate:*)",
+      "Bash(go run:*)",
+      "Bash(vp check)",
+      "Bash(npm run build:wasm)",
+      "Bash(pnpm install)"
+    ],
+    "deny": [
+      "Read(./.secrets/**)",
+      "Read(./.dev.vars)",
+      "Read(./workers/gateway/.dev.vars)",
+      "Read(./workers/apiserver/.dev.vars)",
+      "Read(./workers/runtime/.dev.vars)",
+      "Bash(wrangler secret:*)",
+      "Bash(npx wrangler secret:*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|MultiEdit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/gen-guard.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|MultiEdit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/gofmt-go.sh",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/cost-guard.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

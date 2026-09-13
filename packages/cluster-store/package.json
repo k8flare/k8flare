@@ -1,0 +1,6 @@
+{
+  "name": "@k8flare/cluster-store",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/cluster.ts" }
+}

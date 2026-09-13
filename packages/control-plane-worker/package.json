@@ -1,0 +1,6 @@
+{
+  "name": "@k8flare/control-plane-worker",
+  "private": true,
+  "type": "module",
+  "dependencies": { "@k8flare/cluster-store": "workspace:*" }
+}

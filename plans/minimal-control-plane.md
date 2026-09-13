@@ -12,7 +12,7 @@ its log, and removing it again.
 ## Locked decisions
 
 - **k8flare is glue, not a reimplementation.** Where upstream code has to
-  change, the change is a sha256-pinned overlay applied by `hack/mirror` at
+  change, the change is a sha256-pinned overlay applied by `scripts/mirror` at
   build time, never an edited copy. No per-resource handling in k8flare code
   where upstream can do it; the remaining per-kind branches are listed under
   Known limitations as debt.
@@ -26,7 +26,7 @@ its log, and removing it again.
 - **One resident Go instance per isolate**, dispatched per request by the
   Loader bootstrap. Watches stream from it (Content-Encoding: identity, or
   the runtime gzips JSON and holds the stream until it closes).
-- **The agent is k3s.** `cmd/agent` embeds `k3s/pkg/agent` unchanged except
+- **The agent is k3s.** `packages/agent` embeds `k3s/pkg/agent` unchanged except
   the `deps.KubeConfigOverride` hook, because TLS terminates at the edge and
   client certificates never reach the control plane. Node identity on the
   API is the bearer token `node:<name>:<node password>`, the secret k3s
@@ -37,19 +37,19 @@ its log, and removing it again.
 
 ## Current-state anchors
 
-- `pkg/apiserver/zz_generated_resources.go` (from `hack/genresources`): the
+- `packages/apiserver-registry/zz_generated_resources.go` (from `scripts/genresources`): the
   served surface, filtered from upstream's discovery documents.
-  `registry.go` builds a generic store for each; pods get upstream's
+  `packages/apiserver-registry` builds a generic store for each; pods get upstream's
   graceful-delete rule, nodes a static PodCIDR in `BeginCreate`.
-- `pkg/apiserver/kine.go`: `storage.Interface` over the Cluster DO's
+- `packages/apiserver-kine`: `storage.Interface` over the Cluster DO's
   revisioned key-value log; `Watch` dials the DO over a WebSocket and emits
   the WatchList bookmark at the end of the snapshot.
-- `pkg/apiserver/supervisor.go`, `vault.go`: the nine k3s join endpoints,
+- `packages/apiserver-supervisor`: the nine k3s join endpoints,
   CSR signing, node passwords, CAs in the DO under `/vault`.
-- `pkg/wasmhttp`: the Go↔Loader bridge (streamed responses, WebSocket client).
-- `worker/src/cluster.ts`: the Cluster DO; `worker/src/loader.ts`: bootstrap
-  and chunk assembly; `worker/src/index.ts`: routing and the parked tunnel.
-- `hack/mirror/main.go`: the overlays (apiserver storage factory, tracing
+- `packages/worker-bridge`: the Go↔Loader bridge (streamed responses, WebSocket client).
+- `packages/cluster-store`: the Cluster DO; `packages/control-plane-worker`:
+  bootstrap, chunk assembly, routing and the parked tunnel.
+- `scripts/mirror/main.go`: the overlays (apiserver storage factory, tracing
   exporter, CEL parser, installer hub version, k3s kubeconfig hook).
 
 ## Design
@@ -71,7 +71,7 @@ the code:
 
 Done, on `feat/minimal-rewrite`:
 
-1. Size gate (`hack/mirror`, probe measurements in the commit message).
+1. Size gate (`scripts/mirror`, then under hack/; probe measurements in the commit message).
 2. apiserver on the Loader with the Cluster DO as its store; ConfigMap verbs
    through client-go.
 3. Watch from the resident instance.
@@ -89,7 +89,10 @@ Next:
 Next:
 
 8. Repository layout: root `wrangler.jsonc`, `packages/{component}-{part}`
-   (plans/repository-layout.md).
+   (plans/repository-layout.md). Done 2026-09-13.
+
+Next: see Known limitations, in this order — compaction of the DO log,
+the kubelet tunnel, RBAC, then the scheduler and controllers.
 
 ## Known limitations
 
@@ -97,7 +100,7 @@ Next:
   rule, which upstream keeps on the internal Pod type) and `assignPodCIDR`
   (the nodeipam controller's job until controllers run) are the two
   `if resource == ...` branches left. The served resources themselves are
-  generated from upstream's discovery documents (`hack/genresources`), and
+  generated from upstream's discovery documents (`scripts/genresources`), and
   field labels, defaults and PodLogOptions come from upstream's
   `AddToScheme`.
 - **No scheduler, controllers, Services, kube-proxy, or cluster DNS.** Pods

@@ -9,5 +9,5 @@ dist/
 /kubeconfig.yaml
 .DS_Store
 /bin/
-worker/worker-configuration.d.ts
-worker/assets/wasm/
+/worker-configuration.d.ts
+packages/control-plane-worker/assets/wasm/
