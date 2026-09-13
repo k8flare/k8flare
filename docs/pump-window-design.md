@@ -510,3 +510,16 @@ storage DELETE が成功した**後**に走るので、掃除は守ろうとし�
 
 orphan 側で残っているのは拒否(`RefuseOrphanFinalizeOn`)だけで、その LIST から
 CAS までの窓は開いたままである(`docs/known-issues.md`)。
+
+**上の「削除できるものと順番」表が `sweepOrphanStragglers` に課していた基準への
+回答。** 基準は「orphan 直後・切断/再起動/二重 owner・**新規 dependent の競合**でも
+対象 Pod 数と ownerRef が正しい。foreground だけの合格では消さない」だった。
+
+- 「foreground だけの合格では消さない」は満たしている。根拠にしたのは orphan の
+  spec そのもの(`should orphan pods created by rc if delete options say so`、
+  対象 Pod 数を数える spec)で、7/7 × 3。foreground の合格を代用していない。
+- 「新規 dependent の競合」は**満たしていない。そして関数を残しても満たせない。**
+  掃除は所有者の storage DELETE が成功した後に走るので、この競合の窓は掃除の
+  有無にかかわらず開いている。基準は「掃除がその窓を守っている」という前提で
+  書かれていたが、その前提が誤りだった(S70)。窓は塞がったふりをやめて
+  `docs/known-issues.md` に開いたまま記録した。

@@ -8584,6 +8584,9 @@ clearing the orphan finalizer with only an Event owned =
 | `AfterDelete` → `sweepOrphanStragglers` | 0(一度も実行されていない) | **26**(短絡しない) |
 | 合計 | 27 | **52** |
 
+**追記(同日、S70 後)**: 掃除を削除したので合計は **26**(拒否のみ)に戻った。
+上の表は掃除が実際に走っていた `e5a5555`〜`5c64e3e` の約 90 分間の値として残す。
+
 namespaced リソースは 27 種(S41 の「27 resource kinds」と一致)、うち events が 1。
 拒否される試行のほうは最初の依存で短絡するので 1〜26 で、カスケード 1 回につき
 ちょうど 1 回。**未計測**: 実機での DO LIST 実数は取っていない(S41 は foreground の

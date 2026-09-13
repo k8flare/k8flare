@@ -1,7 +1,9 @@
 # Review brief — `fix/facet-write-durability`, 2026-09-13
 
-Twenty-three commits, +4,456 / −2,697 across 67 files, not merged. Read this with
-`git diff main...HEAD`.
+Not merged. For the size, ask the branch rather than this line, which has gone
+stale twice already: `git rev-list --count main..HEAD` and
+`git diff main...HEAD --shortstat`. Read this document with
+`git diff main...HEAD` open.
 
 This exists because a reviewer arriving cold at 4,000 lines reviews the diff;
 a reviewer arriving at the five arguments reviews the work. What follows is
@@ -169,7 +171,7 @@ instrumentation and changed the resync period.
 
 ### 5. The gate
 
-`b2d410c` `5f30d6b` `3889ea8` `c63cfd5` `e5a5555`
+`b2d410c` `5f30d6b` `3889ea8` `c63cfd5` `e5a5555` `6e5cb44` `65db402` `5c64e3e`
 
 The required garbage-collector focus was failing **41% of the time** — seven
 of seventeen runs. Root cause, measured at one-second resolution on a
