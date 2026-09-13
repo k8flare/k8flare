@@ -10,7 +10,7 @@ export class Scheduler extends WorkerEntrypoint<Env> {
     this.ctx.waitUntil(
       worker.fetch("https://scheduler.internal/poke").then((resp) => {
         if (resp.status === 202) return this.env.SCHEDULER.poke();
-      }),
+      }).catch((err) => console.error("scheduler poke:", err)),
     );
   }
 }

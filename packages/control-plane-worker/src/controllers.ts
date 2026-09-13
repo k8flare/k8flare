@@ -10,7 +10,7 @@ export class Controllers extends WorkerEntrypoint<Env> {
     this.ctx.waitUntil(
       worker.fetch("https://controllers.internal/poke").then((resp) => {
         if (resp.status === 202) return this.env.CONTROLLERS.poke();
-      }),
+      }).catch((err) => console.error("controllers poke:", err)),
     );
   }
 }

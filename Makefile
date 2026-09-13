@@ -1,5 +1,7 @@
 SHELL := /usr/bin/env bash
-MAKEFLAGS += --jobs=4
+MAKEFLAGS += --jobs=8
+.SECONDARY:
+export BINARYEN_CORES := 2
 export GOTOOLCHAIN := auto
 
 ASSETS := packages/control-plane-worker/assets/wasm
@@ -24,9 +26,13 @@ $(BUILD)/apiserver.raw.wasm: $(GO_SRC) | mirrors
 	mkdir -p $(BUILD)
 	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/apiserver/cmd/apiserver-wasm
 
+## wasm-opt -Oz is the slow step (40s for the largest binary); it is skipped
+## when the raw binary's hash matches the one the existing output came from.
 define OPTIMIZE
-	$(WASM_OPT) $< -o $@
-	@size=$$(wc -c < $@ | tr -d ' '); echo "$(notdir $@): $$size bytes (cap $(CAP))"; \
+	@raw=$$(shasum -a 256 $< | cut -c1-64); \
+	if [ -f $@ ] && [ "$$(cat $@.sha256 2>/dev/null)" = "$$raw" ]; then touch $@; echo "$(notdir $@): unchanged"; exit 0; fi; \
+	$(WASM_OPT) $< -o $@ && echo "$$raw" > $@.sha256 && \
+	size=$$(wc -c < $@ | tr -d ' '); echo "$(notdir $@): $$size bytes (cap $(CAP))"; \
 		[ "$$size" -lt $(CAP) ] || { echo "exceeds the Worker Loader cap" >&2; exit 1; }
 endef
 

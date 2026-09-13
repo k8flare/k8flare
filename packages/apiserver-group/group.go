@@ -31,7 +31,7 @@ func NewHandler(gv schema.GroupVersion, cfg Config) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	var handler http.Handler = mux
+	handler := registry.NamespaceLifecycle(client)(mux)
 	for _, wrap := range registry.Middleware {
 		handler = wrap(installed.Stores)(handler)
 	}

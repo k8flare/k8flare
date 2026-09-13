@@ -72,7 +72,7 @@ so a request pays only for the binary it needs:
 ```
 pnpm install
 make mirrors         # go.mod points k8s.io/{apiserver,client-go,kubernetes,apiextensions-apiserver} at .build/*-mirror; every make target runs this first
-make wasm            # mirrors + Go WASM + wasm-opt + chunking (size is printed; cap 64MiB)
+make wasm            # mirrors + Go WASM + wasm-opt + chunking (size is printed; cap 64MiB); wasm-opt is skipped for binaries whose Go output is unchanged
 make gen             # regenerate the served-resource table, printers and OpenAPI models after a Kubernetes bump
 make test            # client-go tests against a wrangler dev the tests start themselves
 make dev             # wrangler dev on :18787 (see the Makefile for why CLAUDECODE is unset)

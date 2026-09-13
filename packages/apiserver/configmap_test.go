@@ -82,6 +82,9 @@ func TestConfigMapVerbs(t *testing.T) {
 	if err != nil || len(page2.Items) != 1 || page2.Continue != "" {
 		t.Fatalf("page 2: %v items=%d continue=%q", err, len(page2.Items), page2.Continue)
 	}
+	if _, err := cs.CoreV1().Namespaces().Create(c, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "other"}}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := cs.CoreV1().ConfigMaps("other").Create(c, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "a"}}, metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}

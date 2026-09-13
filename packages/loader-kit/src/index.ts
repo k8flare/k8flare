@@ -12,14 +12,14 @@ function instantiate(env, ctx) {
     const binding = {};
     const context = { env, ctx, binding, ready: () => resolve(binding) };
     go.run(new WebAssembly.Instance(wasmModule, go.importObject), context).then(
-      () => reject(new Error("go program exited before ready")),
-      (err) => reject(err),
+      () => { bindingPromise = null; reject(new Error("go program exited")); console.error("go program exited"); },
+      (err) => { bindingPromise = null; reject(err); console.error("go program failed:", err); },
     );
   });
 }
 async function pump(binding, ms) {
   const end = Date.now() + ms;
-  while (Date.now() < end) {
+  while (Date.now() < end && bindingPromise) {
     await new Promise((resolve) => setTimeout(resolve, 250));
     binding.tick();
   }
