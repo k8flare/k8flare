@@ -1,0 +1,7 @@
+{
+  "name": "@k8flare/scheduler",
+  "private": true,
+  "type": "module",
+  "description": "The real kube-scheduler as a Loader dynamic worker: woken by the core apiserver worker when a Pod without a node is written, pumped for a bounded window per wake-up.",
+  "scripts": { "build": "cd ../.. && make wasm" }
+}

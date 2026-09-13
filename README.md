@@ -7,38 +7,55 @@ The layout follows cloudflare/cloudflare-os: Worker configuration at the
 root, one flat `packages/` directory, tooling under `scripts/`, plans under
 `plans/`.
 
-- `packages/apiserver` — the apiserver entry: k8s.io/apiserver's own API
-  installer over the stores, authentication, and the WASM entrypoint. Runs
-  as a Go WASM Loader dynamic worker.
-- `packages/apiserver-registry` — one generic `genericregistry.Store` per
-  served resource; the served resources are generated from upstream's
-  discovery documents (`scripts/genresources`).
+Every Go component is a Worker Loader dynamic worker loaded on first use,
+so a request pays only for the binary it needs:
+
+- `packages/apiserver` — the front: bearer-token authentication, the k3s
+  supervisor endpoints, root discovery, and routing. `/api/*` and
+  `/apis/<group>/*` go to that group's worker, unknown groups to
+  `customresources`, `/openapi/*` to `openapi`.
+- `packages/apiserver-{core,coordination,discovery,node,storage,authentication,authorization,apps,policy,resource}`
+  — one worker per served API group: k8s.io/apiserver's API installer over
+  generic stores for that group only, so each links only its own types.
+  The group list and each group's scheme registration are generated from
+  upstream's discovery documents (`scripts/genresources`).
+  `packages/apiserver-group` is what they share; `packages/apiserver-core`
+  also holds the pod, node, and namespace specifics and wakes the
+  scheduler when a Pod without a node is written.
+- `packages/apiserver-installer`, `packages/apiserver-registry`,
+  `packages/apiserver-auth` — the installer, the generic store with its
+  per-resource hooks, and the authenticators and request filters.
 - `packages/apiserver-kine` — `storage.Interface` over the Cluster
   Durable Object's revisioned key-value log.
 - `packages/apiserver-supervisor` — the k3s supervisor protocol the agent
   joins through, the CA vault, and node passwords.
+- `packages/customresources` — apiextensions.k8s.io and every CRD-defined
+  group, served by upstream's CRD handler and controllers (naming,
+  establishing, discovery, finalizer) behind the `CustomResources`
+  entrypoint.
+- `packages/openapi` — the /openapi/v2 and /openapi/v3 documents, computed
+  by kube-openapi from the same routes behind the `OpenAPI` entrypoint.
+- `packages/scheduler` — the real kube-scheduler behind the `Scheduler`
+  entrypoint, started on the first wake-up and pumped for a bounded window
+  per wake-up.
+- `packages/printers` and `packages/printers-{core,coordination,discovery,node,storage,apps,policy,resource}`
+  — upstream's `kubectl get` printers, one worker per API group.
 - `packages/worker-bridge` — the bridge between a Go `http.Handler` and the
-  Worker Loader bootstrap, with streaming responses and WebSocket clients.
-- `packages/control-plane-worker` — the Worker: routing, the `Printers`
-  RPC entrypoint, and the Loader call that hands the Cluster Durable
-  Object's stub to the dynamic worker. `packages/loader-kit` — the Loader
-  bootstrap and chunk assembly. `packages/cluster-store` — the Cluster
+  Worker Loader bootstrap, with streaming requests, responses and
+  WebSocket clients. `packages/loader-kit` — the Loader bootstrap and chunk
+  assembly. `packages/control-plane-worker` — the Worker: the default fetch
+  and the entrypoints above. `packages/cluster-store` — the Cluster
   Durable Object.
-- `packages/apiserver-installer` — every served route, built with
-  k8s.io/apiserver's API installer; shared by the apiserver and the openapi
-  dynamic workers. `packages/openapi` — the /openapi/v2 and /openapi/v3
-  documents, computed by kube-openapi from those routes in their own
-  dynamic worker behind the `OpenAPI` entrypoint, so CRDs can be added to
-  the input later instead of to a static file.
-- `packages/printers` and `packages/printers-{core,coordination,discovery,node,storage}`
-  — upstream's `kubectl get` printers, one dynamic worker per API group
-  (all groups in one binary exceed the Loader cap).
 - `packages/agent` — the k3s agent, embedded unchanged but for one hook
   that lets it write bearer-token kubeconfigs (TLS terminates at the edge,
   so client certificates never reach the control plane).
 - `scripts/` — `mirror` copies pinned upstream modules into `.build/` with
-  sha256-pinned overlays that make them build for GOOS=js, `genresources`
-  writes the served-resource table, `genprinters` extracts the kubectl
+  sha256-pinned overlays that make them build for GOOS=js (no etcd, no
+  gRPC egress, no APF controller, a clientset scheme that registers nothing
+  so each worker links only the groups it imports, and a clientset and
+  informer factory narrowed to the groups the scheduler uses),
+  `genresources` writes the served-resource table and the per-group
+  packages, `genprinters` extracts the kubectl
   table printers per API group, `genopenapi` prunes upstream's OpenAPI
   model definitions to the served kinds, `wasmpack` prepares the binary for
   Static Assets, `devtls` terminates TLS in front of `wrangler dev`.
@@ -47,6 +64,7 @@ root, one flat `packages/` directory, tooling under `scripts/`, plans under
 
 ```
 pnpm install
+make mirrors         # go.mod points k8s.io/{apiserver,client-go,kubernetes,apiextensions-apiserver} at .build/*-mirror; every make target runs this first
 make wasm            # mirrors + Go WASM + wasm-opt + chunking (size is printed; cap 64MiB)
 make gen             # regenerate the served-resource table, printers and OpenAPI models after a Kubernetes bump
 make test            # client-go tests against a wrangler dev the tests start themselves

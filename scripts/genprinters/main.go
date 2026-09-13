@@ -40,7 +40,10 @@ var served = []struct {
 	alias string
 	kinds []string
 }{
-	{"core", "api", []string{"Pod", "Node", "Namespace", "Service", "ConfigMap", "Secret", "ServiceAccount", "Event"}},
+	{"core", "api", []string{"Pod", "Node", "Namespace", "Service", "ConfigMap", "Secret", "ServiceAccount", "Event", "ReplicationController"}},
+	{"apps", "apps", []string{"ReplicaSet", "StatefulSet"}},
+	{"policy", "policy", []string{"PodDisruptionBudget"}},
+	{"resource", "resource", []string{"DeviceClass", "ResourceClaim", "ResourceClaimTemplate", "ResourceSlice"}},
 	{"coordination", "coordination", []string{"Lease"}},
 	{"discovery", "discovery", []string{"EndpointSlice"}},
 	{"node", "nodeapi", []string{"RuntimeClass"}},

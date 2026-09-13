@@ -7,8 +7,6 @@ import (
 	"testing"
 )
 
-// TestOpenAPI fetches the documents the way kubectl does: v2 as protobuf
-// through the discovery client, and v3 per group through the v3 client.
 func TestOpenAPI(t *testing.T) {
 	cs := startDev(t)
 	v2, err := cs.Discovery().OpenAPISchema()

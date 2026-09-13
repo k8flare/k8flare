@@ -77,10 +77,79 @@ var KubeConfigOverride func(dest, url, caCert, clientCert, clientKey string) (ha
 		},
 	},
 	{
+		name:    "kubernetes",
+		module:  "github.com/k3s-io/kubernetes",
+		version: "v1.36.4-k3s1",
+		pins: []string{
+			"pkg/scheduler/backend/cache/debugger/signal.go",
+			"pkg/scheduler/backend/queue/testing.go",
+			"pkg/kubelet/types/types.go",
+			"pkg/scheduler/backend/queue/scheduling_queue.go",
+		},
+		ops: []op{
+			replaceJS("pkg/scheduler/backend/cache/debugger/signal.go", "kubernetes/signal.go"),
+			hostOnly("pkg/scheduler/backend/queue/testing.go"),
+			patchJS("pkg/kubelet/types/types.go", []op{
+				patch("", "\t\"k8s.io/cri-client/pkg/logs\"\n", ""),
+				patch("", "logs.RFC3339NanoLenient", "\"2006-01-02T15:04:05.999999999Z07:00\""),
+				patch("", "logs.RFC3339NanoFixed", "\"2006-01-02T15:04:05.000000000Z07:00\""),
+			}),
+		},
+	},
+	{
+		name:    "client-go",
+		module:  "github.com/k3s-io/kubernetes/staging/src/k8s.io/client-go",
+		version: "v1.36.4-k3s1",
+		pins: []string{
+			"kubernetes/scheme/register.go",
+			"kubernetes/clientset.go",
+			"informers/factory.go",
+			"informers/generic.go",
+			"informers/apps/interface.go",
+			"informers/policy/interface.go",
+			"informers/resource/interface.go",
+			"informers/scheduling/interface.go",
+			"informers/storage/interface.go",
+		},
+		ops: []op{
+			replaceJS("kubernetes/scheme/register.go", "client-go/register.go"),
+			replaceJS("kubernetes/clientset.go", "client-go/kubernetes/clientset.go"),
+			replaceJS("informers/factory.go", "client-go/informers/factory.go"),
+			hostOnly("informers/generic.go"),
+			replaceJS("informers/apps/interface.go", "client-go/informers/apps/interface.go"),
+			replaceJS("informers/policy/interface.go", "client-go/informers/policy/interface.go"),
+			replaceJS("informers/resource/interface.go", "client-go/informers/resource/interface.go"),
+			replaceJS("informers/scheduling/interface.go", "client-go/informers/scheduling/interface.go"),
+			replaceJS("informers/storage/interface.go", "client-go/informers/storage/interface.go"),
+		},
+	},
+	{
+		name:    "apiextensions",
+		module:  "github.com/k3s-io/kubernetes/staging/src/k8s.io/apiextensions-apiserver",
+		version: "v1.36.4-k3s1",
+		pins: []string{
+			"pkg/apiserver/apiserver.go",
+			"pkg/apiserver/customresource_discovery.go",
+		},
+		ops: []op{
+			replaceJS("pkg/apiserver/apiserver.go", "apiextensions/apiserver.go"),
+			appendText("pkg/apiserver/customresource_discovery.go", `
+func NewDiscoveryHandlers(delegate http.Handler) (*versionDiscoveryHandler, *groupDiscoveryHandler) {
+	return &versionDiscoveryHandler{discovery: map[schema.GroupVersion]*discovery.APIVersionHandler{}, delegate: delegate},
+		&groupDiscoveryHandler{discovery: map[string]*discovery.APIGroupHandler{}, delegate: delegate}
+}
+`),
+		},
+	},
+	{
 		name:    "apiserver",
 		module:  "github.com/k3s-io/kubernetes/staging/src/k8s.io/apiserver",
 		version: "v1.36.4-k3s1",
 		pins: []string{
+			"pkg/util/webhook/authentication.go",
+			"pkg/storage/cacher/cache_watcher.go",
+			"pkg/server/filters/priority-and-fairness.go",
+			"pkg/storageversion/manager.go",
 			"pkg/storage/storagebackend/config.go",
 			"pkg/storage/storagebackend/factory/factory.go",
 			"pkg/storage/feature/feature_support_checker.go",
@@ -92,6 +161,48 @@ var KubeConfigOverride func(dest, url, caCert, clientCert, clientKey string) (ha
 			replaceJS("pkg/storage/storagebackend/factory/factory.go", "apiserver/factory.go"),
 			replaceJS("pkg/storage/feature/feature_support_checker.go", "apiserver/feature_support_checker.go"),
 			replaceJS("pkg/sharding/parser.go", "apiserver/sharding_parser.go"),
+			patchJS("pkg/storage/cacher/cache_watcher.go", []op{
+				patch("", "\tutilflowcontrol \"k8s.io/apiserver/pkg/util/flowcontrol\"\n", ""),
+				patch("", "\tutilflowcontrol.WatchInitialized(ctx)\n", ""),
+			}),
+			replaceJS("pkg/server/filters/priority-and-fairness.go", "apiserver/priority_and_fairness.go"),
+			patchJS("pkg/storageversion/manager.go", []op{
+				patch("", "\t\"k8s.io/client-go/kubernetes\"\n", "\tapiserverinternalv1alpha1 \"k8s.io/client-go/kubernetes/typed/apiserverinternal/v1alpha1\"\n"),
+				patch("", "clientset, err := kubernetes.NewForConfig(kubeAPIServerClientConfig)", "clientset, err := apiserverinternalv1alpha1.NewForConfig(kubeAPIServerClientConfig)"),
+				patch("", "sc := clientset.InternalV1alpha1().StorageVersions()", "sc := clientset.StorageVersions()"),
+			}),
+			patchJS("pkg/util/webhook/authentication.go", []op{
+				patch("", "\tegressselector \"k8s.io/apiserver/pkg/server/egressselector\"\n", ""),
+				patch("", "\tutilnet \"k8s.io/apimachinery/pkg/util/net\"\n", ""),
+				patch("", "\tegressSelector *egressselector.EgressSelector,\n", "\tegressSelector any,\n"),
+				patch("", `
+				if egressSelector != nil {
+					networkContext := egressselector.ControlPlane.AsNetworkContext()
+					var egressDialer utilnet.DialFunc
+					egressDialer, err = egressSelector.Lookup(networkContext)
+
+					if err != nil {
+						return nil, err
+					}
+
+					ret.Dial = egressDialer
+				}
+`, ""),
+				patch("", `
+				if egressSelector != nil {
+					networkContext := egressselector.Cluster.AsNetworkContext()
+					var egressDialer utilnet.DialFunc
+					egressDialer, err = egressSelector.Lookup(networkContext)
+					if err != nil {
+						return nil, err
+					}
+
+					ret.Dial = egressDialer
+				} else if proxyTransport != nil && proxyTransport.DialContext != nil {
+`, `
+				if proxyTransport != nil && proxyTransport.DialContext != nil {
+`),
+			}),
 			patchJS("pkg/storage/storagebackend/config.go", []op{
 				patch("", "\t\"k8s.io/apiserver/pkg/server/egressselector\"\n", ""),
 				patch("", "\t\"k8s.io/apiserver/pkg/storage/etcd3\"\n", ""),
@@ -232,7 +343,13 @@ func keepHostOnly(dst, path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return data, os.WriteFile(target, append([]byte(hostTag), data...), 0o644)
+	tagged := append([]byte(hostTag), data...)
+	if i := bytes.Index(data, []byte("//go:build ")); i >= 0 {
+		end := i + bytes.IndexByte(data[i:], '\n')
+		expr := string(data[i+len("//go:build ") : end])
+		tagged = append(append(append([]byte{}, data[:i]...), []byte("//go:build ("+expr+") && !js")...), data[end:]...)
+	}
+	return data, os.WriteFile(target, tagged, 0o644)
 }
 
 func apply(dst, overlays string, o op) error {

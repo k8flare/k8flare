@@ -3,6 +3,7 @@
 package tables
 
 import (
+	"bytes"
 	"fmt"
 	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -15,6 +16,7 @@ import (
 	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/printers"
 	"k8s.io/kubernetes/pkg/util/node"
+	"k8s.io/utils/ptr"
 	"strconv"
 	"strings"
 	"time"
@@ -34,6 +36,18 @@ func AddHandlers(h printers.PrintHandler) {
 	}
 	_ = h.TableHandler(podColumnDefinitions, printPodList)
 	_ = h.TableHandler(podColumnDefinitions, printPod)
+	replicationControllerColumnDefinitions := []metav1.TableColumnDefinition{
+		{Name: "Name", Type: "string", Format: "name", Description: metav1.ObjectMeta{}.SwaggerDoc()["name"]},
+		{Name: "Desired", Type: "integer", Description: apiv1.ReplicationControllerSpec{}.SwaggerDoc()["replicas"]},
+		{Name: "Current", Type: "integer", Description: apiv1.ReplicationControllerStatus{}.SwaggerDoc()["replicas"]},
+		{Name: "Ready", Type: "integer", Description: apiv1.ReplicationControllerStatus{}.SwaggerDoc()["readyReplicas"]},
+		{Name: "Age", Type: "string", Description: metav1.ObjectMeta{}.SwaggerDoc()["creationTimestamp"]},
+		{Name: "Containers", Type: "string", Priority: 1, Description: "Names of each container in the template."},
+		{Name: "Images", Type: "string", Priority: 1, Description: "Images referenced by each container in the template."},
+		{Name: "Selector", Type: "string", Priority: 1, Description: apiv1.ReplicationControllerSpec{}.SwaggerDoc()["selector"]},
+	}
+	_ = h.TableHandler(replicationControllerColumnDefinitions, printReplicationController)
+	_ = h.TableHandler(replicationControllerColumnDefinitions, printReplicationControllerList)
 	serviceColumnDefinitions := []metav1.TableColumnDefinition{
 		{Name: "Name", Type: "string", Format: "name", Description: metav1.ObjectMeta{}.SwaggerDoc()["name"]},
 		{Name: "Type", Type: "string", Description: apiv1.ServiceSpec{}.SwaggerDoc()["type"]},
@@ -345,6 +359,40 @@ func hasPodReadyCondition(conditions []api.PodCondition) bool {
 		}
 	}
 	return false
+}
+
+// TODO(AdoHe): try to put wide output in a single method
+func printReplicationController(obj *api.ReplicationController, options printers.GenerateOptions) ([]metav1.TableRow, error) {
+	row := metav1.TableRow{
+		Object: runtime.RawExtension{Object: obj},
+	}
+
+	desiredReplicas := ptr.Deref(obj.Spec.Replicas, 0)
+	currentReplicas := obj.Status.Replicas
+	readyReplicas := obj.Status.ReadyReplicas
+
+	row.Cells = append(row.Cells, obj.Name, int64(desiredReplicas), int64(currentReplicas), int64(readyReplicas), translateTimestampSince(obj.CreationTimestamp))
+	if options.Wide {
+		var containers []api.Container
+		if obj.Spec.Template != nil {
+			containers = obj.Spec.Template.Spec.Containers
+		}
+		names, images := layoutContainerCells(containers)
+		row.Cells = append(row.Cells, names, images, labels.FormatLabels(obj.Spec.Selector))
+	}
+	return []metav1.TableRow{row}, nil
+}
+
+func printReplicationControllerList(list *api.ReplicationControllerList, options printers.GenerateOptions) ([]metav1.TableRow, error) {
+	rows := make([]metav1.TableRow, 0, len(list.Items))
+	for i := range list.Items {
+		r, err := printReplicationController(&list.Items[i], options)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, r...)
+	}
+	return rows, nil
 }
 
 // loadBalancerStatusStringer behaves mostly like a string interface and converts the given status to a string.
@@ -703,6 +751,22 @@ func printConfigMapList(list *api.ConfigMapList, options printers.GenerateOption
 		rows = append(rows, r...)
 	}
 	return rows, nil
+}
+
+// Lay out all the containers on one line if use wide output.
+func layoutContainerCells(containers []api.Container) (names string, images string) {
+	var namesBuffer bytes.Buffer
+	var imagesBuffer bytes.Buffer
+
+	for i, container := range containers {
+		namesBuffer.WriteString(container.Name)
+		imagesBuffer.WriteString(container.Image)
+		if i != len(containers)-1 {
+			namesBuffer.WriteString(",")
+			imagesBuffer.WriteString(",")
+		}
+	}
+	return namesBuffer.String(), imagesBuffer.String()
 }
 
 // formatEventSource formats EventSource as a comma separated string excluding Host when empty.

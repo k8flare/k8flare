@@ -34,11 +34,11 @@ replace (
 	google.golang.org/genproto => google.golang.org/genproto v0.0.0-20230525234035-dd9d682886f9
 	google.golang.org/grpc => google.golang.org/grpc v1.79.3
 	k8s.io/api => github.com/k3s-io/kubernetes/staging/src/k8s.io/api v1.36.4-k3s1
-	k8s.io/apiextensions-apiserver => github.com/k3s-io/kubernetes/staging/src/k8s.io/apiextensions-apiserver v1.36.4-k3s1
+	k8s.io/apiextensions-apiserver => ./.build/apiextensions-mirror
 	k8s.io/apimachinery => github.com/k3s-io/kubernetes/staging/src/k8s.io/apimachinery v1.36.4-k3s1
 	k8s.io/apiserver => ./.build/apiserver-mirror
 	k8s.io/cli-runtime => github.com/k3s-io/kubernetes/staging/src/k8s.io/cli-runtime v1.36.4-k3s1
-	k8s.io/client-go => github.com/k3s-io/kubernetes/staging/src/k8s.io/client-go v1.36.4-k3s1
+	k8s.io/client-go => ./.build/client-go-mirror
 	k8s.io/cloud-provider => github.com/k3s-io/kubernetes/staging/src/k8s.io/cloud-provider v1.36.4-k3s1
 	k8s.io/cluster-bootstrap => github.com/k3s-io/kubernetes/staging/src/k8s.io/cluster-bootstrap v1.36.4-k3s1
 	k8s.io/code-generator => github.com/k3s-io/kubernetes/staging/src/k8s.io/code-generator v1.36.4-k3s1
@@ -62,7 +62,7 @@ replace (
 	k8s.io/kube-scheduler => github.com/k3s-io/kubernetes/staging/src/k8s.io/kube-scheduler v1.36.4-k3s1
 	k8s.io/kubectl => github.com/k3s-io/kubernetes/staging/src/k8s.io/kubectl v1.36.4-k3s1
 	k8s.io/kubelet => github.com/k3s-io/kubernetes/staging/src/k8s.io/kubelet v1.36.4-k3s1
-	k8s.io/kubernetes => github.com/k3s-io/kubernetes v1.36.4-k3s1
+	k8s.io/kubernetes => ./.build/kubernetes-mirror
 	k8s.io/metrics => github.com/k3s-io/kubernetes/staging/src/k8s.io/metrics v1.36.4-k3s1
 	k8s.io/mount-utils => github.com/k3s-io/kubernetes/staging/src/k8s.io/mount-utils v1.36.4-k3s1
 	k8s.io/node-api => github.com/k3s-io/kubernetes/staging/src/k8s.io/node-api v1.36.2-k3s1

@@ -9,8 +9,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// TestTables asks for kubectl's server-side tables and expects upstream's
-// columns, which come from the printers Worker.
 func TestTables(t *testing.T) {
 	cs := startDev(t)
 	c := ctx(t)

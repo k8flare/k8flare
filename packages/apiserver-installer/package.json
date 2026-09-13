@@ -2,7 +2,7 @@
   "name": "@k8flare/apiserver-installer",
   "private": true,
   "type": "module",
-  "description": "Builds every served route with k8s.io/apiserver's API installer; shared by the apiserver and the openapi dynamic workers.",
+  "description": "Builds the served routes of one or every API group with k8s.io/apiserver's API installer, taking per-resource implementations from the registry's hooks.",
   "scripts": {
     "vet": "cd ../.. && go vet ./packages/apiserver-installer/..."
   }

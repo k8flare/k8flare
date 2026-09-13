@@ -1,3 +1,4 @@
+<meta charset="utf-8">
 <title>k8flare Architecture</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+JP:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
@@ -86,75 +87,96 @@
 
   <h2>1. kubectl / kubelet からリクエストが辿る経路</h2>
   <div class="diagram">
-  <svg viewBox="0 0 980 470" width="980" height="470" role="img" aria-label="Request path from kubectl to the Cluster Durable Object">
+  <svg viewBox="0 0 980 680" width="980" height="680" role="img" aria-label="Request path from kubectl through the front and per-group dynamic workers to the Cluster Durable Object">
     <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="context-stroke"/></marker></defs>
     <!-- lanes -->
-    <rect class="lanebg" x="0" y="40" width="980" height="90" rx="4"/><text class="lane" x="10" y="58">Client</text>
-    <rect class="lanebg" x="0" y="150" width="980" height="120" rx="4"/><text class="lane" x="10" y="168">Worker (control-plane-worker)</text>
-    <rect class="lanebg" x="0" y="290" width="980" height="90" rx="4"/><text class="lane" x="10" y="308">Loader dynamic worker (apiserver, resident Go)</text>
-    <rect class="lanebg" x="0" y="400" width="980" height="60" rx="4"/><text class="lane" x="10" y="418">Durable Object</text>
+    <rect class="lanebg" x="0" y="36" width="980" height="94" rx="4"/><text class="lane" x="10" y="54">Client</text>
+    <rect class="lanebg" x="0" y="140" width="980" height="110" rx="4"/><text class="lane" x="10" y="158">Worker (control-plane-worker)</text>
+    <rect class="lanebg" x="0" y="260" width="980" height="330" rx="4"/><text class="lane" x="10" y="278">Dynamic worker(Go, resident · loader-kit が sha256 で常駐化)</text>
+    <rect class="lanebg" x="0" y="600" width="980" height="50" rx="4"/><text class="lane" x="10" y="618">Durable Object</text>
     <!-- client boxes -->
     <rect class="box" x="30" y="70" width="170" height="46" rx="4"/><text class="lbl" x="44" y="90">kubectl(管理者)</text><text class="sub" x="44" y="106">Bearer admin token</text>
     <rect class="box" x="420" y="70" width="190" height="46" rx="4"/><text class="lbl" x="434" y="90">TLS 終端 → CP</text><text class="sub" x="434" y="106">dev: scripts/devtls · prod: edge</text>
     <rect class="box" x="760" y="70" width="190" height="46" rx="4"/><text class="lbl" x="774" y="90">k3s agent / kubelet(node)</text><text class="sub" x="774" y="106">node:&lt;name&gt;:&lt;password&gt;</text>
     <path class="arrow" d="M200 93 H420"/><path class="arrow" d="M760 93 H610"/>
-    <text class="sub" x="230" y="86">API / watch</text><text class="sub" x="640" y="86">join · API · watch · tunnel</text>
-    <path class="arrow alt" d="M900 116 V150"/><text class="mono" x="906" y="140">CP → kubelet: pods/log のみ</text>
-    <!-- worker boxes -->
-    <rect class="box ts" x="420" y="180" width="190" height="70" rx="4"/><text class="lbl" x="434" y="200">index.ts</text><text class="sub" x="434" y="216">/v1-k3s/connect → accept &amp; park</text><text class="sub" x="434" y="232">それ以外 → apiserverFetch()</text>
-    <path class="arrow" d="M515 116 V180"/>
-    <rect class="box ts" x="650" y="180" width="200" height="70" rx="4"/><text class="lbl" x="664" y="200">loader.ts</text><text class="sub" x="664" y="216">ASSETS の 3 チャンクを結合</text><text class="sub" x="664" y="232">LOADER.get(apiserver@sha256)</text>
-    <path class="arrow" d="M610 215 H650"/>
-    <!-- DW boxes -->
-    <rect class="box go" x="420" y="320" width="430" height="48" rx="4"/><text class="lbl" x="434" y="340">bridge.Serve → apiserver.NewHandler</text><text class="sub" x="434" y="356">installer(k8s.io/apiserver)→ genericregistry.Store → kine.Storage · supervisor · auth</text>
-    <path class="arrow" d="M750 250 V320"/><text class="mono" x="758" y="290">handleRequest(req, env)</text>
+    <text class="sub" x="230" y="86">API / watch</text><text class="sub" x="595" y="86">join・API・watch・tunnel</text>
+    <path class="arrow alt" d="M855 116 V140"/><text class="mono" x="790" y="132">kubelet: pods/log(core)</text>
+    <path class="arrow" d="M515 116 V172"/>
+    <!-- worker box -->
+    <rect class="box ts" x="420" y="172" width="190" height="64" rx="4"/><text class="lbl" x="434" y="192">index.ts</text><text class="sub" x="434" y="208">/v1-k3s/connect → accept &amp; park</text><text class="sub" x="434" y="224">他 → apiserverFetch()</text>
+    <path class="arrow" d="M515 236 V266 H465 V296"/><text class="mono" x="522" y="256">LOADER: "apiserver"</text>
+    <!-- DW row A: front -->
+    <rect class="box go" x="325" y="296" width="280" height="50" rx="4"/><text class="lbl" x="339" y="316">apiserver(front)</text><text class="sub" x="339" y="332">bearertoken 認証・supervisor・/api,/apis discovery</text>
+    <!-- DW row B: children of front, via self Service Binding -->
+    <rect class="box go" x="175" y="386" width="220" height="50" rx="4"/><text class="lbl" x="189" y="406">apiserver-&lt;group&gt; ×10</text><text class="sub" x="189" y="422">installer→Store→kine(CRUD/watch)</text>
+    <rect class="box go" x="420" y="386" width="170" height="50" rx="4"/><text class="lbl" x="434" y="406">customresources</text><text class="sub" x="434" y="422">CRD handler/controller</text>
+    <rect class="box go" x="615" y="386" width="150" height="50" rx="4"/><text class="lbl" x="629" y="406">openapi</text><text class="sub" x="629" y="422">/openapi/v2, v3</text>
+    <path class="arrow" d="M400 346 V366 H285 V386"/><text class="mono" x="300" y="362">APIGROUPS</text>
+    <path class="arrow" d="M505 346 V386"/><text class="mono" x="510" y="368">CUSTOMRESOURCES</text>
+    <path class="arrow" d="M600 346 V366 H690 V386"/><text class="mono" x="630" y="362">OPENAPI</text>
+    <!-- DW row C: children of apiserver-core specifically -->
+    <rect class="box go" x="100" y="486" width="170" height="50" rx="4"/><text class="lbl" x="114" y="506">scheduler</text><text class="sub" x="114" y="522">poke() で起床</text>
+    <rect class="box go" x="290" y="486" width="190" height="50" rx="4"/><text class="lbl" x="304" y="506">printers-&lt;group&gt; ×8</text><text class="sub" x="304" y="522">convertToTable(RPC)</text>
+    <path class="arrow" d="M220 436 V486"/><text class="mono" x="225" y="462">SCHEDULER</text>
+    <path class="arrow" d="M350 436 V461 H385 V486"/><text class="mono" x="392" y="458">PRINTERS</text>
+    <path class="arrow alt" d="M185 536 V560 H945 V321 H605"/><text class="mono" x="800" y="316">APISERVER binding</text>
+    <!-- storage: front / group / customresources each get their own STORAGE binding -->
+    <path class="arrow" d="M480 346 V360 H600 V612"/>
+    <path class="arrow" d="M280 436 V612"/>
+    <path class="arrow" d="M505 436 V612"/>
+    <text class="mono" x="180" y="606">STORAGE: front / group / customresources のみ bind(openapi・scheduler・printers は未使用)</text>
     <!-- DO -->
-    <rect class="box do" x="420" y="425" width="430" height="30" rx="4"/><text class="lbl" x="434" y="445">Cluster DO(cluster-store)</text><text class="mono" x="640" y="445">/kv · /list · /revision · /watch(WebSocket)</text>
-    <!-- storage path: the DO stub handed to the dynamic worker's env -->
-    <path class="arrow" d="M635 368 V425"/><text class="mono" x="645" y="392">env.STORAGE.fetch()</text><text class="sub" x="645" y="408">STORAGE = CLUSTER.get("default") の stub(loader.ts が env に渡す)</text>
+    <rect class="box do" x="175" y="612" width="435" height="30" rx="4"/><text class="lbl" x="189" y="632">Cluster DO(cluster-store)</text><text class="mono" x="395" y="632">/kv · /list · /revision · /watch(WS)</text>
   </svg>
   </div>
   <ol class="path">
     <li><strong>認証と TLS。</strong>kubectl も kubelet も Bearer トークン。TLS はエッジ(dev では devtls)で終端するので、クライアント証明書は届かない。kubelet の kubeconfig は agent が <code>node:&lt;name&gt;:&lt;password&gt;</code> のトークンで書く。</li>
-    <li><strong>シェル Worker</strong> は 2 分岐のみ。k3s の remotedialer 用 <code>/v1-k3s/connect</code> は WebSocket を受けて放置、残りは全て Loader の apiserver へ。</li>
-    <li><strong>Loader</strong> は sha256 をキーに常駐 Go インスタンスを 1 つ持ち、ASSETS から 25 MiB × 3 のチャンクを結合して起動する。</li>
-    <li><strong>Go apiserver</strong> は upstream の API installer がルーティングし、<code>genericregistry.Store</code> が CRUD を、<code>kine.Storage</code> が DO への読み書きを担う。watch は DO への WebSocket をそのままストリーム応答にする。</li>
-    <li><strong>DO への経路。</strong>loader.ts が factory で <code>CLUSTER.get("default")</code> の stub を dynamic worker の env に <code>STORAGE</code> として渡し、Go は <code>bridge.BindingTransport{Name: "STORAGE"}</code> でそれを fetch する。旧リポジトリの S2 は DO <em>namespace</em> が渡せないことしか示しておらず、stub は渡せた(2026-09-13 実測、wrangler dev)。</li>
+    <li><strong>index.ts</strong> は 2 分岐のみ。k3s の remotedialer 用 <code>/v1-k3s/connect</code> は WebSocket を受けて放置、残りは全て <code>apiserverFetch()</code> が読み込む <code>apiserver</code>(front)dynamic worker へ。</li>
+    <li><strong>front(apiserver)</strong>は認証(<code>AdminToken</code> + <code>NodeToken</code> の union)と supervisor(join プロトコル)をマウントし、<code>/api</code>・<code>/apis</code> の root discovery をまとめる。実際の CRUD は自身では持たず、<code>APIGROUPS</code>(<code>/api</code>, <code>/apis/&lt;group&gt;</code> → <code>apiserver-&lt;group&gt;</code>)・<code>CUSTOMRESOURCES</code>(未登録グループ、および <code>/apis</code> への CRD グループのマージ)・<code>OPENAPI</code>(<code>/openapi/*</code>)という 3 本の self Service Binding へストリーム転送する(<code>X-Remote-User</code> 付与)。</li>
+    <li><strong>apiserver-&lt;group&gt;</strong>は installer → <code>genericregistry.Store</code> → <code>kine.Storage</code> という同じ配線を、自分のグループの型だけリンクして持つ。<code>core</code> だけ pod の graceful delete・node の PodCIDR 割当・namespace 初期化・pods/log があり、pod 作成/更新で <code>Spec.NodeName</code> が空なら <code>SCHEDULER.poke()</code> を呼ぶ。テーブル整形は <code>PRINTERS.convertToTable(group, object)</code> の RPC。</li>
+    <li><strong>scheduler</strong> は <code>poke()</code> で起こされ、<code>waitUntil</code> の窓の間だけ実 kube-scheduler の informer とスケジューリングループを回す。読み書きは自分では持たず <code>APISERVER</code> binding(= front と同じエントリポイント)を再入呼び出しする。</li>
+    <li><strong>DO への経路。</strong>front・各 group DW・customresources はそれぞれ独立に <code>env.CLUSTER.get(idFromName("default"))</code> の stub を <code>STORAGE</code> として受け取り、Go は <code>bridge.BindingTransport{Name: "STORAGE"}</code>(watch は <code>bridge.DialWebSocket</code>)でそれを叩く。openapi・scheduler・printers-&lt;group&gt; は STORAGE を持たない。</li>
   </ol>
 
-  <h2>2. ClusterLoopback は外した</h2>
-  <p>自分自身への service binding と <code>WorkerEntrypoint</code> は削除。dynamic worker の env に渡した DO stub は、isolate の寿命にわたる別々のリクエスト(CRUD、5 分単位の watch WebSocket、agent の join)からそのまま使えた。<span class="verify">未検証</span> 本番 workerd での同挙動。dev と本番で Loader の env 検証が異なる場合はここが最初に壊れる。</p>
+  <h2>2. ClusterLoopback で外したのは DO 中継専用の 1 本だけ</h2>
+  <p>削除したのは Cluster DO のスタブを渡すためだけにあった自己 <code>WorkerEntrypoint</code>。今は index.ts / APIGroups / CustomResources がそれぞれ <code>env.CLUSTER.get(idFromName("default"))</code> で直接スタブを作り、<code>loadWasmWorker()</code> の env に <code>STORAGE</code> として渡す。一方、グループ別 DW を呼び分けるための自己 Service Binding(<code>APIGroups</code> / <code>CustomResources</code> / <code>OpenAPI</code> / <code>Printers</code> / <code>Scheduler</code>、表 3 参照)はこれとは別物で、今回の分割の中心として残っている。<span class="verify">未検証</span> 本番 workerd での同挙動。dev と本番で Loader の env 検証が異なる場合はここが最初に壊れる。</p>
 
   <h2>3. パッケージの役割</h2>
   <div class="tablewrap"><table>
     <thead><tr><th>パッケージ</th><th>役割</th><th>依存先</th><th class="num">手書き行</th><th class="num">生成</th><th class="num">テスト</th></tr></thead>
     <tbody>
-      <tr><td class="pkg"><span class="tag ts">TS</span>control-plane-worker</td><td>唯一の Worker。ルーティング、トンネルのスタブ、<code>Printers</code> / <code>OpenAPI</code> エントリポイント(自己 Service Binding)。DO stub を Loader の env に渡す。</td><td>cluster-store, loader-kit, LOADER, ASSETS, PRINTERS, OPENAPI</td><td class="num">62</td><td class="num">–</td><td class="num">–</td></tr>
-      <tr><td class="pkg"><span class="tag ts">TS</span>loader-kit</td><td>Loader bootstrap(JS 文字列)、manifest キャッシュ、チャンク結合。<code>loadWasmWorker(name)</code> で apiserver / printers-* を同じ経路でロード。</td><td>LOADER, ASSETS</td><td class="num">88</td><td class="num">–</td><td class="num">–</td></tr>
+      <tr><td class="pkg"><span class="tag ts">TS</span>control-plane-worker</td><td>唯一の Worker。既定 fetch はフロント apiserver をロード。<code>APIGroups</code> / <code>CustomResources</code> / <code>OpenAPI</code> / <code>Scheduler</code> / <code>Printers</code> の各エントリポイント(自己 Service Binding)が、対応する wasm を初回利用時にロードする。</td><td>cluster-store, loader-kit, LOADER, ASSETS</td><td class="num">108</td><td class="num">–</td><td class="num">–</td></tr>
+      <tr><td class="pkg"><span class="tag ts">TS</span>loader-kit</td><td>Loader bootstrap(JS 文字列)、manifest キャッシュ、チャンク結合。<code>loadWasmWorker(name, env, pumpMs)</code> で全 Go バイナリを同じ経路でロード。応答後も pump window の間はコンテキストを保ち、250ms ごとに Go に入ってタイマーを進める(Go のタイマーはリクエストコンテキスト外では死ぬため)。</td><td>LOADER, ASSETS</td><td class="num">88</td><td class="num">–</td><td class="num">–</td></tr>
       <tr><td class="pkg"><span class="tag do">DO</span>cluster-store</td><td>Cluster Durable Object。kine 風の revision 付き KV ログ(SQLite)と、hibernatable WebSocket への watch 配信。</td><td>–</td><td class="num">231</td><td class="num">–</td><td class="num">–</td></tr>
-      <tr><td class="pkg"><span class="tag go">Go</span>apiserver</td><td>エントリ。installer の配線、認証(bearertoken + union)、review 系リソース、既定 namespace、<code>cmd/apiserver-wasm</code>。</td><td>registry, kine, supervisor, worker-bridge</td><td class="num">419</td><td class="num">–</td><td class="num">644</td></tr>
-      <tr><td class="pkg"><span class="tag go">Go</span>apiserver-installer</td><td>提供リソースごとの route を k8s.io/apiserver の installer で構築。review 系の仮想リソースもここ。apiserver と openapi の両 DW が共有。</td><td>registry, kine, k8s.io/apiserver/pkg/endpoints</td><td class="num">201</td><td class="num">–</td><td class="num">–</td></tr>
-      <tr><td class="pkg"><span class="tag go">Go</span>openapi</td><td>同じ route から kube-openapi で /openapi/v2, /openapi/v3 を計算する Dynamic Worker。apiserver は <code>OPENAPI</code> binding へ転送するだけ。モデル定義は upstream 生成物を提供 kind の到達閉包(261/1,381)に刈り込んだもの。</td><td>apiserver-installer, kube-openapi, k8s.io/apiserver/pkg/server/routes</td><td class="num">45</td><td class="num">14,389</td><td class="num">71</td></tr>
-      <tr><td class="pkg"><span class="tag go">Go</span>apiserver-registry</td><td>提供リソースごとの <code>genericregistry.Store</code>。表は upstream の discovery 文書から生成。pods の graceful delete、nodes の PodCIDR、status、pods/log。</td><td>kine, k8s.io/apiserver, k8s.io/kubernetes/pkg/apis/*/v1</td><td class="num">465</td><td class="num">47</td><td class="num">–</td></tr>
-      <tr><td class="pkg"><span class="tag go">Go</span>printers / printers-*</td><td>upstream の <code>pkg/printers</code> を API グループ単位に切り出した Dynamic Worker(core, coordination, discovery, node, storage)。POST /table で Table を返す。apiserver からは <code>PRINTERS.convertToTable</code> RPC 経由。</td><td>k8s.io/kubernetes/pkg/printers(生成抜粋)</td><td class="num">44</td><td class="num">1,086</td><td class="num">–</td></tr>
+      <tr><td class="pkg"><span class="tag go">Go</span>apiserver</td><td>フロント。認証(bearertoken + union)、supervisor、/api と /apis の root discovery(CRD グループは customresources に問い合わせて結合)、グループ別 DW への転送(X-Remote-User 付与、ストリーム転送)。</td><td>auth, installer, kine, supervisor, registry(表のみ)</td><td class="num">207</td><td class="num">–</td><td class="num">956</td></tr>
+      <tr><td class="pkg"><span class="tag go">Go</span>apiserver-{core,coordination,discovery,node,storage,authentication,authorization,apps,policy,resource}</td><td>API グループごとの Dynamic Worker。生成ファイルが GroupVersion と、そのグループの external / internal <code>AddToScheme</code> を登録する。core には pod の graceful delete、pods/binding、node の PodCIDR、pods/log、namespace 初期化、スケジューラーの poke が同居。authn / authz は review 系仮想リソース。</td><td>apiserver-group, registry</td><td class="num">475</td><td class="num">170</td><td class="num">–</td></tr>
+      <tr><td class="pkg"><span class="tag go">Go</span>apiserver-group / apiserver-installer / apiserver-auth</td><td>グループ DW の共通部(installer 呼び出し、node/admin トークン、bridge エントリ)、installer(registry のフックで per-resource 実装を差し込む)、認証と RequestInfo フィルタ。</td><td>k8s.io/apiserver/pkg/endpoints</td><td class="num">314</td><td class="num">–</td><td class="num">–</td></tr>
+      <tr><td class="pkg"><span class="tag go">Go</span>apiserver-registry</td><td>提供リソースごとの <code>genericregistry.Store</code>。表は upstream の discovery 文書から生成。Resources / Customizers / Subresources / Middleware / Poke のフックで per-resource 実装を受け付ける。</td><td>kine, k8s.io/apiserver</td><td class="num">431</td><td class="num">47</td><td class="num">–</td></tr>
+      <tr><td class="pkg"><span class="tag go">Go</span>customresources</td><td>upstream の CRD ハンドラー・レジストリ・コントローラー(naming / establishing / discovery / finalizer 等)をそのまま載せた DW。CRD の informer は自分のハンドラーへのインプロセス loopback client(Service Binding の自己ループは応答が返らない)。</td><td>apiextensions-apiserver(mirror)</td><td class="num">321</td><td class="num">–</td><td class="num">156</td></tr>
+      <tr><td class="pkg"><span class="tag go">Go</span>openapi</td><td>全提供グループの route から kube-openapi で /openapi/v2, /openapi/v3 を計算する DW。モデル定義は upstream 生成物を提供 kind の到達閉包(261/1,381)に刈り込んだもの。</td><td>apiserver-installer, kube-openapi</td><td class="num">45</td><td class="num">14,389</td><td class="num">71</td></tr>
+      <tr><td class="pkg"><span class="tag go">Go</span>scheduler</td><td>実 kube-scheduler。core DW が node 未指定の Pod を書いたときに <code>Scheduler.poke</code> で起こされ、waitUntil の窓の間だけ informer と scheduling loop を回す。</td><td>k8s.io/kubernetes/pkg/scheduler(mirror)</td><td class="num">169</td><td class="num">–</td><td class="num">49</td></tr>
+      <tr><td class="pkg"><span class="tag go">Go</span>printers / printers-*</td><td>upstream の <code>pkg/printers</code> を API グループ単位に切り出した DW。<code>PRINTERS.convertToTable</code> RPC 経由。</td><td>k8s.io/kubernetes/pkg/printers(生成抜粋)</td><td class="num">44</td><td class="num">1,086</td><td class="num">–</td></tr>
       <tr><td class="pkg"><span class="tag go">Go</span>apiserver-kine</td><td><code>storage.Interface</code> の実装。DO の HTTP/WebSocket プロトコルを話し、WatchList の bookmark を発行。</td><td>k8s.io/apiserver/pkg/storage</td><td class="num">526</td><td class="num">–</td><td class="num">–</td></tr>
       <tr><td class="pkg"><span class="tag go">Go</span>apiserver-supervisor</td><td>k3s の join プロトコル(/cacerts, /v1-k3s/*)、CSR 署名、CA vault、ノードパスワード。</td><td>kine</td><td class="num">418</td><td class="num">–</td><td class="num">–</td></tr>
-      <tr><td class="pkg"><span class="tag go">Go</span>worker-bridge</td><td>Go <code>http.Handler</code> ↔ Loader bootstrap。ストリーム応答(ReadableStream)、binding 経由 fetch、WebSocket クライアント。</td><td>syscall/js</td><td class="num">460</td><td class="num">–</td><td class="num">–</td></tr>
+      <tr><td class="pkg"><span class="tag go">Go</span>worker-bridge</td><td>Go <code>http.Handler</code> ↔ Loader bootstrap。ストリーム応答、binding 経由 fetch(応答もストリーム)、WebSocket クライアント、RPC 呼び出し。</td><td>syscall/js</td><td class="num">523</td><td class="num">–</td><td class="num">–</td></tr>
       <tr><td class="pkg"><span class="tag go">Go</span>agent</td><td>k3s agent の埋め込み。変更は <code>deps.KubeConfigOverride</code> フック 1 点(ミラーで注入)と kubelet plain-HTTP ポート。</td><td>k3s(mirror)</td><td class="num">127</td><td class="num">–</td><td class="num">–</td></tr>
-      <tr><td class="pkg">scripts/*</td><td>mirror(sha256 ピン付きオーバーレイ)、genresources、genprinters(AST で到達可能な printer 関数だけ抽出)、genopenapi(OpenAPI モデルを提供 kind の到達閉包に刈り込み)、wasmpack(wasm_exec パッチ + チャンク化)、devtls。</td><td>依存なし</td><td class="num">1,390</td><td class="num">111 overlay</td><td class="num">–</td></tr>
+      <tr><td class="pkg">scripts/*</td><td>mirror(sha256 ピン付き js overlay: etcd3 / gRPC egress / APF / StorageVersion / clientset scheme / GenericAPIServer)、genresources(提供表 + グループ別パッケージ)、genprinters、genopenapi、wasmpack、devtls。</td><td>依存なし</td><td class="num">1,593</td><td class="num">111 overlay</td><td class="num">–</td></tr>
     </tbody>
   </table></div>
 
   <h2>4. ビルド後のサイズ</h2>
   <div class="bars">
-    <div class="bar"><span class="k">apiserver.wasm(raw)</span><div class="track"><div class="fill" style="width:100%"></div></div><span class="v">70,036,659 B</span></div>
-    <div class="bar"><span class="k">apiserver.opt.wasm(wasm-opt -Oz)</span><div class="track"><div class="fill" style="width:82%"></div><div class="fill cap" style="width:95.8%"></div></div><span class="v">57,474,909 B</span></div>
-    <div class="bar"><span class="k">Loader cap(赤線)</span><div class="track"><div class="fill cap" style="width:95.8%"></div></div><span class="v">67,108,864 B</span></div>
-    <div class="bar"><span class="k">チャンク(ASSETS, ≤ 25 MiB)</span><div class="track"><div class="fill" style="width:36%; background: var(--ts)"></div><div class="fill" style="left:36.5%; width:36%; background: var(--ts)"></div><div class="fill" style="left:73%; width:10%; background: var(--ts)"></div></div><span class="v">25,165,824 ×2 + 7,143,261</span></div>
-    <div class="bar"><span class="k">openapi.opt.wasm(全モデル版 71.4MB は不採用)</span><div class="track"><div class="fill" style="width:91.7%"></div><div class="fill cap" style="width:95.8%"></div></div><span class="v">64,222,160 B</span></div>
-    <div class="bar"><span class="k">printers-core.opt.wasm</span><div class="track"><div class="fill" style="width:61%"></div><div class="fill cap" style="width:95.8%"></div></div><span class="v">43,010,102 B</span></div>
-    <div class="bar"><span class="k">printers-storage / discovery / node / coordination</span><div class="track"><div class="fill" style="width:38%"></div></div><span class="v">26.5 / 18.0 / 17.9 / 13.1 MB</span></div>
-    <div class="bar"><span class="k">printers 全グループ 1 バイナリ(不採用)</span><div class="track"><div class="fill" style="width:100%; background: var(--cut)"></div></div><span class="v">79.5 MB &gt; cap</span></div>
+    <div class="bar"><span class="k">apiserver(フロント)</span><div class="track"><div class="fill" style="width:37.8%"></div><div class="fill cap" style="width:100%"></div></div><span class="v">25,392,046 B</span></div>
+    <div class="bar"><span class="k">apiserver-apps / storage / resource / core</span><div class="track"><div class="fill" style="width:57.6%"></div><div class="fill cap" style="width:100%"></div></div><span class="v">38,635,735 B / 38,543,868 / 37,727,744 / 37,720,966</span></div>
+    <div class="bar"><span class="k">apiserver-discovery / node</span><div class="track"><div class="fill" style="width:53.6%"></div><div class="fill cap" style="width:100%"></div></div><span class="v">35,965,399 B / 35,831,882</span></div>
+    <div class="bar"><span class="k">apiserver-authorization / policy / coordination / authentication</span><div class="track"><div class="fill" style="width:43.3%"></div><div class="fill cap" style="width:100%"></div></div><span class="v">29,078,628 B / 28,772,938 / 28,682,181 / 28,649,769</span></div>
+    <div class="bar"><span class="k">openapi</span><div class="track"><div class="fill" style="width:74.6%"></div><div class="fill cap" style="width:100%"></div></div><span class="v">50,048,437 B</span></div>
+    <div class="bar"><span class="k">customresources</span><div class="track"><div class="fill" style="width:85.4%"></div><div class="fill cap" style="width:100%"></div></div><span class="v">57,296,809 B</span></div>
+    <div class="bar"><span class="k">scheduler(overlay 前 109.9MB)</span><div class="track"><div class="fill" style="width:82.1%"></div><div class="fill cap" style="width:100%"></div></div><span class="v">55,081,153 B</span></div>
+    <div class="bar"><span class="k">printers-apps / storage / core / resource</span><div class="track"><div class="fill" style="width:40.9%"></div><div class="fill cap" style="width:100%"></div></div><span class="v">27,418,915 B / 26,462,675 / 25,594,757 / 21,847,253</span></div>
+    <div class="bar"><span class="k">printers-discovery / node / coordination / policy</span><div class="track"><div class="fill" style="width:26.9%"></div><div class="fill cap" style="width:100%"></div></div><span class="v">18,029,082 B / 17,912,301 / 13,137,192 / 13,120,020</span></div>
+    <div class="bar"><span class="k">Loader cap(赤線)</span><div class="track"><div class="fill cap" style="width:100%"></div></div><span class="v">67,108,864 B</span></div>
+    <div class="bar"><span class="k">不採用: 旧 apiserver 一体 / printers 一体 / crdHandler(overlay 前)</span><div class="track"><div class="fill" style="width:100%; background: var(--cut)"></div></div><span class="v">57.5 / 79.5 / 73.5 MB</span></div>
     <div class="bar"><span class="k">wasm_exec.js(パッチ済)</span><div class="track"><div class="fill" style="width:0.03%"></div></div><span class="v">17,347 B</span></div>
     <div class="bar"><span class="k">k8flare-agent(linux/arm64)</span><div class="track"><div class="fill" style="width:100%; background: var(--ink-3)"></div></div><span class="v">244,499,662 B</span></div>
   </div>

@@ -1,10 +1,12 @@
 SHELL := /usr/bin/env bash
+MAKEFLAGS += --jobs=4
 export GOTOOLCHAIN := auto
 
 ASSETS := packages/control-plane-worker/assets/wasm
 BUILD := .build/wasm
 CAP := 67108864
-GROUPS := core coordination discovery node storage
+GROUPS := core coordination discovery node storage apps policy resource
+API_GROUPS := core coordination discovery node storage authentication authorization apps policy resource
 WASM_OPT := wasm-opt -Oz --strip-debug --strip-producers --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals
 
 .PHONY: mirrors wasm gen agent dev devtls kubeconfig check vet test clean
@@ -41,6 +43,36 @@ $(BUILD)/openapi.opt.wasm: $(BUILD)/openapi.raw.wasm
 $(ASSETS)/openapi.manifest.json: $(BUILD)/openapi.opt.wasm
 	cd scripts && go run ./wasmpack chunk ../$< ../$(ASSETS) openapi
 
+$(BUILD)/customresources.raw.wasm: $(GO_SRC) | mirrors
+	mkdir -p $(BUILD)
+	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/customresources/cmd/customresources-wasm
+
+$(BUILD)/customresources.opt.wasm: $(BUILD)/customresources.raw.wasm
+	$(OPTIMIZE)
+
+$(ASSETS)/customresources.manifest.json: $(BUILD)/customresources.opt.wasm
+	cd scripts && go run ./wasmpack chunk ../$< ../$(ASSETS) customresources
+
+$(BUILD)/apiserver-%.raw.wasm: $(GO_SRC) | mirrors
+	mkdir -p $(BUILD)
+	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/apiserver-$*/cmd/apiserver-wasm
+
+$(BUILD)/apiserver-%.opt.wasm: $(BUILD)/apiserver-%.raw.wasm
+	$(OPTIMIZE)
+
+$(ASSETS)/apiserver-%.manifest.json: $(BUILD)/apiserver-%.opt.wasm
+	cd scripts && go run ./wasmpack chunk ../$< ../$(ASSETS) apiserver-$*
+
+$(BUILD)/scheduler.raw.wasm: $(GO_SRC) | mirrors
+	mkdir -p $(BUILD)
+	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/scheduler/cmd/scheduler-wasm
+
+$(BUILD)/scheduler.opt.wasm: $(BUILD)/scheduler.raw.wasm
+	$(OPTIMIZE)
+
+$(ASSETS)/scheduler.manifest.json: $(BUILD)/scheduler.opt.wasm
+	cd scripts && go run ./wasmpack chunk ../$< ../$(ASSETS) scheduler
+
 $(BUILD)/printers-%.opt.wasm: $(BUILD)/printers-%.raw.wasm
 	$(OPTIMIZE)
 
@@ -54,7 +86,7 @@ $(ASSETS)/apiserver.manifest.json: $(BUILD)/apiserver.opt.wasm
 $(ASSETS)/printers-%.manifest.json: $(BUILD)/printers-%.opt.wasm
 	cd scripts && go run ./wasmpack chunk ../$< ../$(ASSETS) printers-$*
 
-wasm: $(ASSETS)/wasm_exec.js $(ASSETS)/apiserver.manifest.json $(ASSETS)/openapi.manifest.json $(foreach g,$(GROUPS),$(ASSETS)/printers-$(g).manifest.json)
+wasm: $(ASSETS)/wasm_exec.js $(ASSETS)/apiserver.manifest.json $(foreach g,$(API_GROUPS),$(ASSETS)/apiserver-$(g).manifest.json) $(ASSETS)/openapi.manifest.json $(ASSETS)/customresources.manifest.json $(ASSETS)/scheduler.manifest.json $(foreach g,$(GROUPS),$(ASSETS)/printers-$(g).manifest.json)
 
 gen:
 	cd scripts && go run ./genresources && go run ./genprinters && go run ./genopenapi

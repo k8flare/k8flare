@@ -17,10 +17,18 @@ function instantiate(env, ctx) {
     );
   });
 }
+async function pump(binding, ms) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    binding.tick();
+  }
+}
 export default {
   async fetch(request, env, ctx) {
     if (!bindingPromise) bindingPromise = instantiate(env, ctx);
     const binding = await bindingPromise;
+    if (PUMP_MS > 0) ctx.waitUntil(pump(binding, PUMP_MS));
     const raw = await request.arrayBuffer();
     const out = await binding.handleRequest(
       { method: request.method, url: request.url, headers: [...request.headers], body: raw.byteLength === 0 ? null : new Uint8Array(raw) },
@@ -67,6 +75,7 @@ export async function loadWasmWorker(
   assets: Fetcher,
   name: string,
   env: Record<string, unknown>,
+  pumpMs = 0,
 ): Promise<Fetcher> {
   let m = manifests.get(name);
   if (!m) {
@@ -74,11 +83,11 @@ export async function loadWasmWorker(
     manifests.set(name, m);
   }
   const manifest = m;
-  const worker = loader.get(`${name}@${manifest.sha256}`, async () => ({
+  const worker = loader.get(`${name}@${manifest.sha256}@${pumpMs}`, async () => ({
     compatibilityDate: "2026-09-01",
     mainModule: "index.js",
     modules: {
-      "index.js": BOOTSTRAP,
+      "index.js": `const PUMP_MS = ${pumpMs};\n` + BOOTSTRAP,
       "wasm_exec.js": await (await asset(assets, "wasm_exec.js")).text(),
       "app.wasm": { wasm: (await assemble(assets, manifest)).buffer as ArrayBuffer },
     },

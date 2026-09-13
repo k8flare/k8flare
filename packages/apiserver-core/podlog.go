@@ -1,8 +1,9 @@
-package registry
+package core
 
 import (
 	"context"
 	"fmt"
+	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
 	"net/http"
 	"net/url"
 
@@ -18,31 +19,15 @@ import (
 	nodeutil "k8s.io/kubernetes/pkg/util/node"
 )
 
-// KubeletProxy says how the apiserver reaches a node's kubelet API.
-type KubeletProxy struct {
-	// Scheme and Port are dialed on the node's InternalIP. Production will
-	// route this through the node tunnel.
-	Scheme string
-	Port   int
-	// Token authenticates the apiserver to the kubelet, which checks it
-	// back with a TokenReview.
-	Token string
-}
-
-// logREST serves pods/log the way upstream's LogREST does: it resolves the
-// kubelet location and hands a LocationStreamer to the installer, which
-// streams the kubelet's response.
 type logREST struct {
 	pods  *genericregistry.Store
 	nodes *genericregistry.Store
-	proxy KubeletProxy
+	proxy registry.KubeletProxy
 }
 
 var _ rest.GetterWithOptions = (*logREST)(nil)
 
-// NewLogREST serves pods/log for the pods in pods, reaching kubelets by
-// the node addresses in nodes.
-func NewLogREST(pods, nodes *genericregistry.Store, proxy KubeletProxy) rest.Storage {
+func NewLogREST(pods, nodes *genericregistry.Store, proxy registry.KubeletProxy) rest.Storage {
 	return &logREST{pods: pods, nodes: nodes, proxy: proxy}
 }
 

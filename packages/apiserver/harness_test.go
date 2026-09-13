@@ -38,7 +38,15 @@ func startDevURL(t *testing.T) (string, *kubernetes.Clientset) {
 	t.Helper()
 	_, file, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(file), "../..")
-	for _, m := range []string{"packages/control-plane-worker/assets/wasm/apiserver.manifest.json", "packages/control-plane-worker/assets/wasm/printers-core.manifest.json", "packages/control-plane-worker/assets/wasm/openapi.manifest.json"} {
+	workers := []string{"apiserver", "openapi", "customresources", "scheduler"}
+	for _, g := range []string{"core", "coordination", "discovery", "node", "storage", "authentication", "authorization", "apps", "policy", "resource"} {
+		workers = append(workers, "apiserver-"+g)
+	}
+	for _, g := range []string{"core", "coordination", "discovery", "node", "storage", "apps", "policy", "resource"} {
+		workers = append(workers, "printers-"+g)
+	}
+	for _, w := range workers {
+		m := "packages/control-plane-worker/assets/wasm/" + w + ".manifest.json"
 		if _, err := os.Stat(filepath.Join(root, m)); err != nil {
 			t.Fatalf("wasm assets missing; run make wasm: %v", err)
 		}

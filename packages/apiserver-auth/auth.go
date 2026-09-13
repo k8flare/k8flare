@@ -1,4 +1,4 @@
-package apiserver
+package auth
 
 import (
 	"context"
@@ -19,23 +19,18 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 )
 
-// adminToken authenticates kubectl.
-type adminToken string
+type AdminToken string
 
-func (t adminToken) AuthenticateToken(_ context.Context, token string) (*authenticator.Response, bool, error) {
+func (t AdminToken) AuthenticateToken(_ context.Context, token string) (*authenticator.Response, bool, error) {
 	if t == "" || subtle.ConstantTimeCompare([]byte(token), []byte(t)) != 1 {
 		return nil, false, nil
 	}
 	return &authenticator.Response{User: &user.DefaultInfo{Name: "admin", Groups: []string{user.SystemPrivilegedGroup, user.AllAuthenticated}}}, true, nil
 }
 
-// nodeToken accepts the token packages/agent writes into the kubelet's
-// kubeconfig, "node:<name>:<node password>": the same secret the supervisor
-// verified when it signed the node's certificates. It never registers a
-// node; only the supervisor does.
-type nodeToken struct{ vault *supervisor.Vault }
+type NodeToken struct{ Vault *supervisor.Vault }
 
-func (n nodeToken) AuthenticateToken(ctx context.Context, token string) (*authenticator.Response, bool, error) {
+func (n NodeToken) AuthenticateToken(ctx context.Context, token string) (*authenticator.Response, bool, error) {
 	rest, ok := strings.CutPrefix(token, "node:")
 	if !ok {
 		return nil, false, nil
@@ -44,29 +39,53 @@ func (n nodeToken) AuthenticateToken(ctx context.Context, token string) (*authen
 	if !ok || name == "" || password == "" {
 		return nil, false, nil
 	}
-	if err := n.vault.CheckNodePassword(ctx, name, password); err != nil {
+	if err := n.Vault.CheckNodePassword(ctx, name, password); err != nil {
 		return nil, false, nil
 	}
 	return &authenticator.Response{User: &user.DefaultInfo{Name: "system:node:" + name, Groups: []string{user.NodesGroup, user.AllAuthenticated}}}, true, nil
 }
 
-// withAuth requires a bearer token one of the authenticators knows. Every
-// authenticated user is authorized for everything; RBAC comes later.
-func withAuth(next http.Handler, tokens authenticator.Token) http.Handler {
+func WithAuth(next http.Handler, tokens authenticator.Token) http.Handler {
 	requests := bearertoken.New(tokens)
-	resolver := &genericapirequest.RequestInfoFactory{APIPrefixes: sets.NewString("api", "apis"), GrouplessAPIPrefixes: sets.NewString("api")}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp, ok, err := requests.AuthenticateRequest(r)
 		if err != nil || !ok {
 			responsewriters.ErrorNegotiated(apierrors.NewUnauthorized("Unauthorized"), scheme.Codecs, schema.GroupVersion{}, w, r)
 			return
 		}
-		info, err := resolver.NewRequestInfo(r)
+		next.ServeHTTP(w, r.WithContext(genericapirequest.WithUser(r.Context(), resp.User)))
+	})
+}
+
+var requestInfoResolver = &genericapirequest.RequestInfoFactory{APIPrefixes: sets.NewString("api", "apis"), GrouplessAPIPrefixes: sets.NewString("api")}
+
+func WithRequestInfo(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		info, err := requestInfoResolver.NewRequestInfo(r)
 		if err != nil {
 			responsewriters.ErrorNegotiated(apierrors.NewBadRequest(err.Error()), scheme.Codecs, schema.GroupVersion{}, w, r)
 			return
 		}
-		ctx := genericapirequest.WithRequestInfo(genericapirequest.WithUser(r.Context(), resp.User), info)
+		ctx := genericapirequest.WithRequestInfo(r.Context(), info)
 		next.ServeHTTP(w, r.WithContext(audit.WithAuditContext(ctx)))
 	})
+}
+
+func WithRemoteUser(next http.Handler) http.Handler {
+	return WithRequestInfo(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u := &user.DefaultInfo{Name: r.Header.Get("X-Remote-User"), Groups: r.Header.Values("X-Remote-Group")}
+		next.ServeHTTP(w, r.WithContext(genericapirequest.WithUser(r.Context(), u)))
+	}))
+}
+
+func ForwardRemoteUser(ctx context.Context, h http.Header) {
+	h.Del("Authorization")
+	h.Del("X-Remote-User")
+	h.Del("X-Remote-Group")
+	if u, ok := genericapirequest.UserFrom(ctx); ok {
+		h.Set("X-Remote-User", u.GetName())
+		for _, g := range u.GetGroups() {
+			h.Add("X-Remote-Group", g)
+		}
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	installer "github.com/k8flare/k8flare/packages/apiserver-installer"
+	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
 	"github.com/k8flare/k8flare/packages/openapi/definitions"
 	openapinamer "k8s.io/apiserver/pkg/endpoints/openapi"
 	"k8s.io/apiserver/pkg/server/mux"
@@ -15,10 +16,11 @@ import (
 )
 
 func Handler() (http.Handler, error) {
-	_, container, err := installer.Install(http.NewServeMux(), installer.Deps{})
+	installed, err := installer.Install(http.NewServeMux(), registry.Deps{})
 	if err != nil {
 		return nil, err
 	}
+	container := installed.Container
 	namer := openapinamer.NewDefinitionNamer(scheme.Scheme)
 	info := &spec.Info{InfoProps: spec.InfoProps{Title: "Kubernetes", Version: "v1.36.4+k8flare"}}
 	oa := routes.OpenAPI{

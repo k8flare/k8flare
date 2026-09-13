@@ -3,8 +3,8 @@
 // Package bridge connects a Go http.Handler to the Worker Loader bootstrap
 // (packages/control-plane-worker/src/loader.ts). The bootstrap instantiates the Go program once per
 // isolate, waits for context.ready(), then calls context.binding.handleRequest
-// (request, env) for every dispatch. Bodies are fully buffered in both
-// directions.
+// (request, env) for every dispatch. Request bodies are buffered; responses
+// and binding fetches stream.
 package bridge
 
 import (
@@ -117,6 +117,7 @@ func Serve(handler http.Handler) {
 		})
 		return js.Global().Get("Promise").New(executor)
 	}))
+	binding.Set("tick", js.FuncOf(func(js.Value, []js.Value) any { return nil }))
 	rt.Call("ready")
 	select {}
 }
@@ -178,9 +179,13 @@ func (r *responseWriter) Write(b []byte) (n int, err error) {
 	return len(b), nil
 }
 
+func bodyless(status int) bool {
+	return status == http.StatusSwitchingProtocols || status == http.StatusNoContent || status == http.StatusResetContent || status == http.StatusNotModified
+}
+
 func (r *responseWriter) Flush() {
 	r.WriteHeader(http.StatusOK)
-	if r.streaming {
+	if r.streaming || bodyless(r.status) {
 		return
 	}
 	src := js.Global().Get("Object").New()
@@ -223,6 +228,10 @@ func (r *responseWriter) finish() {
 		return
 	}
 	r.WriteHeader(http.StatusOK)
+	if bodyless(r.status) {
+		r.started(r.response(js.Null()))
+		return
+	}
 	r.started(r.response(toUint8Array(r.buf.Bytes())))
 }
 
@@ -328,11 +337,6 @@ func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bridge: fetch %s: %w", req.URL, err)
 	}
-	buf, err := await(jsResp.Call("arrayBuffer"))
-	if err != nil {
-		return nil, err
-	}
-	body := fromUint8Array(js.Global().Get("Uint8Array").New(buf))
 	header := headerFromPairs(js.Global().Get("Array").Call("from", jsResp.Get("headers").Call("entries")))
 	status := jsResp.Get("status").Int()
 	return &http.Response{
@@ -342,10 +346,36 @@ func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		ProtoMajor:    1,
 		ProtoMinor:    1,
 		Header:        header,
-		Body:          io.NopCloser(bytes.NewReader(body)),
-		ContentLength: int64(len(body)),
+		Body:          streamBody(jsResp.Get("body")),
+		ContentLength: -1,
 		Request:       req,
 	}, nil
+}
+
+func streamBody(stream js.Value) io.ReadCloser {
+	if stream.IsNull() || stream.IsUndefined() {
+		return io.NopCloser(bytes.NewReader(nil))
+	}
+	reader := stream.Call("getReader")
+	pr, pw := io.Pipe()
+	go func() {
+		for {
+			chunk, err := await(reader.Call("read"))
+			if err != nil {
+				pw.CloseWithError(err)
+				return
+			}
+			if chunk.Get("done").Bool() {
+				pw.Close()
+				return
+			}
+			if _, err := pw.Write(fromUint8Array(chunk.Get("value"))); err != nil {
+				reader.Call("cancel")
+				return
+			}
+		}
+	}()
+	return pr
 }
 
 func await(promise js.Value) (js.Value, error) {

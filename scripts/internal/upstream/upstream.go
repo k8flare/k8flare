@@ -19,7 +19,10 @@ type ServedGroupVersion struct {
 }
 
 var Served = []ServedGroupVersion{
-	{"v1", []string{"configmaps", "events", "namespaces", "nodes", "pods", "pods/log", "secrets", "serviceaccounts", "services"}},
+	{"v1", []string{"configmaps", "events", "namespaces", "nodes", "pods", "pods/binding", "pods/log", "replicationcontrollers", "secrets", "serviceaccounts", "services"}},
+	{"apps/v1", []string{"replicasets", "statefulsets"}},
+	{"policy/v1", []string{"poddisruptionbudgets"}},
+	{"resource.k8s.io/v1", []string{"deviceclasses", "resourceclaims", "resourceclaimtemplates", "resourceslices"}},
 	{"coordination.k8s.io/v1", []string{"leases"}},
 	{"discovery.k8s.io/v1", []string{"endpointslices"}},
 	{"node.k8s.io/v1", []string{"runtimeclasses"}},
@@ -76,4 +79,13 @@ func LoadDiscovery(dir, gv string) (*APIResourceList, error) {
 	}
 	var list APIResourceList
 	return &list, json.Unmarshal(data, &list)
+}
+
+func APIPackage(gv string) (alias, path string) {
+	group, version, ok := strings.Cut(gv, "/")
+	if !ok {
+		group, version = "core", gv
+	}
+	group = strings.TrimSuffix(group, ".k8s.io")
+	return group + version, "k8s.io/api/" + group + "/" + version
 }

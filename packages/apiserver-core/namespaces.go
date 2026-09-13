@@ -1,4 +1,4 @@
-package apiserver
+package core
 
 import (
 	"net/http"
@@ -14,8 +14,6 @@ import (
 
 var systemNamespaces = []string{"default", "kube-system", "kube-public", "kube-node-lease"}
 
-// ensureNamespaces creates the namespaces every cluster starts with, on
-// the first request that reaches the API.
 func ensureNamespaces(store *genericregistry.Store, next http.Handler) http.Handler {
 	var once sync.Once
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

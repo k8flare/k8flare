@@ -25,16 +25,25 @@ configuration at the root, one flat `packages/` directory with
 wrangler.jsonc            main: packages/control-plane-worker/src/index.ts
 package.json / pnpm-workspace.yaml / tsconfig.json / .dev.vars(.example)
 go.mod / go.sum / Makefile
-scripts/                  mirror, wasmpack, devtls (Go, own go.mod)
+scripts/                  mirror, genresources, genprinters, genopenapi, wasmpack, devtls (Go, own go.mod)
 docs/  plans/
 packages/
-  control-plane-worker/   TS: shell, Loader bootstrap, assets/wasm (build output)
+  control-plane-worker/   TS: the Worker: default fetch + APIGroups / CustomResources / OpenAPI / Scheduler / Printers entrypoints; assets/wasm (build output)
+  loader-kit/             TS: Loader bootstrap and chunk assembly
   cluster-store/          TS: the Cluster Durable Object
-  apiserver/              Go: server, installer, auth, reviews, namespaces, cmd/apiserver-wasm
-  apiserver-registry/     Go: Kinds, strategies, status, field labels, defaults, pods/log
+  apiserver/              Go: the front: auth, supervisor mount, root discovery, routing; cmd/apiserver-wasm
+  apiserver-<group>/      Go: one worker per served API group (generated registration + cmd); core also holds pod/node/log/namespace hooks
+  apiserver-group/        Go: what the group workers share
+  apiserver-installer/    Go: routes via k8s.io/apiserver's installer, per-resource implementations from registry hooks
+  apiserver-registry/     Go: generic store, served table, hooks, status, field labels, tables
+  apiserver-auth/         Go: token authenticators and request filters
   apiserver-kine/         Go: KineClient and the storage.Interface adapter
   apiserver-supervisor/   Go: k3s join protocol, CA vault, node identity
-  worker-bridge/          Go: today's pkg/wasmhttp
+  customresources/        Go: upstream's CRD handler and controllers
+  openapi/                Go: /openapi/v2, /openapi/v3 from the served routes
+  scheduler/              Go: the real kube-scheduler, woken by the core worker
+  printers/ printers-*/   Go: kubectl table printers per group
+  worker-bridge/          Go: Go http.Handler <-> Loader bootstrap
   agent/                  Go: the k3s agent embedding
 ```
 

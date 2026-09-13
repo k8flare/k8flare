@@ -1,0 +1,7 @@
+{
+  "name": "@k8flare/apiserver-auth",
+  "private": true,
+  "type": "module",
+  "description": "Bearer-token authenticators (admin token, k3s node token) and the request-context filters shared by the front apiserver and the per-group workers.",
+  "scripts": { "vet": "cd ../.. && go vet ./packages/apiserver-auth/..." }
+}

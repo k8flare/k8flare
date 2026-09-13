@@ -22,16 +22,31 @@ its log, and removing it again.
   `genericregistry.Store`, and only the defaulters from
   `k8s.io/kubernetes/pkg/apis/*/v1` are linked (+3.5MB).
 - **Size is a gate, not a guideline.** `make wasm` fails above 67,108,864
-  bytes per binary. Current: apiserver 57,503,611; openapi 64,222,160;
-  printers-core 43,010,102; the other printer groups 13–27MB each. One
-  printers binary for all groups measured 79.5MB, which is why they are
-  split per group. The openapi worker with upstream's full model set
-  measured 71.4MB; `scripts/genopenapi` keeps the 261 models reachable
-  from the served kinds (of 1,381). Its remaining headroom is 2.9MB: the
-  next size lever for both apiserver and openapi is a scheme holding only
-  the served groups instead of client-go's, which links all of k8s.io/api.
+  bytes per binary. Current: front 25.4MB; group workers 28.6–38.6MB;
+  openapi 50.0MB; customresources 57.3MB; scheduler 55.1MB (109.9MB before the lean clientset and informer factory overlays and the two files that dragged the fake clientset and cri-client in);
+  printers-core 43.0MB, the other printer groups 13–27MB. Before the
+  clientset-scheme / APF / StorageVersion overlays the one-binary apiserver
+  was 57.5MB and the CRD handler 73.5MB; `k8s.io/api` alone was 21.4MB of
+  code in every binary because those packages' `init` registrations keep
+  every type reachable once the package is imported.
+- **One dynamic worker per API group, loaded on first use.** The front
+  worker only authenticates and routes; each served group, the CRD handler,
+  OpenAPI, the scheduler and each printers group is its own binary, so a
+  request loads only what it touches and every binary stays under the cap.
+  Two js overlays make that possible without touching what upstream does:
+  the clientset scheme registers nothing (each worker registers the groups
+  it imports), and the APF filter and StorageVersion manager no longer pull
+  every group's informers and typed clients.
 - **One resident Go instance per isolate**, dispatched per request by the
-  Loader bootstrap. Watches stream from it (Content-Encoding: identity, or
+  Loader bootstrap. Go timers and fetches only live inside a request
+  context, and the Go runtime keeps a single scheduled wake-up, so once a
+  context ends every goroutine waiting on a timer stalls until the next
+  request enters the instance (observed 2026-09-13: a custom resource
+  create finished only when the next request arrived, and workerd reported
+  the isolate as hung). The bootstrap therefore keeps each request's
+  context open for a pump window after responding and re-enters Go every
+  250ms during it: 5s for group workers, 30s for customresources and the
+  scheduler, whose controllers otherwise only run while pumped. Watches stream from it (Content-Encoding: identity, or
   the runtime gzips JSON and holds the stream until it closes).
 - **The agent is k3s.** `packages/agent` embeds `k3s/pkg/agent` unchanged except
   the `deps.KubeConfigOverride` hook, because TLS terminates at the edge and
@@ -40,7 +55,10 @@ its log, and removing it again.
   already registers with the supervisor.
 - **Local verification only** while GitHub Actions is off: `make test`
   starts `wrangler dev` itself; the node path is checked by hand against
-  `devtls` and an OrbStack VM.
+  `devtls` and an OrbStack VM. The harness tests are smoke tests for the
+  worker plumbing; the definition of done is upstream's conformance suite
+  run through Sonobuoy with a narrowed focus, against the VM cluster, once
+  the pieces below stop moving.
 
 ## Current-state anchors
 
@@ -105,15 +123,29 @@ the kubelet tunnel, RBAC, then the scheduler and controllers.
 
 ## Known limitations
 
-- **Per-kind code that remains**: `podStrategy` (upstream's graceful-delete
-  rule, which upstream keeps on the internal Pod type) and `assignPodCIDR`
-  (the nodeipam controller's job until controllers run) are the two
-  `if resource == ...` branches left. The served resources themselves are
-  generated from upstream's discovery documents (`scripts/genresources`), and
-  field labels, defaults and PodLogOptions come from upstream's
-  `AddToScheme`.
-- **No scheduler, controllers, Services, kube-proxy, or cluster DNS.** Pods
-  need `spec.nodeName` and `dnsPolicy: Default`.
+- **Per-kind code that remains**, all in `packages/apiserver-core` and
+  registered through the registry's hooks: `podStrategy` (upstream's
+  graceful-delete rule, which upstream keeps on the internal Pod type),
+  `assignPodCIDR` (the nodeipam controller's job until controllers run),
+  the namespace bootstrap, `pods/binding` (upstream's BindingREST lives on
+  the internal Pod type), and the scheduler wake-up. The served resources
+  themselves are generated from upstream's discovery documents
+  (`scripts/genresources`), and field labels, defaults and PodLogOptions
+  come from upstream's `AddToScheme`.
+- **The scheduler runs only while woken.** A Pod written without a node
+  wakes the scheduler worker, which runs the real kube-scheduler and its
+  informers in that isolate for a bounded window per wake-up; nothing keeps
+  it alive at idle. A poke holds its request until the active and backoff
+  queues drain (20s at most) and answers 202 while work remains, which the
+  entrypoint turns into the next poke; only Pod writes poke, so a Pod
+  created before any Node exists waits for the next Pod write (follow-up:
+  poke on Node writes too). The scheduler's informers are why apps/v1, policy/v1,
+  resource.k8s.io/v1 and replicationcontrollers are served: an informer
+  on an unserved resource never syncs and the scheduler never starts. Controllers, Services, kube-proxy and cluster DNS are
+  still absent; Pods need `dnsPolicy: Default`.
+- **CRD OpenAPI is not published**: `kubectl explain` on a custom resource
+  has no schema and `kubectl apply` of one validates server-side only.
+  Conversion webhooks are untested.
 - **`pods/log` reaches the kubelet on its InternalIP over plain HTTP**
   (`--kubelet-plain-port`), which only works while the Worker runs on the
   same machine as the VM. The `/v1-k3s/connect` tunnel is accepted and
@@ -134,7 +166,9 @@ the kubelet tunnel, RBAC, then the scheduler and controllers.
   route installer and kube-openapi's builders. The document set is what
   the installer serves, so CRDs later mean feeding the worker their
   schemas (apiextensions' openapi builder + kube-openapi's aggregator),
-  not regenerating a file. Not wired yet.
+  not regenerating a file. Its CRD informer talks to its own handler
+  through an in-process loopback client: the same request sent through the
+  Service Binding back into the same dynamic worker never returned.
 
 ## Known edge cases / watch-fors
 

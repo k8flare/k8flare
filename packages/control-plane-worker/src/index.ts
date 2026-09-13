@@ -3,6 +3,9 @@ import { apiserverFetch } from "./loader.ts";
 export { Cluster } from "@k8flare/cluster-store";
 export { Printers } from "./printers.ts";
 export { OpenAPI } from "./openapi.ts";
+export { CustomResources } from "./customresources.ts";
+export { APIGroups } from "./apigroups.ts";
+export { Scheduler } from "./scheduler.ts";
 
 // The k3s agent keeps a remotedialer tunnel to its server so the server
 // can reach the kubelet. Nothing dials back through it here yet, so the

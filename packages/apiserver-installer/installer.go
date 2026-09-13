@@ -2,62 +2,65 @@ package installer
 
 import (
 	"fmt"
-	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
-	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
-	supervisor "github.com/k8flare/k8flare/packages/apiserver-supervisor"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/emicklei/go-restful/v3"
+	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/managedfields"
 	"k8s.io/apiserver/pkg/admission"
-	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/endpoints"
 	"k8s.io/apiserver/pkg/endpoints/discovery"
-	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
 	"k8s.io/apiserver/pkg/registry/rest"
 	"k8s.io/client-go/kubernetes/scheme"
 )
 
-func apiRoot(gv schema.GroupVersion) string {
+func Root(gv schema.GroupVersion) string {
 	if gv.Group == "" {
 		return "/api"
 	}
 	return "/apis"
 }
 
-// Install builds every route, and the per-version discovery documents,
-// with k8s.io/apiserver's own API installer. The root discovery documents
-// (/api, /apis) are the only ones added by hand. It returns the stores by
-// resource name.
-type Deps struct {
-	Kine    *kine.Client
-	Tokens  authenticator.Token
-	Kubelet registry.KubeletProxy
+func APIGroup(gv schema.GroupVersion) metav1.APIGroup {
+	v := metav1.GroupVersionForDiscovery{GroupVersion: gv.String(), Version: gv.Version}
+	return metav1.APIGroup{Name: gv.Group, Versions: []metav1.GroupVersionForDiscovery{v}, PreferredVersion: v}
 }
 
-func Install(mux *http.ServeMux, deps Deps) (map[string]*genericregistry.Store, *restful.Container, error) {
-	client, tokens, kubelet := deps.Kine, deps.Tokens, deps.Kubelet
-	stores := map[string]*genericregistry.Store{}
-	byGV := map[schema.GroupVersion]map[string]rest.Storage{}
+type Installed struct {
+	Stores    map[string]*registry.Store
+	Container *restful.Container
+}
+
+func Install(mux *http.ServeMux, deps registry.Deps, only ...schema.GroupVersion) (*Installed, error) {
+	stores := map[string]*registry.Store{}
+	container := restful.NewContainer()
+	container.ServeMux = mux
+	container.Router(restful.CurlyRouter{})
 	for _, sgv := range registry.Served {
+		if len(only) > 0 && !contains(only, sgv.GV) {
+			continue
+		}
 		storage := map[string]rest.Storage{}
 		for _, res := range sgv.Resources {
 			if strings.Contains(res.Name, "/") {
 				continue
 			}
-			if create, ok := reviewCreators(tokens)[res.Name]; ok {
-				storage[res.Name] = newReviewREST(sgv.GV.WithKind(res.Kind), res.SingularName, create)
+			if custom, ok := registry.Resources[res.Name]; ok {
+				storage[res.Name] = custom(sgv.GV, res, deps)
 				continue
 			}
-			store, err := registry.NewStore(client, sgv.GV, res, supervisor.ClusterCIDR)
+			store, err := registry.NewStore(deps.Kine, sgv.GV, res)
 			if err != nil {
-				return nil, nil, err
+				return nil, err
+			}
+			if customize, ok := registry.Customizers[res.Name]; ok {
+				customize(store, deps)
 			}
 			stores[res.Name] = store
 			storage[res.Name] = registry.WithNames(store, res)
@@ -67,30 +70,21 @@ func Install(mux *http.ServeMux, deps Deps) (map[string]*genericregistry.Store, 
 			if !ok {
 				continue
 			}
-			switch sub {
-			case "status":
+			switch build, custom := registry.Subresources[res.Name]; {
+			case custom:
+				storage[res.Name] = build(stores, deps)
+			case sub == "status":
 				storage[res.Name] = registry.NewStatusREST(stores[parent])
-			case "log":
-				storage[res.Name] = registry.NewLogREST(stores["pods"], stores["nodes"], kubelet)
 			default:
-				return nil, nil, fmt.Errorf("no implementation for subresource %s", res.Name)
+				return nil, fmt.Errorf("no implementation for subresource %s", res.Name)
 			}
 		}
-		byGV[sgv.GV] = storage
-	}
-	container := restful.NewContainer()
-	container.ServeMux = mux
-	container.Router(restful.CurlyRouter{})
-	addresses := discovery.DefaultAddresses{DefaultAddress: "k8flare"}
-	rootAPIs := discovery.NewRootAPIsHandler(addresses, scheme.Codecs)
-	for _, sgv := range registry.Served {
-		gv := sgv.GV
 		group := &endpoints.APIGroupVersion{
-			Storage:                     byGV[gv],
-			Root:                        apiRoot(gv),
-			GroupVersion:                gv,
+			Storage:                     storage,
+			Root:                        Root(sgv.GV),
+			GroupVersion:                sgv.GV,
 			MetaGroupVersion:            &metav1.SchemeGroupVersion,
-			AllServedVersionsByResource: servedVersions(gv, byGV[gv]),
+			AllServedVersionsByResource: servedVersions(sgv.GV, storage),
 			Creater:                     scheme.Scheme,
 			Convertor:                   scheme.Scheme,
 			Typer:                       scheme.Scheme,
@@ -106,27 +100,28 @@ func Install(mux *http.ServeMux, deps Deps) (map[string]*genericregistry.Store, 
 			MinRequestTimeout:           30 * time.Minute,
 		}
 		if _, _, err := group.InstallREST(container); err != nil {
-			return nil, nil, fmt.Errorf("install %s: %w", gv, err)
+			return nil, fmt.Errorf("install %s: %w", sgv.GV, err)
 		}
-		if gv.Group != "" {
-			apiGroup := metav1.APIGroup{
-				Name:             gv.Group,
-				Versions:         []metav1.GroupVersionForDiscovery{{GroupVersion: gv.String(), Version: gv.Version}},
-				PreferredVersion: metav1.GroupVersionForDiscovery{GroupVersion: gv.String(), Version: gv.Version},
-			}
-			rootAPIs.AddGroup(apiGroup)
-			container.Add(discovery.NewAPIGroupHandler(scheme.Codecs, apiGroup).WebService())
+		if sgv.GV.Group != "" {
+			container.Add(discovery.NewAPIGroupHandler(scheme.Codecs, APIGroup(sgv.GV)).WebService())
 		}
 	}
-	container.Add(discovery.NewLegacyRootAPIHandler(addresses, scheme.Codecs, "/api").WebService())
-	container.Add(rootAPIs.WebService())
-	return stores, container, nil
+	return &Installed{Stores: stores, Container: container}, nil
+}
+
+func contains(list []schema.GroupVersion, gv schema.GroupVersion) bool {
+	for _, v := range list {
+		if v == gv {
+			return true
+		}
+	}
+	return false
 }
 
 func servedVersions(gv schema.GroupVersion, storage map[string]rest.Storage) map[string][]string {
-	served := make(map[string][]string, len(storage))
-	for resource := range storage {
-		served[resource] = []string{gv.String()}
+	out := map[string][]string{}
+	for name := range storage {
+		out[name] = []string{gv.Version}
 	}
-	return served
+	return out
 }

@@ -3,12 +3,15 @@
 package definitions
 
 import (
+	appsv1 "k8s.io/api/apps/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	nodev1 "k8s.io/api/node/v1"
+	policyv1 "k8s.io/api/policy/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	resource "k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -20,267 +23,1085 @@ import (
 
 func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenAPIDefinition {
 	return map[string]common.OpenAPIDefinition{
-		authenticationv1.TokenReview{}.OpenAPIModelName():                schema_k8sio_api_authentication_v1_TokenReview(ref),
-		authenticationv1.TokenReviewSpec{}.OpenAPIModelName():            schema_k8sio_api_authentication_v1_TokenReviewSpec(ref),
-		authenticationv1.TokenReviewStatus{}.OpenAPIModelName():          schema_k8sio_api_authentication_v1_TokenReviewStatus(ref),
-		authenticationv1.UserInfo{}.OpenAPIModelName():                   schema_k8sio_api_authentication_v1_UserInfo(ref),
-		authorizationv1.FieldSelectorAttributes{}.OpenAPIModelName():     schema_k8sio_api_authorization_v1_FieldSelectorAttributes(ref),
-		authorizationv1.LabelSelectorAttributes{}.OpenAPIModelName():     schema_k8sio_api_authorization_v1_LabelSelectorAttributes(ref),
-		authorizationv1.NonResourceAttributes{}.OpenAPIModelName():       schema_k8sio_api_authorization_v1_NonResourceAttributes(ref),
-		authorizationv1.ResourceAttributes{}.OpenAPIModelName():          schema_k8sio_api_authorization_v1_ResourceAttributes(ref),
-		authorizationv1.SelfSubjectAccessReview{}.OpenAPIModelName():     schema_k8sio_api_authorization_v1_SelfSubjectAccessReview(ref),
-		authorizationv1.SelfSubjectAccessReviewSpec{}.OpenAPIModelName(): schema_k8sio_api_authorization_v1_SelfSubjectAccessReviewSpec(ref),
-		authorizationv1.SubjectAccessReview{}.OpenAPIModelName():         schema_k8sio_api_authorization_v1_SubjectAccessReview(ref),
-		authorizationv1.SubjectAccessReviewSpec{}.OpenAPIModelName():     schema_k8sio_api_authorization_v1_SubjectAccessReviewSpec(ref),
-		authorizationv1.SubjectAccessReviewStatus{}.OpenAPIModelName():   schema_k8sio_api_authorization_v1_SubjectAccessReviewStatus(ref),
-		coordinationv1.Lease{}.OpenAPIModelName():                        schema_k8sio_api_coordination_v1_Lease(ref),
-		coordinationv1.LeaseList{}.OpenAPIModelName():                    schema_k8sio_api_coordination_v1_LeaseList(ref),
-		coordinationv1.LeaseSpec{}.OpenAPIModelName():                    schema_k8sio_api_coordination_v1_LeaseSpec(ref),
-		corev1.AWSElasticBlockStoreVolumeSource{}.OpenAPIModelName():     schema_k8sio_api_core_v1_AWSElasticBlockStoreVolumeSource(ref),
-		corev1.Affinity{}.OpenAPIModelName():                             schema_k8sio_api_core_v1_Affinity(ref),
-		corev1.AppArmorProfile{}.OpenAPIModelName():                      schema_k8sio_api_core_v1_AppArmorProfile(ref),
-		corev1.AttachedVolume{}.OpenAPIModelName():                       schema_k8sio_api_core_v1_AttachedVolume(ref),
-		corev1.AzureDiskVolumeSource{}.OpenAPIModelName():                schema_k8sio_api_core_v1_AzureDiskVolumeSource(ref),
-		corev1.AzureFileVolumeSource{}.OpenAPIModelName():                schema_k8sio_api_core_v1_AzureFileVolumeSource(ref),
-		corev1.CSIVolumeSource{}.OpenAPIModelName():                      schema_k8sio_api_core_v1_CSIVolumeSource(ref),
-		corev1.Capabilities{}.OpenAPIModelName():                         schema_k8sio_api_core_v1_Capabilities(ref),
-		corev1.CephFSVolumeSource{}.OpenAPIModelName():                   schema_k8sio_api_core_v1_CephFSVolumeSource(ref),
-		corev1.CinderVolumeSource{}.OpenAPIModelName():                   schema_k8sio_api_core_v1_CinderVolumeSource(ref),
-		corev1.ClientIPConfig{}.OpenAPIModelName():                       schema_k8sio_api_core_v1_ClientIPConfig(ref),
-		corev1.ClusterTrustBundleProjection{}.OpenAPIModelName():         schema_k8sio_api_core_v1_ClusterTrustBundleProjection(ref),
-		corev1.ConfigMap{}.OpenAPIModelName():                            schema_k8sio_api_core_v1_ConfigMap(ref),
-		corev1.ConfigMapEnvSource{}.OpenAPIModelName():                   schema_k8sio_api_core_v1_ConfigMapEnvSource(ref),
-		corev1.ConfigMapKeySelector{}.OpenAPIModelName():                 schema_k8sio_api_core_v1_ConfigMapKeySelector(ref),
-		corev1.ConfigMapList{}.OpenAPIModelName():                        schema_k8sio_api_core_v1_ConfigMapList(ref),
-		corev1.ConfigMapNodeConfigSource{}.OpenAPIModelName():            schema_k8sio_api_core_v1_ConfigMapNodeConfigSource(ref),
-		corev1.ConfigMapProjection{}.OpenAPIModelName():                  schema_k8sio_api_core_v1_ConfigMapProjection(ref),
-		corev1.ConfigMapVolumeSource{}.OpenAPIModelName():                schema_k8sio_api_core_v1_ConfigMapVolumeSource(ref),
-		corev1.Container{}.OpenAPIModelName():                            schema_k8sio_api_core_v1_Container(ref),
-		corev1.ContainerExtendedResourceRequest{}.OpenAPIModelName():     schema_k8sio_api_core_v1_ContainerExtendedResourceRequest(ref),
-		corev1.ContainerImage{}.OpenAPIModelName():                       schema_k8sio_api_core_v1_ContainerImage(ref),
-		corev1.ContainerPort{}.OpenAPIModelName():                        schema_k8sio_api_core_v1_ContainerPort(ref),
-		corev1.ContainerResizePolicy{}.OpenAPIModelName():                schema_k8sio_api_core_v1_ContainerResizePolicy(ref),
-		corev1.ContainerRestartRule{}.OpenAPIModelName():                 schema_k8sio_api_core_v1_ContainerRestartRule(ref),
-		corev1.ContainerRestartRuleOnExitCodes{}.OpenAPIModelName():      schema_k8sio_api_core_v1_ContainerRestartRuleOnExitCodes(ref),
-		corev1.ContainerState{}.OpenAPIModelName():                       schema_k8sio_api_core_v1_ContainerState(ref),
-		corev1.ContainerStateRunning{}.OpenAPIModelName():                schema_k8sio_api_core_v1_ContainerStateRunning(ref),
-		corev1.ContainerStateTerminated{}.OpenAPIModelName():             schema_k8sio_api_core_v1_ContainerStateTerminated(ref),
-		corev1.ContainerStateWaiting{}.OpenAPIModelName():                schema_k8sio_api_core_v1_ContainerStateWaiting(ref),
-		corev1.ContainerStatus{}.OpenAPIModelName():                      schema_k8sio_api_core_v1_ContainerStatus(ref),
-		corev1.ContainerUser{}.OpenAPIModelName():                        schema_k8sio_api_core_v1_ContainerUser(ref),
-		corev1.DaemonEndpoint{}.OpenAPIModelName():                       schema_k8sio_api_core_v1_DaemonEndpoint(ref),
-		corev1.DownwardAPIProjection{}.OpenAPIModelName():                schema_k8sio_api_core_v1_DownwardAPIProjection(ref),
-		corev1.DownwardAPIVolumeFile{}.OpenAPIModelName():                schema_k8sio_api_core_v1_DownwardAPIVolumeFile(ref),
-		corev1.DownwardAPIVolumeSource{}.OpenAPIModelName():              schema_k8sio_api_core_v1_DownwardAPIVolumeSource(ref),
-		corev1.EmptyDirVolumeSource{}.OpenAPIModelName():                 schema_k8sio_api_core_v1_EmptyDirVolumeSource(ref),
-		corev1.EnvFromSource{}.OpenAPIModelName():                        schema_k8sio_api_core_v1_EnvFromSource(ref),
-		corev1.EnvVar{}.OpenAPIModelName():                               schema_k8sio_api_core_v1_EnvVar(ref),
-		corev1.EnvVarSource{}.OpenAPIModelName():                         schema_k8sio_api_core_v1_EnvVarSource(ref),
-		corev1.EphemeralContainer{}.OpenAPIModelName():                   schema_k8sio_api_core_v1_EphemeralContainer(ref),
-		corev1.EphemeralVolumeSource{}.OpenAPIModelName():                schema_k8sio_api_core_v1_EphemeralVolumeSource(ref),
-		corev1.Event{}.OpenAPIModelName():                                schema_k8sio_api_core_v1_Event(ref),
-		corev1.EventList{}.OpenAPIModelName():                            schema_k8sio_api_core_v1_EventList(ref),
-		corev1.EventSeries{}.OpenAPIModelName():                          schema_k8sio_api_core_v1_EventSeries(ref),
-		corev1.EventSource{}.OpenAPIModelName():                          schema_k8sio_api_core_v1_EventSource(ref),
-		corev1.ExecAction{}.OpenAPIModelName():                           schema_k8sio_api_core_v1_ExecAction(ref),
-		corev1.FCVolumeSource{}.OpenAPIModelName():                       schema_k8sio_api_core_v1_FCVolumeSource(ref),
-		corev1.FileKeySelector{}.OpenAPIModelName():                      schema_k8sio_api_core_v1_FileKeySelector(ref),
-		corev1.FlexVolumeSource{}.OpenAPIModelName():                     schema_k8sio_api_core_v1_FlexVolumeSource(ref),
-		corev1.FlockerVolumeSource{}.OpenAPIModelName():                  schema_k8sio_api_core_v1_FlockerVolumeSource(ref),
-		corev1.GCEPersistentDiskVolumeSource{}.OpenAPIModelName():        schema_k8sio_api_core_v1_GCEPersistentDiskVolumeSource(ref),
-		corev1.GRPCAction{}.OpenAPIModelName():                           schema_k8sio_api_core_v1_GRPCAction(ref),
-		corev1.GitRepoVolumeSource{}.OpenAPIModelName():                  schema_k8sio_api_core_v1_GitRepoVolumeSource(ref),
-		corev1.GlusterfsVolumeSource{}.OpenAPIModelName():                schema_k8sio_api_core_v1_GlusterfsVolumeSource(ref),
-		corev1.HTTPGetAction{}.OpenAPIModelName():                        schema_k8sio_api_core_v1_HTTPGetAction(ref),
-		corev1.HTTPHeader{}.OpenAPIModelName():                           schema_k8sio_api_core_v1_HTTPHeader(ref),
-		corev1.HostAlias{}.OpenAPIModelName():                            schema_k8sio_api_core_v1_HostAlias(ref),
-		corev1.HostIP{}.OpenAPIModelName():                               schema_k8sio_api_core_v1_HostIP(ref),
-		corev1.HostPathVolumeSource{}.OpenAPIModelName():                 schema_k8sio_api_core_v1_HostPathVolumeSource(ref),
-		corev1.ISCSIVolumeSource{}.OpenAPIModelName():                    schema_k8sio_api_core_v1_ISCSIVolumeSource(ref),
-		corev1.ImageVolumeSource{}.OpenAPIModelName():                    schema_k8sio_api_core_v1_ImageVolumeSource(ref),
-		corev1.ImageVolumeStatus{}.OpenAPIModelName():                    schema_k8sio_api_core_v1_ImageVolumeStatus(ref),
-		corev1.KeyToPath{}.OpenAPIModelName():                            schema_k8sio_api_core_v1_KeyToPath(ref),
-		corev1.Lifecycle{}.OpenAPIModelName():                            schema_k8sio_api_core_v1_Lifecycle(ref),
-		corev1.LifecycleHandler{}.OpenAPIModelName():                     schema_k8sio_api_core_v1_LifecycleHandler(ref),
-		corev1.LinuxContainerUser{}.OpenAPIModelName():                   schema_k8sio_api_core_v1_LinuxContainerUser(ref),
-		corev1.LoadBalancerIngress{}.OpenAPIModelName():                  schema_k8sio_api_core_v1_LoadBalancerIngress(ref),
-		corev1.LoadBalancerStatus{}.OpenAPIModelName():                   schema_k8sio_api_core_v1_LoadBalancerStatus(ref),
-		corev1.LocalObjectReference{}.OpenAPIModelName():                 schema_k8sio_api_core_v1_LocalObjectReference(ref),
-		corev1.NFSVolumeSource{}.OpenAPIModelName():                      schema_k8sio_api_core_v1_NFSVolumeSource(ref),
-		corev1.Namespace{}.OpenAPIModelName():                            schema_k8sio_api_core_v1_Namespace(ref),
-		corev1.NamespaceCondition{}.OpenAPIModelName():                   schema_k8sio_api_core_v1_NamespaceCondition(ref),
-		corev1.NamespaceList{}.OpenAPIModelName():                        schema_k8sio_api_core_v1_NamespaceList(ref),
-		corev1.NamespaceSpec{}.OpenAPIModelName():                        schema_k8sio_api_core_v1_NamespaceSpec(ref),
-		corev1.NamespaceStatus{}.OpenAPIModelName():                      schema_k8sio_api_core_v1_NamespaceStatus(ref),
-		corev1.Node{}.OpenAPIModelName():                                 schema_k8sio_api_core_v1_Node(ref),
-		corev1.NodeAddress{}.OpenAPIModelName():                          schema_k8sio_api_core_v1_NodeAddress(ref),
-		corev1.NodeAffinity{}.OpenAPIModelName():                         schema_k8sio_api_core_v1_NodeAffinity(ref),
-		corev1.NodeAllocatableResourceClaimStatus{}.OpenAPIModelName():   schema_k8sio_api_core_v1_NodeAllocatableResourceClaimStatus(ref),
-		corev1.NodeCondition{}.OpenAPIModelName():                        schema_k8sio_api_core_v1_NodeCondition(ref),
-		corev1.NodeConfigSource{}.OpenAPIModelName():                     schema_k8sio_api_core_v1_NodeConfigSource(ref),
-		corev1.NodeConfigStatus{}.OpenAPIModelName():                     schema_k8sio_api_core_v1_NodeConfigStatus(ref),
-		corev1.NodeDaemonEndpoints{}.OpenAPIModelName():                  schema_k8sio_api_core_v1_NodeDaemonEndpoints(ref),
-		corev1.NodeFeatures{}.OpenAPIModelName():                         schema_k8sio_api_core_v1_NodeFeatures(ref),
-		corev1.NodeList{}.OpenAPIModelName():                             schema_k8sio_api_core_v1_NodeList(ref),
-		corev1.NodeRuntimeHandler{}.OpenAPIModelName():                   schema_k8sio_api_core_v1_NodeRuntimeHandler(ref),
-		corev1.NodeRuntimeHandlerFeatures{}.OpenAPIModelName():           schema_k8sio_api_core_v1_NodeRuntimeHandlerFeatures(ref),
-		corev1.NodeSelector{}.OpenAPIModelName():                         schema_k8sio_api_core_v1_NodeSelector(ref),
-		corev1.NodeSelectorRequirement{}.OpenAPIModelName():              schema_k8sio_api_core_v1_NodeSelectorRequirement(ref),
-		corev1.NodeSelectorTerm{}.OpenAPIModelName():                     schema_k8sio_api_core_v1_NodeSelectorTerm(ref),
-		corev1.NodeSpec{}.OpenAPIModelName():                             schema_k8sio_api_core_v1_NodeSpec(ref),
-		corev1.NodeStatus{}.OpenAPIModelName():                           schema_k8sio_api_core_v1_NodeStatus(ref),
-		corev1.NodeSwapStatus{}.OpenAPIModelName():                       schema_k8sio_api_core_v1_NodeSwapStatus(ref),
-		corev1.NodeSystemInfo{}.OpenAPIModelName():                       schema_k8sio_api_core_v1_NodeSystemInfo(ref),
-		corev1.ObjectFieldSelector{}.OpenAPIModelName():                  schema_k8sio_api_core_v1_ObjectFieldSelector(ref),
-		corev1.ObjectReference{}.OpenAPIModelName():                      schema_k8sio_api_core_v1_ObjectReference(ref),
-		corev1.PersistentVolumeClaimSpec{}.OpenAPIModelName():            schema_k8sio_api_core_v1_PersistentVolumeClaimSpec(ref),
-		corev1.PersistentVolumeClaimTemplate{}.OpenAPIModelName():        schema_k8sio_api_core_v1_PersistentVolumeClaimTemplate(ref),
-		corev1.PersistentVolumeClaimVolumeSource{}.OpenAPIModelName():    schema_k8sio_api_core_v1_PersistentVolumeClaimVolumeSource(ref),
-		corev1.PhotonPersistentDiskVolumeSource{}.OpenAPIModelName():     schema_k8sio_api_core_v1_PhotonPersistentDiskVolumeSource(ref),
-		corev1.Pod{}.OpenAPIModelName():                                  schema_k8sio_api_core_v1_Pod(ref),
-		corev1.PodAffinity{}.OpenAPIModelName():                          schema_k8sio_api_core_v1_PodAffinity(ref),
-		corev1.PodAffinityTerm{}.OpenAPIModelName():                      schema_k8sio_api_core_v1_PodAffinityTerm(ref),
-		corev1.PodAntiAffinity{}.OpenAPIModelName():                      schema_k8sio_api_core_v1_PodAntiAffinity(ref),
-		corev1.PodCertificateProjection{}.OpenAPIModelName():             schema_k8sio_api_core_v1_PodCertificateProjection(ref),
-		corev1.PodCondition{}.OpenAPIModelName():                         schema_k8sio_api_core_v1_PodCondition(ref),
-		corev1.PodDNSConfig{}.OpenAPIModelName():                         schema_k8sio_api_core_v1_PodDNSConfig(ref),
-		corev1.PodDNSConfigOption{}.OpenAPIModelName():                   schema_k8sio_api_core_v1_PodDNSConfigOption(ref),
-		corev1.PodExtendedResourceClaimStatus{}.OpenAPIModelName():       schema_k8sio_api_core_v1_PodExtendedResourceClaimStatus(ref),
-		corev1.PodIP{}.OpenAPIModelName():                                schema_k8sio_api_core_v1_PodIP(ref),
-		corev1.PodList{}.OpenAPIModelName():                              schema_k8sio_api_core_v1_PodList(ref),
-		corev1.PodOS{}.OpenAPIModelName():                                schema_k8sio_api_core_v1_PodOS(ref),
-		corev1.PodReadinessGate{}.OpenAPIModelName():                     schema_k8sio_api_core_v1_PodReadinessGate(ref),
-		corev1.PodResourceClaim{}.OpenAPIModelName():                     schema_k8sio_api_core_v1_PodResourceClaim(ref),
-		corev1.PodResourceClaimStatus{}.OpenAPIModelName():               schema_k8sio_api_core_v1_PodResourceClaimStatus(ref),
-		corev1.PodSchedulingGate{}.OpenAPIModelName():                    schema_k8sio_api_core_v1_PodSchedulingGate(ref),
-		corev1.PodSchedulingGroup{}.OpenAPIModelName():                   schema_k8sio_api_core_v1_PodSchedulingGroup(ref),
-		corev1.PodSecurityContext{}.OpenAPIModelName():                   schema_k8sio_api_core_v1_PodSecurityContext(ref),
-		corev1.PodSpec{}.OpenAPIModelName():                              schema_k8sio_api_core_v1_PodSpec(ref),
-		corev1.PodStatus{}.OpenAPIModelName():                            schema_k8sio_api_core_v1_PodStatus(ref),
-		corev1.PortStatus{}.OpenAPIModelName():                           schema_k8sio_api_core_v1_PortStatus(ref),
-		corev1.PortworxVolumeSource{}.OpenAPIModelName():                 schema_k8sio_api_core_v1_PortworxVolumeSource(ref),
-		corev1.PreferredSchedulingTerm{}.OpenAPIModelName():              schema_k8sio_api_core_v1_PreferredSchedulingTerm(ref),
-		corev1.Probe{}.OpenAPIModelName():                                schema_k8sio_api_core_v1_Probe(ref),
-		corev1.ProjectedVolumeSource{}.OpenAPIModelName():                schema_k8sio_api_core_v1_ProjectedVolumeSource(ref),
-		corev1.QuobyteVolumeSource{}.OpenAPIModelName():                  schema_k8sio_api_core_v1_QuobyteVolumeSource(ref),
-		corev1.RBDVolumeSource{}.OpenAPIModelName():                      schema_k8sio_api_core_v1_RBDVolumeSource(ref),
-		corev1.ResourceClaim{}.OpenAPIModelName():                        schema_k8sio_api_core_v1_ResourceClaim(ref),
-		corev1.ResourceFieldSelector{}.OpenAPIModelName():                schema_k8sio_api_core_v1_ResourceFieldSelector(ref),
-		corev1.ResourceHealth{}.OpenAPIModelName():                       schema_k8sio_api_core_v1_ResourceHealth(ref),
-		corev1.ResourceRequirements{}.OpenAPIModelName():                 schema_k8sio_api_core_v1_ResourceRequirements(ref),
-		corev1.ResourceStatus{}.OpenAPIModelName():                       schema_k8sio_api_core_v1_ResourceStatus(ref),
-		corev1.SELinuxOptions{}.OpenAPIModelName():                       schema_k8sio_api_core_v1_SELinuxOptions(ref),
-		corev1.ScaleIOVolumeSource{}.OpenAPIModelName():                  schema_k8sio_api_core_v1_ScaleIOVolumeSource(ref),
-		corev1.SeccompProfile{}.OpenAPIModelName():                       schema_k8sio_api_core_v1_SeccompProfile(ref),
-		corev1.Secret{}.OpenAPIModelName():                               schema_k8sio_api_core_v1_Secret(ref),
-		corev1.SecretEnvSource{}.OpenAPIModelName():                      schema_k8sio_api_core_v1_SecretEnvSource(ref),
-		corev1.SecretKeySelector{}.OpenAPIModelName():                    schema_k8sio_api_core_v1_SecretKeySelector(ref),
-		corev1.SecretList{}.OpenAPIModelName():                           schema_k8sio_api_core_v1_SecretList(ref),
-		corev1.SecretProjection{}.OpenAPIModelName():                     schema_k8sio_api_core_v1_SecretProjection(ref),
-		corev1.SecretVolumeSource{}.OpenAPIModelName():                   schema_k8sio_api_core_v1_SecretVolumeSource(ref),
-		corev1.SecurityContext{}.OpenAPIModelName():                      schema_k8sio_api_core_v1_SecurityContext(ref),
-		corev1.Service{}.OpenAPIModelName():                              schema_k8sio_api_core_v1_Service(ref),
-		corev1.ServiceAccount{}.OpenAPIModelName():                       schema_k8sio_api_core_v1_ServiceAccount(ref),
-		corev1.ServiceAccountList{}.OpenAPIModelName():                   schema_k8sio_api_core_v1_ServiceAccountList(ref),
-		corev1.ServiceAccountTokenProjection{}.OpenAPIModelName():        schema_k8sio_api_core_v1_ServiceAccountTokenProjection(ref),
-		corev1.ServiceList{}.OpenAPIModelName():                          schema_k8sio_api_core_v1_ServiceList(ref),
-		corev1.ServicePort{}.OpenAPIModelName():                          schema_k8sio_api_core_v1_ServicePort(ref),
-		corev1.ServiceSpec{}.OpenAPIModelName():                          schema_k8sio_api_core_v1_ServiceSpec(ref),
-		corev1.ServiceStatus{}.OpenAPIModelName():                        schema_k8sio_api_core_v1_ServiceStatus(ref),
-		corev1.SessionAffinityConfig{}.OpenAPIModelName():                schema_k8sio_api_core_v1_SessionAffinityConfig(ref),
-		corev1.SleepAction{}.OpenAPIModelName():                          schema_k8sio_api_core_v1_SleepAction(ref),
-		corev1.StorageOSVolumeSource{}.OpenAPIModelName():                schema_k8sio_api_core_v1_StorageOSVolumeSource(ref),
-		corev1.Sysctl{}.OpenAPIModelName():                               schema_k8sio_api_core_v1_Sysctl(ref),
-		corev1.TCPSocketAction{}.OpenAPIModelName():                      schema_k8sio_api_core_v1_TCPSocketAction(ref),
-		corev1.Taint{}.OpenAPIModelName():                                schema_k8sio_api_core_v1_Taint(ref),
-		corev1.Toleration{}.OpenAPIModelName():                           schema_k8sio_api_core_v1_Toleration(ref),
-		corev1.TopologySpreadConstraint{}.OpenAPIModelName():             schema_k8sio_api_core_v1_TopologySpreadConstraint(ref),
-		corev1.TypedLocalObjectReference{}.OpenAPIModelName():            schema_k8sio_api_core_v1_TypedLocalObjectReference(ref),
-		corev1.TypedObjectReference{}.OpenAPIModelName():                 schema_k8sio_api_core_v1_TypedObjectReference(ref),
-		corev1.Volume{}.OpenAPIModelName():                               schema_k8sio_api_core_v1_Volume(ref),
-		corev1.VolumeDevice{}.OpenAPIModelName():                         schema_k8sio_api_core_v1_VolumeDevice(ref),
-		corev1.VolumeMount{}.OpenAPIModelName():                          schema_k8sio_api_core_v1_VolumeMount(ref),
-		corev1.VolumeMountStatus{}.OpenAPIModelName():                    schema_k8sio_api_core_v1_VolumeMountStatus(ref),
-		corev1.VolumeProjection{}.OpenAPIModelName():                     schema_k8sio_api_core_v1_VolumeProjection(ref),
-		corev1.VolumeResourceRequirements{}.OpenAPIModelName():           schema_k8sio_api_core_v1_VolumeResourceRequirements(ref),
-		corev1.VolumeStatus{}.OpenAPIModelName():                         schema_k8sio_api_core_v1_VolumeStatus(ref),
-		corev1.VsphereVirtualDiskVolumeSource{}.OpenAPIModelName():       schema_k8sio_api_core_v1_VsphereVirtualDiskVolumeSource(ref),
-		corev1.WeightedPodAffinityTerm{}.OpenAPIModelName():              schema_k8sio_api_core_v1_WeightedPodAffinityTerm(ref),
-		corev1.WindowsSecurityContextOptions{}.OpenAPIModelName():        schema_k8sio_api_core_v1_WindowsSecurityContextOptions(ref),
-		discoveryv1.Endpoint{}.OpenAPIModelName():                        schema_k8sio_api_discovery_v1_Endpoint(ref),
-		discoveryv1.EndpointConditions{}.OpenAPIModelName():              schema_k8sio_api_discovery_v1_EndpointConditions(ref),
-		discoveryv1.EndpointHints{}.OpenAPIModelName():                   schema_k8sio_api_discovery_v1_EndpointHints(ref),
-		discoveryv1.EndpointPort{}.OpenAPIModelName():                    schema_k8sio_api_discovery_v1_EndpointPort(ref),
-		discoveryv1.EndpointSlice{}.OpenAPIModelName():                   schema_k8sio_api_discovery_v1_EndpointSlice(ref),
-		discoveryv1.EndpointSliceList{}.OpenAPIModelName():               schema_k8sio_api_discovery_v1_EndpointSliceList(ref),
-		discoveryv1.ForNode{}.OpenAPIModelName():                         schema_k8sio_api_discovery_v1_ForNode(ref),
-		discoveryv1.ForZone{}.OpenAPIModelName():                         schema_k8sio_api_discovery_v1_ForZone(ref),
-		intstr.IntOrString{}.OpenAPIModelName():                          schema_apimachinery_pkg_util_intstr_IntOrString(ref),
-		metav1.APIGroup{}.OpenAPIModelName():                             schema_pkg_apis_meta_v1_APIGroup(ref),
-		metav1.APIGroupList{}.OpenAPIModelName():                         schema_pkg_apis_meta_v1_APIGroupList(ref),
-		metav1.APIResource{}.OpenAPIModelName():                          schema_pkg_apis_meta_v1_APIResource(ref),
-		metav1.APIResourceList{}.OpenAPIModelName():                      schema_pkg_apis_meta_v1_APIResourceList(ref),
-		metav1.APIVersions{}.OpenAPIModelName():                          schema_pkg_apis_meta_v1_APIVersions(ref),
-		metav1.ApplyOptions{}.OpenAPIModelName():                         schema_pkg_apis_meta_v1_ApplyOptions(ref),
-		metav1.Condition{}.OpenAPIModelName():                            schema_pkg_apis_meta_v1_Condition(ref),
-		metav1.CreateOptions{}.OpenAPIModelName():                        schema_pkg_apis_meta_v1_CreateOptions(ref),
-		metav1.DeleteOptions{}.OpenAPIModelName():                        schema_pkg_apis_meta_v1_DeleteOptions(ref),
-		metav1.Duration{}.OpenAPIModelName():                             schema_pkg_apis_meta_v1_Duration(ref),
-		metav1.FieldSelectorRequirement{}.OpenAPIModelName():             schema_pkg_apis_meta_v1_FieldSelectorRequirement(ref),
-		metav1.FieldsV1{}.OpenAPIModelName():                             schema_pkg_apis_meta_v1_FieldsV1(ref),
-		metav1.GetOptions{}.OpenAPIModelName():                           schema_pkg_apis_meta_v1_GetOptions(ref),
-		metav1.GroupKind{}.OpenAPIModelName():                            schema_pkg_apis_meta_v1_GroupKind(ref),
-		metav1.GroupResource{}.OpenAPIModelName():                        schema_pkg_apis_meta_v1_GroupResource(ref),
-		metav1.GroupVersion{}.OpenAPIModelName():                         schema_pkg_apis_meta_v1_GroupVersion(ref),
-		metav1.GroupVersionForDiscovery{}.OpenAPIModelName():             schema_pkg_apis_meta_v1_GroupVersionForDiscovery(ref),
-		metav1.GroupVersionKind{}.OpenAPIModelName():                     schema_pkg_apis_meta_v1_GroupVersionKind(ref),
-		metav1.GroupVersionResource{}.OpenAPIModelName():                 schema_pkg_apis_meta_v1_GroupVersionResource(ref),
-		metav1.InternalEvent{}.OpenAPIModelName():                        schema_pkg_apis_meta_v1_InternalEvent(ref),
-		metav1.LabelSelector{}.OpenAPIModelName():                        schema_pkg_apis_meta_v1_LabelSelector(ref),
-		metav1.LabelSelectorRequirement{}.OpenAPIModelName():             schema_pkg_apis_meta_v1_LabelSelectorRequirement(ref),
-		metav1.List{}.OpenAPIModelName():                                 schema_pkg_apis_meta_v1_List(ref),
-		metav1.ListMeta{}.OpenAPIModelName():                             schema_pkg_apis_meta_v1_ListMeta(ref),
-		metav1.ListOptions{}.OpenAPIModelName():                          schema_pkg_apis_meta_v1_ListOptions(ref),
-		metav1.ManagedFieldsEntry{}.OpenAPIModelName():                   schema_pkg_apis_meta_v1_ManagedFieldsEntry(ref),
-		metav1.MicroTime{}.OpenAPIModelName():                            schema_pkg_apis_meta_v1_MicroTime(ref),
-		metav1.ObjectMeta{}.OpenAPIModelName():                           schema_pkg_apis_meta_v1_ObjectMeta(ref),
-		metav1.OwnerReference{}.OpenAPIModelName():                       schema_pkg_apis_meta_v1_OwnerReference(ref),
-		metav1.PartialObjectMetadata{}.OpenAPIModelName():                schema_pkg_apis_meta_v1_PartialObjectMetadata(ref),
-		metav1.PartialObjectMetadataList{}.OpenAPIModelName():            schema_pkg_apis_meta_v1_PartialObjectMetadataList(ref),
-		metav1.Patch{}.OpenAPIModelName():                                schema_pkg_apis_meta_v1_Patch(ref),
-		metav1.PatchOptions{}.OpenAPIModelName():                         schema_pkg_apis_meta_v1_PatchOptions(ref),
-		metav1.Preconditions{}.OpenAPIModelName():                        schema_pkg_apis_meta_v1_Preconditions(ref),
-		metav1.RootPaths{}.OpenAPIModelName():                            schema_pkg_apis_meta_v1_RootPaths(ref),
-		metav1.ServerAddressByClientCIDR{}.OpenAPIModelName():            schema_pkg_apis_meta_v1_ServerAddressByClientCIDR(ref),
-		metav1.ShardInfo{}.OpenAPIModelName():                            schema_pkg_apis_meta_v1_ShardInfo(ref),
-		metav1.Status{}.OpenAPIModelName():                               schema_pkg_apis_meta_v1_Status(ref),
-		metav1.StatusCause{}.OpenAPIModelName():                          schema_pkg_apis_meta_v1_StatusCause(ref),
-		metav1.StatusDetails{}.OpenAPIModelName():                        schema_pkg_apis_meta_v1_StatusDetails(ref),
-		metav1.Table{}.OpenAPIModelName():                                schema_pkg_apis_meta_v1_Table(ref),
-		metav1.TableColumnDefinition{}.OpenAPIModelName():                schema_pkg_apis_meta_v1_TableColumnDefinition(ref),
-		metav1.TableOptions{}.OpenAPIModelName():                         schema_pkg_apis_meta_v1_TableOptions(ref),
-		metav1.TableRow{}.OpenAPIModelName():                             schema_pkg_apis_meta_v1_TableRow(ref),
-		metav1.TableRowCondition{}.OpenAPIModelName():                    schema_pkg_apis_meta_v1_TableRowCondition(ref),
-		metav1.Time{}.OpenAPIModelName():                                 schema_pkg_apis_meta_v1_Time(ref),
-		metav1.Timestamp{}.OpenAPIModelName():                            schema_pkg_apis_meta_v1_Timestamp(ref),
-		metav1.TypeMeta{}.OpenAPIModelName():                             schema_pkg_apis_meta_v1_TypeMeta(ref),
-		metav1.UpdateOptions{}.OpenAPIModelName():                        schema_pkg_apis_meta_v1_UpdateOptions(ref),
-		metav1.WatchEvent{}.OpenAPIModelName():                           schema_pkg_apis_meta_v1_WatchEvent(ref),
-		nodev1.Overhead{}.OpenAPIModelName():                             schema_k8sio_api_node_v1_Overhead(ref),
-		nodev1.RuntimeClass{}.OpenAPIModelName():                         schema_k8sio_api_node_v1_RuntimeClass(ref),
-		nodev1.RuntimeClassList{}.OpenAPIModelName():                     schema_k8sio_api_node_v1_RuntimeClassList(ref),
-		nodev1.Scheduling{}.OpenAPIModelName():                           schema_k8sio_api_node_v1_Scheduling(ref),
-		resource.Quantity{}.OpenAPIModelName():                           schema_apimachinery_pkg_api_resource_Quantity(ref),
-		runtime.RawExtension{}.OpenAPIModelName():                        schema_k8sio_apimachinery_pkg_runtime_RawExtension(ref),
-		storagev1.CSIDriver{}.OpenAPIModelName():                         schema_k8sio_api_storage_v1_CSIDriver(ref),
-		storagev1.CSIDriverList{}.OpenAPIModelName():                     schema_k8sio_api_storage_v1_CSIDriverList(ref),
-		storagev1.CSIDriverSpec{}.OpenAPIModelName():                     schema_k8sio_api_storage_v1_CSIDriverSpec(ref),
-		storagev1.CSINode{}.OpenAPIModelName():                           schema_k8sio_api_storage_v1_CSINode(ref),
-		storagev1.CSINodeDriver{}.OpenAPIModelName():                     schema_k8sio_api_storage_v1_CSINodeDriver(ref),
-		storagev1.CSINodeList{}.OpenAPIModelName():                       schema_k8sio_api_storage_v1_CSINodeList(ref),
-		storagev1.CSINodeSpec{}.OpenAPIModelName():                       schema_k8sio_api_storage_v1_CSINodeSpec(ref),
-		storagev1.TokenRequest{}.OpenAPIModelName():                      schema_k8sio_api_storage_v1_TokenRequest(ref),
-		storagev1.VolumeNodeResources{}.OpenAPIModelName():               schema_k8sio_api_storage_v1_VolumeNodeResources(ref),
+		appsv1.ReplicaSet{}.OpenAPIModelName():                                      schema_k8sio_api_apps_v1_ReplicaSet(ref),
+		appsv1.ReplicaSetCondition{}.OpenAPIModelName():                             schema_k8sio_api_apps_v1_ReplicaSetCondition(ref),
+		appsv1.ReplicaSetList{}.OpenAPIModelName():                                  schema_k8sio_api_apps_v1_ReplicaSetList(ref),
+		appsv1.ReplicaSetSpec{}.OpenAPIModelName():                                  schema_k8sio_api_apps_v1_ReplicaSetSpec(ref),
+		appsv1.ReplicaSetStatus{}.OpenAPIModelName():                                schema_k8sio_api_apps_v1_ReplicaSetStatus(ref),
+		appsv1.RollingUpdateStatefulSetStrategy{}.OpenAPIModelName():                schema_k8sio_api_apps_v1_RollingUpdateStatefulSetStrategy(ref),
+		appsv1.StatefulSet{}.OpenAPIModelName():                                     schema_k8sio_api_apps_v1_StatefulSet(ref),
+		appsv1.StatefulSetCondition{}.OpenAPIModelName():                            schema_k8sio_api_apps_v1_StatefulSetCondition(ref),
+		appsv1.StatefulSetList{}.OpenAPIModelName():                                 schema_k8sio_api_apps_v1_StatefulSetList(ref),
+		appsv1.StatefulSetOrdinals{}.OpenAPIModelName():                             schema_k8sio_api_apps_v1_StatefulSetOrdinals(ref),
+		appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{}.OpenAPIModelName(): schema_k8sio_api_apps_v1_StatefulSetPersistentVolumeClaimRetentionPolicy(ref),
+		appsv1.StatefulSetSpec{}.OpenAPIModelName():                                 schema_k8sio_api_apps_v1_StatefulSetSpec(ref),
+		appsv1.StatefulSetStatus{}.OpenAPIModelName():                               schema_k8sio_api_apps_v1_StatefulSetStatus(ref),
+		appsv1.StatefulSetUpdateStrategy{}.OpenAPIModelName():                       schema_k8sio_api_apps_v1_StatefulSetUpdateStrategy(ref),
+		authenticationv1.TokenReview{}.OpenAPIModelName():                           schema_k8sio_api_authentication_v1_TokenReview(ref),
+		authenticationv1.TokenReviewSpec{}.OpenAPIModelName():                       schema_k8sio_api_authentication_v1_TokenReviewSpec(ref),
+		authenticationv1.TokenReviewStatus{}.OpenAPIModelName():                     schema_k8sio_api_authentication_v1_TokenReviewStatus(ref),
+		authenticationv1.UserInfo{}.OpenAPIModelName():                              schema_k8sio_api_authentication_v1_UserInfo(ref),
+		authorizationv1.FieldSelectorAttributes{}.OpenAPIModelName():                schema_k8sio_api_authorization_v1_FieldSelectorAttributes(ref),
+		authorizationv1.LabelSelectorAttributes{}.OpenAPIModelName():                schema_k8sio_api_authorization_v1_LabelSelectorAttributes(ref),
+		authorizationv1.NonResourceAttributes{}.OpenAPIModelName():                  schema_k8sio_api_authorization_v1_NonResourceAttributes(ref),
+		authorizationv1.ResourceAttributes{}.OpenAPIModelName():                     schema_k8sio_api_authorization_v1_ResourceAttributes(ref),
+		authorizationv1.SelfSubjectAccessReview{}.OpenAPIModelName():                schema_k8sio_api_authorization_v1_SelfSubjectAccessReview(ref),
+		authorizationv1.SelfSubjectAccessReviewSpec{}.OpenAPIModelName():            schema_k8sio_api_authorization_v1_SelfSubjectAccessReviewSpec(ref),
+		authorizationv1.SubjectAccessReview{}.OpenAPIModelName():                    schema_k8sio_api_authorization_v1_SubjectAccessReview(ref),
+		authorizationv1.SubjectAccessReviewSpec{}.OpenAPIModelName():                schema_k8sio_api_authorization_v1_SubjectAccessReviewSpec(ref),
+		authorizationv1.SubjectAccessReviewStatus{}.OpenAPIModelName():              schema_k8sio_api_authorization_v1_SubjectAccessReviewStatus(ref),
+		coordinationv1.Lease{}.OpenAPIModelName():                                   schema_k8sio_api_coordination_v1_Lease(ref),
+		coordinationv1.LeaseList{}.OpenAPIModelName():                               schema_k8sio_api_coordination_v1_LeaseList(ref),
+		coordinationv1.LeaseSpec{}.OpenAPIModelName():                               schema_k8sio_api_coordination_v1_LeaseSpec(ref),
+		corev1.AWSElasticBlockStoreVolumeSource{}.OpenAPIModelName():                schema_k8sio_api_core_v1_AWSElasticBlockStoreVolumeSource(ref),
+		corev1.Affinity{}.OpenAPIModelName():                                        schema_k8sio_api_core_v1_Affinity(ref),
+		corev1.AppArmorProfile{}.OpenAPIModelName():                                 schema_k8sio_api_core_v1_AppArmorProfile(ref),
+		corev1.AttachedVolume{}.OpenAPIModelName():                                  schema_k8sio_api_core_v1_AttachedVolume(ref),
+		corev1.AzureDiskVolumeSource{}.OpenAPIModelName():                           schema_k8sio_api_core_v1_AzureDiskVolumeSource(ref),
+		corev1.AzureFileVolumeSource{}.OpenAPIModelName():                           schema_k8sio_api_core_v1_AzureFileVolumeSource(ref),
+		corev1.Binding{}.OpenAPIModelName():                                         schema_k8sio_api_core_v1_Binding(ref),
+		corev1.CSIVolumeSource{}.OpenAPIModelName():                                 schema_k8sio_api_core_v1_CSIVolumeSource(ref),
+		corev1.Capabilities{}.OpenAPIModelName():                                    schema_k8sio_api_core_v1_Capabilities(ref),
+		corev1.CephFSVolumeSource{}.OpenAPIModelName():                              schema_k8sio_api_core_v1_CephFSVolumeSource(ref),
+		corev1.CinderVolumeSource{}.OpenAPIModelName():                              schema_k8sio_api_core_v1_CinderVolumeSource(ref),
+		corev1.ClientIPConfig{}.OpenAPIModelName():                                  schema_k8sio_api_core_v1_ClientIPConfig(ref),
+		corev1.ClusterTrustBundleProjection{}.OpenAPIModelName():                    schema_k8sio_api_core_v1_ClusterTrustBundleProjection(ref),
+		corev1.ConfigMap{}.OpenAPIModelName():                                       schema_k8sio_api_core_v1_ConfigMap(ref),
+		corev1.ConfigMapEnvSource{}.OpenAPIModelName():                              schema_k8sio_api_core_v1_ConfigMapEnvSource(ref),
+		corev1.ConfigMapKeySelector{}.OpenAPIModelName():                            schema_k8sio_api_core_v1_ConfigMapKeySelector(ref),
+		corev1.ConfigMapList{}.OpenAPIModelName():                                   schema_k8sio_api_core_v1_ConfigMapList(ref),
+		corev1.ConfigMapNodeConfigSource{}.OpenAPIModelName():                       schema_k8sio_api_core_v1_ConfigMapNodeConfigSource(ref),
+		corev1.ConfigMapProjection{}.OpenAPIModelName():                             schema_k8sio_api_core_v1_ConfigMapProjection(ref),
+		corev1.ConfigMapVolumeSource{}.OpenAPIModelName():                           schema_k8sio_api_core_v1_ConfigMapVolumeSource(ref),
+		corev1.Container{}.OpenAPIModelName():                                       schema_k8sio_api_core_v1_Container(ref),
+		corev1.ContainerExtendedResourceRequest{}.OpenAPIModelName():                schema_k8sio_api_core_v1_ContainerExtendedResourceRequest(ref),
+		corev1.ContainerImage{}.OpenAPIModelName():                                  schema_k8sio_api_core_v1_ContainerImage(ref),
+		corev1.ContainerPort{}.OpenAPIModelName():                                   schema_k8sio_api_core_v1_ContainerPort(ref),
+		corev1.ContainerResizePolicy{}.OpenAPIModelName():                           schema_k8sio_api_core_v1_ContainerResizePolicy(ref),
+		corev1.ContainerRestartRule{}.OpenAPIModelName():                            schema_k8sio_api_core_v1_ContainerRestartRule(ref),
+		corev1.ContainerRestartRuleOnExitCodes{}.OpenAPIModelName():                 schema_k8sio_api_core_v1_ContainerRestartRuleOnExitCodes(ref),
+		corev1.ContainerState{}.OpenAPIModelName():                                  schema_k8sio_api_core_v1_ContainerState(ref),
+		corev1.ContainerStateRunning{}.OpenAPIModelName():                           schema_k8sio_api_core_v1_ContainerStateRunning(ref),
+		corev1.ContainerStateTerminated{}.OpenAPIModelName():                        schema_k8sio_api_core_v1_ContainerStateTerminated(ref),
+		corev1.ContainerStateWaiting{}.OpenAPIModelName():                           schema_k8sio_api_core_v1_ContainerStateWaiting(ref),
+		corev1.ContainerStatus{}.OpenAPIModelName():                                 schema_k8sio_api_core_v1_ContainerStatus(ref),
+		corev1.ContainerUser{}.OpenAPIModelName():                                   schema_k8sio_api_core_v1_ContainerUser(ref),
+		corev1.DaemonEndpoint{}.OpenAPIModelName():                                  schema_k8sio_api_core_v1_DaemonEndpoint(ref),
+		corev1.DownwardAPIProjection{}.OpenAPIModelName():                           schema_k8sio_api_core_v1_DownwardAPIProjection(ref),
+		corev1.DownwardAPIVolumeFile{}.OpenAPIModelName():                           schema_k8sio_api_core_v1_DownwardAPIVolumeFile(ref),
+		corev1.DownwardAPIVolumeSource{}.OpenAPIModelName():                         schema_k8sio_api_core_v1_DownwardAPIVolumeSource(ref),
+		corev1.EmptyDirVolumeSource{}.OpenAPIModelName():                            schema_k8sio_api_core_v1_EmptyDirVolumeSource(ref),
+		corev1.EnvFromSource{}.OpenAPIModelName():                                   schema_k8sio_api_core_v1_EnvFromSource(ref),
+		corev1.EnvVar{}.OpenAPIModelName():                                          schema_k8sio_api_core_v1_EnvVar(ref),
+		corev1.EnvVarSource{}.OpenAPIModelName():                                    schema_k8sio_api_core_v1_EnvVarSource(ref),
+		corev1.EphemeralContainer{}.OpenAPIModelName():                              schema_k8sio_api_core_v1_EphemeralContainer(ref),
+		corev1.EphemeralVolumeSource{}.OpenAPIModelName():                           schema_k8sio_api_core_v1_EphemeralVolumeSource(ref),
+		corev1.Event{}.OpenAPIModelName():                                           schema_k8sio_api_core_v1_Event(ref),
+		corev1.EventList{}.OpenAPIModelName():                                       schema_k8sio_api_core_v1_EventList(ref),
+		corev1.EventSeries{}.OpenAPIModelName():                                     schema_k8sio_api_core_v1_EventSeries(ref),
+		corev1.EventSource{}.OpenAPIModelName():                                     schema_k8sio_api_core_v1_EventSource(ref),
+		corev1.ExecAction{}.OpenAPIModelName():                                      schema_k8sio_api_core_v1_ExecAction(ref),
+		corev1.FCVolumeSource{}.OpenAPIModelName():                                  schema_k8sio_api_core_v1_FCVolumeSource(ref),
+		corev1.FileKeySelector{}.OpenAPIModelName():                                 schema_k8sio_api_core_v1_FileKeySelector(ref),
+		corev1.FlexVolumeSource{}.OpenAPIModelName():                                schema_k8sio_api_core_v1_FlexVolumeSource(ref),
+		corev1.FlockerVolumeSource{}.OpenAPIModelName():                             schema_k8sio_api_core_v1_FlockerVolumeSource(ref),
+		corev1.GCEPersistentDiskVolumeSource{}.OpenAPIModelName():                   schema_k8sio_api_core_v1_GCEPersistentDiskVolumeSource(ref),
+		corev1.GRPCAction{}.OpenAPIModelName():                                      schema_k8sio_api_core_v1_GRPCAction(ref),
+		corev1.GitRepoVolumeSource{}.OpenAPIModelName():                             schema_k8sio_api_core_v1_GitRepoVolumeSource(ref),
+		corev1.GlusterfsVolumeSource{}.OpenAPIModelName():                           schema_k8sio_api_core_v1_GlusterfsVolumeSource(ref),
+		corev1.HTTPGetAction{}.OpenAPIModelName():                                   schema_k8sio_api_core_v1_HTTPGetAction(ref),
+		corev1.HTTPHeader{}.OpenAPIModelName():                                      schema_k8sio_api_core_v1_HTTPHeader(ref),
+		corev1.HostAlias{}.OpenAPIModelName():                                       schema_k8sio_api_core_v1_HostAlias(ref),
+		corev1.HostIP{}.OpenAPIModelName():                                          schema_k8sio_api_core_v1_HostIP(ref),
+		corev1.HostPathVolumeSource{}.OpenAPIModelName():                            schema_k8sio_api_core_v1_HostPathVolumeSource(ref),
+		corev1.ISCSIVolumeSource{}.OpenAPIModelName():                               schema_k8sio_api_core_v1_ISCSIVolumeSource(ref),
+		corev1.ImageVolumeSource{}.OpenAPIModelName():                               schema_k8sio_api_core_v1_ImageVolumeSource(ref),
+		corev1.ImageVolumeStatus{}.OpenAPIModelName():                               schema_k8sio_api_core_v1_ImageVolumeStatus(ref),
+		corev1.KeyToPath{}.OpenAPIModelName():                                       schema_k8sio_api_core_v1_KeyToPath(ref),
+		corev1.Lifecycle{}.OpenAPIModelName():                                       schema_k8sio_api_core_v1_Lifecycle(ref),
+		corev1.LifecycleHandler{}.OpenAPIModelName():                                schema_k8sio_api_core_v1_LifecycleHandler(ref),
+		corev1.LinuxContainerUser{}.OpenAPIModelName():                              schema_k8sio_api_core_v1_LinuxContainerUser(ref),
+		corev1.LoadBalancerIngress{}.OpenAPIModelName():                             schema_k8sio_api_core_v1_LoadBalancerIngress(ref),
+		corev1.LoadBalancerStatus{}.OpenAPIModelName():                              schema_k8sio_api_core_v1_LoadBalancerStatus(ref),
+		corev1.LocalObjectReference{}.OpenAPIModelName():                            schema_k8sio_api_core_v1_LocalObjectReference(ref),
+		corev1.ModifyVolumeStatus{}.OpenAPIModelName():                              schema_k8sio_api_core_v1_ModifyVolumeStatus(ref),
+		corev1.NFSVolumeSource{}.OpenAPIModelName():                                 schema_k8sio_api_core_v1_NFSVolumeSource(ref),
+		corev1.Namespace{}.OpenAPIModelName():                                       schema_k8sio_api_core_v1_Namespace(ref),
+		corev1.NamespaceCondition{}.OpenAPIModelName():                              schema_k8sio_api_core_v1_NamespaceCondition(ref),
+		corev1.NamespaceList{}.OpenAPIModelName():                                   schema_k8sio_api_core_v1_NamespaceList(ref),
+		corev1.NamespaceSpec{}.OpenAPIModelName():                                   schema_k8sio_api_core_v1_NamespaceSpec(ref),
+		corev1.NamespaceStatus{}.OpenAPIModelName():                                 schema_k8sio_api_core_v1_NamespaceStatus(ref),
+		corev1.Node{}.OpenAPIModelName():                                            schema_k8sio_api_core_v1_Node(ref),
+		corev1.NodeAddress{}.OpenAPIModelName():                                     schema_k8sio_api_core_v1_NodeAddress(ref),
+		corev1.NodeAffinity{}.OpenAPIModelName():                                    schema_k8sio_api_core_v1_NodeAffinity(ref),
+		corev1.NodeAllocatableResourceClaimStatus{}.OpenAPIModelName():              schema_k8sio_api_core_v1_NodeAllocatableResourceClaimStatus(ref),
+		corev1.NodeCondition{}.OpenAPIModelName():                                   schema_k8sio_api_core_v1_NodeCondition(ref),
+		corev1.NodeConfigSource{}.OpenAPIModelName():                                schema_k8sio_api_core_v1_NodeConfigSource(ref),
+		corev1.NodeConfigStatus{}.OpenAPIModelName():                                schema_k8sio_api_core_v1_NodeConfigStatus(ref),
+		corev1.NodeDaemonEndpoints{}.OpenAPIModelName():                             schema_k8sio_api_core_v1_NodeDaemonEndpoints(ref),
+		corev1.NodeFeatures{}.OpenAPIModelName():                                    schema_k8sio_api_core_v1_NodeFeatures(ref),
+		corev1.NodeList{}.OpenAPIModelName():                                        schema_k8sio_api_core_v1_NodeList(ref),
+		corev1.NodeRuntimeHandler{}.OpenAPIModelName():                              schema_k8sio_api_core_v1_NodeRuntimeHandler(ref),
+		corev1.NodeRuntimeHandlerFeatures{}.OpenAPIModelName():                      schema_k8sio_api_core_v1_NodeRuntimeHandlerFeatures(ref),
+		corev1.NodeSelector{}.OpenAPIModelName():                                    schema_k8sio_api_core_v1_NodeSelector(ref),
+		corev1.NodeSelectorRequirement{}.OpenAPIModelName():                         schema_k8sio_api_core_v1_NodeSelectorRequirement(ref),
+		corev1.NodeSelectorTerm{}.OpenAPIModelName():                                schema_k8sio_api_core_v1_NodeSelectorTerm(ref),
+		corev1.NodeSpec{}.OpenAPIModelName():                                        schema_k8sio_api_core_v1_NodeSpec(ref),
+		corev1.NodeStatus{}.OpenAPIModelName():                                      schema_k8sio_api_core_v1_NodeStatus(ref),
+		corev1.NodeSwapStatus{}.OpenAPIModelName():                                  schema_k8sio_api_core_v1_NodeSwapStatus(ref),
+		corev1.NodeSystemInfo{}.OpenAPIModelName():                                  schema_k8sio_api_core_v1_NodeSystemInfo(ref),
+		corev1.ObjectFieldSelector{}.OpenAPIModelName():                             schema_k8sio_api_core_v1_ObjectFieldSelector(ref),
+		corev1.ObjectReference{}.OpenAPIModelName():                                 schema_k8sio_api_core_v1_ObjectReference(ref),
+		corev1.PersistentVolumeClaim{}.OpenAPIModelName():                           schema_k8sio_api_core_v1_PersistentVolumeClaim(ref),
+		corev1.PersistentVolumeClaimCondition{}.OpenAPIModelName():                  schema_k8sio_api_core_v1_PersistentVolumeClaimCondition(ref),
+		corev1.PersistentVolumeClaimSpec{}.OpenAPIModelName():                       schema_k8sio_api_core_v1_PersistentVolumeClaimSpec(ref),
+		corev1.PersistentVolumeClaimStatus{}.OpenAPIModelName():                     schema_k8sio_api_core_v1_PersistentVolumeClaimStatus(ref),
+		corev1.PersistentVolumeClaimTemplate{}.OpenAPIModelName():                   schema_k8sio_api_core_v1_PersistentVolumeClaimTemplate(ref),
+		corev1.PersistentVolumeClaimVolumeSource{}.OpenAPIModelName():               schema_k8sio_api_core_v1_PersistentVolumeClaimVolumeSource(ref),
+		corev1.PhotonPersistentDiskVolumeSource{}.OpenAPIModelName():                schema_k8sio_api_core_v1_PhotonPersistentDiskVolumeSource(ref),
+		corev1.Pod{}.OpenAPIModelName():                                             schema_k8sio_api_core_v1_Pod(ref),
+		corev1.PodAffinity{}.OpenAPIModelName():                                     schema_k8sio_api_core_v1_PodAffinity(ref),
+		corev1.PodAffinityTerm{}.OpenAPIModelName():                                 schema_k8sio_api_core_v1_PodAffinityTerm(ref),
+		corev1.PodAntiAffinity{}.OpenAPIModelName():                                 schema_k8sio_api_core_v1_PodAntiAffinity(ref),
+		corev1.PodCertificateProjection{}.OpenAPIModelName():                        schema_k8sio_api_core_v1_PodCertificateProjection(ref),
+		corev1.PodCondition{}.OpenAPIModelName():                                    schema_k8sio_api_core_v1_PodCondition(ref),
+		corev1.PodDNSConfig{}.OpenAPIModelName():                                    schema_k8sio_api_core_v1_PodDNSConfig(ref),
+		corev1.PodDNSConfigOption{}.OpenAPIModelName():                              schema_k8sio_api_core_v1_PodDNSConfigOption(ref),
+		corev1.PodExtendedResourceClaimStatus{}.OpenAPIModelName():                  schema_k8sio_api_core_v1_PodExtendedResourceClaimStatus(ref),
+		corev1.PodIP{}.OpenAPIModelName():                                           schema_k8sio_api_core_v1_PodIP(ref),
+		corev1.PodList{}.OpenAPIModelName():                                         schema_k8sio_api_core_v1_PodList(ref),
+		corev1.PodOS{}.OpenAPIModelName():                                           schema_k8sio_api_core_v1_PodOS(ref),
+		corev1.PodReadinessGate{}.OpenAPIModelName():                                schema_k8sio_api_core_v1_PodReadinessGate(ref),
+		corev1.PodResourceClaim{}.OpenAPIModelName():                                schema_k8sio_api_core_v1_PodResourceClaim(ref),
+		corev1.PodResourceClaimStatus{}.OpenAPIModelName():                          schema_k8sio_api_core_v1_PodResourceClaimStatus(ref),
+		corev1.PodSchedulingGate{}.OpenAPIModelName():                               schema_k8sio_api_core_v1_PodSchedulingGate(ref),
+		corev1.PodSchedulingGroup{}.OpenAPIModelName():                              schema_k8sio_api_core_v1_PodSchedulingGroup(ref),
+		corev1.PodSecurityContext{}.OpenAPIModelName():                              schema_k8sio_api_core_v1_PodSecurityContext(ref),
+		corev1.PodSpec{}.OpenAPIModelName():                                         schema_k8sio_api_core_v1_PodSpec(ref),
+		corev1.PodStatus{}.OpenAPIModelName():                                       schema_k8sio_api_core_v1_PodStatus(ref),
+		corev1.PodTemplateSpec{}.OpenAPIModelName():                                 schema_k8sio_api_core_v1_PodTemplateSpec(ref),
+		corev1.PortStatus{}.OpenAPIModelName():                                      schema_k8sio_api_core_v1_PortStatus(ref),
+		corev1.PortworxVolumeSource{}.OpenAPIModelName():                            schema_k8sio_api_core_v1_PortworxVolumeSource(ref),
+		corev1.PreferredSchedulingTerm{}.OpenAPIModelName():                         schema_k8sio_api_core_v1_PreferredSchedulingTerm(ref),
+		corev1.Probe{}.OpenAPIModelName():                                           schema_k8sio_api_core_v1_Probe(ref),
+		corev1.ProjectedVolumeSource{}.OpenAPIModelName():                           schema_k8sio_api_core_v1_ProjectedVolumeSource(ref),
+		corev1.QuobyteVolumeSource{}.OpenAPIModelName():                             schema_k8sio_api_core_v1_QuobyteVolumeSource(ref),
+		corev1.RBDVolumeSource{}.OpenAPIModelName():                                 schema_k8sio_api_core_v1_RBDVolumeSource(ref),
+		corev1.ReplicationController{}.OpenAPIModelName():                           schema_k8sio_api_core_v1_ReplicationController(ref),
+		corev1.ReplicationControllerCondition{}.OpenAPIModelName():                  schema_k8sio_api_core_v1_ReplicationControllerCondition(ref),
+		corev1.ReplicationControllerList{}.OpenAPIModelName():                       schema_k8sio_api_core_v1_ReplicationControllerList(ref),
+		corev1.ReplicationControllerSpec{}.OpenAPIModelName():                       schema_k8sio_api_core_v1_ReplicationControllerSpec(ref),
+		corev1.ReplicationControllerStatus{}.OpenAPIModelName():                     schema_k8sio_api_core_v1_ReplicationControllerStatus(ref),
+		corev1.ResourceClaim{}.OpenAPIModelName():                                   schema_k8sio_api_core_v1_ResourceClaim(ref),
+		corev1.ResourceFieldSelector{}.OpenAPIModelName():                           schema_k8sio_api_core_v1_ResourceFieldSelector(ref),
+		corev1.ResourceHealth{}.OpenAPIModelName():                                  schema_k8sio_api_core_v1_ResourceHealth(ref),
+		corev1.ResourceRequirements{}.OpenAPIModelName():                            schema_k8sio_api_core_v1_ResourceRequirements(ref),
+		corev1.ResourceStatus{}.OpenAPIModelName():                                  schema_k8sio_api_core_v1_ResourceStatus(ref),
+		corev1.SELinuxOptions{}.OpenAPIModelName():                                  schema_k8sio_api_core_v1_SELinuxOptions(ref),
+		corev1.ScaleIOVolumeSource{}.OpenAPIModelName():                             schema_k8sio_api_core_v1_ScaleIOVolumeSource(ref),
+		corev1.SeccompProfile{}.OpenAPIModelName():                                  schema_k8sio_api_core_v1_SeccompProfile(ref),
+		corev1.Secret{}.OpenAPIModelName():                                          schema_k8sio_api_core_v1_Secret(ref),
+		corev1.SecretEnvSource{}.OpenAPIModelName():                                 schema_k8sio_api_core_v1_SecretEnvSource(ref),
+		corev1.SecretKeySelector{}.OpenAPIModelName():                               schema_k8sio_api_core_v1_SecretKeySelector(ref),
+		corev1.SecretList{}.OpenAPIModelName():                                      schema_k8sio_api_core_v1_SecretList(ref),
+		corev1.SecretProjection{}.OpenAPIModelName():                                schema_k8sio_api_core_v1_SecretProjection(ref),
+		corev1.SecretVolumeSource{}.OpenAPIModelName():                              schema_k8sio_api_core_v1_SecretVolumeSource(ref),
+		corev1.SecurityContext{}.OpenAPIModelName():                                 schema_k8sio_api_core_v1_SecurityContext(ref),
+		corev1.Service{}.OpenAPIModelName():                                         schema_k8sio_api_core_v1_Service(ref),
+		corev1.ServiceAccount{}.OpenAPIModelName():                                  schema_k8sio_api_core_v1_ServiceAccount(ref),
+		corev1.ServiceAccountList{}.OpenAPIModelName():                              schema_k8sio_api_core_v1_ServiceAccountList(ref),
+		corev1.ServiceAccountTokenProjection{}.OpenAPIModelName():                   schema_k8sio_api_core_v1_ServiceAccountTokenProjection(ref),
+		corev1.ServiceList{}.OpenAPIModelName():                                     schema_k8sio_api_core_v1_ServiceList(ref),
+		corev1.ServicePort{}.OpenAPIModelName():                                     schema_k8sio_api_core_v1_ServicePort(ref),
+		corev1.ServiceSpec{}.OpenAPIModelName():                                     schema_k8sio_api_core_v1_ServiceSpec(ref),
+		corev1.ServiceStatus{}.OpenAPIModelName():                                   schema_k8sio_api_core_v1_ServiceStatus(ref),
+		corev1.SessionAffinityConfig{}.OpenAPIModelName():                           schema_k8sio_api_core_v1_SessionAffinityConfig(ref),
+		corev1.SleepAction{}.OpenAPIModelName():                                     schema_k8sio_api_core_v1_SleepAction(ref),
+		corev1.StorageOSVolumeSource{}.OpenAPIModelName():                           schema_k8sio_api_core_v1_StorageOSVolumeSource(ref),
+		corev1.Sysctl{}.OpenAPIModelName():                                          schema_k8sio_api_core_v1_Sysctl(ref),
+		corev1.TCPSocketAction{}.OpenAPIModelName():                                 schema_k8sio_api_core_v1_TCPSocketAction(ref),
+		corev1.Taint{}.OpenAPIModelName():                                           schema_k8sio_api_core_v1_Taint(ref),
+		corev1.Toleration{}.OpenAPIModelName():                                      schema_k8sio_api_core_v1_Toleration(ref),
+		corev1.TopologySpreadConstraint{}.OpenAPIModelName():                        schema_k8sio_api_core_v1_TopologySpreadConstraint(ref),
+		corev1.TypedLocalObjectReference{}.OpenAPIModelName():                       schema_k8sio_api_core_v1_TypedLocalObjectReference(ref),
+		corev1.TypedObjectReference{}.OpenAPIModelName():                            schema_k8sio_api_core_v1_TypedObjectReference(ref),
+		corev1.Volume{}.OpenAPIModelName():                                          schema_k8sio_api_core_v1_Volume(ref),
+		corev1.VolumeDevice{}.OpenAPIModelName():                                    schema_k8sio_api_core_v1_VolumeDevice(ref),
+		corev1.VolumeMount{}.OpenAPIModelName():                                     schema_k8sio_api_core_v1_VolumeMount(ref),
+		corev1.VolumeMountStatus{}.OpenAPIModelName():                               schema_k8sio_api_core_v1_VolumeMountStatus(ref),
+		corev1.VolumeProjection{}.OpenAPIModelName():                                schema_k8sio_api_core_v1_VolumeProjection(ref),
+		corev1.VolumeResourceRequirements{}.OpenAPIModelName():                      schema_k8sio_api_core_v1_VolumeResourceRequirements(ref),
+		corev1.VolumeStatus{}.OpenAPIModelName():                                    schema_k8sio_api_core_v1_VolumeStatus(ref),
+		corev1.VsphereVirtualDiskVolumeSource{}.OpenAPIModelName():                  schema_k8sio_api_core_v1_VsphereVirtualDiskVolumeSource(ref),
+		corev1.WeightedPodAffinityTerm{}.OpenAPIModelName():                         schema_k8sio_api_core_v1_WeightedPodAffinityTerm(ref),
+		corev1.WindowsSecurityContextOptions{}.OpenAPIModelName():                   schema_k8sio_api_core_v1_WindowsSecurityContextOptions(ref),
+		discoveryv1.Endpoint{}.OpenAPIModelName():                                   schema_k8sio_api_discovery_v1_Endpoint(ref),
+		discoveryv1.EndpointConditions{}.OpenAPIModelName():                         schema_k8sio_api_discovery_v1_EndpointConditions(ref),
+		discoveryv1.EndpointHints{}.OpenAPIModelName():                              schema_k8sio_api_discovery_v1_EndpointHints(ref),
+		discoveryv1.EndpointPort{}.OpenAPIModelName():                               schema_k8sio_api_discovery_v1_EndpointPort(ref),
+		discoveryv1.EndpointSlice{}.OpenAPIModelName():                              schema_k8sio_api_discovery_v1_EndpointSlice(ref),
+		discoveryv1.EndpointSliceList{}.OpenAPIModelName():                          schema_k8sio_api_discovery_v1_EndpointSliceList(ref),
+		discoveryv1.ForNode{}.OpenAPIModelName():                                    schema_k8sio_api_discovery_v1_ForNode(ref),
+		discoveryv1.ForZone{}.OpenAPIModelName():                                    schema_k8sio_api_discovery_v1_ForZone(ref),
+		intstr.IntOrString{}.OpenAPIModelName():                                     schema_apimachinery_pkg_util_intstr_IntOrString(ref),
+		metav1.APIGroup{}.OpenAPIModelName():                                        schema_pkg_apis_meta_v1_APIGroup(ref),
+		metav1.APIGroupList{}.OpenAPIModelName():                                    schema_pkg_apis_meta_v1_APIGroupList(ref),
+		metav1.APIResource{}.OpenAPIModelName():                                     schema_pkg_apis_meta_v1_APIResource(ref),
+		metav1.APIResourceList{}.OpenAPIModelName():                                 schema_pkg_apis_meta_v1_APIResourceList(ref),
+		metav1.APIVersions{}.OpenAPIModelName():                                     schema_pkg_apis_meta_v1_APIVersions(ref),
+		metav1.ApplyOptions{}.OpenAPIModelName():                                    schema_pkg_apis_meta_v1_ApplyOptions(ref),
+		metav1.Condition{}.OpenAPIModelName():                                       schema_pkg_apis_meta_v1_Condition(ref),
+		metav1.CreateOptions{}.OpenAPIModelName():                                   schema_pkg_apis_meta_v1_CreateOptions(ref),
+		metav1.DeleteOptions{}.OpenAPIModelName():                                   schema_pkg_apis_meta_v1_DeleteOptions(ref),
+		metav1.Duration{}.OpenAPIModelName():                                        schema_pkg_apis_meta_v1_Duration(ref),
+		metav1.FieldSelectorRequirement{}.OpenAPIModelName():                        schema_pkg_apis_meta_v1_FieldSelectorRequirement(ref),
+		metav1.FieldsV1{}.OpenAPIModelName():                                        schema_pkg_apis_meta_v1_FieldsV1(ref),
+		metav1.GetOptions{}.OpenAPIModelName():                                      schema_pkg_apis_meta_v1_GetOptions(ref),
+		metav1.GroupKind{}.OpenAPIModelName():                                       schema_pkg_apis_meta_v1_GroupKind(ref),
+		metav1.GroupResource{}.OpenAPIModelName():                                   schema_pkg_apis_meta_v1_GroupResource(ref),
+		metav1.GroupVersion{}.OpenAPIModelName():                                    schema_pkg_apis_meta_v1_GroupVersion(ref),
+		metav1.GroupVersionForDiscovery{}.OpenAPIModelName():                        schema_pkg_apis_meta_v1_GroupVersionForDiscovery(ref),
+		metav1.GroupVersionKind{}.OpenAPIModelName():                                schema_pkg_apis_meta_v1_GroupVersionKind(ref),
+		metav1.GroupVersionResource{}.OpenAPIModelName():                            schema_pkg_apis_meta_v1_GroupVersionResource(ref),
+		metav1.InternalEvent{}.OpenAPIModelName():                                   schema_pkg_apis_meta_v1_InternalEvent(ref),
+		metav1.LabelSelector{}.OpenAPIModelName():                                   schema_pkg_apis_meta_v1_LabelSelector(ref),
+		metav1.LabelSelectorRequirement{}.OpenAPIModelName():                        schema_pkg_apis_meta_v1_LabelSelectorRequirement(ref),
+		metav1.List{}.OpenAPIModelName():                                            schema_pkg_apis_meta_v1_List(ref),
+		metav1.ListMeta{}.OpenAPIModelName():                                        schema_pkg_apis_meta_v1_ListMeta(ref),
+		metav1.ListOptions{}.OpenAPIModelName():                                     schema_pkg_apis_meta_v1_ListOptions(ref),
+		metav1.ManagedFieldsEntry{}.OpenAPIModelName():                              schema_pkg_apis_meta_v1_ManagedFieldsEntry(ref),
+		metav1.MicroTime{}.OpenAPIModelName():                                       schema_pkg_apis_meta_v1_MicroTime(ref),
+		metav1.ObjectMeta{}.OpenAPIModelName():                                      schema_pkg_apis_meta_v1_ObjectMeta(ref),
+		metav1.OwnerReference{}.OpenAPIModelName():                                  schema_pkg_apis_meta_v1_OwnerReference(ref),
+		metav1.PartialObjectMetadata{}.OpenAPIModelName():                           schema_pkg_apis_meta_v1_PartialObjectMetadata(ref),
+		metav1.PartialObjectMetadataList{}.OpenAPIModelName():                       schema_pkg_apis_meta_v1_PartialObjectMetadataList(ref),
+		metav1.Patch{}.OpenAPIModelName():                                           schema_pkg_apis_meta_v1_Patch(ref),
+		metav1.PatchOptions{}.OpenAPIModelName():                                    schema_pkg_apis_meta_v1_PatchOptions(ref),
+		metav1.Preconditions{}.OpenAPIModelName():                                   schema_pkg_apis_meta_v1_Preconditions(ref),
+		metav1.RootPaths{}.OpenAPIModelName():                                       schema_pkg_apis_meta_v1_RootPaths(ref),
+		metav1.ServerAddressByClientCIDR{}.OpenAPIModelName():                       schema_pkg_apis_meta_v1_ServerAddressByClientCIDR(ref),
+		metav1.ShardInfo{}.OpenAPIModelName():                                       schema_pkg_apis_meta_v1_ShardInfo(ref),
+		metav1.Status{}.OpenAPIModelName():                                          schema_pkg_apis_meta_v1_Status(ref),
+		metav1.StatusCause{}.OpenAPIModelName():                                     schema_pkg_apis_meta_v1_StatusCause(ref),
+		metav1.StatusDetails{}.OpenAPIModelName():                                   schema_pkg_apis_meta_v1_StatusDetails(ref),
+		metav1.Table{}.OpenAPIModelName():                                           schema_pkg_apis_meta_v1_Table(ref),
+		metav1.TableColumnDefinition{}.OpenAPIModelName():                           schema_pkg_apis_meta_v1_TableColumnDefinition(ref),
+		metav1.TableOptions{}.OpenAPIModelName():                                    schema_pkg_apis_meta_v1_TableOptions(ref),
+		metav1.TableRow{}.OpenAPIModelName():                                        schema_pkg_apis_meta_v1_TableRow(ref),
+		metav1.TableRowCondition{}.OpenAPIModelName():                               schema_pkg_apis_meta_v1_TableRowCondition(ref),
+		metav1.Time{}.OpenAPIModelName():                                            schema_pkg_apis_meta_v1_Time(ref),
+		metav1.Timestamp{}.OpenAPIModelName():                                       schema_pkg_apis_meta_v1_Timestamp(ref),
+		metav1.TypeMeta{}.OpenAPIModelName():                                        schema_pkg_apis_meta_v1_TypeMeta(ref),
+		metav1.UpdateOptions{}.OpenAPIModelName():                                   schema_pkg_apis_meta_v1_UpdateOptions(ref),
+		metav1.WatchEvent{}.OpenAPIModelName():                                      schema_pkg_apis_meta_v1_WatchEvent(ref),
+		nodev1.Overhead{}.OpenAPIModelName():                                        schema_k8sio_api_node_v1_Overhead(ref),
+		nodev1.RuntimeClass{}.OpenAPIModelName():                                    schema_k8sio_api_node_v1_RuntimeClass(ref),
+		nodev1.RuntimeClassList{}.OpenAPIModelName():                                schema_k8sio_api_node_v1_RuntimeClassList(ref),
+		nodev1.Scheduling{}.OpenAPIModelName():                                      schema_k8sio_api_node_v1_Scheduling(ref),
+		policyv1.PodDisruptionBudget{}.OpenAPIModelName():                           schema_k8sio_api_policy_v1_PodDisruptionBudget(ref),
+		policyv1.PodDisruptionBudgetList{}.OpenAPIModelName():                       schema_k8sio_api_policy_v1_PodDisruptionBudgetList(ref),
+		policyv1.PodDisruptionBudgetSpec{}.OpenAPIModelName():                       schema_k8sio_api_policy_v1_PodDisruptionBudgetSpec(ref),
+		policyv1.PodDisruptionBudgetStatus{}.OpenAPIModelName():                     schema_k8sio_api_policy_v1_PodDisruptionBudgetStatus(ref),
+		resource.Quantity{}.OpenAPIModelName():                                      schema_apimachinery_pkg_api_resource_Quantity(ref),
+		resourcev1.AllocatedDeviceStatus{}.OpenAPIModelName():                       schema_k8sio_api_resource_v1_AllocatedDeviceStatus(ref),
+		resourcev1.AllocationResult{}.OpenAPIModelName():                            schema_k8sio_api_resource_v1_AllocationResult(ref),
+		resourcev1.CELDeviceSelector{}.OpenAPIModelName():                           schema_k8sio_api_resource_v1_CELDeviceSelector(ref),
+		resourcev1.CapacityRequestPolicy{}.OpenAPIModelName():                       schema_k8sio_api_resource_v1_CapacityRequestPolicy(ref),
+		resourcev1.CapacityRequestPolicyRange{}.OpenAPIModelName():                  schema_k8sio_api_resource_v1_CapacityRequestPolicyRange(ref),
+		resourcev1.CapacityRequirements{}.OpenAPIModelName():                        schema_k8sio_api_resource_v1_CapacityRequirements(ref),
+		resourcev1.Counter{}.OpenAPIModelName():                                     schema_k8sio_api_resource_v1_Counter(ref),
+		resourcev1.CounterSet{}.OpenAPIModelName():                                  schema_k8sio_api_resource_v1_CounterSet(ref),
+		resourcev1.Device{}.OpenAPIModelName():                                      schema_k8sio_api_resource_v1_Device(ref),
+		resourcev1.DeviceAllocationConfiguration{}.OpenAPIModelName():               schema_k8sio_api_resource_v1_DeviceAllocationConfiguration(ref),
+		resourcev1.DeviceAllocationResult{}.OpenAPIModelName():                      schema_k8sio_api_resource_v1_DeviceAllocationResult(ref),
+		resourcev1.DeviceAttribute{}.OpenAPIModelName():                             schema_k8sio_api_resource_v1_DeviceAttribute(ref),
+		resourcev1.DeviceCapacity{}.OpenAPIModelName():                              schema_k8sio_api_resource_v1_DeviceCapacity(ref),
+		resourcev1.DeviceClaim{}.OpenAPIModelName():                                 schema_k8sio_api_resource_v1_DeviceClaim(ref),
+		resourcev1.DeviceClaimConfiguration{}.OpenAPIModelName():                    schema_k8sio_api_resource_v1_DeviceClaimConfiguration(ref),
+		resourcev1.DeviceClass{}.OpenAPIModelName():                                 schema_k8sio_api_resource_v1_DeviceClass(ref),
+		resourcev1.DeviceClassConfiguration{}.OpenAPIModelName():                    schema_k8sio_api_resource_v1_DeviceClassConfiguration(ref),
+		resourcev1.DeviceClassList{}.OpenAPIModelName():                             schema_k8sio_api_resource_v1_DeviceClassList(ref),
+		resourcev1.DeviceClassSpec{}.OpenAPIModelName():                             schema_k8sio_api_resource_v1_DeviceClassSpec(ref),
+		resourcev1.DeviceConstraint{}.OpenAPIModelName():                            schema_k8sio_api_resource_v1_DeviceConstraint(ref),
+		resourcev1.DeviceCounterConsumption{}.OpenAPIModelName():                    schema_k8sio_api_resource_v1_DeviceCounterConsumption(ref),
+		resourcev1.DeviceRequest{}.OpenAPIModelName():                               schema_k8sio_api_resource_v1_DeviceRequest(ref),
+		resourcev1.DeviceRequestAllocationResult{}.OpenAPIModelName():               schema_k8sio_api_resource_v1_DeviceRequestAllocationResult(ref),
+		resourcev1.DeviceSelector{}.OpenAPIModelName():                              schema_k8sio_api_resource_v1_DeviceSelector(ref),
+		resourcev1.DeviceSubRequest{}.OpenAPIModelName():                            schema_k8sio_api_resource_v1_DeviceSubRequest(ref),
+		resourcev1.DeviceTaint{}.OpenAPIModelName():                                 schema_k8sio_api_resource_v1_DeviceTaint(ref),
+		resourcev1.DeviceToleration{}.OpenAPIModelName():                            schema_k8sio_api_resource_v1_DeviceToleration(ref),
+		resourcev1.ExactDeviceRequest{}.OpenAPIModelName():                          schema_k8sio_api_resource_v1_ExactDeviceRequest(ref),
+		resourcev1.NetworkDeviceData{}.OpenAPIModelName():                           schema_k8sio_api_resource_v1_NetworkDeviceData(ref),
+		resourcev1.NodeAllocatableResourceMapping{}.OpenAPIModelName():              schema_k8sio_api_resource_v1_NodeAllocatableResourceMapping(ref),
+		resourcev1.OpaqueDeviceConfiguration{}.OpenAPIModelName():                   schema_k8sio_api_resource_v1_OpaqueDeviceConfiguration(ref),
+		resourcev1.ResourceClaim{}.OpenAPIModelName():                               schema_k8sio_api_resource_v1_ResourceClaim(ref),
+		resourcev1.ResourceClaimConsumerReference{}.OpenAPIModelName():              schema_k8sio_api_resource_v1_ResourceClaimConsumerReference(ref),
+		resourcev1.ResourceClaimList{}.OpenAPIModelName():                           schema_k8sio_api_resource_v1_ResourceClaimList(ref),
+		resourcev1.ResourceClaimSpec{}.OpenAPIModelName():                           schema_k8sio_api_resource_v1_ResourceClaimSpec(ref),
+		resourcev1.ResourceClaimStatus{}.OpenAPIModelName():                         schema_k8sio_api_resource_v1_ResourceClaimStatus(ref),
+		resourcev1.ResourceClaimTemplate{}.OpenAPIModelName():                       schema_k8sio_api_resource_v1_ResourceClaimTemplate(ref),
+		resourcev1.ResourceClaimTemplateList{}.OpenAPIModelName():                   schema_k8sio_api_resource_v1_ResourceClaimTemplateList(ref),
+		resourcev1.ResourceClaimTemplateSpec{}.OpenAPIModelName():                   schema_k8sio_api_resource_v1_ResourceClaimTemplateSpec(ref),
+		resourcev1.ResourcePool{}.OpenAPIModelName():                                schema_k8sio_api_resource_v1_ResourcePool(ref),
+		resourcev1.ResourceSlice{}.OpenAPIModelName():                               schema_k8sio_api_resource_v1_ResourceSlice(ref),
+		resourcev1.ResourceSliceList{}.OpenAPIModelName():                           schema_k8sio_api_resource_v1_ResourceSliceList(ref),
+		resourcev1.ResourceSliceSpec{}.OpenAPIModelName():                           schema_k8sio_api_resource_v1_ResourceSliceSpec(ref),
+		runtime.RawExtension{}.OpenAPIModelName():                                   schema_k8sio_apimachinery_pkg_runtime_RawExtension(ref),
+		storagev1.CSIDriver{}.OpenAPIModelName():                                    schema_k8sio_api_storage_v1_CSIDriver(ref),
+		storagev1.CSIDriverList{}.OpenAPIModelName():                                schema_k8sio_api_storage_v1_CSIDriverList(ref),
+		storagev1.CSIDriverSpec{}.OpenAPIModelName():                                schema_k8sio_api_storage_v1_CSIDriverSpec(ref),
+		storagev1.CSINode{}.OpenAPIModelName():                                      schema_k8sio_api_storage_v1_CSINode(ref),
+		storagev1.CSINodeDriver{}.OpenAPIModelName():                                schema_k8sio_api_storage_v1_CSINodeDriver(ref),
+		storagev1.CSINodeList{}.OpenAPIModelName():                                  schema_k8sio_api_storage_v1_CSINodeList(ref),
+		storagev1.CSINodeSpec{}.OpenAPIModelName():                                  schema_k8sio_api_storage_v1_CSINodeSpec(ref),
+		storagev1.TokenRequest{}.OpenAPIModelName():                                 schema_k8sio_api_storage_v1_TokenRequest(ref),
+		storagev1.VolumeNodeResources{}.OpenAPIModelName():                          schema_k8sio_api_storage_v1_VolumeNodeResources(ref),
+	}
+}
+
+func schema_k8sio_api_apps_v1_ReplicaSet(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ReplicaSet ensures that a specified number of pod replicas are running at any given time.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "If the Labels of a ReplicaSet are empty, they are defaulted to be the same as the Pod(s) that the ReplicaSet manages. Standard object's metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Spec defines the specification of the desired behavior of the ReplicaSet. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#spec-and-status",
+							Default:     map[string]interface{}{},
+							Ref:         ref(appsv1.ReplicaSetSpec{}.OpenAPIModelName()),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Status is the most recently observed status of the ReplicaSet. This data may be out of date by some window of time. Populated by the system. Read-only. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#spec-and-status",
+							Default:     map[string]interface{}{},
+							Ref:         ref(appsv1.ReplicaSetStatus{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			appsv1.ReplicaSetSpec{}.OpenAPIModelName(), appsv1.ReplicaSetStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_apps_v1_ReplicaSetCondition(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ReplicaSetCondition describes the state of a replica set at a certain point.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"type": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Type of replica set condition.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Status of the condition, one of True, False, Unknown.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"lastTransitionTime": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The last time the condition transitioned from one status to another.",
+							Ref:         ref(metav1.Time{}.OpenAPIModelName()),
+						},
+					},
+					"reason": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The reason for the condition's last transition.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"message": {
+						SchemaProps: spec.SchemaProps{
+							Description: "A human readable message indicating details about the transition.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"type", "status"},
+			},
+		},
+		Dependencies: []string{
+			metav1.Time{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_apps_v1_ReplicaSetList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ReplicaSetList is a collection of ReplicaSets.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Standard list metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Description: "List of ReplicaSets. More info: https://kubernetes.io/docs/concepts/workloads/controllers/replicaset",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(appsv1.ReplicaSet{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			appsv1.ReplicaSet{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_apps_v1_ReplicaSetSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ReplicaSetSpec is the specification of a ReplicaSet.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"replicas": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Replicas is the number of desired pods. This is a pointer to distinguish between explicit zero and unspecified. Defaults to 1. More info: https://kubernetes.io/docs/concepts/workloads/controllers/replicaset",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"minReadySeconds": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Minimum number of seconds for which a newly created pod should be ready without any of its container crashing, for it to be considered available. Defaults to 0 (pod will be considered available as soon as it is ready)",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"selector": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Selector is a label query over pods that should match the replica count. Label keys and values that must match in order to be controlled by this replica set. It must match the pod template's labels. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors",
+							Ref:         ref(metav1.LabelSelector{}.OpenAPIModelName()),
+						},
+					},
+					"template": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Template is the object that describes the pod that will be created if insufficient replicas are detected. More info: https://kubernetes.io/docs/concepts/workloads/controllers/replicaset/#pod-template",
+							Default:     map[string]interface{}{},
+							Ref:         ref(corev1.PodTemplateSpec{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"selector"},
+			},
+		},
+		Dependencies: []string{
+			corev1.PodTemplateSpec{}.OpenAPIModelName(), metav1.LabelSelector{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_apps_v1_ReplicaSetStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ReplicaSetStatus represents the current status of a ReplicaSet.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"replicas": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Replicas is the most recently observed number of non-terminating pods. More info: https://kubernetes.io/docs/concepts/workloads/controllers/replicaset",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"fullyLabeledReplicas": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The number of non-terminating pods that have labels matching the labels of the pod template of the replicaset.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"readyReplicas": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The number of non-terminating pods targeted by this ReplicaSet with a Ready Condition.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"availableReplicas": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The number of available non-terminating pods (ready for at least minReadySeconds) for this replica set.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"terminatingReplicas": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The number of terminating pods for this replica set. Terminating pods have a non-null .metadata.deletionTimestamp and have not yet reached the Failed or Succeeded .status.phase.\n\nThis is a beta field and requires enabling DeploymentReplicaSetTerminatingReplicas feature (enabled by default).",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"observedGeneration": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ObservedGeneration reflects the generation of the most recently observed ReplicaSet.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type":       "map",
+								"x-kubernetes-patch-merge-key": "type",
+								"x-kubernetes-patch-strategy":  "merge",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Represents the latest available observations of a replica set's current state.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(appsv1.ReplicaSetCondition{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"replicas"},
+			},
+		},
+		Dependencies: []string{
+			appsv1.ReplicaSetCondition{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_apps_v1_RollingUpdateStatefulSetStrategy(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "RollingUpdateStatefulSetStrategy is used to communicate parameter for RollingUpdateStatefulSetStrategyType.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"partition": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Partition indicates the ordinal at which the StatefulSet should be partitioned for updates. During a rolling update, all pods from ordinal Replicas-1 to Partition are updated. All pods from ordinal Partition-1 to 0 remain untouched. This is helpful in being able to do a canary based deployment. The default value is 0.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"maxUnavailable": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The maximum number of pods that can be unavailable during the update. Value can be an absolute number (ex: 5) or a percentage of desired pods (ex: 10%). Absolute number is calculated from percentage by rounding up. This can not be 0. Defaults to 1. This field is beta-level and is enabled by default. The field applies to all pods in the range 0 to Replicas-1. That means if there is any unavailable pod in the range 0 to Replicas-1, it will be counted towards MaxUnavailable. This setting might not be effective for the OrderedReady podManagementPolicy. That policy ensures pods are created and become ready one at a time.",
+							Ref:         ref(intstr.IntOrString{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			intstr.IntOrString{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_apps_v1_StatefulSet(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "StatefulSet represents a set of pods with consistent identities. Identities are defined as:\n  - Network: A single stable DNS and hostname.\n  - Storage: As many VolumeClaims as requested.\n\nThe StatefulSet guarantees that a given network identity will always map to the same storage identity.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Standard object's metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Spec defines the desired identities of pods in this set.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(appsv1.StatefulSetSpec{}.OpenAPIModelName()),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Status is the current status of Pods in this StatefulSet. This data may be out of date by some window of time.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(appsv1.StatefulSetStatus{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			appsv1.StatefulSetSpec{}.OpenAPIModelName(), appsv1.StatefulSetStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_apps_v1_StatefulSetCondition(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "StatefulSetCondition describes the state of a statefulset at a certain point.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"type": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Type of statefulset condition.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Status of the condition, one of True, False, Unknown.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"lastTransitionTime": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Last time the condition transitioned from one status to another.",
+							Ref:         ref(metav1.Time{}.OpenAPIModelName()),
+						},
+					},
+					"reason": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The reason for the condition's last transition.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"message": {
+						SchemaProps: spec.SchemaProps{
+							Description: "A human readable message indicating details about the transition.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"type", "status"},
+			},
+		},
+		Dependencies: []string{
+			metav1.Time{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_apps_v1_StatefulSetList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "StatefulSetList is a collection of StatefulSets.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Standard list's metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Items is the list of stateful sets.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(appsv1.StatefulSet{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			appsv1.StatefulSet{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_apps_v1_StatefulSetOrdinals(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "StatefulSetOrdinals describes the policy used for replica ordinal assignment in this StatefulSet.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"start": {
+						SchemaProps: spec.SchemaProps{
+							Description: "start is the number representing the first replica's index. It may be used to number replicas from an alternate index (eg: 1-indexed) over the default 0-indexed names, or to orchestrate progressive movement of replicas from one StatefulSet to another. If set, replica indices will be in the range:\n  [.spec.ordinals.start, .spec.ordinals.start + .spec.replicas).\nIf unset, defaults to 0. Replica indices will be in the range:\n  [0, .spec.replicas).",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_k8sio_api_apps_v1_StatefulSetPersistentVolumeClaimRetentionPolicy(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "StatefulSetPersistentVolumeClaimRetentionPolicy describes the policy used for PVCs created from the StatefulSet VolumeClaimTemplates.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"whenDeleted": {
+						SchemaProps: spec.SchemaProps{
+							Description: "WhenDeleted specifies what happens to PVCs created from StatefulSet VolumeClaimTemplates when the StatefulSet is deleted. The default policy of `Retain` causes PVCs to not be affected by StatefulSet deletion. The `Delete` policy causes those PVCs to be deleted.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"whenScaled": {
+						SchemaProps: spec.SchemaProps{
+							Description: "WhenScaled specifies what happens to PVCs created from StatefulSet VolumeClaimTemplates when the StatefulSet is scaled down. The default policy of `Retain` causes PVCs to not be affected by a scaledown. The `Delete` policy causes the associated PVCs for any excess pods above the replica count to be deleted.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_k8sio_api_apps_v1_StatefulSetSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "A StatefulSetSpec is the specification of a StatefulSet.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"replicas": {
+						SchemaProps: spec.SchemaProps{
+							Description: "replicas is the desired number of replicas of the given Template. These are replicas in the sense that they are instantiations of the same Template, but individual replicas also have a consistent identity. If unspecified, defaults to 1.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"selector": {
+						SchemaProps: spec.SchemaProps{
+							Description: "selector is a label query over pods that should match the replica count. It must match the pod template's labels. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors",
+							Ref:         ref(metav1.LabelSelector{}.OpenAPIModelName()),
+						},
+					},
+					"template": {
+						SchemaProps: spec.SchemaProps{
+							Description: "template is the object that describes the pod that will be created if insufficient replicas are detected. Each pod stamped out by the StatefulSet will fulfill this Template, but have a unique identity from the rest of the StatefulSet. Each pod will be named with the format <statefulsetname>-<podindex>. For example, a pod in a StatefulSet named \"web\" with index number \"3\" would be named \"web-3\". The only allowed template.spec.restartPolicy value is \"Always\".",
+							Default:     map[string]interface{}{},
+							Ref:         ref(corev1.PodTemplateSpec{}.OpenAPIModelName()),
+						},
+					},
+					"volumeClaimTemplates": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "volumeClaimTemplates is a list of claims that pods are allowed to reference. The StatefulSet controller is responsible for mapping network identities to claims in a way that maintains the identity of a pod. Every claim in this list must have at least one matching (by name) volumeMount in one container in the template. A claim in this list takes precedence over any volumes in the template, with the same name.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(corev1.PersistentVolumeClaim{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"serviceName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "serviceName is the name of the service that governs this StatefulSet. This service must exist before the StatefulSet, and is responsible for the network identity of the set. Pods get DNS/hostnames that follow the pattern: pod-specific-string.serviceName.default.svc.cluster.local where \"pod-specific-string\" is managed by the StatefulSet controller.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"podManagementPolicy": {
+						SchemaProps: spec.SchemaProps{
+							Description: "podManagementPolicy controls how pods are created during initial scale up, when replacing pods on nodes, or when scaling down. The default policy is `OrderedReady`, where pods are created in increasing order (pod-0, then pod-1, etc) and the controller will wait until each pod is ready before continuing. When scaling down, the pods are removed in the opposite order. The alternative policy is `Parallel` which will create pods in parallel to match the desired scale without waiting, and on scale down will delete all pods at once.\n\nPossible enum values:\n - `\"OrderedReady\"` will create pods in strictly increasing order on scale up and strictly decreasing order on scale down, progressing only when the previous pod is ready or terminated. At most one pod will be changed at any time.\n - `\"Parallel\"` will create and delete pods as soon as the stateful set replica count is changed, and will not wait for pods to be ready or complete termination.",
+							Type:        []string{"string"},
+							Format:      "",
+							Enum:        []interface{}{"OrderedReady", "Parallel"},
+						},
+					},
+					"updateStrategy": {
+						SchemaProps: spec.SchemaProps{
+							Description: "updateStrategy indicates the StatefulSetUpdateStrategy that will be employed to update Pods in the StatefulSet when a revision is made to Template.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(appsv1.StatefulSetUpdateStrategy{}.OpenAPIModelName()),
+						},
+					},
+					"revisionHistoryLimit": {
+						SchemaProps: spec.SchemaProps{
+							Description: "revisionHistoryLimit is the maximum number of revisions that will be maintained in the StatefulSet's revision history. The revision history consists of all revisions not represented by a currently applied StatefulSetSpec version. The default value is 10.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"minReadySeconds": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Minimum number of seconds for which a newly created pod should be ready without any of its container crashing for it to be considered available. Defaults to 0 (pod will be considered available as soon as it is ready)",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"persistentVolumeClaimRetentionPolicy": {
+						SchemaProps: spec.SchemaProps{
+							Description: "persistentVolumeClaimRetentionPolicy describes the lifecycle of persistent volume claims created from volumeClaimTemplates. By default, all persistent volume claims are created as needed and retained until manually deleted. This policy allows the lifecycle to be altered, for example by deleting persistent volume claims when their stateful set is deleted, or when their pod is scaled down.",
+							Ref:         ref(appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{}.OpenAPIModelName()),
+						},
+					},
+					"ordinals": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ordinals controls the numbering of replica indices in a StatefulSet. The default ordinals behavior assigns a \"0\" index to the first replica and increments the index by one for each additional replica requested.",
+							Ref:         ref(appsv1.StatefulSetOrdinals{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"selector", "template"},
+			},
+		},
+		Dependencies: []string{
+			appsv1.StatefulSetOrdinals{}.OpenAPIModelName(), appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{}.OpenAPIModelName(), appsv1.StatefulSetUpdateStrategy{}.OpenAPIModelName(), corev1.PersistentVolumeClaim{}.OpenAPIModelName(), corev1.PodTemplateSpec{}.OpenAPIModelName(), metav1.LabelSelector{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_apps_v1_StatefulSetStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "StatefulSetStatus represents the current state of a StatefulSet.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"observedGeneration": {
+						SchemaProps: spec.SchemaProps{
+							Description: "observedGeneration is the most recent generation observed for this StatefulSet. It corresponds to the StatefulSet's generation, which is updated on mutation by the API Server.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"replicas": {
+						SchemaProps: spec.SchemaProps{
+							Description: "replicas is the number of Pods created by the StatefulSet controller.",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"readyReplicas": {
+						SchemaProps: spec.SchemaProps{
+							Description: "readyReplicas is the number of pods created for this StatefulSet with a Ready Condition.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"currentReplicas": {
+						SchemaProps: spec.SchemaProps{
+							Description: "currentReplicas is the number of Pods created by the StatefulSet controller from the StatefulSet version indicated by currentRevision.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"updatedReplicas": {
+						SchemaProps: spec.SchemaProps{
+							Description: "updatedReplicas is the number of Pods created by the StatefulSet controller from the StatefulSet version indicated by updateRevision.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"currentRevision": {
+						SchemaProps: spec.SchemaProps{
+							Description: "currentRevision, if not empty, indicates the version of the StatefulSet used to generate Pods in the sequence [0,currentReplicas).",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"updateRevision": {
+						SchemaProps: spec.SchemaProps{
+							Description: "updateRevision, if not empty, indicates the version of the StatefulSet used to generate Pods in the sequence [replicas-updatedReplicas,replicas)",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"collisionCount": {
+						SchemaProps: spec.SchemaProps{
+							Description: "collisionCount is the count of hash collisions for the StatefulSet. The StatefulSet controller uses this field as a collision avoidance mechanism when it needs to create the name for the newest ControllerRevision.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type":       "map",
+								"x-kubernetes-patch-merge-key": "type",
+								"x-kubernetes-patch-strategy":  "merge",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Represents the latest available observations of a statefulset's current state.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(appsv1.StatefulSetCondition{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"availableReplicas": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Total number of available pods (ready for at least minReadySeconds) targeted by this statefulset.",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+				Required: []string{"replicas"},
+			},
+		},
+		Dependencies: []string{
+			appsv1.StatefulSetCondition{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_apps_v1_StatefulSetUpdateStrategy(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "StatefulSetUpdateStrategy indicates the strategy that the StatefulSet controller will use to perform updates. It includes any additional parameters necessary to perform the update for the indicated strategy.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"type": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Type indicates the type of the StatefulSetUpdateStrategy. Default is RollingUpdate.\n\nPossible enum values:\n - `\"OnDelete\"` triggers the legacy behavior. Version tracking and ordered rolling restarts are disabled. Pods are recreated from the StatefulSetSpec when they are manually deleted. When a scale operation is performed with this strategy,specification version indicated by the StatefulSet's currentRevision.\n - `\"RollingUpdate\"` indicates that update will be applied to all Pods in the StatefulSet with respect to the StatefulSet ordering constraints. When a scale operation is performed with this strategy, new Pods will be created from the specification version indicated by the StatefulSet's updateRevision.",
+							Type:        []string{"string"},
+							Format:      "",
+							Enum:        []interface{}{"OnDelete", "RollingUpdate"},
+						},
+					},
+					"rollingUpdate": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RollingUpdate is used to communicate parameters when Type is RollingUpdateStatefulSetStrategyType.",
+							Ref:         ref(appsv1.RollingUpdateStatefulSetStrategy{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			appsv1.RollingUpdateStatefulSetStrategy{}.OpenAPIModelName()},
 	}
 }
 
@@ -1345,6 +2166,50 @@ func schema_k8sio_api_core_v1_AzureFileVolumeSource(ref common.ReferenceCallback
 				Required: []string{"secretName", "shareName"},
 			},
 		},
+	}
+}
+
+func schema_k8sio_api_core_v1_Binding(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Binding ties one object to another; for example, a pod is bound to a node by a scheduler.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Standard object's metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"target": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The target object that you want to bind to the standard object.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(corev1.ObjectReference{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"target"},
+			},
+		},
+		Dependencies: []string{
+			corev1.ObjectReference{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
 	}
 }
 
@@ -4762,6 +5627,36 @@ func schema_k8sio_api_core_v1_LocalObjectReference(ref common.ReferenceCallback)
 	}
 }
 
+func schema_k8sio_api_core_v1_ModifyVolumeStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ModifyVolumeStatus represents the status object of ControllerModifyVolume operation",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"targetVolumeAttributesClassName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "targetVolumeAttributesClassName is the name of the VolumeAttributesClass the PVC currently being reconciled",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "status is the status of the ControllerModifyVolume operation. It can be in any of following states:\n - Pending\n   Pending indicates that the PersistentVolumeClaim cannot be modified due to unmet requirements, such as\n   the specified VolumeAttributesClass not existing.\n - InProgress\n   InProgress indicates that the volume is being modified.\n - Infeasible\n  Infeasible indicates that the request has been rejected as invalid by the CSI driver. To\n\t  resolve the error, a valid VolumeAttributesClass needs to be specified.\nNote: New statuses can be added in the future. Consumers should check for unknown statuses and fail appropriately.\n\nPossible enum values:\n - `\"InProgress\"` InProgress indicates that the volume is being modified\n - `\"Infeasible\"` Infeasible indicates that the request has been rejected as invalid by the CSI driver. To resolve the error, a valid VolumeAttributesClass needs to be specified\n - `\"Pending\"` Pending indicates that the PersistentVolumeClaim cannot be modified due to unmet requirements, such as the specified VolumeAttributesClass not existing",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+							Enum:        []interface{}{"InProgress", "Infeasible", "Pending"},
+						},
+					},
+				},
+				Required: []string{"status"},
+			},
+		},
+	}
+}
+
 func schema_k8sio_api_core_v1_NFSVolumeSource(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -6161,6 +7056,114 @@ func schema_k8sio_api_core_v1_ObjectReference(ref common.ReferenceCallback) comm
 	}
 }
 
+func schema_k8sio_api_core_v1_PersistentVolumeClaim(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PersistentVolumeClaim is a user's request for and claim to a persistent volume",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Standard object's metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "spec defines the desired characteristics of a volume requested by a pod author. More info: https://kubernetes.io/docs/concepts/storage/persistent-volumes#persistentvolumeclaims",
+							Default:     map[string]interface{}{},
+							Ref:         ref(corev1.PersistentVolumeClaimSpec{}.OpenAPIModelName()),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "status represents the current information/status of a persistent volume claim. Read-only. More info: https://kubernetes.io/docs/concepts/storage/persistent-volumes#persistentvolumeclaims",
+							Default:     map[string]interface{}{},
+							Ref:         ref(corev1.PersistentVolumeClaimStatus{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			corev1.PersistentVolumeClaimSpec{}.OpenAPIModelName(), corev1.PersistentVolumeClaimStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_core_v1_PersistentVolumeClaimCondition(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PersistentVolumeClaimCondition contains details about state of pvc",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"type": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Type is the type of the condition. More info: https://kubernetes.io/docs/reference/kubernetes-api/config-and-storage-resources/persistent-volume-claim-v1/#:~:text=set%20to%20%27ResizeStarted%27.-,PersistentVolumeClaimCondition,-contains%20details%20about",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Status is the status of the condition. Can be True, False, Unknown. More info: https://kubernetes.io/docs/reference/kubernetes-api/config-and-storage-resources/persistent-volume-claim-v1/#:~:text=state%20of%20pvc-,conditions.status,-(string)%2C%20required",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"lastProbeTime": {
+						SchemaProps: spec.SchemaProps{
+							Description: "lastProbeTime is the time we probed the condition.",
+							Ref:         ref(metav1.Time{}.OpenAPIModelName()),
+						},
+					},
+					"lastTransitionTime": {
+						SchemaProps: spec.SchemaProps{
+							Description: "lastTransitionTime is the time the condition transitioned from one status to another.",
+							Ref:         ref(metav1.Time{}.OpenAPIModelName()),
+						},
+					},
+					"reason": {
+						SchemaProps: spec.SchemaProps{
+							Description: "reason is a unique, this should be a short, machine understandable string that gives the reason for condition's last transition. If it reports \"Resizing\" that means the underlying persistent volume is being resized.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"message": {
+						SchemaProps: spec.SchemaProps{
+							Description: "message is the human-readable message indicating details about last transition.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"type", "status"},
+			},
+		},
+		Dependencies: []string{
+			metav1.Time{}.OpenAPIModelName()},
+	}
+}
+
 func schema_k8sio_api_core_v1_PersistentVolumeClaimSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -6248,6 +7251,137 @@ func schema_k8sio_api_core_v1_PersistentVolumeClaimSpec(ref common.ReferenceCall
 		},
 		Dependencies: []string{
 			corev1.TypedLocalObjectReference{}.OpenAPIModelName(), corev1.TypedObjectReference{}.OpenAPIModelName(), corev1.VolumeResourceRequirements{}.OpenAPIModelName(), metav1.LabelSelector{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_core_v1_PersistentVolumeClaimStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PersistentVolumeClaimStatus is the current status of a persistent volume claim.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"phase": {
+						SchemaProps: spec.SchemaProps{
+							Description: "phase represents the current phase of PersistentVolumeClaim.\n\nPossible enum values:\n - `\"Bound\"` used for PersistentVolumeClaims that are bound\n - `\"Lost\"` used for PersistentVolumeClaims that lost their underlying PersistentVolume. The claim was bound to a PersistentVolume and this volume does not exist any longer and all data on it was lost.\n - `\"Pending\"` used for PersistentVolumeClaims that are not yet bound",
+							Type:        []string{"string"},
+							Format:      "",
+							Enum:        []interface{}{"Bound", "Lost", "Pending"},
+						},
+					},
+					"accessModes": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "accessModes contains the actual access modes the volume backing the PVC has. More info: https://kubernetes.io/docs/concepts/storage/persistent-volumes#access-modes-1",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+										Enum:    []interface{}{"ReadOnlyMany", "ReadWriteMany", "ReadWriteOnce", "ReadWriteOncePod"},
+									},
+								},
+							},
+						},
+					},
+					"capacity": {
+						SchemaProps: spec.SchemaProps{
+							Description: "capacity represents the actual resources of the underlying volume.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(resource.Quantity{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type":       "map",
+								"x-kubernetes-patch-merge-key": "type",
+								"x-kubernetes-patch-strategy":  "merge",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "conditions is the current Condition of persistent volume claim. If underlying persistent volume is being resized then the Condition will be set to 'Resizing'.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(corev1.PersistentVolumeClaimCondition{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"allocatedResources": {
+						SchemaProps: spec.SchemaProps{
+							Description: "allocatedResources tracks the resources allocated to a PVC including its capacity. Key names follow standard Kubernetes label syntax. Valid values are either:\n\t* Un-prefixed keys:\n\t\t- storage - the capacity of the volume.\n\t* Custom resources must use implementation-defined prefixed names such as \"example.com/my-custom-resource\"\nApart from above values - keys that are unprefixed or have kubernetes.io prefix are considered reserved and hence may not be used.\n\nCapacity reported here may be larger than the actual capacity when a volume expansion operation is requested. For storage quota, the larger value from allocatedResources and PVC.spec.resources is used. If allocatedResources is not set, PVC.spec.resources alone is used for quota calculation. If a volume expansion capacity request is lowered, allocatedResources is only lowered if there are no expansion operations in progress and if the actual volume capacity is equal or lower than the requested capacity.\n\nA controller that receives PVC update with previously unknown resourceName should ignore the update for the purpose it was designed. For example - a controller that only is responsible for resizing capacity of the volume, should ignore PVC updates that change other valid resources associated with PVC.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(resource.Quantity{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"allocatedResourceStatuses": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-map-type": "granular",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "allocatedResourceStatuses stores status of resource being resized for the given PVC. Key names follow standard Kubernetes label syntax. Valid values are either:\n\t* Un-prefixed keys:\n\t\t- storage - the capacity of the volume.\n\t* Custom resources must use implementation-defined prefixed names such as \"example.com/my-custom-resource\"\nApart from above values - keys that are unprefixed or have kubernetes.io prefix are considered reserved and hence may not be used.\n\nClaimResourceStatus can be in any of following states:\n\t- ControllerResizeInProgress:\n\t\tState set when resize controller starts resizing the volume in control-plane.\n\t- ControllerResizeFailed:\n\t\tState set when resize has failed in resize controller with a terminal error.\n\t- NodeResizePending:\n\t\tState set when resize controller has finished resizing the volume but further resizing of\n\t\tvolume is needed on the node.\n\t- NodeResizeInProgress:\n\t\tState set when kubelet starts resizing the volume.\n\t- NodeResizeFailed:\n\t\tState set when resizing has failed in kubelet with a terminal error. Transient errors don't set\n\t\tNodeResizeFailed.\nFor example: if expanding a PVC for more capacity - this field can be one of the following states:\n\t- pvc.status.allocatedResourceStatus['storage'] = \"ControllerResizeInProgress\"\n     - pvc.status.allocatedResourceStatus['storage'] = \"ControllerResizeFailed\"\n     - pvc.status.allocatedResourceStatus['storage'] = \"NodeResizePending\"\n     - pvc.status.allocatedResourceStatus['storage'] = \"NodeResizeInProgress\"\n     - pvc.status.allocatedResourceStatus['storage'] = \"NodeResizeFailed\"\nWhen this field is not set, it means that no resize operation is in progress for the given PVC.\n\nA controller that receives PVC update with previously unknown resourceName or ClaimResourceStatus should ignore the update for the purpose it was designed. For example - a controller that only is responsible for resizing capacity of the volume, should ignore PVC updates that change other valid resources associated with PVC.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+										Enum:    []interface{}{"ControllerResizeInProgress", "ControllerResizeInfeasible", "NodeResizeInProgress", "NodeResizeInfeasible", "NodeResizePending"},
+									},
+								},
+							},
+						},
+					},
+					"currentVolumeAttributesClassName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "currentVolumeAttributesClassName is the current name of the VolumeAttributesClass the PVC is using. When unset, there is no VolumeAttributeClass applied to this PersistentVolumeClaim",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"modifyVolumeStatus": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ModifyVolumeStatus represents the status object of ControllerModifyVolume operation. When this is unset, there is no ModifyVolume operation being attempted.",
+							Ref:         ref(corev1.ModifyVolumeStatus{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			corev1.ModifyVolumeStatus{}.OpenAPIModelName(), corev1.PersistentVolumeClaimCondition{}.OpenAPIModelName(), resource.Quantity{}.OpenAPIModelName()},
 	}
 }
 
@@ -8023,6 +9157,35 @@ func schema_k8sio_api_core_v1_PodStatus(ref common.ReferenceCallback) common.Ope
 	}
 }
 
+func schema_k8sio_api_core_v1_PodTemplateSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PodTemplateSpec describes the data a pod should have when created from a template",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Standard object's metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Specification of the desired behavior of the pod. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#spec-and-status",
+							Default:     map[string]interface{}{},
+							Ref:         ref(corev1.PodSpec{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			corev1.PodSpec{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
 func schema_k8sio_api_core_v1_PortStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -8393,6 +9556,293 @@ func schema_k8sio_api_core_v1_RBDVolumeSource(ref common.ReferenceCallback) comm
 		},
 		Dependencies: []string{
 			corev1.LocalObjectReference{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_core_v1_ReplicationController(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ReplicationController represents the configuration of a replication controller.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "If the Labels of a ReplicationController are empty, they are defaulted to be the same as the Pod(s) that the replication controller manages. Standard object's metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Spec defines the specification of the desired behavior of the replication controller. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#spec-and-status",
+							Default:     map[string]interface{}{},
+							Ref:         ref(corev1.ReplicationControllerSpec{}.OpenAPIModelName()),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Status is the most recently observed status of the replication controller. This data may be out of date by some window of time. Populated by the system. Read-only. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#spec-and-status",
+							Default:     map[string]interface{}{},
+							Ref:         ref(corev1.ReplicationControllerStatus{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			corev1.ReplicationControllerSpec{}.OpenAPIModelName(), corev1.ReplicationControllerStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_core_v1_ReplicationControllerCondition(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ReplicationControllerCondition describes the state of a replication controller at a certain point.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"type": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Type of replication controller condition.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Status of the condition, one of True, False, Unknown.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"lastTransitionTime": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The last time the condition transitioned from one status to another.",
+							Ref:         ref(metav1.Time{}.OpenAPIModelName()),
+						},
+					},
+					"reason": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The reason for the condition's last transition.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"message": {
+						SchemaProps: spec.SchemaProps{
+							Description: "A human readable message indicating details about the transition.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"type", "status"},
+			},
+		},
+		Dependencies: []string{
+			metav1.Time{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_core_v1_ReplicationControllerList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ReplicationControllerList is a collection of replication controllers.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Standard list metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Description: "List of replication controllers. More info: https://kubernetes.io/docs/concepts/workloads/controllers/replicationcontroller",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(corev1.ReplicationController{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			corev1.ReplicationController{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_core_v1_ReplicationControllerSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ReplicationControllerSpec is the specification of a replication controller.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"replicas": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Replicas is the number of desired replicas. This is a pointer to distinguish between explicit zero and unspecified. Defaults to 1. More info: https://kubernetes.io/docs/concepts/workloads/controllers/replicationcontroller#what-is-a-replicationcontroller",
+							Default:     1,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"minReadySeconds": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Minimum number of seconds for which a newly created pod should be ready without any of its container crashing, for it to be considered available. Defaults to 0 (pod will be considered available as soon as it is ready)",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"selector": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-map-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Selector is a label query over pods that should match the Replicas count. If Selector is empty, it is defaulted to the labels present on the Pod template. Label keys and values that must match in order to be controlled by this replication controller, if empty defaulted to labels on Pod template. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"template": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Template is the object that describes the pod that will be created if insufficient replicas are detected. This takes precedence over a TemplateRef. The only allowed template.spec.restartPolicy value is \"Always\". More info: https://kubernetes.io/docs/concepts/workloads/controllers/replicationcontroller#pod-template",
+							Ref:         ref(corev1.PodTemplateSpec{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			corev1.PodTemplateSpec{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_core_v1_ReplicationControllerStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ReplicationControllerStatus represents the current status of a replication controller.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"replicas": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Replicas is the most recently observed number of replicas. More info: https://kubernetes.io/docs/concepts/workloads/controllers/replicationcontroller#what-is-a-replicationcontroller",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"fullyLabeledReplicas": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The number of pods that have labels matching the labels of the pod template of the replication controller.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"readyReplicas": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The number of ready replicas for this replication controller.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"availableReplicas": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The number of available replicas (ready for at least minReadySeconds) for this replication controller.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"observedGeneration": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ObservedGeneration reflects the generation of the most recently observed replication controller.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type":       "map",
+								"x-kubernetes-patch-merge-key": "type",
+								"x-kubernetes-patch-strategy":  "merge",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Represents the latest available observations of a replication controller's current state.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(corev1.ReplicationControllerCondition{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"replicas"},
+			},
+		},
+		Dependencies: []string{
+			corev1.ReplicationControllerCondition{}.OpenAPIModelName()},
 	}
 }
 
@@ -13903,6 +15353,245 @@ func schema_k8sio_api_node_v1_Scheduling(ref common.ReferenceCallback) common.Op
 	}
 }
 
+func schema_k8sio_api_policy_v1_PodDisruptionBudget(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PodDisruptionBudget is an object to define the max disruption that can be caused to a collection of pods",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Standard object's metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Specification of the desired behavior of the PodDisruptionBudget.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(policyv1.PodDisruptionBudgetSpec{}.OpenAPIModelName()),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Most recently observed status of the PodDisruptionBudget.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(policyv1.PodDisruptionBudgetStatus{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			policyv1.PodDisruptionBudgetSpec{}.OpenAPIModelName(), policyv1.PodDisruptionBudgetStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_policy_v1_PodDisruptionBudgetList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PodDisruptionBudgetList is a collection of PodDisruptionBudgets.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Standard object's metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Items is a list of PodDisruptionBudgets",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(policyv1.PodDisruptionBudget{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			policyv1.PodDisruptionBudget{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_policy_v1_PodDisruptionBudgetSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PodDisruptionBudgetSpec is a description of a PodDisruptionBudget.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"minAvailable": {
+						SchemaProps: spec.SchemaProps{
+							Description: "An eviction is allowed if at least \"minAvailable\" pods selected by \"selector\" will still be available after the eviction, i.e. even in the absence of the evicted pod.  So for example you can prevent all voluntary evictions by specifying \"100%\".",
+							Ref:         ref(intstr.IntOrString{}.OpenAPIModelName()),
+						},
+					},
+					"selector": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-patch-strategy": "replace",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Label query over pods whose evictions are managed by the disruption budget. A null selector will match no pods, while an empty ({}) selector will select all pods within the namespace.",
+							Ref:         ref(metav1.LabelSelector{}.OpenAPIModelName()),
+						},
+					},
+					"maxUnavailable": {
+						SchemaProps: spec.SchemaProps{
+							Description: "An eviction is allowed if at most \"maxUnavailable\" pods selected by \"selector\" are unavailable after the eviction, i.e. even in absence of the evicted pod. For example, one can prevent all voluntary evictions by specifying 0. This is a mutually exclusive setting with \"minAvailable\".",
+							Ref:         ref(intstr.IntOrString{}.OpenAPIModelName()),
+						},
+					},
+					"unhealthyPodEvictionPolicy": {
+						SchemaProps: spec.SchemaProps{
+							Description: "UnhealthyPodEvictionPolicy defines the criteria for when unhealthy pods should be considered for eviction. Current implementation considers healthy pods, as pods that have status.conditions item with type=\"Ready\",status=\"True\".\n\nValid policies are IfHealthyBudget and AlwaysAllow. If no policy is specified, the default behavior will be used, which corresponds to the IfHealthyBudget policy.\n\nIfHealthyBudget policy means that running pods (status.phase=\"Running\"), but not yet healthy can be evicted only if the guarded application is not disrupted (status.currentHealthy is at least equal to status.desiredHealthy). Healthy pods will be subject to the PDB for eviction.\n\nAlwaysAllow policy means that all running pods (status.phase=\"Running\"), but not yet healthy are considered disrupted and can be evicted regardless of whether the criteria in a PDB is met. This means perspective running pods of a disrupted application might not get a chance to become healthy. Healthy pods will be subject to the PDB for eviction.\n\nAdditional policies may be added in the future. Clients making eviction decisions should disallow eviction of unhealthy pods if they encounter an unrecognized policy in this field.\n\nPossible enum values:\n - `\"AlwaysAllow\"` policy means that all running pods (status.phase=\"Running\"), but not yet healthy are considered disrupted and can be evicted regardless of whether the criteria in a PDB is met. This means perspective running pods of a disrupted application might not get a chance to become healthy. Healthy pods will be subject to the PDB for eviction.\n - `\"IfHealthyBudget\"` policy means that running pods (status.phase=\"Running\"), but not yet healthy can be evicted only if the guarded application is not disrupted (status.currentHealthy is at least equal to status.desiredHealthy). Healthy pods will be subject to the PDB for eviction.",
+							Type:        []string{"string"},
+							Format:      "",
+							Enum:        []interface{}{"AlwaysAllow", "IfHealthyBudget"},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			metav1.LabelSelector{}.OpenAPIModelName(), intstr.IntOrString{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_policy_v1_PodDisruptionBudgetStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PodDisruptionBudgetStatus represents information about the status of a PodDisruptionBudget. Status may trail the actual state of a system.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"observedGeneration": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Most recent generation observed when updating this PDB status. DisruptionsAllowed and other status information is valid only if observedGeneration equals to PDB's object generation.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"disruptedPods": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DisruptedPods contains information about pods whose eviction was processed by the API server eviction subresource handler but has not yet been observed by the PodDisruptionBudget controller. A pod will be in this map from the time when the API server processed the eviction request to the time when the pod is seen by PDB controller as having been marked for deletion (or after a timeout). The key in the map is the name of the pod and the value is the time when the API server processed the eviction request. If the deletion didn't occur and a pod is still there it will be removed from the list automatically by PodDisruptionBudget controller after some time. If everything goes smooth this map should be empty for the most of the time. Large number of entries in the map may indicate problems with pod deletions.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(metav1.Time{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"disruptionsAllowed": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Number of pod disruptions that are currently allowed.",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"currentHealthy": {
+						SchemaProps: spec.SchemaProps{
+							Description: "current number of healthy pods",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"desiredHealthy": {
+						SchemaProps: spec.SchemaProps{
+							Description: "minimum desired number of healthy pods",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"expectedPods": {
+						SchemaProps: spec.SchemaProps{
+							Description: "total number of pods counted by this disruption budget",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type":       "map",
+								"x-kubernetes-patch-merge-key": "type",
+								"x-kubernetes-patch-strategy":  "merge",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Conditions contain conditions for PDB. The disruption controller sets the DisruptionAllowed condition. The following are known values for the reason field (additional reasons could be added in the future): - SyncFailed: The controller encountered an error and wasn't able to compute\n              the number of allowed disruptions. Therefore no disruptions are\n              allowed and the status of the condition will be False.\n- InsufficientPods: The number of pods are either at or below the number\n                    required by the PodDisruptionBudget. No disruptions are\n                    allowed and the status of the condition will be False.\n- SufficientPods: There are more pods than required by the PodDisruptionBudget.\n                  The condition will be True, and the number of allowed\n                  disruptions are provided by the disruptionsAllowed property.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(metav1.Condition{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			metav1.Condition{}.OpenAPIModelName(), metav1.Time{}.OpenAPIModelName()},
+	}
+}
+
 func schema_apimachinery_pkg_api_resource_Quantity(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.EmbedOpenAPIDefinitionIntoV2Extension(common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -13921,6 +15610,2302 @@ func schema_apimachinery_pkg_api_resource_Quantity(ref common.ReferenceCallback)
 			},
 		},
 	})
+}
+
+func schema_k8sio_api_resource_v1_AllocatedDeviceStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "AllocatedDeviceStatus contains the status of an allocated device, if the driver chooses to report it. This may include driver-specific information.\n\nThe combination of Driver, Pool, Device, and ShareID must match the corresponding key in Status.Allocation.Devices.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"driver": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Driver specifies the name of the DRA driver whose kubelet plugin should be invoked to process the allocation once the claim is needed on a node.\n\nMust be a DNS subdomain and should end with a DNS domain owned by the vendor of the driver. It should use only lower case characters.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"pool": {
+						SchemaProps: spec.SchemaProps{
+							Description: "This name together with the driver name and the device name field identify which device was allocated (`<driver name>/<pool name>/<device name>`).\n\nMust not be longer than 253 characters and may contain one or more DNS sub-domains separated by slashes.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"device": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Device references one device instance via its name in the driver's resource pool. It must be a DNS label.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"shareID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ShareID uniquely identifies an individual allocation share of the device.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Conditions contains the latest observation of the device's state. If the device has been configured according to the class and claim config references, the `Ready` condition should be True.\n\nMust not contain more than 8 entries.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(metav1.Condition{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"data": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Data contains arbitrary driver-specific data.\n\nThe length of the raw data must be smaller or equal to 10 Ki.",
+							Ref:         ref(runtime.RawExtension{}.OpenAPIModelName()),
+						},
+					},
+					"networkData": {
+						SchemaProps: spec.SchemaProps{
+							Description: "NetworkData contains network-related information specific to the device.",
+							Ref:         ref(resourcev1.NetworkDeviceData{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"driver", "pool", "device"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.NetworkDeviceData{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), runtime.RawExtension{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_AllocationResult(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "AllocationResult contains attributes of an allocated resource.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"devices": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Devices is the result of allocating devices.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(resourcev1.DeviceAllocationResult{}.OpenAPIModelName()),
+						},
+					},
+					"nodeSelector": {
+						SchemaProps: spec.SchemaProps{
+							Description: "NodeSelector defines where the allocated resources are available. If unset, they are available everywhere.",
+							Ref:         ref(corev1.NodeSelector{}.OpenAPIModelName()),
+						},
+					},
+					"allocationTimestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AllocationTimestamp stores the time when the resources were allocated. This field is not guaranteed to be set, in which case that time is unknown.\n\nThis is a beta field and requires enabling the DRADeviceBindingConditions and DRAResourceClaimDeviceStatus feature gate.",
+							Ref:         ref(metav1.Time{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			corev1.NodeSelector{}.OpenAPIModelName(), resourcev1.DeviceAllocationResult{}.OpenAPIModelName(), metav1.Time{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_CELDeviceSelector(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "CELDeviceSelector contains a CEL expression for selecting a device.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"expression": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Expression is a CEL expression which evaluates a single device. It must evaluate to true when the device under consideration satisfies the desired criteria, and false when it does not. Any other result is an error and causes allocation of devices to abort.\n\nThe expression's input is an object named \"device\", which carries the following properties:\n - driver (string): the name of the driver which defines this device.\n - attributes (map[string]object): the device's attributes, grouped by prefix\n   (e.g. device.attributes[\"dra.example.com\"] evaluates to an object with all\n   of the attributes which were prefixed by \"dra.example.com\".\n - capacity (map[string]object): the device's capacities, grouped by prefix.\n - allowMultipleAllocations (bool): the allowMultipleAllocations property of the device\n   (v1.34+ with the DRAConsumableCapacity feature enabled).\n\nExample: Consider a device with driver=\"dra.example.com\", which exposes two attributes named \"model\" and \"ext.example.com/family\" and which exposes one capacity named \"modules\". This input to this expression would have the following fields:\n\n    device.driver\n    device.attributes[\"dra.example.com\"].model\n    device.attributes[\"ext.example.com\"].family\n    device.capacity[\"dra.example.com\"].modules\n\nThe device.driver field can be used to check for a specific driver, either as a high-level precondition (i.e. you only want to consider devices from this driver) or as part of a multi-clause expression that is meant to consider devices from different drivers.\n\nThe value type of each attribute is defined by the device definition, and users who write these expressions must consult the documentation for their specific drivers. The value type of each capacity is Quantity.\n\nIf an unknown prefix is used as a lookup in either device.attributes or device.capacity, an empty map will be returned. Any reference to an unknown field will cause an evaluation error and allocation to abort.\n\nA robust expression should check for the existence of attributes before referencing them.\n\nFor ease of use, the cel.bind() function is enabled, and can be used to simplify expressions that access multiple attributes with the same domain. For example:\n\n    cel.bind(dra, device.attributes[\"dra.example.com\"], dra.someBool && dra.anotherBool)\n\nWhen the DRAListTypeAttributes feature gate is enabled, the includes() helper is available and it can work for both scalar and list-type attributes. It was introduced to support smooth migration from scalar attributes to list-type attributes while keeping CEL expressions simple. For example:\n\n    device.attributes[\"dra.example.com\"].models.includes(\"some-model\")\n\nThe length of the expression must be smaller or equal to 10 Ki. The cost of evaluating it is also limited based on the estimated number of logical steps.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"expression"},
+			},
+		},
+	}
+}
+
+func schema_k8sio_api_resource_v1_CapacityRequestPolicy(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "CapacityRequestPolicy defines how requests consume device capacity.\n\nMust not set more than one ValidRequestValues.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"default": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Default specifies how much of this capacity is consumed by a request that does not contain an entry for it in DeviceRequest's Capacity.",
+							Ref:         ref(resource.Quantity{}.OpenAPIModelName()),
+						},
+					},
+					"validValues": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "ValidValues defines a set of acceptable quantity values in consuming requests.\n\nMust not contain more than 10 entries. Must be sorted in ascending order.\n\nIf this field is set, Default must be defined and it must be included in ValidValues list.\n\nIf the requested amount does not match any valid value but smaller than some valid values, the scheduler calculates the smallest valid value that is greater than or equal to the request. That is: min(ceil(requestedValue) ∈ validValues), where requestedValue ≤ max(validValues).\n\nIf the requested amount exceeds all valid values, the request violates the policy, and this device cannot be allocated.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(resource.Quantity{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"validRange": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ValidRange defines an acceptable quantity value range in consuming requests.\n\nIf this field is set, Default must be defined and it must fall within the defined ValidRange.\n\nIf the requested amount does not fall within the defined range, the request violates the policy, and this device cannot be allocated.\n\nIf the request doesn't contain this capacity entry, Default value is used.",
+							Ref:         ref(resourcev1.CapacityRequestPolicyRange{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.CapacityRequestPolicyRange{}.OpenAPIModelName(), resource.Quantity{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_CapacityRequestPolicyRange(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "CapacityRequestPolicyRange defines a valid range for consumable capacity values.\n\n  - If the requested amount is less than Min, it is rounded up to the Min value.\n  - If Step is set and the requested amount is between Min and Max but not aligned with Step,\n    it will be rounded up to the next value equal to Min + (n * Step).\n  - If Step is not set, the requested amount is used as-is if it falls within the range Min to Max (if set).\n  - If the requested or rounded amount exceeds Max (if set), the request does not satisfy the policy,\n    and the device cannot be allocated.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"min": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Min specifies the minimum capacity allowed for a consumption request.\n\nMin must be greater than or equal to zero, and less than or equal to the capacity value. requestPolicy.default must be more than or equal to the minimum.",
+							Ref:         ref(resource.Quantity{}.OpenAPIModelName()),
+						},
+					},
+					"max": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Max defines the upper limit for capacity that can be requested.\n\nMax must be less than or equal to the capacity value. Min and requestPolicy.default must be less than or equal to the maximum.",
+							Ref:         ref(resource.Quantity{}.OpenAPIModelName()),
+						},
+					},
+					"step": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Step defines the step size between valid capacity amounts within the range.\n\nMax (if set) and requestPolicy.default must be a multiple of Step. Min + Step must be less than or equal to the capacity value.",
+							Ref:         ref(resource.Quantity{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"min"},
+			},
+		},
+		Dependencies: []string{
+			resource.Quantity{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_CapacityRequirements(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "CapacityRequirements defines the capacity requirements for a specific device request.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"requests": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Requests represent individual device resource requests for distinct resources, all of which must be provided by the device.\n\nThis value is used as an additional filtering condition against the available capacity on the device. This is semantically equivalent to a CEL selector with `device.capacity[<domain>].<name>.compareTo(quantity(<request quantity>)) >= 0`. For example, device.capacity['test-driver.cdi.k8s.io'].counters.compareTo(quantity('2')) >= 0.\n\nWhen a requestPolicy is defined, the requested amount is adjusted upward to the nearest valid value based on the policy. If the requested amount cannot be adjusted to a valid value—because it exceeds what the requestPolicy allows— the device is considered ineligible for allocation.\n\nFor any capacity that is not explicitly requested: - If no requestPolicy is set, the default consumed capacity is equal to the full device capacity\n  (i.e., the whole device is claimed).\n- If a requestPolicy is set, the default consumed capacity is determined according to that policy.\n\nIf the device allows multiple allocation, the aggregated amount across all requests must not exceed the capacity value. The consumed capacity, which may be adjusted based on the requestPolicy if defined, is recorded in the resource claim’s status.devices[*].consumedCapacity field.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(resource.Quantity{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			resource.Quantity{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_Counter(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Counter describes a quantity associated with a device.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"value": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Value defines how much of a certain device counter is available.",
+							Ref:         ref(resource.Quantity{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"value"},
+			},
+		},
+		Dependencies: []string{
+			resource.Quantity{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_CounterSet(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "CounterSet defines a named set of counters that are available to be used by devices defined in the ResourcePool.\n\nThe counters are not allocatable by themselves, but can be referenced by devices. When a device is allocated, the portion of counters it uses will no longer be available for use by other devices.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name defines the name of the counter set. It must be a DNS label.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"counters": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Counters defines the set of counters for this CounterSet The name of each counter must be unique in that set and must be a DNS label.\n\nThe maximum number of counters is 32.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.Counter{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"name", "counters"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.Counter{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_Device(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Device represents one individual hardware instance that can be selected based on its attributes. Besides the name, exactly one field must be set.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name is unique identifier among all devices managed by the driver in the pool. It must be a DNS label.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"attributes": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Attributes defines the set of attributes for this device. The name of each attribute must be unique in that set.\n\nThe maximum number of attributes and capacities combined is 32.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceAttribute{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"capacity": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Capacity defines the set of capacities for this device. The name of each capacity must be unique in that set.\n\nThe maximum number of attributes and capacities combined is 32.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceCapacity{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"consumesCounters": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "ConsumesCounters defines a list of references to sharedCounters and the set of counters that the device will consume from those counter sets.\n\nThere can only be a single entry per counterSet.\n\nThe maximum number of device counter consumptions per device is 2.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceCounterConsumption{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"nodeName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "NodeName identifies the node where the device is available.\n\nMust only be set if Spec.PerDeviceNodeSelection is set to true. At most one of NodeName, NodeSelector and AllNodes can be set.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"nodeSelector": {
+						SchemaProps: spec.SchemaProps{
+							Description: "NodeSelector defines the nodes where the device is available.\n\nMust use exactly one term.\n\nMust only be set if Spec.PerDeviceNodeSelection is set to true. At most one of NodeName, NodeSelector and AllNodes can be set.",
+							Ref:         ref(corev1.NodeSelector{}.OpenAPIModelName()),
+						},
+					},
+					"allNodes": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AllNodes indicates that all nodes have access to the device.\n\nMust only be set if Spec.PerDeviceNodeSelection is set to true. At most one of NodeName, NodeSelector and AllNodes can be set.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"taints": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "If specified, these are the driver-defined taints.\n\nThe maximum number of taints is 16. If taints are set for any device in a ResourceSlice, then the maximum number of allowed devices per ResourceSlice is 64 instead of 128.\n\nThis is a beta field and requires enabling the DRADeviceTaints feature gate.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceTaint{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"bindsToNode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "BindsToNode indicates if the usage of an allocation involving this device has to be limited to exactly the node that was chosen when allocating the claim. If set to true, the scheduler will set the ResourceClaim.Status.Allocation.NodeSelector to match the node where the allocation was made.\n\nThis is a beta field and requires enabling the DRADeviceBindingConditions and DRAResourceClaimDeviceStatus feature gates.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"bindingConditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "BindingConditions defines the conditions for proceeding with binding. All of these conditions must be set in the per-device status conditions with a value of True to proceed with binding the pod to the node while scheduling the pod.\n\nThe maximum number of binding conditions is 4.\n\nThe conditions must be a valid condition type string.\n\nThis is a beta field and requires enabling the DRADeviceBindingConditions and DRAResourceClaimDeviceStatus feature gates.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"bindingFailureConditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "BindingFailureConditions defines the conditions for binding failure. They may be set in the per-device status conditions. If any is set to \"True\", a binding failure occurred.\n\nThe maximum number of binding failure conditions is 4.\n\nThe conditions must be a valid condition type string.\n\nThis is a beta field and requires enabling the DRADeviceBindingConditions and DRAResourceClaimDeviceStatus feature gates.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"allowMultipleAllocations": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AllowMultipleAllocations marks whether the device is allowed to be allocated to multiple DeviceRequests.\n\nIf AllowMultipleAllocations is set to true, the device can be allocated more than once, and all of its capacity is consumable, regardless of whether the requestPolicy is defined or not.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"nodeAllocatableResourceMappings": {
+						SchemaProps: spec.SchemaProps{
+							Description: "NodeAllocatableResourceMappings defines the mapping of node resources that are managed by the DRA driver exposing this device. This includes resources currently reported in v1.Node `status.allocatable` that are not extended resources (see https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#extended-resources). Examples include \"cpu\", \"memory\", \"ephemeral-storage\", and hugepages. In addition to standard requests made through the Pod `spec`, these resources can also be requested through claims and allocated by the DRA driver. For example, a CPU DRA driver might allocate exclusive CPUs or auxiliary node memory dependencies of an accelerator device. The keys of this map are the node-allocatable resource names (e.g., \"cpu\", \"memory\"). Extended resource names are not permitted as keys.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.NodeAllocatableResourceMapping{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
+		Dependencies: []string{
+			corev1.NodeSelector{}.OpenAPIModelName(), resourcev1.DeviceAttribute{}.OpenAPIModelName(), resourcev1.DeviceCapacity{}.OpenAPIModelName(), resourcev1.DeviceCounterConsumption{}.OpenAPIModelName(), resourcev1.DeviceTaint{}.OpenAPIModelName(), resourcev1.NodeAllocatableResourceMapping{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceAllocationConfiguration(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DeviceAllocationConfiguration gets embedded in an AllocationResult.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"source": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Source records whether the configuration comes from a class and thus is not something that a normal user would have been able to set or from a claim.\n\n\nPossible enum values:\n - `\"FromClaim\"`\n - `\"FromClass\"`",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+							Enum:        []interface{}{"FromClaim", "FromClass"},
+						},
+					},
+					"requests": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Requests lists the names of requests where the configuration applies. If empty, its applies to all requests.\n\nReferences to subrequests must include the name of the main request and may include the subrequest using the format <main request>[/<subrequest>]. If just the main request is given, the configuration applies to all subrequests.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"opaque": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Opaque provides driver-specific configuration parameters.",
+							Ref:         ref(resourcev1.OpaqueDeviceConfiguration{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"source"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.OpaqueDeviceConfiguration{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceAllocationResult(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DeviceAllocationResult is the result of allocating devices.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"results": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Results lists all allocated devices.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceRequestAllocationResult{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"config": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "This field is a combination of all the claim and class configuration parameters. Drivers can distinguish between those based on a flag.\n\nThis includes configuration parameters for drivers which have no allocated devices in the result because it is up to the drivers which configuration parameters they support. They can silently ignore unknown configuration parameters.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceAllocationConfiguration{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.DeviceAllocationConfiguration{}.OpenAPIModelName(), resourcev1.DeviceRequestAllocationResult{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceAttribute(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DeviceAttribute must have exactly one field set.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"int": {
+						SchemaProps: spec.SchemaProps{
+							Description: "IntValue is a number.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"bool": {
+						SchemaProps: spec.SchemaProps{
+							Description: "BoolValue is a true/false value.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"string": {
+						SchemaProps: spec.SchemaProps{
+							Description: "StringValue is a string. Must not be longer than 64 characters.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"version": {
+						SchemaProps: spec.SchemaProps{
+							Description: "VersionValue is a semantic version according to semver.org spec 2.0.0. Must not be longer than 64 characters.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"ints": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "IntValues is a non-empty list of numbers.\n\nThis is an alpha field and requires enabling the DRAListTypeAttributes feature gate.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: 0,
+										Type:    []string{"integer"},
+										Format:  "int64",
+									},
+								},
+							},
+						},
+					},
+					"bools": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "BoolValues is a non-empty list of true/false values.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: false,
+										Type:    []string{"boolean"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"strings": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "StringValues is a non-empty list of strings. Each string must not be longer than 64 characters.\n\nThis is an alpha field and requires enabling the DRAListTypeAttributes feature gate.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"versions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "VersionValues is a non-empty list of semantic versions according to semver.org spec 2.0.0. Each version string must not be longer than 64 characters.\n\nThis is an alpha field and requires enabling the DRAListTypeAttributes feature gate.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceCapacity(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DeviceCapacity describes a quantity associated with a device.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"value": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Value defines how much of a certain capacity that device has.\n\nThis field reflects the fixed total capacity and does not change. The consumed amount is tracked separately by scheduler and does not affect this value.",
+							Ref:         ref(resource.Quantity{}.OpenAPIModelName()),
+						},
+					},
+					"requestPolicy": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RequestPolicy defines how this DeviceCapacity must be consumed when the device is allowed to be shared by multiple allocations.\n\nThe Device must have allowMultipleAllocations set to true in order to set a requestPolicy.\n\nIf unset, capacity requests are unconstrained: requests can consume any amount of capacity, as long as the total consumed across all allocations does not exceed the device's defined capacity. If request is also unset, default is the full capacity value.",
+							Ref:         ref(resourcev1.CapacityRequestPolicy{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"value"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.CapacityRequestPolicy{}.OpenAPIModelName(), resource.Quantity{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceClaim(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DeviceClaim defines how to request devices with a ResourceClaim.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"requests": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Requests represent individual requests for distinct devices which must all be satisfied. If empty, nothing needs to be allocated.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceRequest{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"constraints": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "These constraints must be satisfied by the set of devices that get allocated for the claim.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceConstraint{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"config": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "This field holds configuration for multiple potential drivers which could satisfy requests in this claim. It is ignored while allocating the claim.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceClaimConfiguration{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.DeviceClaimConfiguration{}.OpenAPIModelName(), resourcev1.DeviceConstraint{}.OpenAPIModelName(), resourcev1.DeviceRequest{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceClaimConfiguration(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DeviceClaimConfiguration is used for configuration parameters in DeviceClaim.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"requests": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Requests lists the names of requests where the configuration applies. If empty, it applies to all requests.\n\nReferences to subrequests must include the name of the main request and may include the subrequest using the format <main request>[/<subrequest>]. If just the main request is given, the configuration applies to all subrequests.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"opaque": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Opaque provides driver-specific configuration parameters.",
+							Ref:         ref(resourcev1.OpaqueDeviceConfiguration{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.OpaqueDeviceConfiguration{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceClass(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DeviceClass is a vendor- or admin-provided resource that contains device configuration and selectors. It can be referenced in the device requests of a claim to apply these presets. Cluster scoped.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Standard object metadata",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Spec defines what can be allocated and how to configure it.\n\nThis is mutable. Consumers have to be prepared for classes changing at any time, either because they get updated or replaced. Claim allocations are done once based on whatever was set in classes at the time of allocation.\n\nChanging the spec automatically increments the metadata.generation number.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(resourcev1.DeviceClassSpec{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"spec"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.DeviceClassSpec{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceClassConfiguration(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DeviceClassConfiguration is used in DeviceClass.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"opaque": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Opaque provides driver-specific configuration parameters.",
+							Ref:         ref(resourcev1.OpaqueDeviceConfiguration{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.OpaqueDeviceConfiguration{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceClassList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DeviceClassList is a collection of classes.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Standard list metadata",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Items is the list of resource classes.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceClass{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.DeviceClass{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceClassSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DeviceClassSpec is used in a [DeviceClass] to define what can be allocated and how to configure it.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"selectors": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Each selector must be satisfied by a device which is claimed via this class.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceSelector{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"config": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Config defines configuration parameters that apply to each device that is claimed via this class. Some classses may potentially be satisfied by multiple drivers, so each instance of a vendor configuration applies to exactly one driver.\n\nThey are passed to the driver, but are not considered while allocating the claim.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceClassConfiguration{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"extendedResourceName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ExtendedResourceName is the extended resource name for the devices of this class. The devices of this class can be used to satisfy a pod's extended resource requests. It has the same format as the name of a pod's extended resource. It should be unique among all the device classes in a cluster. If two device classes have the same name, then the class created later is picked to satisfy a pod's extended resource requests. If two classes are created at the same time, then the name of the class lexicographically sorted first is picked.\n\nThis is a beta field.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.DeviceClassConfiguration{}.OpenAPIModelName(), resourcev1.DeviceSelector{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceConstraint(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DeviceConstraint must have exactly one field set besides Requests.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"requests": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Requests is a list of the one or more requests in this claim which must co-satisfy this constraint. If a request is fulfilled by multiple devices, then all of the devices must satisfy the constraint. If this is not specified, this constraint applies to all requests in this claim.\n\nReferences to subrequests must include the name of the main request and may include the subrequest using the format <main request>[/<subrequest>]. If just the main request is given, the constraint applies to all subrequests.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"matchAttribute": {
+						SchemaProps: spec.SchemaProps{
+							Description: "MatchAttribute requires that all devices in question have this attribute and that its type and value are the same across those devices.\n\nFor example, if you specified \"dra.example.com/numa\" (a hypothetical example!), then only devices in the same NUMA node will be chosen. A device which does not have that attribute will not be chosen. All devices should use a value of the same type for this attribute because that is part of its specification, but if one device doesn't, then it also will not be chosen.\n\nWhen the DRAListTypeAttributes feature gate is enabled, comparison uses set semantics(i.e., element order and duplicates are ignored): list-valued attributes match when the intersection across all devices is non-empty. Scalar values are treated as single-element lists for backward compatibility.\n\nMust include the domain qualifier.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"distinctAttribute": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DistinctAttribute requires that all devices in question have this attribute and that its type and value are unique across those devices.\n\nWhen the DRAListTypeAttributes feature gate is enabled, comparison uses set semantics (i.e., element order and duplicates are ignored): list-valued attributes must be pairwise disjoint across devices. Scalar values are treated as singleton sets for backward compatibility.\n\nThis acts as the inverse of MatchAttribute.\n\nThis constraint is used to avoid allocating multiple requests to the same device by ensuring attribute-level differentiation.\n\nThis is useful for scenarios where resource requests must be fulfilled by separate physical devices. For example, a container requests two network interfaces that must be allocated from two different physical NICs.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceCounterConsumption(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DeviceCounterConsumption defines a set of counters that a device will consume from a CounterSet.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"counterSet": {
+						SchemaProps: spec.SchemaProps{
+							Description: "CounterSet is the name of the set from which the counters defined will be consumed.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"counters": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Counters defines the counters that will be consumed by the device.\n\nThe maximum number of counters is 32.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.Counter{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"counterSet", "counters"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.Counter{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceRequest(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DeviceRequest is a request for devices required for a claim. This is typically a request for a single resource like a device, but can also ask for several identical devices. With FirstAvailable it is also possible to provide a prioritized list of requests.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name can be used to reference this request in a pod.spec.containers[].resources.claims entry and in a constraint of the claim.\n\nReferences using the name in the DeviceRequest will uniquely identify a request when the Exactly field is set. When the FirstAvailable field is set, a reference to the name of the DeviceRequest will match whatever subrequest is chosen by the scheduler.\n\nMust be a DNS label.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"exactly": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Exactly specifies the details for a single request that must be met exactly for the request to be satisfied.\n\nOne of Exactly or FirstAvailable must be set.",
+							Ref:         ref(resourcev1.ExactDeviceRequest{}.OpenAPIModelName()),
+						},
+					},
+					"firstAvailable": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "FirstAvailable contains subrequests, of which exactly one will be selected by the scheduler. It tries to satisfy them in the order in which they are listed here. So if there are two entries in the list, the scheduler will only check the second one if it determines that the first one can not be used.\n\nDRA does not yet implement scoring, so the scheduler will select the first set of devices that satisfies all the requests in the claim. And if the requirements can be satisfied on more than one node, other scheduling features will determine which node is chosen. This means that the set of devices allocated to a claim might not be the optimal set available to the cluster. Scoring will be implemented later.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceSubRequest{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.DeviceSubRequest{}.OpenAPIModelName(), resourcev1.ExactDeviceRequest{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceRequestAllocationResult(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DeviceRequestAllocationResult contains the allocation result for one request.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"request": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Request is the name of the request in the claim which caused this device to be allocated. If it references a subrequest in the firstAvailable list on a DeviceRequest, this field must include both the name of the main request and the subrequest using the format <main request>/<subrequest>.\n\nMultiple devices may have been allocated per request.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"driver": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Driver specifies the name of the DRA driver whose kubelet plugin should be invoked to process the allocation once the claim is needed on a node.\n\nMust be a DNS subdomain and should end with a DNS domain owned by the vendor of the driver. It should use only lower case characters.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"pool": {
+						SchemaProps: spec.SchemaProps{
+							Description: "This name together with the driver name and the device name field identify which device was allocated (`<driver name>/<pool name>/<device name>`).\n\nMust not be longer than 253 characters and may contain one or more DNS sub-domains separated by slashes.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"device": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Device references one device instance via its name in the driver's resource pool. It must be a DNS label.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"adminAccess": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AdminAccess indicates that this device was allocated for administrative access. See the corresponding request field for a definition of mode.\n\nAdmin access is disabled if this field is unset or set to false, otherwise it is enabled.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"tolerations": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "A copy of all tolerations specified in the request at the time when the device got allocated.\n\nThe maximum number of tolerations is 16.\n\nThis is a beta field and requires enabling the DRADeviceTaints feature gate.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceToleration{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"bindingConditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "BindingConditions contains a copy of the BindingConditions from the corresponding ResourceSlice at the time of allocation.\n\nThis is a beta field and requires enabling the DRADeviceBindingConditions and DRAResourceClaimDeviceStatus feature gates.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"bindingFailureConditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "BindingFailureConditions contains a copy of the BindingFailureConditions from the corresponding ResourceSlice at the time of allocation.\n\nThis is a beta field and requires enabling the DRADeviceBindingConditions and DRAResourceClaimDeviceStatus feature gates.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"shareID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ShareID uniquely identifies an individual allocation share of the device, used when the device supports multiple simultaneous allocations. It serves as an additional map key to differentiate concurrent shares of the same device.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"consumedCapacity": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ConsumedCapacity tracks the amount of capacity consumed per device as part of the claim request. The consumed amount may differ from the requested amount: it is rounded up to the nearest valid value based on the device’s requestPolicy if applicable (i.e., may not be less than the requested amount).\n\nThe total consumed capacity for each device must not exceed the DeviceCapacity's Value.\n\nThis field is populated only for devices that allow multiple allocations. All capacity entries are included, even if the consumed amount is zero.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(resource.Quantity{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"request", "driver", "pool", "device"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.DeviceToleration{}.OpenAPIModelName(), resource.Quantity{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceSelector(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DeviceSelector must have exactly one field set.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"cel": {
+						SchemaProps: spec.SchemaProps{
+							Description: "CEL contains a CEL expression for selecting a device.",
+							Ref:         ref(resourcev1.CELDeviceSelector{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.CELDeviceSelector{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceSubRequest(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DeviceSubRequest describes a request for device provided in the claim.spec.devices.requests[].firstAvailable array. Each is typically a request for a single resource like a device, but can also ask for several identical devices.\n\nDeviceSubRequest is similar to ExactDeviceRequest, but doesn't expose the AdminAccess field as that one is only supported when requesting a specific device.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name can be used to reference this subrequest in the list of constraints or the list of configurations for the claim. References must use the format <main request>/<subrequest>.\n\nMust be a DNS label.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"deviceClassName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DeviceClassName references a specific DeviceClass, which can define additional configuration and selectors to be inherited by this subrequest.\n\nA class is required. Which classes are available depends on the cluster.\n\nAdministrators may use this to restrict which devices may get requested by only installing classes with selectors for permitted devices. If users are free to request anything without restrictions, then administrators can create an empty DeviceClass for users to reference.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"selectors": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Selectors define criteria which must be satisfied by a specific device in order for that device to be considered for this subrequest. All selectors must be satisfied for a device to be considered.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceSelector{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"allocationMode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AllocationMode and its related fields define how devices are allocated to satisfy this subrequest. Supported values are:\n\n- ExactCount: This request is for a specific number of devices.\n  This is the default. The exact number is provided in the\n  count field.\n\n- All: This subrequest is for all of the matching devices in a pool.\n  Allocation will fail if some devices are already allocated,\n  unless adminAccess is requested.\n\nIf AllocationMode is not specified, the default mode is ExactCount. If the mode is ExactCount and count is not specified, the default count is one. Any other subrequests must specify this field.\n\nMore modes may get added in the future. Clients must refuse to handle requests with unknown modes.\n\n\nPossible enum values:\n - `\"All\"`\n - `\"ExactCount\"`",
+							Type:        []string{"string"},
+							Format:      "",
+							Enum:        []interface{}{"All", "ExactCount"},
+						},
+					},
+					"count": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Count is used only when the count mode is \"ExactCount\". Must be greater than zero. If AllocationMode is ExactCount and this field is not specified, the default is one.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"tolerations": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "If specified, the request's tolerations.\n\nTolerations for NoSchedule are required to allocate a device which has a taint with that effect. The same applies to NoExecute.\n\nIn addition, should any of the allocated devices get tainted with NoExecute after allocation and that effect is not tolerated, then all pods consuming the ResourceClaim get deleted to evict them. The scheduler will not let new pods reserve the claim while it has these tainted devices. Once all pods are evicted, the claim will get deallocated.\n\nThe maximum number of tolerations is 16.\n\nThis is a beta field and requires enabling the DRADeviceTaints feature gate.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceToleration{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"capacity": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Capacity define resource requirements against each capacity.\n\nIf this field is unset and the device supports multiple allocations, the default value will be applied to each capacity according to requestPolicy. For the capacity that has no requestPolicy, default is the full capacity value.\n\nApplies to each device allocation. If Count > 1, the request fails if there aren't enough devices that meet the requirements. If AllocationMode is set to All, the request fails if there are devices that otherwise match the request, and have this capacity, with a value >= the requested amount, but which cannot be allocated to this request.",
+							Ref:         ref(resourcev1.CapacityRequirements{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"name", "deviceClassName"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.CapacityRequirements{}.OpenAPIModelName(), resourcev1.DeviceSelector{}.OpenAPIModelName(), resourcev1.DeviceToleration{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceTaint(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "The device this taint is attached to has the \"effect\" on any claim which does not tolerate the taint and, through the claim, to pods using the claim.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"key": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The taint key to be applied to a device. Must be a label name.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"value": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The taint value corresponding to the taint key. Must be a label value.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"effect": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The effect of the taint on claims that do not tolerate the taint and through such claims on the pods using them.\n\nValid effects are None, NoSchedule and NoExecute. PreferNoSchedule as used for nodes is not valid here. More effects may get added in the future. Consumers must treat unknown effects like None.\n\n\nPossible enum values:\n - `\"NoExecute\"` Evict any already-running pods that do not tolerate the device taint.\n - `\"NoSchedule\"` Do not allow new pods to schedule which use a tainted device unless they tolerate the taint, but allow all pods submitted to Kubelet without going through the scheduler to start, and allow all already-running pods to continue running.\n - `\"None\"` No effect, the taint is purely informational.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+							Enum:        []interface{}{"NoExecute", "NoSchedule", "None"},
+						},
+					},
+					"timeAdded": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TimeAdded represents the time at which the taint was added or (only in a DeviceTaintRule) the effect was modified. Added automatically during create or update if not set.\n\nIn addition, in a DeviceTaintRule a value provided during an update gets replaced with the current time if the provided value is the same as the old one and the new effect is different. Changing the key and/or value while keeping the effect unchanged is possible and does not update the time stamp because the eviction which uses it is either already started (NoExecute) or not started yet (NoEffect, NoSchedule).",
+							Ref:         ref(metav1.Time{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"key", "effect"},
+			},
+		},
+		Dependencies: []string{
+			metav1.Time{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceToleration(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "The ResourceClaim this DeviceToleration is attached to tolerates any taint that matches the triple <key,value,effect> using the matching operator <operator>.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"key": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Key is the taint key that the toleration applies to. Empty means match all taint keys. If the key is empty, operator must be Exists; this combination means to match all values and all keys. Must be a label name.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"operator": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Operator represents a key's relationship to the value. Valid operators are Exists and Equal. Defaults to Equal. Exists is equivalent to wildcard for value, so that a ResourceClaim can tolerate all taints of a particular category.\n\n\nPossible enum values:\n - `\"Equal\"`\n - `\"Exists\"`",
+							Default:     "Equal",
+							Type:        []string{"string"},
+							Format:      "",
+							Enum:        []interface{}{"Equal", "Exists"},
+						},
+					},
+					"value": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Value is the taint value the toleration matches to. If the operator is Exists, the value must be empty, otherwise just a regular string. Must be a label value.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"effect": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Effect indicates the taint effect to match. Empty means match all taint effects. When specified, allowed values are NoSchedule and NoExecute.\n\n\nPossible enum values:\n - `\"NoExecute\"` Evict any already-running pods that do not tolerate the device taint.\n - `\"NoSchedule\"` Do not allow new pods to schedule which use a tainted device unless they tolerate the taint, but allow all pods submitted to Kubelet without going through the scheduler to start, and allow all already-running pods to continue running.\n - `\"None\"` No effect, the taint is purely informational.",
+							Type:        []string{"string"},
+							Format:      "",
+							Enum:        []interface{}{"NoExecute", "NoSchedule", "None"},
+						},
+					},
+					"tolerationSeconds": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TolerationSeconds represents the period of time the toleration (which must be of effect NoExecute, otherwise this field is ignored) tolerates the taint. By default, it is not set, which means tolerate the taint forever (do not evict). Zero and negative values will be treated as 0 (evict immediately) by the system. If larger than zero, the time when the pod needs to be evicted is calculated as <time when taint was adedd> + <toleration seconds>.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_k8sio_api_resource_v1_ExactDeviceRequest(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ExactDeviceRequest is a request for one or more identical devices.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"deviceClassName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DeviceClassName references a specific DeviceClass, which can define additional configuration and selectors to be inherited by this request.\n\nA DeviceClassName is required.\n\nAdministrators may use this to restrict which devices may get requested by only installing classes with selectors for permitted devices. If users are free to request anything without restrictions, then administrators can create an empty DeviceClass for users to reference.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"selectors": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Selectors define criteria which must be satisfied by a specific device in order for that device to be considered for this request. All selectors must be satisfied for a device to be considered.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceSelector{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"allocationMode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AllocationMode and its related fields define how devices are allocated to satisfy this request. Supported values are:\n\n- ExactCount: This request is for a specific number of devices.\n  This is the default. The exact number is provided in the\n  count field.\n\n- All: This request is for all of the matching devices in a pool.\n  At least one device must exist on the node for the allocation to succeed.\n  Allocation will fail if some devices are already allocated,\n  unless adminAccess is requested.\n\nIf AllocationMode is not specified, the default mode is ExactCount. If the mode is ExactCount and count is not specified, the default count is one. Any other requests must specify this field.\n\nMore modes may get added in the future. Clients must refuse to handle requests with unknown modes.\n\n\nPossible enum values:\n - `\"All\"`\n - `\"ExactCount\"`",
+							Type:        []string{"string"},
+							Format:      "",
+							Enum:        []interface{}{"All", "ExactCount"},
+						},
+					},
+					"count": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Count is used only when the count mode is \"ExactCount\". Must be greater than zero. If AllocationMode is ExactCount and this field is not specified, the default is one.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"adminAccess": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AdminAccess indicates that this is a claim for administrative access to the device(s). Claims with AdminAccess are expected to be used for monitoring or other management services for a device.  They ignore all ordinary claims to the device with respect to access modes and any resource allocations.\n\nAdmin access is disabled if this field is unset or set to false, otherwise it is enabled.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"tolerations": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "If specified, the request's tolerations.\n\nTolerations for NoSchedule are required to allocate a device which has a taint with that effect. The same applies to NoExecute.\n\nIn addition, should any of the allocated devices get tainted with NoExecute after allocation and that effect is not tolerated, then all pods consuming the ResourceClaim get deleted to evict them. The scheduler will not let new pods reserve the claim while it has these tainted devices. Once all pods are evicted, the claim will get deallocated.\n\nThe maximum number of tolerations is 16.\n\nThis is a beta field and requires enabling the DRADeviceTaints feature gate.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceToleration{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"capacity": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Capacity define resource requirements against each capacity.\n\nIf this field is unset and the device supports multiple allocations, the default value will be applied to each capacity according to requestPolicy. For the capacity that has no requestPolicy, default is the full capacity value.\n\nApplies to each device allocation. If Count > 1, the request fails if there aren't enough devices that meet the requirements. If AllocationMode is set to All, the request fails if there are devices that otherwise match the request, and have this capacity, with a value >= the requested amount, but which cannot be allocated to this request.",
+							Ref:         ref(resourcev1.CapacityRequirements{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"deviceClassName"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.CapacityRequirements{}.OpenAPIModelName(), resourcev1.DeviceSelector{}.OpenAPIModelName(), resourcev1.DeviceToleration{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_NetworkDeviceData(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "NetworkDeviceData provides network-related details for the allocated device. This information may be filled by drivers or other components to configure or identify the device within a network context.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"interfaceName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "InterfaceName specifies the name of the network interface associated with the allocated device. This might be the name of a physical or virtual network interface being configured in the pod.\n\nMust not be longer than 256 bytes.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"ips": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "IPs lists the network addresses assigned to the device's network interface. This can include both IPv4 and IPv6 addresses. The IPs are in the CIDR notation, which includes both the address and the associated subnet mask. e.g.: \"192.0.2.5/24\" for IPv4 and \"2001:db8::5/64\" for IPv6.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"hardwareAddress": {
+						SchemaProps: spec.SchemaProps{
+							Description: "HardwareAddress represents the hardware address (e.g. MAC Address) of the device's network interface.\n\nMust not be longer than 128 bytes.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_k8sio_api_resource_v1_NodeAllocatableResourceMapping(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "NodeAllocatableResourceMapping defines the translation between the DRA device/capacity units requested to the corresponding quantity of the node allocatable resource.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"capacityKey": {
+						SchemaProps: spec.SchemaProps{
+							Description: "CapacityKey references a capacity name defined as a key in the `spec.devices[*].capacity` map. When this field is set, the value associated with this key in the `status.allocation.devices.results[*].consumedCapacity` map (for a specific claim allocation) determines the base quantity for the node allocatable resource. If `allocationMultiplier` is also set, it is multiplied with the base quantity. For example, if `spec.devices[*].capacity` has an entry \"dra.example.com/memory\": \"128Gi\", and this field is set to \"dra.example.com/memory\", then for a claim allocation that consumes { \"dra.example.com/memory\": \"4Gi\" } the base quantity for the node allocatable resource mapping will be \"4Gi\", and `allocationMultiplier` should be omitted or set to \"1\".",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"allocationMultiplier": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AllocationMultiplier is used as a multiplier for the allocated device count or the allocated capacity in the claim. It defaults to 1 if not specified. How the field is used also depends on whether `capacityKey` is set. 1.  If `capacityKey` is NOT set: `allocationMultiplier` multiplies the device count allocated to the claim.\n\t   a. A DRA driver representing each CPU core as a device would have\n       {ResourceName: \"cpu\", allocationMultiplier: \"2\"} in its\n       `nodeAllocatableResourceMappings`. If 4 devices are allocated to the claim,\n\t\t  4 * 2 CPUs would be considered as allocated and subtracted from the node's capacity.\n    b. A GPU device that needs additional node memory per GPU allocation would\n       have {ResourceName: \"memory\", allocationMultiplier: \"2Gi\"}.  Each allocated\n\t\t  GPU device instance of this type will account for 2Gi of memory.\n\n2.  If `capacityKey` IS set: `allocationMultiplier` is multiplied by the amount of that capacity consumed.\n\t   The final node allocatable resource amount is `consumedCapacity[capacityKey]` * `allocationMultiplier`.\n    For example, if a Device's capacity \"dra.example.com/cores\" is consumed,\n    and each \"core\" provides 2 \"cpu\"s, the mapping would be:\n    {ResourceName: \"cpu\", capacityKey: \"dra.example.com/cores\", allocationMultiplier: \"2\"}.\n    If a claim consumes 8 \"dra.example.com/cores\", the CPU footprint is 8 * 2 = 16.",
+							Ref:         ref(resource.Quantity{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			resource.Quantity{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_OpaqueDeviceConfiguration(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "OpaqueDeviceConfiguration contains configuration parameters for a driver in a format defined by the driver vendor.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"driver": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Driver is used to determine which kubelet plugin needs to be passed these configuration parameters.\n\nAn admission policy provided by the driver developer could use this to decide whether it needs to validate them.\n\nMust be a DNS subdomain and should end with a DNS domain owned by the vendor of the driver. It should use only lower case characters.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"parameters": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Parameters can contain arbitrary data. It is the responsibility of the driver developer to handle validation and versioning. Typically this includes self-identification and a version (\"kind\" + \"apiVersion\" for Kubernetes types), with conversion between different versions.\n\nThe length of the raw data must be smaller or equal to 10 Ki.",
+							Ref:         ref(runtime.RawExtension{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"driver", "parameters"},
+			},
+		},
+		Dependencies: []string{
+			runtime.RawExtension{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_ResourceClaim(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ResourceClaim describes a request for access to resources in the cluster, for use by workloads. For example, if a workload needs an accelerator device with specific properties, this is how that request is expressed. The status stanza tracks whether this claim has been satisfied and what specific resources have been allocated.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Standard object metadata",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Spec describes what is being requested and how to configure it. The spec is immutable.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(resourcev1.ResourceClaimSpec{}.OpenAPIModelName()),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Status describes whether the claim is ready to use and what has been allocated.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(resourcev1.ResourceClaimStatus{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"spec"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.ResourceClaimSpec{}.OpenAPIModelName(), resourcev1.ResourceClaimStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_ResourceClaimConsumerReference(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ResourceClaimConsumerReference contains enough information to let you locate the consumer of a ResourceClaim. The user must be a resource in the same namespace as the ResourceClaim.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"apiGroup": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIGroup is the group for the resource being referenced. It is empty for the core API. This matches the group in the APIVersion that is used when creating the resources.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"resource": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Resource is the type of resource being referenced, for example \"pods\".",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name is the name of resource being referenced.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"uid": {
+						SchemaProps: spec.SchemaProps{
+							Description: "UID identifies exactly one incarnation of the resource.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"resource", "name", "uid"},
+			},
+		},
+	}
+}
+
+func schema_k8sio_api_resource_v1_ResourceClaimList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ResourceClaimList is a collection of claims.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Standard list metadata",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Items is the list of resource claims.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.ResourceClaim{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.ResourceClaim{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_ResourceClaimSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ResourceClaimSpec defines what is being requested in a ResourceClaim and how to configure it.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"devices": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Devices defines how to request devices.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(resourcev1.DeviceClaim{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.DeviceClaim{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_ResourceClaimStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ResourceClaimStatus tracks whether the resource has been allocated and what the result of that was.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"allocation": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Allocation is set once the claim has been allocated successfully.",
+							Ref:         ref(resourcev1.AllocationResult{}.OpenAPIModelName()),
+						},
+					},
+					"reservedFor": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"uid",
+								},
+								"x-kubernetes-list-type":       "map",
+								"x-kubernetes-patch-merge-key": "uid",
+								"x-kubernetes-patch-strategy":  "merge",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "ReservedFor indicates which entities are currently allowed to use the claim. A Pod which references a ResourceClaim which is not reserved for that Pod will not be started. A claim that is in use or might be in use because it has been reserved must not get deallocated.\n\nIn a cluster with multiple scheduler instances, two pods might get scheduled concurrently by different schedulers. When they reference the same ResourceClaim which already has reached its maximum number of consumers, only one pod can be scheduled.\n\nBoth schedulers try to add their pod to the claim.status.reservedFor field, but only the update that reaches the API server first gets stored. The other one fails with an error and the scheduler which issued it knows that it must put the pod back into the queue, waiting for the ResourceClaim to become usable again.\n\nThere can be at most 256 such reservations. This may get increased in the future, but not reduced.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.ResourceClaimConsumerReference{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"devices": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"driver",
+									"device",
+									"pool",
+									"shareID",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Devices contains the status of each device allocated for this claim, as reported by the driver. This can include driver-specific information. Entries are owned by their respective drivers.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.AllocatedDeviceStatus{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.AllocatedDeviceStatus{}.OpenAPIModelName(), resourcev1.AllocationResult{}.OpenAPIModelName(), resourcev1.ResourceClaimConsumerReference{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_ResourceClaimTemplate(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ResourceClaimTemplate is used to produce ResourceClaim objects.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Standard object metadata",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Describes the ResourceClaim that is to be generated.\n\nThis field is immutable. A ResourceClaim will get created by the control plane for a Pod when needed and then not get updated anymore.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(resourcev1.ResourceClaimTemplateSpec{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"spec"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.ResourceClaimTemplateSpec{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_ResourceClaimTemplateList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ResourceClaimTemplateList is a collection of claim templates.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Standard list metadata",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Items is the list of resource claim templates.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.ResourceClaimTemplate{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.ResourceClaimTemplate{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_ResourceClaimTemplateSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ResourceClaimTemplateSpec contains the metadata and fields for a ResourceClaim.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ObjectMeta may contain labels and annotations that will be copied into the ResourceClaim when creating it. No other fields are allowed and will be rejected during validation.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Spec for the ResourceClaim. The entire content is copied unchanged into the ResourceClaim that gets created from this template. The same fields as in a ResourceClaim are also valid here.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(resourcev1.ResourceClaimSpec{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"spec"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.ResourceClaimSpec{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_ResourcePool(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ResourcePool describes the pool that ResourceSlices belong to.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name is used to identify the pool. For node-local devices, this is often the node name, but this is not required.\n\nIt must not be longer than 253 characters and must consist of one or more DNS sub-domains separated by slashes. This field is immutable.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"generation": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Generation tracks the change in a pool over time. Whenever a driver changes something about one or more of the resources in a pool, it must change the generation in all ResourceSlices which are part of that pool. Consumers of ResourceSlices should only consider resources from the pool with the highest generation number. The generation may be reset by drivers, which should be fine for consumers, assuming that all ResourceSlices in a pool are updated to match or deleted.\n\nCombined with ResourceSliceCount, this mechanism enables consumers to detect pools which are comprised of multiple ResourceSlices and are in an incomplete state.",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"resourceSliceCount": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ResourceSliceCount is the total number of ResourceSlices in the pool at this generation number. Must be greater than zero.\n\nConsumers can use this to check whether they have seen all ResourceSlices belonging to the same pool.",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+				},
+				Required: []string{"name", "generation", "resourceSliceCount"},
+			},
+		},
+	}
+}
+
+func schema_k8sio_api_resource_v1_ResourceSlice(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ResourceSlice represents one or more resources in a pool of similar resources, managed by a common driver. A pool may span more than one ResourceSlice, and exactly how many ResourceSlices comprise a pool is determined by the driver.\n\nAt the moment, the only supported resources are devices with attributes and capacities. Each device in a given pool, regardless of how many ResourceSlices, must have a unique name. The ResourceSlice in which a device gets published may change over time. The unique identifier for a device is the tuple <driver name>, <pool name>, <device name>.\n\nWhenever a driver needs to update a pool, it increments the pool.Spec.Pool.Generation number and updates all ResourceSlices with that new number and new resource definitions. A consumer must only use ResourceSlices with the highest generation number and ignore all others.\n\nWhen allocating all resources in a pool matching certain criteria or when looking for the best solution among several different alternatives, a consumer should check the number of ResourceSlices in a pool (included in each ResourceSlice) to determine whether its view of a pool is complete and if not, should wait until the driver has completed updating the pool.\n\nFor resources that are not local to a node, the node name is not set. Instead, the driver may use a node selector to specify where the devices are available.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Standard object metadata",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Contains the information published by the driver.\n\nChanging the spec automatically increments the metadata.generation number.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(resourcev1.ResourceSliceSpec{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"spec"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.ResourceSliceSpec{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_ResourceSliceList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ResourceSliceList is a collection of ResourceSlices.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Standard list metadata",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Items is the list of resource ResourceSlices.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.ResourceSlice{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.ResourceSlice{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_ResourceSliceSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ResourceSliceSpec contains the information published by the driver in one ResourceSlice.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"driver": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Driver identifies the DRA driver providing the capacity information. A field selector can be used to list only ResourceSlice objects with a certain driver name.\n\nMust be a DNS subdomain and should end with a DNS domain owned by the vendor of the driver. It should use only lower case characters. This field is immutable.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"pool": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Pool describes the pool that this ResourceSlice belongs to.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(resourcev1.ResourcePool{}.OpenAPIModelName()),
+						},
+					},
+					"nodeName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "NodeName identifies the node which provides the resources in this pool. A field selector can be used to list only ResourceSlice objects belonging to a certain node.\n\nThis field can be used to limit access from nodes to ResourceSlices with the same node name. It also indicates to autoscalers that adding new nodes of the same type as some old node might also make new resources available.\n\nExactly one of NodeName, NodeSelector, AllNodes, and PerDeviceNodeSelection must be set. This field is immutable.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"nodeSelector": {
+						SchemaProps: spec.SchemaProps{
+							Description: "NodeSelector defines which nodes have access to the resources in the pool, when that pool is not limited to a single node.\n\nMust use exactly one term.\n\nExactly one of NodeName, NodeSelector, AllNodes, and PerDeviceNodeSelection must be set.",
+							Ref:         ref(corev1.NodeSelector{}.OpenAPIModelName()),
+						},
+					},
+					"allNodes": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AllNodes indicates that all nodes have access to the resources in the pool.\n\nExactly one of NodeName, NodeSelector, AllNodes, and PerDeviceNodeSelection must be set.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"devices": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Devices lists some or all of the devices in this pool.\n\nMust not have more than 128 entries. If any device uses taints or consumes counters the limit is 64.\n\nOnly one of Devices and SharedCounters can be set in a ResourceSlice.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.Device{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"perDeviceNodeSelection": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PerDeviceNodeSelection defines whether the access from nodes to resources in the pool is set on the ResourceSlice level or on each device. If it is set to true, every device defined the ResourceSlice must specify this individually.\n\nExactly one of NodeName, NodeSelector, AllNodes, and PerDeviceNodeSelection must be set.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"sharedCounters": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "SharedCounters defines a list of counter sets, each of which has a name and a list of counters available.\n\nThe names of the counter sets must be unique in the ResourcePool.\n\nOnly one of Devices and SharedCounters can be set in a ResourceSlice.\n\nThe maximum number of counter sets is 8.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.CounterSet{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"driver", "pool"},
+			},
+		},
+		Dependencies: []string{
+			corev1.NodeSelector{}.OpenAPIModelName(), resourcev1.CounterSet{}.OpenAPIModelName(), resourcev1.Device{}.OpenAPIModelName(), resourcev1.ResourcePool{}.OpenAPIModelName()},
+	}
 }
 
 func schema_k8sio_apimachinery_pkg_runtime_RawExtension(ref common.ReferenceCallback) common.OpenAPIDefinition {

@@ -143,10 +143,14 @@ func rootModels(d *definitions, dir string) ([]string, error) {
 			return nil, err
 		}
 		for _, res := range list.Resources {
-			if strings.Contains(res.Name, "/") || !contains(s.Resources, res.Name) {
+			if !contains(s.Resources, res.Name) {
 				continue
 			}
-			for _, suffix := range []string{"", "List"} {
+			suffixes := []string{""}
+			if !strings.Contains(res.Name, "/") {
+				suffixes = append(suffixes, "List")
+			}
+			for _, suffix := range suffixes {
 				name := alias + "." + res.Kind + suffix
 				if _, ok := d.entries[name]; ok {
 					roots = append(roots, name)

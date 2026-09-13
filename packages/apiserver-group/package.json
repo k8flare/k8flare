@@ -1,0 +1,7 @@
+{
+  "name": "@k8flare/apiserver-group",
+  "private": true,
+  "type": "module",
+  "description": "What every per-group apiserver worker shares: the installer for its GroupVersion, node/admin token review, and the bridge entry point.",
+  "scripts": { "vet": "cd ../.. && GOOS=js GOARCH=wasm go vet ./packages/apiserver-group/..." }
+}
