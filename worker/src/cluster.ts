@@ -131,6 +131,7 @@ export class Cluster extends DurableObject<Env> {
         const kv = rowToKV(r);
         server.send(JSON.stringify({ rev: kv.modRevision, type: "created", key: kv.key, value: b64(kv.value), prev: "" }));
       }
+      server.send(JSON.stringify({ rev: this.revision(), type: "snapshot-end", key: "", value: "", prev: "" }));
     } else {
       const rows = sql
         .exec(

@@ -82,6 +82,8 @@ require (
 	k8s.io/apimachinery v0.36.4
 	k8s.io/apiserver v0.36.4
 	k8s.io/client-go v0.36.4
+	k8s.io/klog/v2 v2.140.0
+	k8s.io/kubernetes v1.36.4
 )
 
 require (
@@ -454,7 +456,6 @@ require (
 	k8s.io/dynamic-resource-allocation v0.0.0 // indirect
 	k8s.io/endpointslice v0.0.0 // indirect
 	k8s.io/externaljwt v1.32.0 // indirect
-	k8s.io/klog/v2 v2.140.0 // indirect
 	k8s.io/kms v0.34.5 // indirect
 	k8s.io/kube-aggregator v0.36.0 // indirect
 	k8s.io/kube-controller-manager v0.0.0 // indirect
@@ -463,7 +464,6 @@ require (
 	k8s.io/kube-scheduler v0.0.0 // indirect
 	k8s.io/kubectl v0.36.4 // indirect
 	k8s.io/kubelet v0.36.4 // indirect
-	k8s.io/kubernetes v1.36.4 // indirect
 	k8s.io/metrics v0.0.0 // indirect
 	k8s.io/mount-utils v0.35.0 // indirect
 	k8s.io/pod-security-admission v0.0.0 // indirect

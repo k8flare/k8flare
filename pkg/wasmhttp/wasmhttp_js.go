@@ -82,7 +82,10 @@ func yieldToEventLoop() {
 // responseWriter buffers until the handler flushes; from the first Flush
 // on, the response is delivered early with a ReadableStream body that the
 // rest of the handler's writes are enqueued into. That is what lets an
-// upstream watch handler stream from a resident instance.
+// upstream watch handler stream from a resident instance. A streamed
+// response also declares Content-Encoding: identity, because the runtime
+// otherwise gzips compressible content types for clients that accept it
+// and holds the whole stream back until it closes.
 type responseWriter struct {
 	header     http.Header
 	status     int
@@ -140,6 +143,9 @@ func (r *responseWriter) Flush() {
 	src.Set("cancel", cancelFn)
 	stream := js.Global().Get("ReadableStream").New(src)
 	r.streaming = true
+	if r.header.Get("Content-Encoding") == "" {
+		r.header.Set("Content-Encoding", "identity")
+	}
 	if r.buf.Len() > 0 {
 		r.controller.Call("enqueue", toUint8Array(r.buf.Bytes()))
 		r.buf.Reset()
@@ -243,6 +249,17 @@ func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if binding.IsUndefined() || binding.IsNull() {
 		return nil, fmt.Errorf("wasmhttp: binding %q is not in env", t.Name)
 	}
+	return fetchVia(binding, req)
+}
+
+// FetchTransport sends requests through the global fetch.
+type FetchTransport struct{}
+
+func (FetchTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fetchVia(js.Global(), req)
+}
+
+func fetchVia(binding js.Value, req *http.Request) (*http.Response, error) {
 	opts := js.Global().Get("Object").New()
 	opts.Set("method", req.Method)
 	opts.Set("headers", headerToPairs(req.Header))

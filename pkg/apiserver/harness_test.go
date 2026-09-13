@@ -46,7 +46,7 @@ func startDevURL(t *testing.T) (string, *kubernetes.Clientset) {
 	cmd := exec.Command("pnpm", "exec", "wrangler", "dev", "--local",
 		"--persist-to", state, "--port", fmt.Sprint(port), "--inspector-port", "0")
 	cmd.Dir = filepath.Join(root, "worker")
-	cmd.Env = append(os.Environ(), "ADMIN_TOKEN="+devToken, "JOIN_TOKEN="+joinToken)
+	cmd.Env = append(devEnv(), "ADMIN_TOKEN="+devToken, "JOIN_TOKEN="+joinToken)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	logFile, err := os.Create(filepath.Join(state, "wrangler.log"))
 	if err != nil {
@@ -106,3 +106,17 @@ func ctx(t *testing.T) context.Context {
 func contains(s, sub string) bool { return strings.Contains(s, sub) }
 
 func mustIP(s string) net.IP { return net.ParseIP(s) }
+
+// devEnv drops the variables that put wrangler dev into its AI-agent
+// mode, whose observability capture buffers application/json streaming
+// responses until they close and so stalls every JSON watch.
+func devEnv() []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "CLAUDECODE=") || strings.HasPrefix(kv, "AI_AGENT=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return env
+}

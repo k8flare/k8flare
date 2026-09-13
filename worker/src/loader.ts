@@ -72,7 +72,13 @@ export async function apiserverFetch(env: Env, request: Request): Promise<Respon
       "wasm_exec.js": await (await asset(env, "wasm_exec.js")).text(),
       "app.wasm": { wasm: (await assemble(env, m)).buffer as ArrayBuffer },
     },
-    env: { STORAGE: env.STORAGE, ADMIN_TOKEN: env.ADMIN_TOKEN, JOIN_TOKEN: env.JOIN_TOKEN },
+    env: {
+      STORAGE: env.STORAGE,
+      ADMIN_TOKEN: env.ADMIN_TOKEN,
+      JOIN_TOKEN: env.JOIN_TOKEN,
+      KUBELET_SCHEME: env.KUBELET_SCHEME,
+      KUBELET_PORT: env.KUBELET_PORT,
+    },
   }));
   return worker.getEntrypoint().fetch(request);
 }

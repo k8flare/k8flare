@@ -1,2 +1,4 @@
 ADMIN_TOKEN=change-me
 JOIN_TOKEN=change-me-too
+KUBELET_SCHEME=https
+KUBELET_PORT=10250

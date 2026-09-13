@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/conversion"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"
@@ -408,7 +409,8 @@ func (s *KineStorage) Watch(ctx context.Context, key string, opts storage.ListOp
 		return nil, err
 	}
 	q.Set("since", strconv.FormatUint(rv, 10))
-	if rv == 0 {
+	initial := rv == 0 || (opts.SendInitialEvents != nil && *opts.SendInitialEvents)
+	if initial {
 		q.Set("initial", "1")
 	}
 	ctx, cancel := context.WithCancel(ctx)
@@ -433,6 +435,24 @@ func (s *KineStorage) Watch(ctx context.Context, key string, opts storage.ListOp
 				}
 				var ev kineEvent
 				if err := json.Unmarshal(msg, &ev); err != nil {
+					continue
+				}
+				if ev.Type == "snapshot-end" {
+					if opts.SendInitialEvents == nil || !*opts.SendInitialEvents {
+						continue
+					}
+					bookmark := s.newFunc()
+					if m, err := meta.Accessor(bookmark); err == nil {
+						m.SetAnnotations(map[string]string{metav1.InitialEventsAnnotationKey: "true"})
+					}
+					if err := s.versioner.UpdateObject(bookmark, uint64(ev.Rev)); err != nil {
+						continue
+					}
+					select {
+					case events <- watch.Event{Type: watch.Bookmark, Object: bookmark}:
+					case <-w.StopChan():
+						return
+					}
 					continue
 				}
 				out, ok := s.watchEvent(ev, opts.Predicate)

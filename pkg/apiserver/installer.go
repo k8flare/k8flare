@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/emicklei/go-restful/v3"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -14,6 +15,7 @@ import (
 	"k8s.io/apiserver/pkg/admission"
 	"k8s.io/apiserver/pkg/endpoints"
 	"k8s.io/apiserver/pkg/endpoints/discovery"
+	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
 	"k8s.io/apiserver/pkg/registry/rest"
 	"k8s.io/client-go/kubernetes/scheme"
 )
@@ -27,16 +29,18 @@ func apiRoot(gv schema.GroupVersion) string {
 
 // installAPI builds every route with k8s.io/apiserver's own API installer
 // and the discovery documents kubectl and client-go read.
-func installAPI(mux *http.ServeMux, kine *KineClient, authenticators []Authenticator) error {
+func installAPI(mux *http.ServeMux, kine *KineClient, authenticators []Authenticator, kubelet KubeletProxy) error {
 	byGV := map[schema.GroupVersion]map[string]rest.Storage{}
 	resources := map[schema.GroupVersion][]metav1.APIResource{}
 	var order []schema.GroupVersion
+	stores := map[string]*genericregistry.Store{}
 	for _, k := range Kinds {
 		if byGV[k.GV] == nil {
 			byGV[k.GV] = map[string]rest.Storage{}
 			order = append(order, k.GV)
 		}
 		store := newStore(kine, k)
+		stores[k.Resource] = store
 		byGV[k.GV][k.Resource] = store
 		resources[k.GV] = append(resources[k.GV], metav1.APIResource{
 			Name: k.Resource, SingularName: k.Singular, Namespaced: k.Namespaced, Kind: k.Kind, ShortNames: k.ShortNames,
@@ -50,6 +54,9 @@ func installAPI(mux *http.ServeMux, kine *KineClient, authenticators []Authentic
 			})
 		}
 	}
+	core := corev1.SchemeGroupVersion
+	byGV[core]["pods/log"] = &logREST{pods: stores["pods"], nodes: stores["nodes"], proxy: kubelet}
+	resources[core] = append(resources[core], metav1.APIResource{Name: "pods/log", Namespaced: true, Kind: "Pod", Verbs: metav1.Verbs{"get"}})
 	for _, rk := range reviewKinds(authenticators) {
 		if byGV[rk.gv] == nil {
 			byGV[rk.gv] = map[string]rest.Storage{}

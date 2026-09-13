@@ -10,9 +10,13 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -53,6 +57,7 @@ func main() {
 	token := flag.String("token", os.Getenv("K3S_TOKEN"), "cluster join token")
 	nodeName := flag.String("node-name", "", "node name (default: hostname)")
 	dataDir := flag.String("data-dir", "/var/lib/rancher/k3s", "k3s data directory")
+	kubeletPlainPort := flag.Int("kubelet-plain-port", 0, "serve the kubelet API over plain HTTP on this port for a control plane that cannot verify the kubelet's certificate (0 = off)")
 	flag.Parse()
 	if *server == "" || *token == "" {
 		log.Fatal("--server and --token are required")
@@ -74,6 +79,9 @@ func main() {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
+	if *kubeletPlainPort > 0 {
+		go serveKubeletPlain(*kubeletPlainPort)
+	}
 	cfg := cmds.Agent{
 		Token:               *token,
 		ServerURL:           *server,
@@ -93,6 +101,19 @@ func main() {
 	}
 	<-ctx.Done()
 	wg.Wait()
+}
+
+// serveKubeletPlain forwards plain HTTP to the kubelet's HTTPS API on
+// 10250. Authentication still happens at the kubelet, which validates the
+// forwarded bearer token against the control plane.
+func serveKubeletPlain(port int) {
+	proxy := httputil.NewSingleHostReverseProxy(&url.URL{Scheme: "https", Host: "127.0.0.1:10250"})
+	proxy.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+	proxy.FlushInterval = -1
+	log.Printf("kubelet plain HTTP proxy on :%d", port)
+	if err := http.ListenAndServe(fmt.Sprintf(":%d", port), proxy); err != nil {
+		log.Printf("kubelet plain HTTP proxy: %v", err)
+	}
 }
 
 // useBundledBinaries puts the containerd, runc and CNI binaries the k3s

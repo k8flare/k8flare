@@ -51,6 +51,7 @@ var Kinds = []Kind{
 	{discoveryv1.SchemeGroupVersion, "endpointslices", "endpointslice", "EndpointSlice", true, false, nil, func() runtime.Object { return &discoveryv1.EndpointSlice{} }, func() runtime.Object { return &discoveryv1.EndpointSliceList{} }},
 	{nodev1.SchemeGroupVersion, "runtimeclasses", "runtimeclass", "RuntimeClass", false, false, nil, func() runtime.Object { return &nodev1.RuntimeClass{} }, func() runtime.Object { return &nodev1.RuntimeClassList{} }},
 	{storagev1.SchemeGroupVersion, "csidrivers", "csidriver", "CSIDriver", false, false, nil, func() runtime.Object { return &storagev1.CSIDriver{} }, func() runtime.Object { return &storagev1.CSIDriverList{} }},
+	{storagev1.SchemeGroupVersion, "csinodes", "csinode", "CSINode", false, false, nil, func() runtime.Object { return &storagev1.CSINode{} }, func() runtime.Object { return &storagev1.CSINodeList{} }},
 }
 
 type strategy struct {
@@ -109,29 +110,6 @@ func (podStrategy) CheckGracefulDelete(_ context.Context, obj runtime.Object, op
 	}
 	options.GracePeriodSeconds = &period
 	return true
-}
-
-func selectableFields(obj runtime.Object) fields.Set {
-	m, err := meta.Accessor(obj)
-	if err != nil {
-		return nil
-	}
-	f := fields.Set{"metadata.name": m.GetName(), "metadata.namespace": m.GetNamespace()}
-	switch o := obj.(type) {
-	case *corev1.Pod:
-		f["spec.nodeName"] = o.Spec.NodeName
-		f["status.phase"] = string(o.Status.Phase)
-	case *corev1.Service:
-		f["spec.clusterIP"] = o.Spec.ClusterIP
-	case *corev1.Event:
-		f["involvedObject.name"] = o.InvolvedObject.Name
-		f["involvedObject.namespace"] = o.InvolvedObject.Namespace
-		f["involvedObject.kind"] = o.InvolvedObject.Kind
-		f["involvedObject.uid"] = string(o.InvolvedObject.UID)
-		f["reason"] = o.Reason
-		f["type"] = o.Type
-	}
-	return f
 }
 
 func newStore(kine *KineClient, k Kind) *genericregistry.Store {

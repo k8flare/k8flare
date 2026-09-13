@@ -14,6 +14,8 @@ type Config struct {
 	AdminToken string
 	// JoinToken is what a k3s agent presents to the supervisor endpoints.
 	JoinToken string
+	// Kubelet is how pods/log reaches a node.
+	Kubelet KubeletProxy
 }
 
 var versionInfo = map[string]string{
@@ -26,7 +28,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	v := newVault(kine)
 	authenticators := []Authenticator{adminAuthenticator(cfg.AdminToken), nodeAuthenticator(v)}
 	mux := http.NewServeMux()
-	if err := installAPI(mux, kine, authenticators); err != nil {
+	if err := installAPI(mux, kine, authenticators, cfg.Kubelet); err != nil {
 		return nil, err
 	}
 	for _, p := range []string{"/healthz", "/readyz", "/livez"} {
