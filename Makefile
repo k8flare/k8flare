@@ -5,7 +5,7 @@ ASSETS := packages/control-plane-worker/assets/wasm
 BUILD := .build/wasm
 CAP := 67108864
 
-.PHONY: mirrors wasm gen agent dev devtls check vet test clean
+.PHONY: mirrors wasm gen agent dev devtls kubeconfig check vet test clean
 
 mirrors:
 	cd scripts && go run ./mirror
@@ -43,6 +43,14 @@ dev:
 
 devtls:
 	cd scripts && go run ./devtls -listen :6443 -upstream http://127.0.0.1:18787 -dir ../.build/devtls
+
+## kubeconfig: write .build/kubeconfig.yaml for the dev stack (make dev + make devtls).
+## The admin token comes from .dev.vars; the CA is the one devtls generated.
+kubeconfig:
+	@test -f .build/devtls/ca.crt || { echo "run make devtls first (it generates .build/devtls/ca.crt)" >&2; exit 1; }
+	@token=$$(sed -n 's/^ADMIN_TOKEN=//p' .dev.vars); \
+	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: k8flare-dev\n  cluster:\n    server: https://localhost:6443\n    certificate-authority: %s/.build/devtls/ca.crt\nusers:\n- name: admin\n  user:\n    token: %s\ncontexts:\n- name: k8flare-dev\n  context:\n    cluster: k8flare-dev\n    user: admin\ncurrent-context: k8flare-dev\n' "$(CURDIR)" "$$token" > .build/kubeconfig.yaml
+	@echo "export KUBECONFIG=$(CURDIR)/.build/kubeconfig.yaml"
 
 check:
 	pnpm exec wrangler types >/dev/null && pnpm exec tsc --noEmit

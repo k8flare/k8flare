@@ -61,8 +61,14 @@ through a Worker fetch that cannot verify the kubelet's certificate.
 
 ### kubectl
 
+With `make dev` and `make devtls` running:
+
 ```
-kubectl --server https://localhost:6443 --certificate-authority .build/devtls/ca.crt --token <ADMIN_TOKEN> get nodes
+make kubeconfig                                  # writes .build/kubeconfig.yaml from .dev.vars and the devtls CA
+export KUBECONFIG=$PWD/.build/kubeconfig.yaml
+kubectl get nodes
+kubectl apply -f pod.yaml --validate=false       # no OpenAPI is served yet, hence --validate=false
+kubectl logs <pod>
 ```
 
 Pods need `spec.nodeName`: there is no scheduler yet. Services, cluster
