@@ -20,7 +20,8 @@ root, one flat `packages/` directory, tooling under `scripts/`, plans under
 - `packages/worker-bridge` — the bridge between a Go `http.Handler` and the
   Worker Loader bootstrap, with streaming responses and WebSocket clients.
 - `packages/control-plane-worker` — the Worker: routing and the Loader
-  bootstrap. `packages/cluster-store` — the Cluster Durable Object.
+  bootstrap, which hands the Cluster Durable Object's stub to the dynamic
+  worker. `packages/cluster-store` — the Cluster Durable Object.
 - `packages/agent` — the k3s agent, embedded unchanged but for one hook
   that lets it write bearer-token kubeconfigs (TLS terminates at the edge,
   so client certificates never reach the control plane).

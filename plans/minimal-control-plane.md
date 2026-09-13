@@ -48,7 +48,9 @@ its log, and removing it again.
   CSR signing, node passwords, CAs in the DO under `/vault`.
 - `packages/worker-bridge`: the Go↔Loader bridge (streamed responses, WebSocket client).
 - `packages/cluster-store`: the Cluster DO; `packages/control-plane-worker`:
-  bootstrap, chunk assembly, routing and the parked tunnel.
+  bootstrap, chunk assembly, routing and the parked tunnel. The DO stub is
+  handed to the dynamic worker's env directly; the old finding that a
+  Loader env cannot carry a DO covered namespaces, not stubs.
 - `scripts/mirror/main.go`: the overlays (apiserver storage factory, tracing
   exporter, CEL parser, installer hub version, k3s kubeconfig hook).
 

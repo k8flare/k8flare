@@ -81,7 +81,7 @@
 <main>
   <p class="meta">feat/minimal-rewrite · 2026-09-13 · k3s-io/kubernetes v1.36.4-k3s1 · Go 1.26.7</p>
   <h1>k8flare Architecture</h1>
-  <p class="lede">kubectl と k3s agent からの経路、各パッケージの役割、ビルド後のサイズ。削れる箇所は赤の破線で示す。</p>
+  <p class="lede">kubectl と k3s agent はどちらも CP にだけ話す(kubectl → CP ← agent)。CP から node へ向かうのは pods/log の kubelet 呼び出しだけ。各パッケージの役割とビルド後のサイズも載せる。</p>
   <div class="legend"><span class="go">Go(WASM / linux)</span><span class="ts">TypeScript(Worker)</span><span class="do">Durable Object</span><span class="cut">削除候補</span></div>
 
   <h2>1. kubectl / kubelet からリクエストが辿る経路</h2>
@@ -94,26 +94,24 @@
     <rect class="lanebg" x="0" y="290" width="980" height="90" rx="4"/><text class="lane" x="10" y="308">Loader dynamic worker (apiserver, resident Go)</text>
     <rect class="lanebg" x="0" y="400" width="980" height="60" rx="4"/><text class="lane" x="10" y="418">Durable Object</text>
     <!-- client boxes -->
-    <rect class="box" x="30" y="70" width="150" height="46" rx="4"/><text class="lbl" x="44" y="90">kubectl</text><text class="sub" x="44" y="106">Bearer admin token</text>
-    <rect class="box" x="210" y="70" width="170" height="46" rx="4"/><text class="lbl" x="224" y="90">k3s agent / kubelet</text><text class="sub" x="224" y="106">node:&lt;name&gt;:&lt;password&gt;</text>
-    <rect class="box" x="420" y="70" width="190" height="46" rx="4"/><text class="lbl" x="434" y="90">TLS 終端</text><text class="sub" x="434" y="106">dev: scripts/devtls · prod: edge</text>
-    <path class="arrow" d="M180 93 H210"/><path class="arrow" d="M380 93 H420"/>
+    <rect class="box" x="30" y="70" width="170" height="46" rx="4"/><text class="lbl" x="44" y="90">kubectl(管理者)</text><text class="sub" x="44" y="106">Bearer admin token</text>
+    <rect class="box" x="420" y="70" width="190" height="46" rx="4"/><text class="lbl" x="434" y="90">TLS 終端 → CP</text><text class="sub" x="434" y="106">dev: scripts/devtls · prod: edge</text>
+    <rect class="box" x="760" y="70" width="190" height="46" rx="4"/><text class="lbl" x="774" y="90">k3s agent / kubelet(node)</text><text class="sub" x="774" y="106">node:&lt;name&gt;:&lt;password&gt;</text>
+    <path class="arrow" d="M200 93 H420"/><path class="arrow" d="M760 93 H610"/>
+    <text class="sub" x="230" y="86">API / watch</text><text class="sub" x="640" y="86">join · API · watch · tunnel</text>
+    <path class="arrow alt" d="M900 116 V150"/><text class="mono" x="906" y="140">CP → kubelet: pods/log のみ</text>
     <!-- worker boxes -->
     <rect class="box ts" x="420" y="180" width="190" height="70" rx="4"/><text class="lbl" x="434" y="200">index.ts</text><text class="sub" x="434" y="216">/v1-k3s/connect → accept &amp; park</text><text class="sub" x="434" y="232">それ以外 → apiserverFetch()</text>
     <path class="arrow" d="M515 116 V180"/>
     <rect class="box ts" x="650" y="180" width="200" height="70" rx="4"/><text class="lbl" x="664" y="200">loader.ts</text><text class="sub" x="664" y="216">ASSETS の 3 チャンクを結合</text><text class="sub" x="664" y="232">LOADER.get(apiserver@sha256)</text>
     <path class="arrow" d="M610 215 H650"/>
-    <rect class="box cut" x="30" y="180" width="200" height="70" rx="4"/><text class="lbl" x="44" y="200">ClusterLoopback</text><text class="sub" x="44" y="216">WorkerEntrypoint(自己 service binding)</text><text class="sub" x="44" y="232">STORAGE → CLUSTER.get("default")</text>
     <!-- DW boxes -->
     <rect class="box go" x="420" y="320" width="430" height="48" rx="4"/><text class="lbl" x="434" y="340">bridge.Serve → apiserver.NewHandler</text><text class="sub" x="434" y="356">installer(k8s.io/apiserver)→ genericregistry.Store → kine.Storage · supervisor · auth</text>
     <path class="arrow" d="M750 250 V320"/><text class="mono" x="758" y="290">handleRequest(req, env)</text>
     <!-- DO -->
     <rect class="box do" x="420" y="425" width="430" height="30" rx="4"/><text class="lbl" x="434" y="445">Cluster DO(cluster-store)</text><text class="mono" x="640" y="445">/kv · /list · /revision · /watch(WebSocket)</text>
-    <!-- storage path via loopback -->
-    <path class="arrow cut" d="M430 344 H130 V250"/><text class="note" x="140" y="300">env.STORAGE.fetch()</text><text class="sub" x="140" y="316">DW には DO namespace を渡せない(S2)</text>
-    <path class="arrow cut" d="M130 250 V440 H420"/>
-    <!-- alternative -->
-    <path class="arrow alt" d="M860 344 Q930 344 930 440 Q930 456 900 456 L850 456"/><text class="mono" x="870" y="395">案: env に DO stub を</text><text class="mono" x="870" y="409">直接渡す(要検証)</text>
+    <!-- storage path: the DO stub handed to the dynamic worker's env -->
+    <path class="arrow" d="M635 368 V425"/><text class="mono" x="645" y="392">env.STORAGE.fetch()</text><text class="sub" x="645" y="408">STORAGE = CLUSTER.get("default") の stub(loader.ts が env に渡す)</text>
   </svg>
   </div>
   <ol class="path">
@@ -121,18 +119,17 @@
     <li><strong>シェル Worker</strong> は 2 分岐のみ。k3s の remotedialer 用 <code>/v1-k3s/connect</code> は WebSocket を受けて放置、残りは全て Loader の apiserver へ。</li>
     <li><strong>Loader</strong> は sha256 をキーに常駐 Go インスタンスを 1 つ持ち、ASSETS から 25 MiB × 3 のチャンクを結合して起動する。</li>
     <li><strong>Go apiserver</strong> は upstream の API installer がルーティングし、<code>genericregistry.Store</code> が CRUD を、<code>kine.Storage</code> が DO への読み書きを担う。watch は DO への WebSocket をそのままストリーム応答にする。</li>
-    <li><strong>DO への経路</strong>が唯一の遠回り。dynamic worker の env には Fetcher しか渡せない(旧リポジトリ S2 で実測)ため、自分自身への service binding <code>STORAGE</code> の named entrypoint <code>ClusterLoopback</code> を経由して <code>CLUSTER.get("default")</code> に届く。</li>
+    <li><strong>DO への経路。</strong>loader.ts が factory で <code>CLUSTER.get("default")</code> の stub を dynamic worker の env に <code>STORAGE</code> として渡し、Go は <code>bridge.BindingTransport{Name: "STORAGE"}</code> でそれを fetch する。旧リポジトリの S2 は DO <em>namespace</em> が渡せないことしか示しておらず、stub は渡せた(2026-09-13 実測、wrangler dev)。</li>
   </ol>
 
-  <h2>2. ClusterLoopback は外せるか</h2>
-  <p>外せる見込みはある。S2 で確認されたのは「DO <em>namespace</em> は Loader の env に渡せない」で、<em>stub</em>(<code>env.CLUSTER.get(id)</code> の戻り値)は試されていない。stub は <code>fetch()</code> を持つ Fetcher なので、loader.ts の factory で <code>STORAGE: env.CLUSTER.get(env.CLUSTER.idFromName("default"))</code> と渡せれば、Go 側の <code>bridge.BindingTransport{Name: "STORAGE"}</code> はそのまま使え、<code>services</code> binding・<code>ClusterLoopback</code> クラス・<code>WorkerEntrypoint</code> import が消える。</p>
-  <p><span class="verify">検証手順</span> loader.ts の env を stub に替えて <code>make test</code>。失敗するなら理由は Loader の env 検証(Fetcher 以外を拒否)か、DW isolate の寿命と stub の request-scoped I/O の不一致(旧 S24 の "Cannot perform I/O on behalf of a different request")のどちらか。後者なら factory 時に作った stub は最初のリクエストにしか使えず、案は成立しない。</p>
+  <h2>2. ClusterLoopback は外した</h2>
+  <p>自分自身への service binding と <code>WorkerEntrypoint</code> は削除。dynamic worker の env に渡した DO stub は、isolate の寿命にわたる別々のリクエスト(CRUD、5 分単位の watch WebSocket、agent の join)からそのまま使えた。<span class="verify">未検証</span> 本番 workerd での同挙動。dev と本番で Loader の env 検証が異なる場合はここが最初に壊れる。</p>
 
   <h2>3. パッケージの役割</h2>
   <div class="tablewrap"><table>
     <thead><tr><th>パッケージ</th><th>役割</th><th>依存先</th><th class="num">手書き行</th><th class="num">生成</th><th class="num">テスト</th></tr></thead>
     <tbody>
-      <tr><td class="pkg"><span class="tag ts">TS</span>control-plane-worker</td><td>唯一の Worker。ルーティング、Loader bootstrap(JS 文字列)、チャンク結合、トンネルのスタブ、ClusterLoopback。</td><td>cluster-store, LOADER, ASSETS</td><td class="num">118</td><td class="num">–</td><td class="num">–</td></tr>
+      <tr><td class="pkg"><span class="tag ts">TS</span>control-plane-worker</td><td>唯一の Worker。ルーティング、Loader bootstrap(JS 文字列)、チャンク結合、トンネルのスタブ。DO stub を Loader の env に渡す。</td><td>cluster-store, LOADER, ASSETS</td><td class="num">104</td><td class="num">–</td><td class="num">–</td></tr>
       <tr><td class="pkg"><span class="tag do">DO</span>cluster-store</td><td>Cluster Durable Object。kine 風の revision 付き KV ログ(SQLite)と、hibernatable WebSocket への watch 配信。</td><td>–</td><td class="num">231</td><td class="num">–</td><td class="num">–</td></tr>
       <tr><td class="pkg"><span class="tag go">Go</span>apiserver</td><td>エントリ。installer の配線、認証(bearertoken + union)、review 系リソース、既定 namespace、<code>cmd/apiserver-wasm</code>。</td><td>registry, kine, supervisor, worker-bridge</td><td class="num">419</td><td class="num">–</td><td class="num">644</td></tr>
       <tr><td class="pkg"><span class="tag go">Go</span>apiserver-registry</td><td>提供リソースごとの <code>genericregistry.Store</code>。表は upstream の discovery 文書から生成。pods の graceful delete、nodes の PodCIDR、status、pods/log。</td><td>kine, k8s.io/apiserver, k8s.io/kubernetes/pkg/apis/*/v1</td><td class="num">465</td><td class="num">47</td><td class="num">–</td></tr>
@@ -157,7 +154,6 @@
 
   <h2>5. どこを削れるか</h2>
   <div class="cuts">
-    <div class="cutcard"><h3>ClusterLoopback(control-plane-worker)</h3><p class="sz">TS 12 行 + wrangler の services binding</p><p>DO stub を Loader env に直接渡せば不要。上記の検証で決まる。</p></div>
     <div class="cutcard"><h3>wasm_exec.js のパッチ(scripts/wasmpack exec)</h3><p class="sz">Go 側 bridge の <code>context</code> 依存 + JS Proxy</p><p>常駐インスタンスは env を毎 dispatch で受け取るので、起動時の context は不要。bootstrap が <code>globalThis.k8flare = {binding, ready}</code> を置けば upstream の wasm_exec.js を無改変で使え、<code>wasmpack exec</code> と Proxy が消える。<span class="verify">実装 1 時間・低リスク</span></p></div>
     <div class="cutcard"><h3>pods/log の plain-HTTP 経路(agent の --kubelet-plain-port)</h3><p class="sz">agent 15 行 + KUBELET_SCHEME/PORT</p><p>dev 専用の回り道。k3s トンネル(/v1-k3s/connect)のサーバー側を Go で持てば本来の経路になるが、remotedialer 実装が要る。今は削らず、経路を 1 本にする側で解消。</p></div>
     <div class="cutcard"><h3>scripts/devtls</h3><p class="sz">Go 150 行、dev 専用</p><p><code>wrangler dev --local-protocol https</code> で置き換えられる可能性。CA を VM に配る手順は残る。未検証。</p></div>

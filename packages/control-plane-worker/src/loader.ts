@@ -73,7 +73,7 @@ export async function apiserverFetch(env: Env, request: Request): Promise<Respon
       "app.wasm": { wasm: (await assemble(env, m)).buffer as ArrayBuffer },
     },
     env: {
-      STORAGE: env.STORAGE,
+      STORAGE: env.CLUSTER.get(env.CLUSTER.idFromName("default")),
       ADMIN_TOKEN: env.ADMIN_TOKEN,
       JOIN_TOKEN: env.JOIN_TOKEN,
       KUBELET_SCHEME: env.KUBELET_SCHEME,

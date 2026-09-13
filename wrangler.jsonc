@@ -13,6 +13,5 @@
     "bindings": [{ "name": "CLUSTER", "class_name": "Cluster" }],
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Cluster"] }],
-  "services": [{ "binding": "STORAGE", "service": "k8flare", "entrypoint": "ClusterLoopback" }],
   "observability": { "enabled": true },
 }
