@@ -8674,3 +8674,22 @@ server-side apply も `BeginCreate` に入る経路なので実測した: 成功
 (`serviceNeedsClusterIP` が false → 確保もしない)。upstream の `ipallocator` は
 予約する。つまり明示指定したアドレスが、後から自動割当の Service に配られ得る。
 この監査中に見つけた 3 件目で、このブランチの守備範囲ではない。
+
+#### 掃除を削除した後のゲート(`5c64e3e`、host バリアント、Pod が動くノード)
+
+| | 結果 |
+|---|---|
+| required GC focus | **7/7 × 3**(147s / 131s / 143s)。全 3 回でホストプロセス 2 を確認 |
+| baseline focus | **11/11**(354s) |
+| `make test` 4 レーン | apiserver 68.8s / kcm 331.1s / clusterop 75.9s / cfruntime すべて緑 |
+| apiserver チャンク | 48,783,606 bytes(cap まで 17,895KiB) |
+
+掃除が「走っていた 1 日」と「削除した後」で required focus の結果は変わらない。
+S69 の訂正その 3 で書いたとおり、拒否が本体である。
+
+**後片付けの注意(実害を出した)**: この計測の 1 回目で `lsof -ti :8443` を使って
+後始末をした。これは**その port に接続しているクライアント**にもマッチするので、
+OrbStack のネットワークヘルパーを掴んで `kill -9` し、マシンの Docker エンジンごと
+8 分間落とした(他プロジェクトのコンテナを巻き込んだ)。`docs/development.md` の
+該当節に書き足した。2 回目以降は `pgrep -f 'sched-now|cm-now'` で PID を取って
+kill し、Docker の生存も確認している。
