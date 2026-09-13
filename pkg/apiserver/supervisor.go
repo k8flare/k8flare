@@ -79,7 +79,7 @@ func (s *supervisor) authorized(r *http.Request) bool {
 	if !ok {
 		_, token, ok = r.BasicAuth()
 	}
-	return ok && subtle.ConstantTimeCompare([]byte(token), []byte(s.joinToken)) == 1
+	return ok && token != "" && s.joinToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.joinToken)) == 1
 }
 
 type nodeIdentity struct {
@@ -96,7 +96,7 @@ func (s *supervisor) nodeAuth(w http.ResponseWriter, r *http.Request) (*nodeIden
 		http.Error(w, "k3s-Node-Name and k3s-Node-Password headers are required", http.StatusBadRequest)
 		return nil, false
 	}
-	if err := s.vault.verifyNodePassword(r.Context(), name, password); err != nil {
+	if err := s.vault.registerNodePassword(r.Context(), name, password); err != nil {
 		code := http.StatusInternalServerError
 		if errors.Is(err, errNodePasswordMismatch) {
 			code = http.StatusForbidden
@@ -219,7 +219,7 @@ func nodeAuthenticator(v *vault) Authenticator {
 		if !ok || name == "" || password == "" {
 			return nil
 		}
-		if err := v.verifyNodePassword(ctx, name, password); err != nil {
+		if err := v.checkNodePassword(ctx, name, password); err != nil {
 			return nil
 		}
 		return &user.DefaultInfo{Name: "system:node:" + name, Groups: []string{user.NodesGroup, user.AllAuthenticated}}

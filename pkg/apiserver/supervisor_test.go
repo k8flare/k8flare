@@ -8,6 +8,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"io"
@@ -151,6 +152,17 @@ func TestSupervisorJoin(t *testing.T) {
 	badClient, _ := kubernetes.NewForConfig(&rest.Config{Host: base, BearerToken: "node:n1:other"})
 	if _, err := badClient.CoreV1().Nodes().List(c, metav1.ListOptions{}); err == nil {
 		t.Fatal("wrong node token was accepted")
+	}
+	unknownClient, _ := kubernetes.NewForConfig(&rest.Config{Host: base, BearerToken: "node:never-joined:whatever"})
+	if _, err := unknownClient.CoreV1().Nodes().List(c, metav1.ListOptions{}); err == nil {
+		t.Fatal("a node token for a node that never joined was accepted")
+	}
+	for _, auth := range []string{"Bearer ", "Basic " + base64.StdEncoding.EncodeToString([]byte("node:"))} {
+		req, _ := http.NewRequest(http.MethodGet, base+"/v1-k3s/config", nil)
+		req.Header.Set("Authorization", auth)
+		if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("empty credential %q: %v %v", auth, err, resp)
+		}
 	}
 
 	ssar, err := nodeClient.AuthorizationV1().SelfSubjectAccessReviews().Create(c, &authorizationv1.SelfSubjectAccessReview{

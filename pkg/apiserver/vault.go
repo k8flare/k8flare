@@ -152,29 +152,40 @@ func hashPassword(password string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// verifyNodePassword records a node's password on first sight and rejects
-// a different one afterwards, which is what stops a second machine from
-// taking over an existing node name.
-func (v *vault) verifyNodePassword(ctx context.Context, node, password string) error {
-	key := "/vault/node/" + node
-	want := hashPassword(password)
+var errNodeUnknown = errors.New("node has not joined")
+
+// registerNodePassword records a node's password on first sight and
+// rejects a different one afterwards, which is what stops a second machine
+// from taking over an existing node name. Only the supervisor, behind the
+// join token, may call it.
+func (v *vault) registerNodePassword(ctx context.Context, node, password string) error {
 	for {
-		kv, _, err := v.kine.Get(ctx, key)
-		if err == nil {
-			stored, err := decodeBase64(kv.Value)
-			if err != nil {
-				return err
-			}
-			if subtle.ConstantTimeCompare(stored, []byte(want)) != 1 {
-				return errNodePasswordMismatch
-			}
-			return nil
-		}
-		if err != errKineNotFound {
+		err := v.checkNodePassword(ctx, node, password)
+		if !errors.Is(err, errNodeUnknown) {
 			return err
 		}
-		if _, err := v.kine.Put(ctx, key, []byte(want), 0); err != nil && err != errKineConflict {
+		if _, err := v.kine.Put(ctx, "/vault/node/"+node, []byte(hashPassword(password)), 0); err != nil && err != errKineConflict {
 			return err
 		}
 	}
+}
+
+// checkNodePassword verifies a password against a node that has joined and
+// never registers one.
+func (v *vault) checkNodePassword(ctx context.Context, node, password string) error {
+	kv, _, err := v.kine.Get(ctx, "/vault/node/"+node)
+	if err == errKineNotFound {
+		return errNodeUnknown
+	}
+	if err != nil {
+		return err
+	}
+	stored, err := decodeBase64(kv.Value)
+	if err != nil {
+		return err
+	}
+	if subtle.ConstantTimeCompare(stored, []byte(hashPassword(password))) != 1 {
+		return errNodePasswordMismatch
+	}
+	return nil
 }
