@@ -141,17 +141,42 @@ its log, and removing it again.
   fire-and-forget poke (`bridge.Notify`) was tried and reverted; it did
   not help, and an un-awaited subrequest is its own hazard.
 
-- **Track 8 (deployment measurement) is ready to run but not run.**
-  `make deploycheck SERVER=... TOKEN=... NODE=...` (`scripts/deploycheck`)
-  times the three paths that need a resident worker to stay alive:
-  namespace to default ServiceAccount and kube-root-ca.crt, CRD to
-  Established, and pod to bound; it cleans up what it creates. Those are
-  the paths that break first if production's waitUntil window is shorter
-  than the 30s pump or if the 128MB isolate cap evicts a worker mid-run,
-  neither of which wrangler dev enforces. Against local dev it reports
-  sub-second to tens of seconds depending on machine load. `wrangler
-  deploy` itself still needs the user's go-ahead, and `wrangler tail`
-  should run alongside to catch hung or cancelled invocations.
+- **Track 8 measured on production (2026-09-15, `k8flare.kooffice.workers.dev`).**
+  The account already held a `k8flare` worker from the pre-rewrite
+  architecture (10 deployments to 2026-09-11) whose `Cluster` DO blocked
+  the `new_sqlite_classes` migration; it was deleted on the user's
+  instruction and the current tree deployed in its place (868MB of wasm
+  assets, 79 files, 160s upload). Tokens are fresh production secrets,
+  not the dev ones.
+
+  | measurement | result |
+  | --- | --- |
+  | namespace to default ServiceAccount and kube-root-ca.crt | 22.5s |
+  | CRD to Established | 1.45s |
+  | pod to bound | not measured, no node can join |
+  | namespaced writes | 201 in 2.7-4.2s |
+
+  Both timed paths completed, so **the 30s pump survives production's
+  `waitUntil`** and the planned contingency (drop `pumpMs` to 25s) is not
+  needed. The local cold first-write failure did not reproduce here.
+
+  The binding constraint is memory, not the pump. Over the run
+  `wrangler tail` recorded 1,544 events: 966 ok, 468 canceled, 98
+  `exceededMemory`, 6 exception, with 101 "Worker exceeded memory limit"
+  exceptions. Every one of them is a discovery request for
+  `/apis/<group>/<version>` against a per-group worker. The group split
+  was sized against the Worker Loader's 64MiB *code* cap, but discovery
+  asks for every group in turn, so several 28-43MB modules instantiate in
+  one isolate and cross the 128MB *isolate memory* cap. wrangler dev does
+  not enforce it, which is why this never appeared locally. Remedies to
+  weigh: fewer, smaller group workers; evicting a loaded module after
+  use; or serving discovery from a static document so the group workers
+  are only instantiated on real resource traffic.
+
+  The pod-bind timing needs a node, and none can join production: the
+  agent trusts the dev CA that `devtls` presents while the edge presents
+  Cloudflare's, and `/v1-k3s/connect` needs the vault seeded with a node
+  password.
 
 - A poke must not make the write that triggered it wait for a cold
   worker. `Scheduler.poke` and `Controllers.poke` awaited
