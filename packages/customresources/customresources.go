@@ -159,6 +159,7 @@ func (o restOptions) GetRESTOptions(gr schema.GroupResource, _ runtime.Object) (
 		Decorator:               o.decorate,
 		ResourcePrefix:          prefix,
 		DeleteCollectionWorkers: 1,
+		EnableGarbageCollection: true,
 	}, nil
 }
 

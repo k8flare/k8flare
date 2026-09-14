@@ -31,7 +31,7 @@ its log, and removing it again.
   wasm-opt to `BINARYEN_CORES=2` under `--jobs=8` (8 unbounded wasm-opt
   processes on 16 cores took over 30 minutes for the full set). Current: front 39.0MB (with the RBAC authorizer);
   group workers 28.7–43.1MB; openapi 58.5MB; customresources 59.1MB;
-  controllers 47.0MB;
+  controllers 48.8MB (with the garbage collector);
   node-tunnel 14.4MB (bundled into the shell); scheduler 55.1MB (109.9MB before the lean clientset and informer factory overlays and the two files that dragged the fake clientset and cri-client in);
   printers-core 43.0MB, the other printer groups 13–27MB. Before the
   clientset-scheme / APF / StorageVersion overlays the one-binary apiserver
@@ -128,20 +128,46 @@ its log, and removing it again.
   joins the controllers worker on the same wake model; its monitors are
   re-established per wake like every other informer.
 
-- **Advisory e2e (2026-09-14, one run each, cluster degrading toward the
-  OOM above; nothing promoted until a second clean run):** Garbage
-  collector 1/8 (no garbage collector controller, so ownerReference
-  cascades never happen); LimitRange defaults 0/1 (no LimitRanger
-  admission, internal types); ConfigMap 2/6 and Secrets 1/5 (empty-key
-  validation lives in upstream's internal-type strategies; pod log reads
-  returned "unknown", unexplained yet); Namespaces [Serial] 5/8 (100
-  namespaces do not delete fast enough under event-armed deletion; a
-  Service-removal case timed out); ReplicaSet 4/7 (`resourcequotas` and
-  the scale subresource are not served; reaching a replica pod from the
-  runner needs pod networking); Deployment 8/11 (scale subresource;
-  cascade needs the garbage collector); Pods exceeded the 25-minute cap
-  and is unmeasured; Job, Services and ServiceAccounts did not run before
-  the scheduler wedged. Watches stream from it (Content-Encoding: identity, or
+- **Advisory e2e (2026-09-14, per focus group, one wrangler per group):**
+  Garbage collector 3/7 after the collector landed (was 1/7): deletion
+  cascades work, and the orphan and foreground cases were failing because
+  the generic store left `EnableGarbageCollection` false, so it never
+  wrote the `orphanDependents`/`foregroundDeletion` finalizers and every
+  policy degraded to background; upstream defaults that flag to true
+  (`pkg/server/options/etcd.go`) and both the generic store and the CR
+  stores now set it. LimitRange defaults 0/1 (no LimitRanger admission,
+  internal types); ConfigMap 2/6 and Secrets 1/5 (empty-key validation
+  lives in upstream's internal-type strategies; pod log reads returned
+  "unknown", unexplained); Namespaces [Serial] 5/8 (100 namespaces do not
+  delete fast enough, and a Service-removal case timed out); ReplicaSet
+  4/7 and Deployment 8/11 (`resourcequotas` and the scale subresource are
+  not served; reaching a replica pod from the runner needs pod
+  networking); Pods and Job exceeded the 25-minute cap; Services and
+  ServiceAccounts did not run.
+
+- The store's `strategy` does not implement
+  `GarbageCollectionDeleteStrategy`, so a delete with no propagation
+  policy is background for every resource; upstream's v1
+  ReplicationController defaults to orphan instead. kubectl has sent an
+  explicit policy since 1.20, so neither kubectl nor e2e sees the gap.
+
+- The CRD specs fail once the cluster has been idle for more than the
+  60s watch lease: the establishing controller in the customresources
+  worker stops reacting, so new CRDs never reach Established and the
+  discovery wait times out (26 creates against 3 status writes in one
+  run). Measured 2026-09-14: a CRD created immediately after a restart is
+  Established in 1s; after 180s of idle none is, at one or four ginkgo
+  processes, with or without load in between, and the worker logs
+  nothing at all for two minutes. The lease closes the informer's watch
+  socket while the isolate is suspended, and the reflector's re-dial then
+  runs with no request window live, so it gets a socket that never
+  delivers. `DialWebSocket` therefore waits for a live window before it
+  dials; a dial inside a request is unaffected, which is every watch a
+  group worker opens for an external client.
+
+- The 60s lease also means an external `kubectl -w` is disconnected once
+  a minute (measured: EOF at 69s) and reconnects from its last resource
+  version, which is within watch semantics but visible in client logs. Watches stream from it (Content-Encoding: identity, or
   the runtime gzips JSON and holds the stream until it closes).
 - **The agent is k3s.** `packages/agent` embeds `k3s/pkg/agent` unchanged except
   the `deps.KubeConfigOverride` hook, because TLS terminates at the edge and
