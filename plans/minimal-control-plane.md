@@ -116,6 +116,17 @@ its log, and removing it again.
   would have taken minutes there instead of an hour. A goroutine parked
   in `await(reader.read())` on a dead stream never wakes; that leaks a
   few KB per informer per wake and is accepted.
+- **A Cron Trigger wakes the resident workers every minute** (decision
+  2026-09-14, replacing "no alarms, no polling"): `scheduled()` in the
+  shell awaits `Scheduler.poke()` and `Controllers.poke()`, so timers that
+  only advance while pumped (nodelifecycle's monitor, workqueue AddAfter
+  retries, CronJob, the garbage collector's 30s discovery sync) get one
+  window per minute even with no writes. Cost: 1,440 invocations a day
+  per worker, each a poke that returns 204 within 1.5s when idle plus its
+  pump window. The garbage collector (upstream's, over a metadata
+  informer per served resource and a deferred discovery RESTMapper)
+  joins the controllers worker on the same wake model; its monitors are
+  re-established per wake like every other informer.
 
 - **Advisory e2e (2026-09-14, one run each, cluster degrading toward the
   OOM above; nothing promoted until a second clean run):** Garbage
@@ -690,6 +701,71 @@ the controllers (kube-controller-manager) and the production deploy check.
   "as little code of our own as possible" goal, not a technical wall, but
   that's an inference from absence of failure evidence, not a stated fact,
   so verify before assuming it's simply revivable as-is.
+- **Is swapping the hardcoded `idFromName("default")` string alone safe
+  multi-tenancy? No — it's the one indirection point that has to exist,
+  but by itself it's unsafe.** Current code has grown to **five** such
+  call sites, not four as stated above (`packages/control-plane-worker/
+  src/loader.ts:5`, `apigroups.ts:11`, `customresources.ts:7`,
+  `index.ts:34` and `:53` — corrects the count in the bullet above), all
+  in the plain TS Worker, none in Go. That split isn't a style choice:
+  `pkg/controllers/clusterop/bridge.go`'s own doc comment cites
+  `docs/platform-verification.md` S2 for the reason — **a Loader-loaded
+  dynamic worker can't be handed a `DurableObjectNamespace` binding at
+  all, only plain values and `Fetcher`s survive the env clone** — so
+  `packages/controllers`, `packages/apiserver*`, etc. can never call
+  `idFromName` themselves; they only ever receive an already-resolved
+  `STORAGE` Fetcher-shaped binding, exactly like the old `clusterop`
+  controller (also a resident Go/wasm dynamic worker) having to proxy
+  every DO-allocation/registry/vault write through an authenticated
+  `/internal/clusters/*` HTTP bridge back into the TS layer instead of
+  touching `env.CLUSTER` itself. On today's code specifically, three
+  things make a bare id-swap unsafe:
+  1. **Global secrets, not per-tenant ones.** `ADMIN_TOKEN` /
+     `READONLY_TOKEN` / `JOIN_TOKEN` are Worker-wide secrets (absent from
+     `wrangler.jsonc`'s `vars`, so `wrangler secret put`-managed — one
+     value for the whole deployment), and the apiserver's bearertoken
+     auth compares against them directly. Route different requests to
+     different Cluster DOs today and every tenant still accepts the
+     *same* admin/join token — a full cross-tenant auth bypass, not an
+     isolation win. The old design's fix: a per-cluster **token vault
+     living inside each tenant's own Cluster DO** (`clusterop.go`'s
+     `EnsureVault`/`MintToken`/`RevokeToken`), reusing exactly the
+     `/vault/...` kine-KV prefix this repo already uses today for node
+     passwords (`checkNodePassword`, `index.ts:33`) — the storage-side
+     isolation primitive already exists, it's just not yet used for
+     admin/join tokens.
+  2. **`NODE_TUNNEL.idFromName(nodeName)` is already parameterized, but
+     only by node name.** Two tenants each naming a node `node1` collide
+     on the identical NodeTunnel DO today, and the join wire format
+     (`node:<name>:<password>`, `index.ts:26`) carries no cluster
+     identifier at all — confirmed zero hits for `tenant`/`clusterId`
+     anywhere in `packages/apiserver-supervisor`. This is a genuinely new
+     gap the old design never had to close, since node-tunnel postdates
+     it; closing it means a wire-format change (e.g.
+     `node:<clusterId>:<name>:<password>`) before `authenticateNode` can
+     even know which vault to check.
+  3. **Name reuse would bleed data.** A raw `idFromName(tenantId)` where
+     `tenantId` is a user-chosen string means deleting and recreating a
+     tenant of the same name resolves to the *same* DO instance,
+     inheriting its old SQLite state. The old code's defense was minting
+     the actual DO-name suffix from the Kubernetes object's own immutable
+     UID (`doNameFor`: `fmt.Sprintf("%s@%s", cl.Name, cl.UID)`,
+     `clusterop.go`), allocated exactly once and persisted in
+     `.Status.DoName`, with the external-facing `/c/<id>` route keyed
+     only on the UID half (`uidFromDoName`) — "switching the id" has to
+     mean switching to an operator-allocated, never-reused compound key,
+     not a bare tenant-supplied slug.
+  What genuinely *is* close to free: Cloudflare's own DO namespace needs
+  no provisioning step — `idFromName` on a new string just lazily
+  allocates a fresh, fully SQLite-isolated instance on first
+  `.get().fetch()`, no platform-side "create cluster" call required.
+  Every hard part above is this project's own application-level
+  assumption, not a platform limit. Sequencing worth reusing verbatim
+  from `clusterop.reconcileActive`: write the `/c/<id>` registry entry
+  *before* minting the vault (a routing entry with no credentials yet
+  safely 401s; credentials with no route safely 404s forever — never
+  serve a half-provisioned tenant), and on rotation, revoke a superseded
+  token only after its replacement is fully distributed.
 - **What this means for "zero to scale" concretely**: DynamicWorkers and
   DOs are already zero-cost-until-addressed by Cloudflare's own runtime
   (no new design needed there); facets add a third, more fine-grained
@@ -709,3 +785,57 @@ the controllers (kube-controller-manager) and the production deploy check.
   workloads than anything needing a full container.
   (https://blog.cloudflare.com/durable-object-facets-dynamic-workers/,
   https://developers.cloudflare.com/dynamic-workers/usage/durable-object-facets/)
+- **Pod-to-pod networking: Cloudflare Mesh is a real WireGuard/Tailscale
+  replacement candidate for flannel's transport — unlike cluster DNS
+  below, this one looks genuinely promising.** `packages/agent` doesn't
+  override flannel's backend at all, so it inherits stock k3s's default,
+  **`vxlan`** (not WireGuard); more importantly, the only milestone
+  reached so far (see Goal) is **one** OrbStack VM — multi-node pod
+  networking is entirely unexercised here today, not just undocumented.
+  The decisive fact, confirmed from current docs: Mesh enrollment installs
+  a **VPN profile** via "a headless version of the Cloudflare One Client,"
+  giving the node real OS-level TCP/UDP/ICMP reachability to other Mesh
+  IPs for *any local process* — architecturally the same shape as
+  WireGuard/Tailscale, and a materially different (better) fact than the
+  Workers-VPC-from-a-DO open question above, since this doesn't route
+  through Workers/DOs at all. flannel's **`host-gw`** backend adds no
+  encapsulation of its own — just a kernel route to each peer's pod CIDR
+  via that peer's node IP — so pointing flannel at `host-gw` with each
+  node's *Mesh IP* as its node-internal IP should work with no k3s/flannel
+  code changes: Mesh supplies the encryption and transport, `host-gw`
+  supplies the pod-CIDR routing. Not verified end-to-end and no existing
+  Cloudflare precedent exists for Mesh-as-CNI-transport specifically (all
+  current framing is dev-agent/SSH/DB-access, not Kubernetes networking) —
+  this is new territory. Sequence after single-node work stabilizes
+  (multi-node is untested regardless of transport). Cheapest validation:
+  enroll two OrbStack VMs in Mesh, confirm plain `ping`/`iperf3` between
+  their Mesh IPs as ordinary OS traffic (no Workers/DO involved at all),
+  then try `--flannel-backend=host-gw` with those Mesh IPs as the node
+  IPs. (https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-mesh/get-started/,
+  https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-mesh/client-devices/)
+- **Cluster DNS: no meaningful Cloudflare-native substitute for CoreDNS
+  exists today — don't stretch for one.** The real constraint: kubelet
+  points every pod's `/etc/resolv.conf` at the cluster-dns ClusterIP, and
+  whatever answers it must be a real UDP/TCP **:53** listener speaking
+  plain DNS wire protocol (DNS is UDP-first; TCP is only the &gt;512-byte
+  fallback) — a fundamentally different transport shape from a Worker's
+  HTTP request/response model. Checked and ruled out: Cloudflare's newest
+  Spectrum-routed-to-Worker-socket feature (private beta, Aug 2026) is
+  **TCP only** — the announcement itself names UDP as future work, so even
+  a mature version misses the half DNS actually needs; plain (GA) Spectrum
+  is a dumb byte-forwarder to a real origin, so routing it at a hand-run
+  DNS server doesn't eliminate a workload, it just relabels one. Cloudflare's
+  DNS product has no dynamic, API-driven per-query answering mechanism —
+  only static zone records (useless for Service/EndpointSlice-derived
+  answers that change every second) and Cloudflare One's Gateway resolver
+  policies (a client's own *outbound* DNS routing/filtering, a different
+  problem entirely, not a way to answer *inbound* in-cluster queries).
+  Realistic path: real upstream CoreDNS as an ordinary Deployment+Service
+  once Services/kube-proxy exist (the same gating dependency already
+  flagged for Ingress and admission control) — a small, well-understood,
+  upstream-maintained fixed cost, consistent with this project's own
+  reuse-upstream philosophy, not overhead worth hand-rolling a replacement
+  for. `node-local-dns`-style caching solves a multi-node conntrack/latency
+  problem this project doesn't have yet.
+  (https://blog.cloudflare.com/grpc-workers/,
+  https://developers.cloudflare.com/cloudflare-one/traffic-policies/resolver-policies/)

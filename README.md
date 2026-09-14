@@ -40,10 +40,11 @@ so a request pays only for the binary it needs:
 - `packages/scheduler` — the real kube-scheduler behind the `Scheduler`
   entrypoint, started on the first wake-up and pumped for a bounded window
   per wake-up.
-- `packages/controllers` — fifteen of kube-controller-manager's controllers
+- `packages/controllers` — sixteen of kube-controller-manager's controllers
   (replication, replicaset, deployment, daemonset, statefulset, job,
   cronjob, endpoints, endpointslice, nodeipam, nodelifecycle,
-  tainteviction, serviceaccount, root-ca-cert-publisher, namespace) behind the `Controllers` entrypoint, woken by writes to the
+  tainteviction, serviceaccount, root-ca-cert-publisher, namespace,
+  garbagecollector) behind the `Controllers` entrypoint, woken by writes to the
   resources they reconcile and held only while their workqueues are busy.
 - `packages/printers` and `packages/printers-{core,coordination,discovery,node,storage,apps,policy,resource}`
   — upstream's `kubectl get` printers, one worker per API group.

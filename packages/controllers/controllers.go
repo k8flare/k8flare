@@ -10,11 +10,16 @@ import (
 
 	supervisor "github.com/k8flare/k8flare/packages/apiserver-supervisor"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/metadata"
+	"k8s.io/client-go/metadata/metadatainformer"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/util/flowcontrol"
+	"k8s.io/controller-manager/pkg/informerfactory"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/controller/certificates/rootcacertpublisher"
 	"k8s.io/kubernetes/pkg/controller/cronjob"
@@ -22,6 +27,7 @@ import (
 	"k8s.io/kubernetes/pkg/controller/deployment"
 	"k8s.io/kubernetes/pkg/controller/endpoint"
 	"k8s.io/kubernetes/pkg/controller/endpointslice"
+	"k8s.io/kubernetes/pkg/controller/garbagecollector"
 	"k8s.io/kubernetes/pkg/controller/job"
 	"k8s.io/kubernetes/pkg/controller/namespace"
 	"k8s.io/kubernetes/pkg/controller/nodeipam"
@@ -49,12 +55,16 @@ const (
 	minResyncPeriod             = 12 * time.Hour
 	namespaceSyncPeriod         = 5 * time.Minute
 	namespaceWorkers            = 10
+	garbageCollectorWorkers     = 20
+	garbageCollectorSyncPeriod  = 30 * time.Second
 )
 
 type Controllers struct {
-	factory informers.SharedInformerFactory
-	runs    []func(context.Context)
-	queues  *queueDepths
+	factory          informers.SharedInformerFactory
+	metadataFactory  metadatainformer.SharedInformerFactory
+	informersStarted chan struct{}
+	runs             []func(context.Context)
+	queues           *queueDepths
 }
 
 func New(ctx context.Context, cfg *rest.Config) (*Controllers, error) {
@@ -65,7 +75,7 @@ func New(ctx context.Context, cfg *rest.Config) (*Controllers, error) {
 	}
 	factory := informers.NewSharedInformerFactory(client, minResyncPeriod)
 	core, apps, batch := factory.Core().V1(), factory.Apps().V1(), factory.Batch().V1()
-	c := &Controllers{factory: factory, queues: queues}
+	c := &Controllers{factory: factory, queues: queues, informersStarted: make(chan struct{})}
 	rc := replication.NewReplicationManager(ctx, core.Pods(), core.ReplicationControllers(), client, replication.BurstReplicas)
 	c.add(func(ctx context.Context) { rc.Run(ctx, workers) })
 	rs := replicaset.NewReplicaSetController(ctx, apps.ReplicaSets(), core.Pods(), client, replicaset.BurstReplicas)
@@ -123,6 +133,16 @@ func New(ctx context.Context, cfg *rest.Config) (*Controllers, error) {
 	}
 	namespaces := namespace.NewNamespaceController(ctx, client, metadataClient, client.Discovery().ServerPreferredNamespacedResources, core.Namespaces(), namespaceSyncPeriod, corev1.FinalizerKubernetes)
 	c.add(func(ctx context.Context) { namespaces.Run(ctx, namespaceWorkers) })
+	c.metadataFactory = metadatainformer.NewSharedInformerFactory(metadataClient, minResyncPeriod)
+	mapper := restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(client.Discovery()))
+	graph := garbagecollector.NewDependencyGraphBuilder(ctx, metadataClient, mapper, garbagecollector.DefaultIgnoredResources(), informerfactory.NewInformerFactory(factory, c.metadataFactory), c.informersStarted)
+	collector, err := garbagecollector.NewComposedGarbageCollector(ctx, client, metadataClient, mapper, graph)
+	if err != nil {
+		return nil, err
+	}
+	c.add(func(ctx context.Context) { collector.Run(ctx, garbageCollectorWorkers, garbageCollectorSyncPeriod) })
+	c.add(func(ctx context.Context) { collector.Sync(ctx, client.Discovery(), garbageCollectorSyncPeriod) })
+	c.add(func(ctx context.Context) { wait.Until(mapper.Reset, garbageCollectorSyncPeriod, ctx.Done()) })
 	rootCA, err := serverCA(ctx, cfg)
 	if err != nil {
 		return nil, err
@@ -161,6 +181,8 @@ func (c *Controllers) add(run func(context.Context)) {
 
 func (c *Controllers) Run(ctx context.Context) {
 	c.factory.Start(ctx.Done())
+	c.metadataFactory.Start(ctx.Done())
+	close(c.informersStarted)
 	c.factory.WaitForCacheSync(ctx.Done())
 	for _, run := range c.runs {
 		go recovered(ctx, run)
