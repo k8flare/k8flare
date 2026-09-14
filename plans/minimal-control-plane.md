@@ -116,6 +116,18 @@ its log, and removing it again.
   would have taken minutes there instead of an hour. A goroutine parked
   in `await(reader.read())` on a dead stream never wakes; that leaks a
   few KB per informer per wake and is accepted.
+- **Track 8 (deployment measurement) is ready to run but not run.**
+  `make deploycheck SERVER=... TOKEN=... NODE=...` (`scripts/deploycheck`)
+  times the three paths that need a resident worker to stay alive:
+  namespace to default ServiceAccount and kube-root-ca.crt, CRD to
+  Established, and pod to bound; it cleans up what it creates. Those are
+  the paths that break first if production's waitUntil window is shorter
+  than the 30s pump or if the 128MB isolate cap evicts a worker mid-run,
+  neither of which wrangler dev enforces. Against local dev it reports
+  sub-second to tens of seconds depending on machine load. `wrangler
+  deploy` itself still needs the user's go-ahead, and `wrangler tail`
+  should run alongside to catch hung or cancelled invocations.
+
 - A poke must not make the write that triggered it wait for a cold
   worker. `Scheduler.poke` and `Controllers.poke` awaited
   `loadWasmWorker` before handing the fetch to `waitUntil`, so the first

@@ -11,7 +11,7 @@ GROUPS := core coordination discovery node storage apps policy resource rbac bat
 API_GROUPS := core coordination discovery node storage authentication authorization apps policy resource rbac batch
 WASM_OPT := wasm-opt -Oz --strip-debug --strip-producers --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals
 
-.PHONY: mirrors wasm gen agent dev devtls kubeconfig check vet test clean e2e
+.PHONY: mirrors wasm gen agent dev devtls kubeconfig check vet test clean e2e deploycheck
 
 mirrors:
 	cd scripts && go run ./mirror
@@ -150,6 +150,9 @@ check:
 vet: mirrors
 	go vet ./packages/...
 	GOOS=js GOARCH=wasm go vet ./packages/...
+
+deploycheck:
+	cd scripts && go run ./deploycheck -server $(SERVER) -token $(TOKEN) -node $(NODE)
 
 e2e:
 	cd scripts && go run ./e2e -set $(or $(SET),required) -procs $(or $(PROCS),4)

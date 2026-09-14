@@ -79,6 +79,7 @@ make test            # client-go tests against a wrangler dev the tests start th
 make dev             # wrangler dev on :18787 (see the Makefile for why CLAUDECODE is unset)
 make devtls          # https://localhost:6443 -> :18787, CA in .build/devtls/ca.crt
 make e2e SET=required   # upstream e2e.test via ginkgo (PROCS=4 parallel; [Serial] specs run alone); needs make dev, make devtls, a joined node
+make deploycheck SERVER=https://<worker> TOKEN=<admin> NODE=<node>   # wake-up timings against a deployment
 ```
 
 Tokens for dev live in `.dev.vars` next to `wrangler.jsonc` (copy
