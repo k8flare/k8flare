@@ -54,4 +54,10 @@ export default {
     }
     return apiserverFetch(env, request);
   },
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    await Promise.all([
+      env.SCHEDULER.poke().catch((err) => console.error("scheduled scheduler poke:", err)),
+      env.CONTROLLERS.poke().catch((err) => console.error("scheduled controllers poke:", err)),
+    ]);
+  },
 } satisfies ExportedHandler<Env>;

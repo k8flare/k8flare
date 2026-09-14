@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"syscall/js"
+	"time"
 )
 
 type envKey struct{}
@@ -324,21 +325,31 @@ type BindingTransport struct {
 	AbortOnWake bool
 }
 
+type trackedStream struct {
+	opened time.Time
+	end    func()
+}
+
 var (
 	streamsMu   sync.Mutex
-	openStreams = map[int]func(){}
+	openStreams = map[int]*trackedStream{}
 	nextStream  int
 )
 
 // EndTrackedStreams ends every response stream an AbortOnWake transport
-// still has open. A subrequest stream is only delivered while the request
-// that opened it is alive, so a resident worker calls this at the start of
-// each wake and lets its informers re-watch inside the new request.
-func EndTrackedStreams() {
+// opened more than olderThan ago. A subrequest stream is only delivered
+// while the request that opened it is alive, so a resident worker calls
+// this at the start of each wake with its pump window and lets its
+// informers re-watch inside the new request; younger streams still belong
+// to a live window and are left alone.
+func EndTrackedStreams(olderThan time.Duration) {
+	cutoff := time.Now().Add(-olderThan)
 	streamsMu.Lock()
-	ends := make([]func(), 0, len(openStreams))
-	for _, end := range openStreams {
-		ends = append(ends, end)
+	var ends []func()
+	for _, stream := range openStreams {
+		if stream.opened.Before(cutoff) {
+			ends = append(ends, stream.end)
+		}
 	}
 	streamsMu.Unlock()
 	for _, end := range ends {
@@ -350,12 +361,12 @@ func trackStream(end func()) (update func(func()), untrack func()) {
 	streamsMu.Lock()
 	nextStream++
 	id := nextStream
-	openStreams[id] = end
+	openStreams[id] = &trackedStream{opened: time.Now(), end: end}
 	streamsMu.Unlock()
 	return func(end func()) {
 			streamsMu.Lock()
-			if _, ok := openStreams[id]; ok {
-				openStreams[id] = end
+			if stream, ok := openStreams[id]; ok {
+				stream.end = end
 			}
 			streamsMu.Unlock()
 		}, func() {

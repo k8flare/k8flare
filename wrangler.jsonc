@@ -10,6 +10,7 @@
   },
   "worker_loaders": [{ "binding": "LOADER" }],
   "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"] }],
+  "triggers": { "crons": ["* * * * *"] },
   "durable_objects": {
     "bindings": [
       { "name": "CLUSTER", "class_name": "Cluster" },
