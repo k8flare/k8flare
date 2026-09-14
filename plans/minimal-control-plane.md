@@ -116,6 +116,15 @@ its log, and removing it again.
   would have taken minutes there instead of an hour. A goroutine parked
   in `await(reader.read())` on a dead stream never wakes; that leaks a
   few KB per informer per wake and is accepted.
+- A poke must not make the write that triggered it wait for a cold
+  worker. `Scheduler.poke` and `Controllers.poke` awaited
+  `loadWasmWorker` before handing the fetch to `waitUntil`, so the first
+  write against a cold cluster blocked while 48.8MB of wasm was assembled
+  and instantiated: measured as a 21s gap in the log between the CRD
+  informer starting and the controllers informers starting, long enough
+  for the front's subrequest to be dropped ("Network connection lost").
+  The load now happens inside `waitUntil`.
+
 - **A Cron Trigger wakes the resident workers every minute** (decision
   2026-09-14, replacing "no alarms, no polling"): `scheduled()` in the
   shell awaits `Scheduler.poke()` and `Controllers.poke()`, so timers that
