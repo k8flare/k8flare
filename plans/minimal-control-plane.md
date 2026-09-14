@@ -158,12 +158,14 @@ its log, and removing it again.
   run). Measured 2026-09-14: a CRD created immediately after a restart is
   Established in 1s; after 180s of idle none is, at one or four ginkgo
   processes, with or without load in between, and the worker logs
-  nothing at all for two minutes. The lease closes the informer's watch
-  socket while the isolate is suspended, and the reflector's re-dial then
-  runs with no request window live, so it gets a socket that never
-  delivers. `DialWebSocket` therefore waits for a live window before it
-  dials; a dial inside a request is unaffected, which is every watch a
-  group worker opens for an external client.
+  nothing at all for two minutes. The lease closes the socket while the
+  isolate is suspended, and `WebSocket.Close` only asked JS to close and
+  waited for the close event to run `finish()`, so that event never
+  arrived and the Go side kept the watch: kine's reader stayed blocked
+  and the reflector believed its watch was healthy. `Close` now finishes
+  the socket itself, and sockets dialed outside a request (an informer's
+  own watch, never one serving a client) are closed at the start of the
+  next wake so the reflector re-dials inside a live request.
 
 - The 60s lease also means an external `kubectl -w` is disconnected once
   a minute (measured: EOF at 69s) and reconnects from its last resource
