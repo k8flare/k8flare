@@ -17,7 +17,6 @@ var Served = []ServedGroupVersion{
 		{Name: "namespaces", SingularName: "namespace", Namespaced: false, Kind: "Namespace", Verbs: metav1.Verbs{"create", "delete", "get", "list", "patch", "update", "watch"}, ShortNames: []string{"ns"}, Categories: nil},
 		{Name: "namespaces/finalize", SingularName: "", Namespaced: false, Kind: "Namespace", Verbs: metav1.Verbs{"update"}, ShortNames: nil, Categories: nil},
 		{Name: "namespaces/status", SingularName: "", Namespaced: false, Kind: "Namespace", Verbs: metav1.Verbs{"get", "patch", "update"}, ShortNames: nil, Categories: nil},
-		{Name: "namespaces/status", SingularName: "", Namespaced: false, Kind: "Namespace", Verbs: metav1.Verbs{"get", "patch", "update"}, ShortNames: nil, Categories: nil},
 		{Name: "nodes", SingularName: "node", Namespaced: false, Kind: "Node", Verbs: metav1.Verbs{"create", "delete", "deletecollection", "get", "list", "patch", "update", "watch"}, ShortNames: []string{"no"}, Categories: nil},
 		{Name: "nodes/status", SingularName: "", Namespaced: false, Kind: "Node", Verbs: metav1.Verbs{"get", "patch", "update"}, ShortNames: nil, Categories: nil},
 		{Name: "persistentvolumeclaims", SingularName: "persistentvolumeclaim", Namespaced: true, Kind: "PersistentVolumeClaim", Verbs: metav1.Verbs{"create", "delete", "deletecollection", "get", "list", "patch", "update", "watch"}, ShortNames: []string{"pvc"}, Categories: nil},

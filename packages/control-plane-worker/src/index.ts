@@ -56,8 +56,8 @@ export default {
   },
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
     await Promise.all([
-      env.SCHEDULER.poke().catch((err) => console.error("scheduled scheduler poke:", err)),
-      env.CONTROLLERS.poke().catch((err) => console.error("scheduled controllers poke:", err)),
+      env.SCHEDULER.run().catch((err) => console.error("scheduled scheduler run:", err)),
+      env.CONTROLLERS.run().catch((err) => console.error("scheduled controllers run:", err)),
     ]);
   },
 } satisfies ExportedHandler<Env>;

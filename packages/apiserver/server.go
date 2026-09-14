@@ -66,6 +66,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	mux.Handle("/api/", forwardTo(cfg.Groups, groupsBase, "apiserver-core"))
 	mux.Handle("/apis", rootAPIs(addresses, cfg.CustomResources))
 	mux.Handle("/apis/", groupRouter(cfg))
+	serveDiscovery(mux)
 	mux.Handle("/openapi/v2", forwardTo(cfg.OpenAPI, openAPIBase, ""))
 	mux.Handle("/openapi/v2/", forwardTo(cfg.OpenAPI, openAPIBase, ""))
 	mux.Handle("/openapi/v3", openAPIV3Root(cfg))
@@ -74,6 +75,33 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	supervisor.New(v, cfg.JoinToken).Register(root)
 	root.Handle("/", auth.WithAuth(auth.WithRequestInfo(auth.WithAuthorization(mux, authorizer)), tokens))
 	return recoverPanics(root), nil
+}
+
+// serveDiscovery answers the per-group discovery documents from the
+// generated table instead of forwarding them. A client walks every group
+// before its first request, and forwarding that walk cold-starts every
+// group worker at once, which is what exhausts the isolates in production.
+func serveDiscovery(mux *http.ServeMux) {
+	versions := map[string][]string{}
+	for _, sgv := range registry.Served {
+		gv, resources := sgv.GV, sgv.Resources
+		lister := discovery.APIResourceListerFunc(func() []metav1.APIResource { return resources })
+		handler := discovery.NewAPIVersionHandler(scheme.Codecs, gv, lister)
+		if gv.Group == "" {
+			mux.Handle("/api/"+gv.Version, handler)
+			continue
+		}
+		mux.Handle("/apis/"+gv.Group+"/"+gv.Version, handler)
+		versions[gv.Group] = append(versions[gv.Group], gv.Version)
+	}
+	for group, vers := range versions {
+		g := metav1.APIGroup{Name: group}
+		for _, v := range vers {
+			g.Versions = append(g.Versions, metav1.GroupVersionForDiscovery{GroupVersion: group + "/" + v, Version: v})
+		}
+		g.PreferredVersion = g.Versions[0]
+		mux.Handle("/apis/"+group, discovery.NewAPIGroupHandler(scheme.Codecs, g))
+	}
 }
 
 func groupRouter(cfg Config) http.Handler {

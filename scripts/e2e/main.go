@@ -27,14 +27,18 @@ func main() {
 	set := flag.String("set", "required", "test set to run: required, advisory, or all")
 	focus := flag.String("focus", "", "override the built-in focus regex")
 	procs := flag.Int("procs", 4, "parallel ginkgo processes; [Serial] specs still run alone")
+	kubeconfigPath := flag.String("kubeconfig", "", "kubeconfig to test against; defaults to .build/kubeconfig.yaml")
 	flag.Parse()
 
 	root, err := upstream.RepoRoot()
 	check(err)
 
-	kubeconfig := filepath.Join(root, ".build/kubeconfig.yaml")
+	kubeconfig := *kubeconfigPath
+	if kubeconfig == "" {
+		kubeconfig = filepath.Join(root, ".build/kubeconfig.yaml")
+	}
 	if _, err := os.Stat(kubeconfig); err != nil {
-		log.Fatal("no .build/kubeconfig.yaml; run make kubeconfig")
+		log.Fatalf("no kubeconfig at %s; run make kubeconfig", kubeconfig)
 	}
 	check(preflight(kubeconfig))
 

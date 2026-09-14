@@ -141,6 +141,43 @@ its log, and removing it again.
   fire-and-forget poke (`bridge.Notify`) was tried and reverted; it did
   not help, and an un-awaited subrequest is its own hazard.
 
+- **The 128MB isolate cap was hit by discovery, and is fixed.** A client
+  walks every API group before its first request. Forwarding that walk
+  cold-started all twelve group workers at once, and several 28-43MB wasm
+  modules in flight crossed the isolate's memory limit: production
+  reported 98 `exceededMemory` outcomes and 101 "Worker exceeded memory
+  limit" exceptions over one run, and `kubectl api-resources` failed for
+  every group. The 64MiB the group split was sized against is the Worker
+  Loader's *code* cap, a separate budget from isolate memory. The front
+  now answers `/api/v1`, `/apis/<group>` and `/apis/<group>/<version>`
+  from the generated `registry.Served` table through upstream's
+  `discovery.NewAPIVersionHandler`, so a group worker loads only for real
+  resource traffic. After the fix, the same run reports 0
+  `exceededMemory` and `kubectl api-resources` returns 37 rows with no
+  errors.
+
+- **Two more faults that only production shows.** A `scheduled()` handler
+  that returns before its work is done has that work cancelled: the cron
+  fired in 2ms and the wake it asked for never happened, so the
+  entrypoints gained `run()`, which awaits the poke, and the Cron Trigger
+  calls that instead of the fire-and-forget `poke()` a write uses.
+  Separately, `SharedInformerFactory.WaitForCacheSync` reports only
+  *started* informers, so a factory that has not started yet returns an
+  empty map, which read as idle: a cold worker answered its own poke 204
+  after 1.5s and the window closed before anything ran. `Idle()` now
+  returns false until `Run` has started every controller, and the cron
+  invocation went from 2ms to a full 20.6s window.
+
+- **Open: the controllers cannot finish a cold start inside one window on
+  production.** Deployments do not produce a ReplicaSet there, while the
+  same build locally creates one in 2s and the default ServiceAccount in
+  3s. Loading 48.8MB of wasm and syncing sixteen controllers over roughly
+  twenty informers does not fit the 20s poke window, and the chained
+  wake does not appear to inherit a warm isolate, so each attempt starts
+  over. This is a startup-budget problem, not memory; the plan's own
+  "split if the cap is hit" note (workload controllers versus node and
+  endpoint controllers) is the lever to try next.
+
 - **Track 8 measured on production (2026-09-15, `k8flare.kooffice.workers.dev`).**
   The account already held a `k8flare` worker from the pre-rewrite
   architecture (10 deployments to 2026-09-11) whose `Cluster` DO blocked

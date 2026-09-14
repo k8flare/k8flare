@@ -35,11 +35,16 @@ func main() {
 			group, ver = s.GV[:i], s.GV[i+1:]
 		}
 		fmt.Fprintf(&out, "\t{GV: schema.GroupVersion{Group: %q, Version: %q}, Resources: []metav1.APIResource{\n", group, ver)
+		requested := map[string]bool{}
+		for _, name := range s.Resources {
+			requested[name] = true
+		}
 		var names []string
 		for _, name := range s.Resources {
 			names = append(names, name)
-			if _, ok := byName[name+"/status"]; ok && !strings.Contains(name, "/") {
-				names = append(names, name+"/status")
+			status := name + "/status"
+			if _, ok := byName[status]; ok && !strings.Contains(name, "/") && !requested[status] {
+				names = append(names, status)
 			}
 		}
 		sort.Strings(names)

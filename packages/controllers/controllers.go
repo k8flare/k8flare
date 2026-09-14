@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	supervisor "github.com/k8flare/k8flare/packages/apiserver-supervisor"
@@ -56,8 +57,6 @@ const (
 	namespaceSyncPeriod         = 5 * time.Minute
 	namespaceWorkers            = 10
 	garbageCollectorWorkers     = 20
-	metadataQPS                 = 5
-	metadataBurst               = 5
 	garbageCollectorSyncPeriod  = 30 * time.Second
 )
 
@@ -67,6 +66,7 @@ type Controllers struct {
 	informersStarted chan struct{}
 	runs             []func(context.Context)
 	queues           *queueDepths
+	running          atomic.Bool
 }
 
 func New(ctx context.Context, cfg *rest.Config) (*Controllers, error) {
@@ -129,9 +129,7 @@ func New(ctx context.Context, cfg *rest.Config) (*Controllers, error) {
 		return nil, err
 	}
 	c.add(func(ctx context.Context) { accounts.Run(ctx, 1) })
-	metadataConfig := rest.CopyConfig(cfg)
-	metadataConfig.QPS, metadataConfig.Burst = metadataQPS, metadataBurst
-	metadataClient, err := metadata.NewForConfig(metadataConfig)
+	metadataClient, err := metadata.NewForConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -191,6 +189,7 @@ func (c *Controllers) Run(ctx context.Context) {
 	for _, run := range c.runs {
 		go recovered(ctx, run)
 	}
+	c.running.Store(true)
 	<-ctx.Done()
 }
 
@@ -203,7 +202,15 @@ func recovered(ctx context.Context, run func(context.Context)) {
 	run(ctx)
 }
 
+// Idle is false until Run has started every controller. A factory that
+// has not started yet reports no informers at all, which would otherwise
+// read as idle and let the poke return before the worker has done
+// anything: on a cold instance loading the wasm outlasts the first
+// checks, so the wake ended and nothing was ever reconciled.
 func (c *Controllers) Idle() bool {
+	if !c.running.Load() {
+		return false
+	}
 	for _, synced := range c.factory.WaitForCacheSync(closedChannel) {
 		if !synced {
 			return false
