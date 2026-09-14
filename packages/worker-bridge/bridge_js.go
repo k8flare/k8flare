@@ -432,7 +432,56 @@ type WebSocket struct {
 	Messages <-chan []byte
 	msgs     chan []byte
 	closed   chan struct{}
+	notify   chan struct{}
+	mu       sync.Mutex
+	queue    [][]byte
+	queued   int
 	id       int
+}
+
+const maxQueuedWebSocketBytes = 32 << 20
+
+func (c *WebSocket) enqueue(b []byte) {
+	c.mu.Lock()
+	c.queue = append(c.queue, b)
+	c.queued += len(b)
+	over := c.queued > maxQueuedWebSocketBytes
+	c.mu.Unlock()
+	if over {
+		c.Close()
+		return
+	}
+	select {
+	case c.notify <- struct{}{}:
+	default:
+	}
+}
+
+func (c *WebSocket) drain() {
+	defer close(c.msgs)
+	for {
+		select {
+		case <-c.notify:
+		case <-c.closed:
+			return
+		}
+		for {
+			c.mu.Lock()
+			if len(c.queue) == 0 {
+				c.mu.Unlock()
+				break
+			}
+			b := c.queue[0]
+			c.queue = c.queue[1:]
+			c.queued -= len(b)
+			c.mu.Unlock()
+			select {
+			case c.msgs <- b:
+			case <-c.closed:
+				return
+			}
+		}
+	}
 }
 
 func DialWebSocket(ctx context.Context, bindingName, rawURL string) (*WebSocket, error) {
@@ -449,9 +498,10 @@ func DialWebSocket(ctx context.Context, bindingName, rawURL string) (*WebSocket,
 	if ws.IsNull() || ws.IsUndefined() {
 		return nil, fmt.Errorf("bridge: websocket %s: status %d", rawURL, resp.Get("status").Int())
 	}
-	msgs := make(chan []byte, 256)
-	c := &WebSocket{ws: ws, Messages: msgs, msgs: msgs, closed: make(chan struct{})}
+	msgs := make(chan []byte)
+	c := &WebSocket{ws: ws, Messages: msgs, msgs: msgs, closed: make(chan struct{}), notify: make(chan struct{}, 1)}
 	c.id = register(c)
+	go c.drain()
 	ws.Call("addEventListener", "message", bound("ws-message", c.id, func(id int, args []js.Value) {
 		w, ok := lookup(id).(*WebSocket)
 		if !ok {
@@ -464,10 +514,7 @@ func DialWebSocket(ctx context.Context, bindingName, rawURL string) (*WebSocket,
 		} else {
 			b = fromUint8Array(js.Global().Get("Uint8Array").New(data))
 		}
-		select {
-		case w.msgs <- b:
-		case <-w.closed:
-		}
+		w.enqueue(b)
 	}))
 	onClose := bound("ws-close", c.id, func(id int, _ []js.Value) {
 		if w, ok := lookup(id).(*WebSocket); ok {
@@ -492,7 +539,6 @@ func (c *WebSocket) finish() {
 	case <-c.closed:
 	default:
 		close(c.closed)
-		close(c.msgs)
 		unregister(c.id)
 	}
 }

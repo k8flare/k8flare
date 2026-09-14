@@ -66,7 +66,20 @@ its log, and removing it again.
   Loader bootstrap and dropped, so the next poke instantiates again, and
   the poke chains log their failures; before that a dead controllers
   instance was invisible (2026-09-14, after a burst of node and namespace
-  deletes, no controller acted for 15 minutes and nothing was logged). Watches stream from it (Content-Encoding: identity, or
+  deletes, no controller acted for 15 minutes and nothing was logged). The
+  first death the logging caught was the core group worker: Go's wasm
+  runtime reported "all goroutines are asleep - deadlock!" with the
+  `ws-message` callback blocked on a full 256-slot kine watch channel
+  while every other goroutine waited on a `setTimeout(0)` that could not
+  fire with JS stuck inside Go; the isolate had been frozen for the whole
+  advisory run before the detector fired and the bootstrap
+  re-instantiated it. No JS callback in the bridge may block now: the
+  WebSocket callback appends to a queue and a Go goroutine drains it into
+  `Messages`; a watch whose consumer never drains (a response stream that
+  died unnoticed) is closed once 32 MiB is queued, which ends the kine
+  watch and makes the reflector relist. The resident scheduler and
+  controllers also use upstream's client QPS/burst (50/100 and 20/30)
+  instead of rest.Config's 5/10, which throttled them under e2e load. Watches stream from it (Content-Encoding: identity, or
   the runtime gzips JSON and holds the stream until it closes).
 - **The agent is k3s.** `packages/agent` embeds `k3s/pkg/agent` unchanged except
   the `deps.KubeConfigOverride` hook, because TLS terminates at the edge and
