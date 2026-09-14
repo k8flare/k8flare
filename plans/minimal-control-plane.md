@@ -79,7 +79,58 @@ its log, and removing it again.
   died unnoticed) is closed once 32 MiB is queued, which ends the kine
   watch and makes the reflector relist. The resident scheduler and
   controllers also use upstream's client QPS/burst (50/100 and 20/30)
-  instead of rest.Config's 5/10, which throttled them under e2e load. Watches stream from it (Content-Encoding: identity, or
+  instead of rest.Config's 5/10, which throttled them under e2e load. The
+  next hour-long run ended with the core group worker at 4.1 GB of Go
+  heap ("fatal error: out of memory") because a watch's server side never
+  learned that its client had gone: the DO's `watchers` count (now in
+  `GET /stats`) grew by 36 every 30s at idle, one per informer re-watch,
+  and killed `kubectl -w` sockets stayed too. `BindingTransport` now ties
+  every fetch to an `AbortController` fired by the request context or by
+  closing the body, so a client's cancel reaches the front, the group
+  worker's `stream-cancel`, and the DO socket, and the Loader bootstrap
+  hands each request's `signal` to Go. Measured in wrangler dev
+  (2026-09-14): neither the ReadableStream `cancel` nor the request abort
+  fired once, for a killed external `curl -N` watch or for a Go-side
+  abort across a service binding (0 callbacks over 3 minutes while the
+  socket count rose from 55 to 112), so no cancellation signal reaches a
+  callee in this runtime and the hooks stay in place only for Track 8 to
+  test at the edge. The constraint is per request, not per isolate: a
+  subrequest stream is delivered only while the request that opened it is
+  alive (its handler plus the pump `waitUntil`); once that poke's window
+  closes, every stream it opened is silently dead even while later pokes
+  keep the isolate busy (measured: an external `curl -N` saw the DO close
+  its watch as EOF after 69s, while the continuously poked controllers
+  isolate never saw the same close on its own streams and its caches went
+  stale, 0/15 required specs). So each accepted poke ends every stream the
+  resident worker still holds (`BindingTransport.AbortOnWake` tracks them,
+  `bridge.EndTrackedStreams` closes the pipes and aborts the fetches) and
+  the informers re-watch from their last resource version inside the new
+  request. The server side is bounded by the DO: any watch socket older
+  than `WATCH_LEASE_MS` (60s) is closed on the next write or watch accept,
+  and a socket whose reader falls 1 MiB behind is closed by the group
+  worker (the 4.1 GB heap was about 120 dead sockets each buffering to
+  the earlier 32 MiB cap). Node status writes poke the resident workers
+  only when the spec, labels, allocatable or Ready condition changed, so
+  kubelet heartbeats no longer drive the re-watch rate. wrangler dev does
+  not enforce the 128 MB isolate limit; production does, so the leak
+  would have taken minutes there instead of an hour. A goroutine parked
+  in `await(reader.read())` on a dead stream never wakes; that leaks a
+  few KB per informer per wake and is accepted.
+
+- **Advisory e2e (2026-09-14, one run each, cluster degrading toward the
+  OOM above; nothing promoted until a second clean run):** Garbage
+  collector 1/8 (no garbage collector controller, so ownerReference
+  cascades never happen); LimitRange defaults 0/1 (no LimitRanger
+  admission, internal types); ConfigMap 2/6 and Secrets 1/5 (empty-key
+  validation lives in upstream's internal-type strategies; pod log reads
+  returned "unknown", unexplained yet); Namespaces [Serial] 5/8 (100
+  namespaces do not delete fast enough under event-armed deletion; a
+  Service-removal case timed out); ReplicaSet 4/7 (`resourcequotas` and
+  the scale subresource are not served; reaching a replica pod from the
+  runner needs pod networking); Deployment 8/11 (scale subresource;
+  cascade needs the garbage collector); Pods exceeded the 25-minute cap
+  and is unmeasured; Job, Services and ServiceAccounts did not run before
+  the scheduler wedged. Watches stream from it (Content-Encoding: identity, or
   the runtime gzips JSON and holds the stream until it closes).
 - **The agent is k3s.** `packages/agent` embeds `k3s/pkg/agent` unchanged except
   the `deps.KubeConfigOverride` hook, because TLS terminates at the edge and

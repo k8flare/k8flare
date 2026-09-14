@@ -6,6 +6,7 @@ import (
 
 	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
@@ -28,8 +29,11 @@ func init() {
 		store.BeginCreate = func(context.Context, runtime.Object, *metav1.CreateOptions) (genericregistry.FinishFunc, error) {
 			return pokeBoth, nil
 		}
-		store.BeginUpdate = func(context.Context, runtime.Object, runtime.Object, *metav1.UpdateOptions) (genericregistry.FinishFunc, error) {
-			return pokeBoth, nil
+		store.BeginUpdate = func(_ context.Context, obj, old runtime.Object, _ *metav1.UpdateOptions) (genericregistry.FinishFunc, error) {
+			if nodeChanged(old.(*corev1.Node), obj.(*corev1.Node)) {
+				return pokeBoth, nil
+			}
+			return func(context.Context, bool) {}, nil
 		}
 	}
 	for _, resource := range []string{"services", "endpoints", "replicationcontrollers", "serviceaccounts"} {
@@ -56,6 +60,22 @@ func init() {
 			return bootstrapCluster(stores["namespaces"], stores["services"], next)
 		}
 	})
+}
+
+func nodeChanged(old, node *corev1.Node) bool {
+	return !equality.Semantic.DeepEqual(old.Spec, node.Spec) ||
+		!equality.Semantic.DeepEqual(old.Labels, node.Labels) ||
+		!equality.Semantic.DeepEqual(old.Status.Allocatable, node.Status.Allocatable) ||
+		nodeReady(old) != nodeReady(node)
+}
+
+func nodeReady(node *corev1.Node) corev1.ConditionStatus {
+	for _, c := range node.Status.Conditions {
+		if c.Type == corev1.NodeReady {
+			return c.Status
+		}
+	}
+	return corev1.ConditionUnknown
 }
 
 func pokeBothFor(obj runtime.Object) genericregistry.FinishFunc {

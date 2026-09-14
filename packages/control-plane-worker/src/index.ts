@@ -47,7 +47,11 @@ async function sha256Hex(s: string): Promise<string> {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    if (new URL(request.url).pathname === "/v1-k3s/connect") return acceptTunnel(request, env);
+    const path = new URL(request.url).pathname;
+    if (path === "/v1-k3s/connect") return acceptTunnel(request, env);
+    if (path === "/stats" && request.headers.get("Authorization") === `Bearer ${env.ADMIN_TOKEN}`) {
+      return env.CLUSTER.get(env.CLUSTER.idFromName("default")).fetch("https://cluster.internal/stats");
+    }
     return apiserverFetch(env, request);
   },
 } satisfies ExportedHandler<Env>;

@@ -14,10 +14,9 @@ import (
 )
 
 const (
-	pokeWindow    = 20 * time.Second
-	idleChecks    = 3
-	checkPeriod   = 500 * time.Millisecond
-	watchLifetime = 15 * time.Second
+	pokeWindow  = 20 * time.Second
+	idleChecks  = 3
+	checkPeriod = 500 * time.Millisecond
 )
 
 func main() {
@@ -26,7 +25,7 @@ func main() {
 		BearerToken: bridge.Getenv("ADMIN_TOKEN"),
 		QPS:         20,
 		Burst:       30,
-		Transport:   bridge.BindingTransport{Name: "APISERVER", WatchLifetime: watchLifetime},
+		Transport:   bridge.BindingTransport{Name: "APISERVER", AbortOnWake: true},
 	}
 	var (
 		mu      sync.Mutex
@@ -42,6 +41,7 @@ func main() {
 		}
 		holding = true
 		mu.Unlock()
+		bridge.EndTrackedStreams()
 		defer func() {
 			mu.Lock()
 			holding = false

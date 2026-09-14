@@ -6,6 +6,7 @@ import { DurableObject } from "cloudflare:workers";
 // version of 0 is illegal for a list. Watchers are hibernatable WebSockets
 // tagged with the key prefix they asked for.
 const RETAINED_REVISIONS = 1000;
+const WATCH_LEASE_MS = 60_000;
 
 export class Cluster extends DurableObject<Env> {
   private watchers = new Map<WebSocket, Watcher>();
@@ -82,6 +83,7 @@ export class Cluster extends DurableObject<Env> {
           revision: this.revision(),
           compactRevision: this.compactRevision(),
           rows: this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM kine").one().n as number,
+          watchers: this.ctx.getWebSockets().length,
         });
       case "GET /kv": {
         const kv = this.current(url.searchParams.get("key") ?? "");
@@ -126,6 +128,7 @@ export class Cluster extends DurableObject<Env> {
     if (rev - this.compactRevision() >= RETAINED_REVISIONS) this.compactBefore(rev - RETAINED_REVISIONS);
     const type = deleted ? "deleted" : prev ? "modified" : "created";
     this.restoreWatchers();
+    this.expireWatchers();
     const targets = [...this.watchers].filter(([, w]) => (w.exact ? name === w.prefix : name.startsWith(w.prefix)));
     if (targets.length > 0) {
       const msg = JSON.stringify({
@@ -153,6 +156,7 @@ export class Cluster extends DurableObject<Env> {
     const watcher: Watcher = {
       prefix: url.searchParams.get("prefix") ?? "/",
       exact: url.searchParams.get("exact") === "1",
+      openedAt: Date.now(),
     };
     const since = Number(url.searchParams.get("since") ?? "0");
     const initial = url.searchParams.get("initial") === "1";
@@ -168,6 +172,7 @@ export class Cluster extends DurableObject<Env> {
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment(watcher);
     this.restoreWatchers();
+    this.expireWatchers();
     this.watchers.set(server, watcher);
     if (initial) {
       for (const kv of this.latest(watcher.prefix, watcher.exact, watcher.prefix, -1)) {
@@ -196,6 +201,16 @@ export class Cluster extends DurableObject<Env> {
     return new Response(null, { status: 101, webSocket: client });
   }
 
+  private expireWatchers(): void {
+    const cutoff = Date.now() - WATCH_LEASE_MS;
+    for (const [ws, w] of this.watchers) {
+      if (w.openedAt < cutoff) {
+        this.watchers.delete(ws);
+        ws.close(1000, "lease");
+      }
+    }
+  }
+
   // The in-memory watcher map does not survive hibernation; the sockets'
   // attachments do, so it is rebuilt from them whenever it is empty.
   private restoreWatchers(): void {
@@ -222,6 +237,7 @@ export class Cluster extends DurableObject<Env> {
 interface Watcher {
   prefix: string;
   exact: boolean;
+  openedAt: number;
 }
 
 interface KV {

@@ -31,7 +31,7 @@ export default {
     if (PUMP_MS > 0) ctx.waitUntil(pump(binding, PUMP_MS));
     const raw = await request.arrayBuffer();
     const out = await binding.handleRequest(
-      { method: request.method, url: request.url, headers: [...request.headers], body: raw.byteLength === 0 ? null : new Uint8Array(raw) },
+      { method: request.method, url: request.url, headers: [...request.headers], body: raw.byteLength === 0 ? null : new Uint8Array(raw), signal: request.signal },
       env,
     );
     return new Response(out.body, { status: out.status, headers: out.headers });

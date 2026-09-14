@@ -18,7 +18,6 @@ import (
 	"strings"
 	"sync"
 	"syscall/js"
-	"time"
 )
 
 type envKey struct{}
@@ -281,6 +280,15 @@ func dispatch(handler http.Handler, reqObj, env js.Value, started func(js.Value)
 	defer cancel()
 	req = req.WithContext(ctx)
 	rw := &responseWriter{header: http.Header{}, cancel: cancel, closed: make(chan bool, 1), started: started}
+	if signal := reqObj.Get("signal"); !signal.IsUndefined() && !signal.IsNull() {
+		id := register(rw)
+		defer unregister(id)
+		signal.Call("addEventListener", "abort", bound("request-abort", id, func(id int, _ []js.Value) {
+			if w, ok := lookup(id).(*responseWriter); ok {
+				w.cancel()
+			}
+		}))
+	}
 	handler.ServeHTTP(rw, req)
 	rw.finish()
 	return nil
@@ -312,8 +320,49 @@ func headerToPairs(h http.Header) js.Value {
 // Plain HTTP needs no transport of its own: net/http's default transport is
 // fetch-based on GOOS=js and streams response bodies.
 type BindingTransport struct {
-	Name          string
-	WatchLifetime time.Duration
+	Name        string
+	AbortOnWake bool
+}
+
+var (
+	streamsMu   sync.Mutex
+	openStreams = map[int]func(){}
+	nextStream  int
+)
+
+// EndTrackedStreams ends every response stream an AbortOnWake transport
+// still has open. A subrequest stream is only delivered while the request
+// that opened it is alive, so a resident worker calls this at the start of
+// each wake and lets its informers re-watch inside the new request.
+func EndTrackedStreams() {
+	streamsMu.Lock()
+	ends := make([]func(), 0, len(openStreams))
+	for _, end := range openStreams {
+		ends = append(ends, end)
+	}
+	streamsMu.Unlock()
+	for _, end := range ends {
+		end()
+	}
+}
+
+func trackStream(end func()) (update func(func()), untrack func()) {
+	streamsMu.Lock()
+	nextStream++
+	id := nextStream
+	openStreams[id] = end
+	streamsMu.Unlock()
+	return func(end func()) {
+			streamsMu.Lock()
+			if _, ok := openStreams[id]; ok {
+				openStreams[id] = end
+			}
+			streamsMu.Unlock()
+		}, func() {
+			streamsMu.Lock()
+			delete(openStreams, id)
+			streamsMu.Unlock()
+		}
 }
 
 func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -334,13 +383,25 @@ func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			opts.Set("body", toUint8Array(body))
 		}
 	}
+	controller := js.Global().Get("AbortController").New()
+	opts.Set("signal", controller.Get("signal"))
+	abort := func() { controller.Call("abort") }
+	stop := context.AfterFunc(req.Context(), abort)
+	update, untrack := func(func()) {}, func() {}
+	if t.AbortOnWake {
+		update, untrack = trackStream(abort)
+	}
 	jsReq := js.Global().Get("Request").New(req.URL.String(), opts)
 	jsResp, err := await(binding.Call("fetch", jsReq))
 	if err != nil {
+		untrack()
+		stop()
 		return nil, fmt.Errorf("bridge: fetch %s: %w", req.URL, err)
 	}
 	header := headerFromPairs(js.Global().Get("Array").Call("from", jsResp.Get("headers").Call("entries")))
 	status := jsResp.Get("status").Int()
+	body, end := streamBody(jsResp.Get("body"), abort)
+	update(end)
 	return &http.Response{
 		Status:        fmt.Sprintf("%d %s", status, http.StatusText(status)),
 		StatusCode:    status,
@@ -348,30 +409,32 @@ func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		ProtoMajor:    1,
 		ProtoMinor:    1,
 		Header:        header,
-		Body:          streamBody(jsResp.Get("body"), t.bodyLifetime(req)),
+		Body:          abortingBody{body, func() { untrack(); stop(); abort() }},
 		ContentLength: -1,
 		Request:       req,
 	}, nil
 }
 
-func (t BindingTransport) bodyLifetime(req *http.Request) time.Duration {
-	if req.URL.Query().Get("watch") == "true" {
-		return t.WatchLifetime
-	}
-	return 0
+type abortingBody struct {
+	io.ReadCloser
+	abort func()
 }
 
-func streamBody(stream js.Value, lifetime time.Duration) io.ReadCloser {
+func (b abortingBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.abort()
+	return err
+}
+
+func streamBody(stream js.Value, abort func()) (io.ReadCloser, func()) {
 	if stream.IsNull() || stream.IsUndefined() {
-		return io.NopCloser(bytes.NewReader(nil))
+		return io.NopCloser(bytes.NewReader(nil)), func() {}
 	}
 	reader := stream.Call("getReader")
 	pr, pw := io.Pipe()
-	if lifetime > 0 {
-		time.AfterFunc(lifetime, func() {
-			pw.Close()
-			reader.Call("cancel")
-		})
+	end := func() {
+		pw.Close()
+		abort()
 	}
 	go func() {
 		for {
@@ -385,12 +448,12 @@ func streamBody(stream js.Value, lifetime time.Duration) io.ReadCloser {
 				return
 			}
 			if _, err := pw.Write(fromUint8Array(chunk.Get("value"))); err != nil {
-				reader.Call("cancel")
+				abort()
 				return
 			}
 		}
 	}()
-	return pr
+	return pr, end
 }
 
 func await(promise js.Value) (js.Value, error) {
@@ -439,7 +502,7 @@ type WebSocket struct {
 	id       int
 }
 
-const maxQueuedWebSocketBytes = 32 << 20
+const maxQueuedWebSocketBytes = 1 << 20
 
 func (c *WebSocket) enqueue(b []byte) {
 	c.mu.Lock()
