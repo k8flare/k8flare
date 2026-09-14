@@ -116,6 +116,31 @@ its log, and removing it again.
   would have taken minutes there instead of an hour. A goroutine parked
   in `await(reader.read())` on a dead stream never wakes; that leaks a
   few KB per informer per wake and is accepted.
+- **Open: the first namespaced write after a cold start fails.** With a
+  fresh store and no node agent, `POST` to a namespaced resource returns
+  500 ("Network connection lost" from the runtime) after 16-26s, and the
+  next identical write succeeds in tens of milliseconds; the failure
+  coincides with the controllers worker's cold start, whose informers
+  flood the single-threaded Cluster DO. It is not new: bisecting to
+  `b88f350`, before the finalizer and socket work, reproduces it exactly
+  (500 after 23.7s, then 97ms). The node agent's steady traffic keeps the
+  workers warm, which is why kubectl and `make e2e` almost never see it
+  and `go test ./packages/apiserver/` almost always does. Reproduce with:
+  `rm -rf .wrangler/state`, stop the agent, `make dev`, then one GET and
+  two POSTs against `/api/v1/namespaces/default/configmaps`.
+
+  Upstream's client rates assume an apiserver that scales out; here every
+  request funnels into one DO thread, so the resident workers now use
+  rates chosen for the store (controllers 5/10, its metadata client 5/5,
+  scheduler 10/20) rather than kube-controller-manager's 20/30 and
+  kube-scheduler's 50/100. One measurement had that turn the cold write
+  into a 3.9s success and take the harness lane from nine failures to
+  three, but the lane is bistable: the same tree gives three failures in
+  one run and eight in the next, so treat the rates as a cost decision
+  that is right on its own terms and the cold-start failure as open. A
+  fire-and-forget poke (`bridge.Notify`) was tried and reverted; it did
+  not help, and an un-awaited subrequest is its own hazard.
+
 - **Track 8 (deployment measurement) is ready to run but not run.**
   `make deploycheck SERVER=... TOKEN=... NODE=...` (`scripts/deploycheck`)
   times the three paths that need a resident worker to stay alive:

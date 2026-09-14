@@ -82,21 +82,24 @@ func startDevURL(t *testing.T) (string, *kubernetes.Clientset) {
 		}
 	})
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
-	deadline := time.Now().Add(2 * time.Minute)
-	for {
-		req, _ := http.NewRequest(http.MethodGet, base+"/version", nil)
-		req.Header.Set("Authorization", "Bearer "+devToken)
-		resp, err := http.DefaultClient.Do(req)
-		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				break
+	deadline := time.Now().Add(3 * time.Minute)
+	for _, path := range []string{"/version", "/api/v1/namespaces/default"} {
+		for {
+			req, _ := http.NewRequest(http.MethodGet, base+path, nil)
+			req.Header.Set("Authorization", "Bearer "+devToken)
+			resp, err := http.DefaultClient.Do(req)
+			if err == nil {
+				resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					break
+				}
+				err = fmt.Errorf("GET %s: HTTP %d", path, resp.StatusCode)
 			}
+			if time.Now().After(deadline) {
+				t.Fatalf("wrangler dev did not become ready: %v", err)
+			}
+			time.Sleep(time.Second)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("wrangler dev did not become ready: %v", err)
-		}
-		time.Sleep(time.Second)
 	}
 	cs, err := kubernetes.NewForConfig(devConfig(base, devToken))
 	if err != nil {

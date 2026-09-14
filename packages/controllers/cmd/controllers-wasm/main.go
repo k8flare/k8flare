@@ -23,8 +23,8 @@ func main() {
 	cfg := &rest.Config{
 		Host:        "https://k8flare.internal",
 		BearerToken: bridge.Getenv("ADMIN_TOKEN"),
-		QPS:         20,
-		Burst:       30,
+		QPS:         5,
+		Burst:       10,
 		Transport:   bridge.BindingTransport{Name: "APISERVER", AbortOnWake: true},
 	}
 	var (

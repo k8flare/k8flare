@@ -56,6 +56,8 @@ const (
 	namespaceSyncPeriod         = 5 * time.Minute
 	namespaceWorkers            = 10
 	garbageCollectorWorkers     = 20
+	metadataQPS                 = 5
+	metadataBurst               = 5
 	garbageCollectorSyncPeriod  = 30 * time.Second
 )
 
@@ -127,7 +129,9 @@ func New(ctx context.Context, cfg *rest.Config) (*Controllers, error) {
 		return nil, err
 	}
 	c.add(func(ctx context.Context) { accounts.Run(ctx, 1) })
-	metadataClient, err := metadata.NewForConfig(cfg)
+	metadataConfig := rest.CopyConfig(cfg)
+	metadataConfig.QPS, metadataConfig.Burst = metadataQPS, metadataBurst
+	metadataClient, err := metadata.NewForConfig(metadataConfig)
 	if err != nil {
 		return nil, err
 	}
