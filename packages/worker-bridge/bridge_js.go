@@ -257,6 +257,7 @@ func fromUint8Array(v js.Value) []byte {
 }
 
 func dispatch(handler http.Handler, reqObj, env js.Value, started func(js.Value)) (err error) {
+	endTrackedStreams(deadStreamAge)
 	u, err := url.Parse(reqObj.Get("url").String())
 	if err != nil {
 		return err
@@ -325,6 +326,8 @@ type BindingTransport struct {
 	AbortOnWake bool
 }
 
+const deadStreamAge = 30 * time.Second
+
 type trackedStream struct {
 	opened time.Time
 	end    func()
@@ -336,13 +339,13 @@ var (
 	nextStream  int
 )
 
-// EndTrackedStreams ends every response stream an AbortOnWake transport
-// opened more than olderThan ago. A subrequest stream is only delivered
-// while the request that opened it is alive, so a resident worker calls
-// this at the start of each wake with its pump window and lets its
-// informers re-watch inside the new request; younger streams still belong
-// to a live window and are left alone.
-func EndTrackedStreams(olderThan time.Duration) {
+// endTrackedStreams ends every stream opened more than olderThan ago: the
+// response streams of AbortOnWake transports and the WebSockets dialed
+// outside a request. A subrequest is only delivered while the request
+// that opened it is alive, and neither its end nor the store's own close
+// is reported back, so each wake ends what the last one opened and lets
+// the informers re-establish inside the live request.
+func endTrackedStreams(olderThan time.Duration) {
 	cutoff := time.Now().Add(-olderThan)
 	streamsMu.Lock()
 	var ends []func()
@@ -507,6 +510,7 @@ type WebSocket struct {
 	msgs     chan []byte
 	closed   chan struct{}
 	notify   chan struct{}
+	untrack  func()
 	mu       sync.Mutex
 	queue    [][]byte
 	queued   int
@@ -560,6 +564,7 @@ func (c *WebSocket) drain() {
 
 func DialWebSocket(ctx context.Context, bindingName, rawURL string) (*WebSocket, error) {
 	binding := Binding(ctx, bindingName)
+	background := ctx.Value(envKey{}) == nil
 	opts := js.Global().Get("Object").New()
 	headers := js.Global().Get("Object").New()
 	headers.Set("Upgrade", "websocket")
@@ -576,6 +581,11 @@ func DialWebSocket(ctx context.Context, bindingName, rawURL string) (*WebSocket,
 	c := &WebSocket{ws: ws, Messages: msgs, msgs: msgs, closed: make(chan struct{}), notify: make(chan struct{}, 1)}
 	c.id = register(c)
 	go c.drain()
+	if background {
+		update, untrack := trackStream(c.Close)
+		update(c.Close)
+		c.untrack = untrack
+	}
 	ws.Call("addEventListener", "message", bound("ws-message", c.id, func(id int, args []js.Value) {
 		w, ok := lookup(id).(*WebSocket)
 		if !ok {
@@ -613,6 +623,9 @@ func (c *WebSocket) finish() {
 	case <-c.closed:
 	default:
 		close(c.closed)
+		if c.untrack != nil {
+			c.untrack()
+		}
 		unregister(c.id)
 	}
 }
@@ -622,6 +635,7 @@ func (c *WebSocket) Close() {
 		defer func() { recover() }()
 		c.ws.Call("close", 1000, "done")
 	}()
+	c.finish()
 }
 
 // Call invokes an RPC method on a service binding in the request's env and

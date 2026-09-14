@@ -8,6 +8,12 @@ import { DurableObject } from "cloudflare:workers";
 const RETAINED_REVISIONS = 1000;
 const WATCH_LEASE_MS = 60_000;
 
+function closeQuietly(ws: WebSocket, reason: string): void {
+  try {
+    ws.close(1000, reason);
+  } catch {}
+}
+
 export class Cluster extends DurableObject<Env> {
   private watchers = new Map<WebSocket, Watcher>();
 
@@ -142,7 +148,7 @@ export class Cluster extends DurableObject<Env> {
         try {
           ws.send(msg);
         } catch {
-          ws.close(1011, "send failed");
+          closeQuietly(ws, "send failed");
         }
       }
     }
@@ -206,7 +212,7 @@ export class Cluster extends DurableObject<Env> {
     for (const [ws, w] of this.watchers) {
       if (w.openedAt < cutoff) {
         this.watchers.delete(ws);
-        ws.close(1000, "lease");
+        closeQuietly(ws, "lease");
       }
     }
   }
@@ -225,12 +231,12 @@ export class Cluster extends DurableObject<Env> {
 
   async webSocketClose(ws: WebSocket): Promise<void> {
     this.watchers.delete(ws);
-    ws.close();
+    closeQuietly(ws, "peer");
   }
 
   async webSocketError(ws: WebSocket): Promise<void> {
     this.watchers.delete(ws);
-    ws.close();
+    closeQuietly(ws, "error");
   }
 }
 

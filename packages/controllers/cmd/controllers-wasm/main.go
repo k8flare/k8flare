@@ -17,7 +17,6 @@ const (
 	pokeWindow  = 20 * time.Second
 	idleChecks  = 3
 	checkPeriod = 500 * time.Millisecond
-	pumpWindow  = 30 * time.Second
 )
 
 func main() {
@@ -42,7 +41,6 @@ func main() {
 		}
 		holding = true
 		mu.Unlock()
-		bridge.EndTrackedStreams(pumpWindow)
 		defer func() {
 			mu.Lock()
 			holding = false

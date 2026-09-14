@@ -75,6 +75,7 @@ func startDevURL(t *testing.T) (string, *kubernetes.Clientset) {
 	t.Cleanup(func() {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 		_ = cmd.Wait()
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		if t.Failed() {
 			log, _ := os.ReadFile(logFile.Name())
 			t.Logf("wrangler dev log:\n%s", log)
