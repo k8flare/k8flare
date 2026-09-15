@@ -1097,15 +1097,35 @@ Two findings from that deploy are keepers:
 | `2fa87f2` window=dispatch, 290s | 5,589 | 241.5M | 206 | 61 | 0 |
 | `b003276` stream ownership | 3,247 | 140.3M | 135 | 165 | 23 |
 | `92b1427`+`62f3c83` keepalive, tracking | 3,267 | 141.1M | 236 | 34 | 0 |
-| `12c1d38` owned windows only | see below | — | 236 | 50 | 54 |
+| `12c1d38` owned windows only | 5,763 | 249.0M | 278 | 41 | 0 |
+| `41eeed2` borrowed dials scoped to the isolate | 4,635 | 200.2M | — | 25 | 0 |
 
 The `12c1d38` window is not usable: a bulk namespace delete issued for
 cleanup was still running through it (`rows` 1,082 → 1,181, `revision`
 2,600 → 3,450). It needs re-measuring.
 
 **The required e2e set, same cluster, same day**: `c044e57` 16 passed /
-5 failed; `12c1d38` 17 passed / 4 failed. The rewrite is not a functional
-regression against the point it started from.
+5 failed; `62f3c83` 3 passed / 18 failed; `12c1d38` 17 passed / 4 failed;
+`41eeed2` 11 passed / 10 failed. `12c1d38` is the only build that beats
+the point this started from, and it is the one production runs.
+
+**No cost reduction survived into the shipped state, and this is the
+honest result of the series.** The two builds that were materially
+cheaper are the two that break: `62f3c83` at 3,247 ms/min fails 18 of 21
+specs because an unrelated request closes the CRD informer's socket, and
+`41eeed2` at 4,635 ms/min fails 10. `12c1d38` costs 5,763 ms/min against
+the 5,611 it started from — the same, within the noise of a single
+window. What it does buy is `exceededMemory` 37 → 0, which was the
+original ask, and a fully attributed cause for the CPU.
+
+The three lifetimes tried for a background dial — the dispatch that
+borrowed the window, the isolate's live period, and no tracking at all —
+trade the store's socket pool against the CRD informer's survival, and
+none of them is right. The socket needs to outlive any single dispatch
+but die with the env that dialed it, and neither `windows` nor the
+isolate is that boundary. The next attempt should give a worker with
+background informers a hold of its own, the way the resident workers
+have one, rather than letting it borrow.
 
 **Comparable failure counts.** The starting point was not failure-free:
 `c044e57` failed 37 requests per 6-minute window with `exceededMemory`.
