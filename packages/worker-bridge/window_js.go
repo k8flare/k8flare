@@ -32,8 +32,6 @@ var (
 	windows   []*Window
 	openedCh  = make(chan struct{})
 	idle      chan struct{}
-	borrowed  = map[int]func(){}
-	borrowID  int
 )
 
 func openWindow(env js.Value) *Window {
@@ -64,15 +62,9 @@ func (w *Window) close() {
 		ends = append(ends, end)
 	}
 	w.streams = nil
-	if len(windows) == 0 {
-		if idle != nil {
-			close(idle)
-			idle = nil
-		}
-		for id, end := range borrowed {
-			ends = append(ends, end)
-			delete(borrowed, id)
-		}
+	if len(windows) == 0 && idle != nil {
+		close(idle)
+		idle = nil
 	}
 	windowsMu.Unlock()
 	close(w.done)
@@ -136,19 +128,6 @@ func CloseWindow(ctx context.Context) {
 	windowsMu.Lock()
 	w.holding = false
 	windowsMu.Unlock()
-}
-
-func trackBorrowed(end func()) func() {
-	windowsMu.Lock()
-	borrowID++
-	id := borrowID
-	borrowed[id] = end
-	windowsMu.Unlock()
-	return func() {
-		windowsMu.Lock()
-		delete(borrowed, id)
-		windowsMu.Unlock()
-	}
 }
 
 func ownedBy(ctx context.Context, w *Window) bool {
