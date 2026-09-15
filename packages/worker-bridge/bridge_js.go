@@ -18,7 +18,6 @@ import (
 	"strings"
 	"sync"
 	"syscall/js"
-	"time"
 )
 
 type envKey struct{}
@@ -259,7 +258,6 @@ func fromUint8Array(v js.Value) []byte {
 }
 
 func dispatch(handler http.Handler, reqObj, env js.Value, started func(js.Value)) (err error) {
-	endTrackedStreams(deadStreamAge)
 	u, err := url.Parse(reqObj.Get("url").String())
 	if err != nil {
 		return err
@@ -330,62 +328,6 @@ type BindingTransport struct {
 	AbortOnWake bool
 }
 
-const deadStreamAge = 30 * time.Second
-
-type trackedStream struct {
-	opened time.Time
-	end    func()
-}
-
-var (
-	streamsMu   sync.Mutex
-	openStreams = map[int]*trackedStream{}
-	nextStream  int
-)
-
-// endTrackedStreams ends every stream opened more than olderThan ago: the
-// response streams of AbortOnWake transports and the WebSockets dialed
-// outside a request. A subrequest is only delivered while the request
-// that opened it is alive, and neither its end nor the store's own close
-// is reported back, so each wake ends what the last one opened and lets
-// the informers re-establish inside the live request.
-func endTrackedStreams(olderThan time.Duration) {
-	cutoff := time.Now().Add(-olderThan)
-	if olderThan > 0 && anyHolding() {
-		return
-	}
-	streamsMu.Lock()
-	var ends []func()
-	for _, stream := range openStreams {
-		if stream.opened.Before(cutoff) {
-			ends = append(ends, stream.end)
-		}
-	}
-	streamsMu.Unlock()
-	for _, end := range ends {
-		end()
-	}
-}
-
-func trackStream(end func()) (update func(func()), untrack func()) {
-	streamsMu.Lock()
-	nextStream++
-	id := nextStream
-	openStreams[id] = &trackedStream{opened: time.Now(), end: end}
-	streamsMu.Unlock()
-	return func(end func()) {
-			streamsMu.Lock()
-			if stream, ok := openStreams[id]; ok {
-				stream.end = end
-			}
-			streamsMu.Unlock()
-		}, func() {
-			streamsMu.Lock()
-			delete(openStreams, id)
-			streamsMu.Unlock()
-		}
-}
-
 func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	window, err := CurrentWindow(req.Context())
 	if err != nil {
@@ -414,7 +356,7 @@ func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	stop := context.AfterFunc(req.Context(), abort)
 	update, untrack := func(func()) {}, func() {}
 	if t.AbortOnWake {
-		update, untrack = trackStream(abort)
+		update, untrack = trackStream(window, abort)
 	}
 	jsReq := js.Global().Get("Request").New(req.URL.String(), opts)
 	jsResp, err := awaitIn(window, binding.Call("fetch", jsReq))
@@ -597,7 +539,7 @@ func DialWebSocket(ctx context.Context, bindingName, rawURL string) (*WebSocket,
 	c.id = register(c)
 	go c.drain()
 	if background {
-		update, untrack := trackStream(c.Close)
+		update, untrack := trackStream(window, c.Close)
 		update(c.Close)
 		c.untrack = untrack
 	}

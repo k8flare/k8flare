@@ -2,7 +2,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import { loadWasmWorker } from "@k8flare/loader-kit";
 
 const writeWindowMs = 20_000;
-const cronWindowMs = 290_000;
+const cronWindowMs = 55_000;
 
 export class Scheduler extends WorkerEntrypoint<Env> {
   async poke(): Promise<void> {

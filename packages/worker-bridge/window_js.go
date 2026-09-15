@@ -15,6 +15,8 @@ type Window struct {
 	env     js.Value
 	done    chan struct{}
 	holding bool
+	streams map[int]func()
+	nextID  int
 }
 
 func (w *Window) Env() js.Value         { return w.env }
@@ -47,8 +49,41 @@ func (w *Window) close() {
 			break
 		}
 	}
+	ends := make([]func(), 0, len(w.streams))
+	for _, end := range w.streams {
+		ends = append(ends, end)
+	}
+	w.streams = nil
 	windowsMu.Unlock()
 	close(w.done)
+	for _, end := range ends {
+		end()
+	}
+}
+
+func trackStream(w *Window, end func()) (update func(func()), untrack func()) {
+	if w == nil {
+		return func(func()) {}, func() {}
+	}
+	windowsMu.Lock()
+	w.nextID++
+	id := w.nextID
+	if w.streams == nil {
+		w.streams = map[int]func(){}
+	}
+	w.streams[id] = end
+	windowsMu.Unlock()
+	return func(end func()) {
+			windowsMu.Lock()
+			if _, ok := w.streams[id]; ok {
+				w.streams[id] = end
+			}
+			windowsMu.Unlock()
+		}, func() {
+			windowsMu.Lock()
+			delete(w.streams, id)
+			windowsMu.Unlock()
+		}
 }
 
 func OpenWindow(ctx context.Context) {
@@ -59,7 +94,6 @@ func OpenWindow(ctx context.Context) {
 	windowsMu.Lock()
 	w.holding = true
 	windowsMu.Unlock()
-	endTrackedStreams(0)
 }
 
 func CloseWindow(ctx context.Context) {
@@ -138,15 +172,4 @@ func awaitIn(w *Window, promise js.Value) (js.Value, error) {
 	case <-w.Done():
 		return js.Value{}, ErrWindowClosed
 	}
-}
-
-func anyHolding() bool {
-	windowsMu.Lock()
-	defer windowsMu.Unlock()
-	for _, w := range windows {
-		if w.holding {
-			return true
-		}
-	}
-	return false
 }
