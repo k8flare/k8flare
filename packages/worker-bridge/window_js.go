@@ -7,73 +7,83 @@ import (
 	"errors"
 	"sync"
 	"syscall/js"
-	"time"
 )
 
 var ErrWindowClosed = errors.New("bridge: pump window closed")
 
-const expiryGrace = 2 * time.Second
-
 type Window struct {
-	id      int
 	env     js.Value
 	done    chan struct{}
-	expires time.Time
-	timer   *time.Timer
+	holding bool
 }
 
 func (w *Window) Env() js.Value         { return w.env }
 func (w *Window) Done() <-chan struct{} { return w.done }
 
+type windowKey struct{}
+
 var (
 	windowsMu sync.Mutex
 	windows   []*Window
-	windowID  int
-	byID      = map[int]*Window{}
 	openedCh  = make(chan struct{})
 )
 
-func OpenPumpWindow(env js.Value, lifetimeMs int) int {
-	lifetime := time.Duration(lifetimeMs)*time.Millisecond + expiryGrace
+func openWindow(env js.Value) *Window {
+	w := &Window{env: env, done: make(chan struct{})}
 	windowsMu.Lock()
-	windowID++
-	id := windowID
-	w := &Window{id: id, env: env, done: make(chan struct{}), expires: time.Now().Add(lifetime)}
-	byID[id] = w
 	windows = append(windows, w)
 	notify := openedCh
 	openedCh = make(chan struct{})
-	w.timer = time.AfterFunc(lifetime, func() { closeWindow(id) })
 	windowsMu.Unlock()
 	close(notify)
-	return id
+	return w
 }
 
-func ClosePumpWindow(id int) { closeWindow(id) }
-
-func closeWindow(id int) {
+func (w *Window) close() {
 	windowsMu.Lock()
-	w := byID[id]
-	if w == nil {
-		windowsMu.Unlock()
-		return
-	}
-	delete(byID, id)
 	for i, live := range windows {
 		if live == w {
 			windows = append(windows[:i], windows[i+1:]...)
 			break
 		}
 	}
-	w.timer.Stop()
 	windowsMu.Unlock()
 	close(w.done)
 }
 
+func OpenWindow(ctx context.Context) {
+	w := windowFrom(ctx)
+	if w == nil {
+		return
+	}
+	windowsMu.Lock()
+	w.holding = true
+	windowsMu.Unlock()
+	endTrackedStreams(0)
+}
+
+func CloseWindow(ctx context.Context) {
+	w := windowFrom(ctx)
+	if w == nil {
+		return
+	}
+	windowsMu.Lock()
+	w.holding = false
+	windowsMu.Unlock()
+}
+
+func windowFrom(ctx context.Context) *Window {
+	w, _ := ctx.Value(windowKey{}).(*Window)
+	return w
+}
+
 func CurrentWindow(ctx context.Context) (*Window, error) {
+	if w := windowFrom(ctx); w != nil {
+		return w, nil
+	}
 	for {
 		windowsMu.Lock()
-		w := newestLive()
+		w := preferred()
 		wait := openedCh
 		windowsMu.Unlock()
 		if w != nil {
@@ -87,12 +97,14 @@ func CurrentWindow(ctx context.Context) (*Window, error) {
 	}
 }
 
-func newestLive() *Window {
-	now := time.Now()
+func preferred() *Window {
 	for i := len(windows) - 1; i >= 0; i-- {
-		if now.Before(windows[i].expires) {
+		if windows[i].holding {
 			return windows[i]
 		}
+	}
+	if len(windows) > 0 {
+		return windows[len(windows)-1]
 	}
 	return nil
 }
@@ -100,7 +112,7 @@ func newestLive() *Window {
 func currentWindowEnv() (js.Value, bool) {
 	windowsMu.Lock()
 	defer windowsMu.Unlock()
-	if w := newestLive(); w != nil {
+	if w := preferred(); w != nil {
 		return w.env, true
 	}
 	return js.Value{}, false
@@ -126,4 +138,15 @@ func awaitIn(w *Window, promise js.Value) (js.Value, error) {
 	case <-w.Done():
 		return js.Value{}, ErrWindowClosed
 	}
+}
+
+func anyHolding() bool {
+	windowsMu.Lock()
+	defer windowsMu.Unlock()
+	for _, w := range windows {
+		if w.holding {
+			return true
+		}
+	}
+	return false
 }

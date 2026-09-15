@@ -121,13 +121,6 @@ func Serve(handler http.Handler) {
 		})
 		return js.Global().Get("Promise").New(executor)
 	}))
-	binding.Set("openPumpWindow", js.FuncOf(func(_ js.Value, args []js.Value) any {
-		return OpenPumpWindow(args[0], args[1].Int())
-	}))
-	binding.Set("closePumpWindow", js.FuncOf(func(_ js.Value, args []js.Value) any {
-		ClosePumpWindow(args[0].Int())
-		return js.Undefined()
-	}))
 	rt.Call("ready")
 	select {}
 }
@@ -287,7 +280,9 @@ func dispatch(handler http.Handler, reqObj, env js.Value, started func(js.Value)
 		Host:          u.Host,
 		RequestURI:    u.RequestURI(),
 	}
-	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), envKey{}, env))
+	window := openWindow(env)
+	defer window.close()
+	ctx, cancel := context.WithCancel(context.WithValue(context.WithValue(context.Background(), envKey{}, env), windowKey{}, window))
 	defer cancel()
 	req = req.WithContext(ctx)
 	rw := &responseWriter{header: http.Header{}, cancel: cancel, closed: make(chan bool, 1), started: started}
@@ -346,25 +341,7 @@ var (
 	streamsMu   sync.Mutex
 	openStreams = map[int]*trackedStream{}
 	nextStream  int
-	windowOpen  bool
 )
-
-// OpenWindow ends the streams the previous window left behind and stops
-// dispatch from reaping until CloseWindow. A resident worker holds its
-// request open for the window, so the streams it opens stay deliverable
-// for the whole of it instead of dying with a 30s pump.
-func OpenWindow() {
-	streamsMu.Lock()
-	windowOpen = true
-	streamsMu.Unlock()
-	endTrackedStreams(0)
-}
-
-func CloseWindow() {
-	streamsMu.Lock()
-	windowOpen = false
-	streamsMu.Unlock()
-}
 
 // endTrackedStreams ends every stream opened more than olderThan ago: the
 // response streams of AbortOnWake transports and the WebSockets dialed
@@ -374,11 +351,10 @@ func CloseWindow() {
 // the informers re-establish inside the live request.
 func endTrackedStreams(olderThan time.Duration) {
 	cutoff := time.Now().Add(-olderThan)
-	streamsMu.Lock()
-	if windowOpen && olderThan > 0 {
-		streamsMu.Unlock()
+	if olderThan > 0 && anyHolding() {
 		return
 	}
+	streamsMu.Lock()
 	var ends []func()
 	for _, stream := range openStreams {
 		if stream.opened.Before(cutoff) {

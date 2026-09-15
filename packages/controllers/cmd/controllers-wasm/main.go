@@ -67,8 +67,8 @@ func main() {
 			ctrl = started
 			go ctrl.Run(context.Background())
 		}
-		bridge.OpenWindow()
-		defer bridge.CloseWindow()
+		bridge.OpenWindow(r.Context())
+		defer bridge.CloseWindow(r.Context())
 		w.WriteHeader(http.StatusOK)
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()

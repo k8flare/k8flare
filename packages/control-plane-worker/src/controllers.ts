@@ -1,9 +1,8 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { loadWasmWorker } from "@k8flare/loader-kit";
 
-const pumpMs = 60_000;
 const writeWindowMs = 20_000;
-const cronWindowMs = 55_000;
+const cronWindowMs = 290_000;
 
 export class Controllers extends WorkerEntrypoint<Env> {
   async poke(): Promise<void> {
@@ -18,7 +17,7 @@ export class Controllers extends WorkerEntrypoint<Env> {
     const worker = await loadWasmWorker(this.env.LOADER, this.env.ASSETS, "controllers", {
       APISERVER: this.env.APISERVER,
       ADMIN_TOKEN: this.env.ADMIN_TOKEN,
-    }, pumpMs, this.env.APISERVER);
+    }, this.env.APISERVER);
     const resp = await worker.fetch(`https://controllers.internal/poke?window=${windowMs}`);
     await resp.text();
   }
