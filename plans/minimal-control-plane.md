@@ -1093,6 +1093,7 @@ Two findings from that deploy are keepers:
 | build | CPU ms/min | /mo | watch/min | hung | exceededMemory |
 | --- | --- | --- | --- | --- | --- |
 | `c044e57` 250ms tick | 5,611 | 242.4M | 266 | 0 | 37 |
+| (store grew from 1,056 to 1,255 rows across the series; each row is one 6-minute window) | | | | | |
 | `1cfd478` I/O anchor, 55s | 4,622 | 199.7M | 258 | 0 | 114 |
 | `2fa87f2` window=dispatch, 290s | 5,589 | 241.5M | 206 | 61 | 0 |
 | `b003276` stream ownership | 3,247 | 140.3M | 135 | 165 | 23 |
@@ -1105,18 +1106,28 @@ cleanup was still running through it (`rows` 1,082 → 1,181, `revision`
 2,600 → 3,450). It needs re-measuring.
 
 **The required e2e set, same cluster, same day**: `c044e57` 16 passed /
-5 failed; `62f3c83` 3 passed / 18 failed; `12c1d38` 17 passed / 4 failed;
-`41eeed2` 11 passed / 10 failed. `12c1d38` is the only build that beats
-the point this started from, and it is the one production runs.
+5 failed; `12c1d38` 17 passed / 4 failed; `41eeed2` 11 passed / 10
+failed. The `62f3c83` run was killed before it produced a summary, with
+the CRD specs failing first; the "18" quoted in that commit message is a
+count of `[FAILED]` *lines*, which overcounts specs about threefold, so
+treat it only as "CRD-heavy, clearly worse".
+
+One spec between 17/4 and 16/5 is inside single-run noise, so the
+shipped build is **not worse** than the point it started from rather
+than better. The failure *mode* did change, and that part is a real
+regression: `c044e57` hangs zero requests, `12c1d38` hangs 41 per
+six-minute window.
 
 **No cost reduction survived into the shipped state, and this is the
 honest result of the series.** The two builds that were materially
-cheaper are the two that break: `62f3c83` at 3,247 ms/min fails 18 of 21
+cheaper are the two that break: `62f3c83` at 3,267 ms/min fails the CRD
 specs because an unrelated request closes the CRD informer's socket, and
-`41eeed2` at 4,635 ms/min fails 10. `12c1d38` costs 5,763 ms/min against
+`41eeed2` at 4,635 ms/min fails 10 of 21. `12c1d38` costs 5,763 ms/min against
 the 5,611 it started from — the same, within the noise of a single
-window. What it does buy is `exceededMemory` 37 → 0, which was the
-original ask, and a fully attributed cause for the CPU.
+window. What it buys is a fully attributed cause for the
+CPU, and `exceededMemory` 37 → 0 **in an idle window only**: the same
+build showed 54 while a bulk namespace delete was running. Memory
+exhaustion is improved, not eliminated.
 
 The three lifetimes tried for a background dial — the dispatch that
 borrowed the window, the isolate's live period, and no tracking at all —
