@@ -6,7 +6,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"sync/atomic"
 	"time"
 
 	supervisor "github.com/k8flare/k8flare/packages/apiserver-supervisor"
@@ -65,19 +64,16 @@ type Controllers struct {
 	metadataFactory  metadatainformer.SharedInformerFactory
 	informersStarted chan struct{}
 	runs             []func(context.Context)
-	queues           *queueDepths
-	running          atomic.Bool
 }
 
 func New(ctx context.Context, cfg *rest.Config) (*Controllers, error) {
-	queues := trackQueueDepths()
 	client, err := kubernetes.NewForConfig(rest.AddUserAgent(cfg, "kube-controller-manager"))
 	if err != nil {
 		return nil, err
 	}
 	factory := informers.NewSharedInformerFactory(client, minResyncPeriod)
 	core, apps, batch := factory.Core().V1(), factory.Apps().V1(), factory.Batch().V1()
-	c := &Controllers{factory: factory, queues: queues, informersStarted: make(chan struct{})}
+	c := &Controllers{factory: factory, informersStarted: make(chan struct{})}
 	rc := replication.NewReplicationManager(ctx, core.Pods(), core.ReplicationControllers(), client, replication.BurstReplicas)
 	c.add(func(ctx context.Context) { rc.Run(ctx, workers) })
 	rs := replicaset.NewReplicaSetController(ctx, apps.ReplicaSets(), core.Pods(), client, replicaset.BurstReplicas)
@@ -189,7 +185,6 @@ func (c *Controllers) Run(ctx context.Context) {
 	for _, run := range c.runs {
 		go recovered(ctx, run)
 	}
-	c.running.Store(true)
 	<-ctx.Done()
 }
 
@@ -200,23 +195,6 @@ func recovered(ctx context.Context, run func(context.Context)) {
 		}
 	}()
 	run(ctx)
-}
-
-// Idle is false until Run has started every controller. A factory that
-// has not started yet reports no informers at all, which would otherwise
-// read as idle and let the poke return before the worker has done
-// anything: on a cold instance loading the wasm outlasts the first
-// checks, so the wake ended and nothing was ever reconciled.
-func (c *Controllers) Idle() bool {
-	if !c.running.Load() {
-		return false
-	}
-	for _, synced := range c.factory.WaitForCacheSync(closedChannel) {
-		if !synced {
-			return false
-		}
-	}
-	return c.queues.total() == 0
 }
 
 var closedChannel = func() chan struct{} {

@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -14,10 +15,20 @@ import (
 )
 
 const (
-	pokeWindow  = 20 * time.Second
-	idleChecks  = 3
-	checkPeriod = 500 * time.Millisecond
+	pokeWindow = 20 * time.Second
+	maxWindow  = 5 * time.Minute
 )
+
+func windowFrom(r *http.Request) time.Duration {
+	ms, err := strconv.Atoi(r.URL.Query().Get("window"))
+	if err != nil || ms <= 0 {
+		return pokeWindow
+	}
+	if d := time.Duration(ms) * time.Millisecond; d < maxWindow {
+		return d
+	}
+	return maxWindow
+}
 
 func main() {
 	cfg := &rest.Config{
@@ -56,23 +67,15 @@ func main() {
 			sched = started
 			go sched.Run(context.Background())
 		}
-		deadline := time.After(pokeWindow)
-		idle := 0
-		for idle < idleChecks {
-			select {
-			case <-deadline:
-				w.WriteHeader(http.StatusAccepted)
-				return
-			case <-r.Context().Done():
-				return
-			case <-time.After(checkPeriod):
-			}
-			if sched.Idle() {
-				idle++
-			} else {
-				idle = 0
-			}
+		bridge.OpenWindow()
+		defer bridge.CloseWindow()
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
 		}
-		w.WriteHeader(http.StatusNoContent)
+		select {
+		case <-time.After(windowFrom(r)):
+		case <-r.Context().Done():
+		}
 	}))
 }

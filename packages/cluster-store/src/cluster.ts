@@ -6,7 +6,7 @@ import { DurableObject } from "cloudflare:workers";
 // version of 0 is illegal for a list. Watchers are hibernatable WebSockets
 // tagged with the key prefix they asked for.
 const RETAINED_REVISIONS = 1000;
-const WATCH_LEASE_MS = 60_000;
+const WATCH_LEASE_MS = 180_000;
 
 function closeQuietly(ws: WebSocket, reason: string): void {
   try {

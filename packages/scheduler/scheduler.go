@@ -2,8 +2,6 @@ package scheduler
 
 import (
 	"context"
-	"fmt"
-	"sync/atomic"
 
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -19,7 +17,6 @@ type Scheduler struct {
 	sched    *scheduler.Scheduler
 	factory  informers.SharedInformerFactory
 	recorder events.EventBroadcasterAdapter
-	running  atomic.Bool
 }
 
 func New(ctx context.Context, cfg *rest.Config) (*Scheduler, error) {
@@ -60,27 +57,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	defer s.recorder.Shutdown()
 	s.factory.Start(ctx.Done())
 	s.factory.WaitForCacheSync(ctx.Done())
-	s.running.Store(true)
 	s.sched.Run(ctx)
-}
-
-// Idle is false until Run has the scheduler going; an unstarted factory
-// reports no informers, which would read as idle before any work began.
-func (s *Scheduler) Idle() bool {
-	if !s.running.Load() {
-		return false
-	}
-	for _, synced := range s.factory.WaitForCacheSync(closedChannel) {
-		if !synced {
-			return false
-		}
-	}
-	var active, backoff, unschedulable int
-	_, summary := s.sched.SchedulingQueue.PendingPods()
-	if _, err := fmt.Sscanf(summary, "activeQ:%d; backoffQ:%d; unschedulablePods:%d", &active, &backoff, &unschedulable); err != nil {
-		return true
-	}
-	return active == 0 && backoff == 0
 }
 
 var closedChannel = func() chan struct{} {

@@ -337,7 +337,25 @@ var (
 	streamsMu   sync.Mutex
 	openStreams = map[int]*trackedStream{}
 	nextStream  int
+	windowOpen  bool
 )
+
+// OpenWindow ends the streams the previous window left behind and stops
+// dispatch from reaping until CloseWindow. A resident worker holds its
+// request open for the window, so the streams it opens stay deliverable
+// for the whole of it instead of dying with a 30s pump.
+func OpenWindow() {
+	streamsMu.Lock()
+	windowOpen = true
+	streamsMu.Unlock()
+	endTrackedStreams(0)
+}
+
+func CloseWindow() {
+	streamsMu.Lock()
+	windowOpen = false
+	streamsMu.Unlock()
+}
 
 // endTrackedStreams ends every stream opened more than olderThan ago: the
 // response streams of AbortOnWake transports and the WebSockets dialed
@@ -348,6 +366,10 @@ var (
 func endTrackedStreams(olderThan time.Duration) {
 	cutoff := time.Now().Add(-olderThan)
 	streamsMu.Lock()
+	if windowOpen && olderThan > 0 {
+		streamsMu.Unlock()
+		return
+	}
 	var ends []func()
 	for _, stream := range openStreams {
 		if stream.opened.Before(cutoff) {
