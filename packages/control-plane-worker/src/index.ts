@@ -54,6 +54,12 @@ export default {
     }
     return apiserverFetch(env, request);
   },
+  tail(events: TraceItem[]): void {
+    for (const e of events) {
+      if (e.event && "consumedEvents" in e.event) continue;
+      console.log(`wasmcpu ${e.scriptName ?? "?"} ${e.entrypoint ?? "-"} ${e.outcome} ${e.cpuTime} ${e.wallTime}`);
+    }
+  },
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
     await Promise.all([
       env.SCHEDULER.run().catch((err) => console.error("scheduled scheduler run:", err)),

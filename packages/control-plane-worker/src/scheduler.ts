@@ -14,7 +14,7 @@ export class Scheduler extends WorkerEntrypoint<Env> {
     const worker = await loadWasmWorker(this.env.LOADER, this.env.ASSETS, "scheduler", {
       APISERVER: this.env.APISERVER,
       ADMIN_TOKEN: this.env.ADMIN_TOKEN,
-    }, 30_000);
+    }, 30_000, this.env.APISERVER);
     const resp = await worker.fetch("https://scheduler.internal/poke");
     if (resp.status === 202) return this.env.SCHEDULER.run();
   }

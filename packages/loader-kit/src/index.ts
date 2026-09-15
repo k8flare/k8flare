@@ -20,7 +20,7 @@ function instantiate(env, ctx) {
 async function pump(binding, ms) {
   const end = Date.now() + ms;
   while (Date.now() < end && bindingPromise) {
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await new Promise((resolve) => setTimeout(resolve, TICK_MS));
     binding.tick();
   }
 }
@@ -46,6 +46,8 @@ interface Manifest {
 }
 
 const manifests = new Map<string, Manifest>();
+
+const tickMs = 1000;
 
 async function asset(assets: Fetcher, path: string): Promise<Response> {
   const resp = await assets.fetch(`https://assets.internal/wasm/${path}`);
@@ -76,6 +78,7 @@ export async function loadWasmWorker(
   name: string,
   env: Record<string, unknown>,
   pumpMs = 0,
+  tail?: Fetcher,
 ): Promise<Fetcher> {
   let m = manifests.get(name);
   if (!m) {
@@ -83,15 +86,16 @@ export async function loadWasmWorker(
     manifests.set(name, m);
   }
   const manifest = m;
-  const worker = loader.get(`${name}@${manifest.sha256}@${pumpMs}`, async () => ({
+  const worker = loader.get(`${name}@${manifest.sha256}@${pumpMs}@${tickMs}@${tail ? 1 : 0}`, async () => ({
     compatibilityDate: "2026-09-01",
     mainModule: "index.js",
     modules: {
-      "index.js": `const PUMP_MS = ${pumpMs};\n` + BOOTSTRAP,
+      "index.js": `const PUMP_MS = ${pumpMs};\nconst TICK_MS = ${tickMs};\n` + BOOTSTRAP,
       "wasm_exec.js": await (await asset(assets, "wasm_exec.js")).text(),
       "app.wasm": { wasm: (await assemble(assets, manifest)).buffer as ArrayBuffer },
     },
     env,
+    ...(tail ? { tails: [tail] } : {}),
   }));
   return worker.getEntrypoint();
 }
