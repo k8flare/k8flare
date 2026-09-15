@@ -530,7 +530,6 @@ func DialWebSocket(ctx context.Context, bindingName, rawURL string) (*WebSocket,
 		return nil, fmt.Errorf("bridge: waiting for a window: %w", err)
 	}
 	binding := window.Env().Get(bindingName)
-	background := ctx.Value(envKey{}) == nil
 	opts := js.Global().Get("Object").New()
 	headers := js.Global().Get("Object").New()
 	headers.Set("Upgrade", "websocket")
@@ -547,11 +546,7 @@ func DialWebSocket(ctx context.Context, bindingName, rawURL string) (*WebSocket,
 	c := &WebSocket{ws: ws, Messages: msgs, msgs: msgs, closed: make(chan struct{}), notify: make(chan struct{}, 1)}
 	c.id = register(c)
 	go c.drain()
-	if background {
-		update, untrack := trackStream(window, c.Close)
-		update(c.Close)
-		c.untrack = untrack
-	}
+	_, c.untrack = trackStream(window, c.Close)
 	ws.Call("addEventListener", "message", bound("ws-message", c.id, func(id int, args []js.Value) {
 		w, ok := lookup(id).(*WebSocket)
 		if !ok {
