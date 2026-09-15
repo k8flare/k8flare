@@ -130,6 +130,15 @@ func CloseWindow(ctx context.Context) {
 	windowsMu.Unlock()
 }
 
+func ownedBy(ctx context.Context, w *Window) bool {
+	if windowFrom(ctx) == w {
+		return true
+	}
+	windowsMu.Lock()
+	defer windowsMu.Unlock()
+	return w.holding
+}
+
 func windowFrom(ctx context.Context) *Window {
 	w, _ := ctx.Value(windowKey{}).(*Window)
 	return w

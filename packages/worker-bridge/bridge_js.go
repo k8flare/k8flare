@@ -546,7 +546,9 @@ func DialWebSocket(ctx context.Context, bindingName, rawURL string) (*WebSocket,
 	c := &WebSocket{ws: ws, Messages: msgs, msgs: msgs, closed: make(chan struct{}), notify: make(chan struct{}, 1)}
 	c.id = register(c)
 	go c.drain()
-	_, c.untrack = trackStream(window, c.Close)
+	if ownedBy(ctx, window) {
+		_, c.untrack = trackStream(window, c.Close)
+	}
 	ws.Call("addEventListener", "message", bound("ws-message", c.id, func(id int, args []js.Value) {
 		w, ok := lookup(id).(*WebSocket)
 		if !ok {
