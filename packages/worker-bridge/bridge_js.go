@@ -423,21 +423,27 @@ func streamBody(stream js.Value, abort func()) (io.ReadCloser, func()) {
 	return pr, end
 }
 
-func await(promise js.Value) (js.Value, error) {
-	done := make(chan struct{})
-	var result js.Value
-	var err error
+type settled struct {
+	value js.Value
+	err   error
+}
+
+func settle(promise js.Value) <-chan settled {
+	ch := make(chan settled, 1)
 	var onOK, onErr js.Func
 	onOK = js.FuncOf(func(_ js.Value, args []js.Value) any {
-		defer onOK.Release()
+		onOK.Release()
+		onErr.Release()
+		var v js.Value
 		if len(args) > 0 {
-			result = args[0]
+			v = args[0]
 		}
-		close(done)
+		ch <- settled{value: v}
 		return nil
 	})
 	onErr = js.FuncOf(func(_ js.Value, args []js.Value) any {
-		defer onErr.Release()
+		onOK.Release()
+		onErr.Release()
 		msg := "rejected"
 		if len(args) > 0 {
 			if m := args[0].Get("message"); m.Type() == js.TypeString {
@@ -446,13 +452,16 @@ func await(promise js.Value) (js.Value, error) {
 				msg = args[0].String()
 			}
 		}
-		err = errors.New(strings.TrimSpace(msg))
-		close(done)
+		ch <- settled{err: errors.New(strings.TrimSpace(msg))}
 		return nil
 	})
 	promise.Call("then", onOK, onErr)
-	<-done
-	return result, err
+	return ch
+}
+
+func await(promise js.Value) (js.Value, error) {
+	o := <-settle(promise)
+	return o.value, o.err
 }
 
 // WebSocket is a client connection opened through a binding's fetch with

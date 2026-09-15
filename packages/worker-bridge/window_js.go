@@ -7,6 +7,7 @@ import (
 	"errors"
 	"sync"
 	"syscall/js"
+	"time"
 )
 
 var ErrWindowClosed = errors.New("bridge: pump window closed")
@@ -24,10 +25,13 @@ func (w *Window) Done() <-chan struct{} { return w.done }
 
 type windowKey struct{}
 
+const scheduledWork = 10 * time.Second
+
 var (
 	windowsMu sync.Mutex
 	windows   []*Window
 	openedCh  = make(chan struct{})
+	idle      chan struct{}
 )
 
 func openWindow(env js.Value) *Window {
@@ -36,6 +40,10 @@ func openWindow(env js.Value) *Window {
 	windows = append(windows, w)
 	notify := openedCh
 	openedCh = make(chan struct{})
+	if idle == nil {
+		idle = make(chan struct{})
+		go keepScheduled(idle)
+	}
 	windowsMu.Unlock()
 	close(notify)
 	return w
@@ -54,10 +62,26 @@ func (w *Window) close() {
 		ends = append(ends, end)
 	}
 	w.streams = nil
+	if len(windows) == 0 && idle != nil {
+		close(idle)
+		idle = nil
+	}
 	windowsMu.Unlock()
 	close(w.done)
 	for _, end := range ends {
 		end()
+	}
+}
+
+func keepScheduled(stop chan struct{}) {
+	t := time.NewTicker(scheduledWork)
+	defer t.Stop()
+	for {
+		select {
+		case <-t.C:
+		case <-stop:
+			return
+		}
 	}
 }
 
@@ -153,15 +177,7 @@ func currentWindowEnv() (js.Value, bool) {
 }
 
 func awaitIn(w *Window, promise js.Value) (js.Value, error) {
-	type outcome struct {
-		value js.Value
-		err   error
-	}
-	ch := make(chan outcome, 1)
-	go func() {
-		v, err := await(promise)
-		ch <- outcome{v, err}
-	}()
+	ch := settle(promise)
 	if w == nil {
 		o := <-ch
 		return o.value, o.err
