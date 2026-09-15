@@ -548,6 +548,8 @@ func DialWebSocket(ctx context.Context, bindingName, rawURL string) (*WebSocket,
 	go c.drain()
 	if ownedBy(ctx, window) {
 		_, c.untrack = trackStream(window, c.Close)
+	} else {
+		c.untrack = trackBorrowed(c.Close)
 	}
 	ws.Call("addEventListener", "message", bound("ws-message", c.id, func(id int, args []js.Value) {
 		w, ok := lookup(id).(*WebSocket)
