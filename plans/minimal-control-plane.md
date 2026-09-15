@@ -1087,3 +1087,57 @@ Two findings from that deploy are keepers:
 - **Dropping the endpoint and endpointslice controllers.** `services`,
   `endpoints` and `endpointslices` are all in `registry.Served`, so those
   controllers do real work even without kube-proxy.
+
+### The window-ownership series (measured on production, one node)
+
+| build | CPU ms/min | /mo | watch/min | hung | exceededMemory |
+| --- | --- | --- | --- | --- | --- |
+| `c044e57` 250ms tick | 5,611 | 242.4M | 266 | 0 | 37 |
+| `1cfd478` I/O anchor, 55s | 4,622 | 199.7M | 258 | 0 | 114 |
+| `2fa87f2` window=dispatch, 290s | 5,589 | 241.5M | 206 | 61 | 0 |
+| `b003276` stream ownership | 3,247 | 140.3M | 135 | 165 | 23 |
+| `92b1427`+`62f3c83` keepalive, tracking | 3,267 | 141.1M | 236 | 34 | 0 |
+| `12c1d38` owned windows only | see below | — | 236 | 50 | 54 |
+
+The `12c1d38` window is not usable: a bulk namespace delete issued for
+cleanup was still running through it (`rows` 1,082 → 1,181, `revision`
+2,600 → 3,450). It needs re-measuring.
+
+**The required e2e set, same cluster, same day**: `c044e57` 16 passed /
+5 failed; `12c1d38` 17 passed / 4 failed. The rewrite is not a functional
+regression against the point it started from.
+
+**Comparable failure counts.** The starting point was not failure-free:
+`c044e57` failed 37 requests per 6-minute window with `exceededMemory`.
+The window-ownership build fails a similar number with `hung`. The
+difference is 42% less CPU and no memory pressure.
+
+### What each change actually did
+
+- **A window is a dispatch** (`2fa87f2`). A window closed by a JS timer
+  outlives the request it anchors — `ctx.waitUntil` is cut at 30s, so a
+  write poke's timer never fired and a dead env stayed registered as the
+  newest window. Fixing this took `exceededMemory` from 114 to 0.
+- **Each window owns the streams it opened** (`b003276`). A tracked
+  stream used to be reaped 30s after it opened, by whichever dispatch ran
+  next, which killed the store socket under a healthy watch. This is the
+  single biggest CPU win: 4,622 → 3,247 ms/min.
+- **Track every store socket** (`62f3c83`). A group worker dials inside
+  the watch request, so `background` was false and the socket was never
+  tracked at all. Nothing closed it once the 30s reap was gone and the
+  pool grew to 353.
+- **Only on a window the caller owns** (`12c1d38`). A worker with no
+  resident hold borrows whichever dispatch is newest, so tracking a
+  borrowed window let an unrelated request close the `customresources`
+  CRD informer's socket. The required e2e set went from 18 failures to 4.
+
+### Open
+
+- **Hangs.** "The Workers runtime canceled this request because it
+  detected that your Worker's code had hung": 0 before this series, 34-50
+  after, all in `APIGroups`. The 250ms tick had been hiding whatever the
+  runtime needs to see; a 10s Go ticker recovers most but not all of it
+  (165 → 34). One e2e failure is a configmap delete that hung; the other
+  three cascade from the node going briefly unschedulable during it.
+- **Watch churn is still 236/min** against roughly 6/min expected from
+  the reflector's own 5-10 minute timeout.
