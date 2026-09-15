@@ -1023,3 +1023,67 @@ the controllers (kube-controller-manager) and the production deploy check.
   problem this project doesn't have yet.
   (https://blog.cloudflare.com/grpc-workers/,
   https://developers.cloudflare.com/cloudflare-one/traffic-policies/resolver-policies/)
+
+## Where the idle CPU actually went (measured, one node attached)
+
+Every measurement below is a 6-minute `wrangler tail` window on production,
+taken 3 minutes after deploy so the cold start is excluded, with the same
+single OrbStack node (`k8flare-c1`) joined and no workloads.
+
+| configuration | inv/min | watch/min | CPU ms/min | /mo | exceededMemory | hung |
+| --- | --- | --- | --- | --- | --- | --- |
+| 250ms tick (`c044e57`) | 577 | 266 | 5,611 | 242.4M | 32 | 0 |
+| I/O anchor, 55s hold (`1cfd478`) | 561 | 258 | 4,622 | 199.7M | 114 | 0 |
+| window=dispatch, 290s hold (`2fa87f2`) | 488 | 206 | 5,589 | 241.5M | **0** | 61 |
+
+Attribution of the 4,622 ms/min, by tail event:
+
+| source | ms/min |
+| --- | --- |
+| dynamic workers, `canceled` (watch re-establishment) | 1,567 |
+| parent-side `APIGroups` dispatch | 887 |
+| dynamic workers, `ok` (steady-state informer work) | 838 |
+
+Broken down per resource, the traffic is almost entirely re-establishment:
+`services` 9.2/min, `pods` 8.7, `replicasets` 7.8, `jobs` 6.6, `leases` 6.5,
+and so on across ~20 resources — each informer re-watching 6 to 8 times a
+minute. That rate is the kubelet lease renewal (every 10s), not the cron:
+a write poke called `OpenWindow`, which called `endTrackedStreams(0)`, which
+killed all 43 watches. **The treadmill scaled with node count × heartbeat
+rate**, which is why idle-with-zero-nodes cost nothing and one node cost
+199.7M CPU-ms/month.
+
+### What the 290s hold taught
+
+Lengthening the resident hold was aimed at the wrong side. Group workers
+(`apiserver-<group>`) never hold, so no resident hold length touches their
+churn, and raising the resident duty cycle from ~50% to ~97% tripled
+steady-state informer work (838 → 2,333 ms/min). Reverted to 55s.
+
+Two findings from that deploy are keepers:
+
+- **`window = dispatch` eliminated the memory exhaustion**: `exceededMemory`
+  114 → 0. A window closed by a JS timer outlives the request it anchors —
+  a write poke runs under `ctx.waitUntil`, cut at 30s, so its timer never
+  fired and a dead env stayed registered as the newest window.
+- **Removing the JS timer entirely introduced 61 hangs**, all in
+  `APIGroups`: "the Workers runtime canceled this request because it
+  detected that your Worker's code had hung". With no Go timer and no JS
+  timer, a wasm isolate whose goroutines are all blocked looks hung. If
+  these persist, the fix is one long-interval ticker, not a 250ms tick.
+
+### Ruled out by measurement, not by argument
+
+- **Controllers or scheduler inside a Durable Object.** The corrected cost
+  model does put one always-resident DO inside the 400k GB-s allowance, so
+  the original objection is gone — but `gzip -9` gives controllers 9.9MB
+  and scheduler 11.2MB against a 10MB Worker bundle limit. The scheduler
+  does not fit.
+- **Trimming the GC monitor set.** Of the 14 monitors, only `runtimeclasses`
+  and `deviceclasses` are cluster-scoped catalog types that structurally
+  cannot be owners or dependents here. `csinodes` and `resourceslices` do
+  carry `ownerReferences` to their Node, so ignoring them leaks objects on
+  node deletion. Two watches out of 43 is not worth the correctness risk.
+- **Dropping the endpoint and endpointslice controllers.** `services`,
+  `endpoints` and `endpointslices` are all in `registry.Served`, so those
+  controllers do real work even without kube-proxy.
