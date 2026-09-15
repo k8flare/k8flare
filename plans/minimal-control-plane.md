@@ -178,6 +178,54 @@ its log, and removing it again.
   "split if the cap is hit" note (workload controllers versus node and
   endpoint controllers) is the lever to try next.
 
+- **Cost: what the pre-rewrite tree already solved, and what carried over.**
+  Billing has four axes and only one of them is over its allowance.
+  Cloudflare bills neither subrequests nor service-binding hops, so the
+  hop count is an operational number, not a cost; Durable Object duration
+  at 128MB is 324k GB-s for a permanently resident object, structurally
+  under the 400k allowance for one object; DO requests cost $0.04. Worker
+  **CPU** is the whole bill above the $5 floor.
+
+  Dynamic Workers are separate Workers, so the parent's tail never showed
+  theirs: attaching the parent as their tail consumer (`tails` on the
+  loader code object) revealed 63% of CPU living there, and the true idle
+  figure is 90.9M CPU-ms/month, not the 75.9M the parent alone reported.
+
+  Holding the wake with a streaming response instead of `waitUntil` took
+  that to 62.1M (-32%): `waitUntil` is capped at 30s while an HTTP
+  response has no cap, so watches now live for the window rather than
+  being re-established on a 30s treadmill.
+
+  The pump's 250ms tick is **not** the remaining cost. Measured at 250ms,
+  500ms and 1000ms, the first two are identical (2,105 and 2,117
+  CPU-ms/min) and CPU tracks the invocation count at a flat 10-13 CPU-ms
+  each, so an earlier single-window "34% saving" was withdrawn.
+
+  The pre-rewrite tree solved the underlying problem differently and its
+  notes are worth reading before trying again
+  (`backup/pre-rewrite-2026-09-13`: `pkg/cfruntime/cloudflare/window.go`,
+  `packages/k8flare-worker/src/loader/bootstrap.ts`, `docs/cost-model.md`,
+  `docs/pump-window-design.md`). Bindings are request-scoped I/O objects:
+  one captured at instantiation stops settling its promises once that
+  request is torn down, with no error, which is recorded there as S31 and
+  is the same silent watch death rediscovered here. Its answer was an I/O
+  anchor - `openPumpWindow(env, ms)` hands Go the live request's env, one
+  `setTimeout` closes it, the window self-closes on a grace timer in case
+  the close is dropped, and background goroutines block on
+  `CurrentWindow` rather than ticking. Its cost invariant was that an
+  idle cluster dispatches nothing at all: no cron, and a safety-net alarm
+  that self-parks when no node exists.
+
+  **Porting the anchor's JS half alone made things worse** and was
+  reverted: removing the tick without the Go-side `CurrentWindow`
+  integration leaves timers unadvanced, and the reflectors spin on
+  immediate retries - 573 invocations/min and 4,110-7,018 CPU-ms/min
+  against 128 and 1,438. A full port has to move the Go side onto windows
+  too. The other half of that design, returning the wake model to
+  event-armed with a self-parking safety net instead of today's
+  unconditional per-minute cron, is independent of it and is the larger
+  remaining lever for an idle cluster.
+
 - **Track 8 measured on production (2026-09-15, `k8flare.kooffice.workers.dev`).**
   The account already held a `k8flare` worker from the pre-rewrite
   architecture (10 deployments to 2026-09-11) whose `Cluster` DO blocked
