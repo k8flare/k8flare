@@ -76,6 +76,9 @@ func Env(ctx context.Context) js.Value {
 			return v
 		}
 	}
+	if env, ok := currentWindowEnv(); ok {
+		return env
+	}
 	return js.Global().Get("context").Get("env")
 }
 
@@ -118,7 +121,13 @@ func Serve(handler http.Handler) {
 		})
 		return js.Global().Get("Promise").New(executor)
 	}))
-	binding.Set("tick", js.FuncOf(func(js.Value, []js.Value) any { return nil }))
+	binding.Set("openPumpWindow", js.FuncOf(func(_ js.Value, args []js.Value) any {
+		return OpenPumpWindow(args[0], args[1].Int())
+	}))
+	binding.Set("closePumpWindow", js.FuncOf(func(_ js.Value, args []js.Value) any {
+		ClosePumpWindow(args[0].Int())
+		return js.Undefined()
+	}))
 	rt.Call("ready")
 	select {}
 }
@@ -402,7 +411,11 @@ func trackStream(end func()) (update func(func()), untrack func()) {
 }
 
 func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	binding := Binding(req.Context(), t.Name)
+	window, err := CurrentWindow(req.Context())
+	if err != nil {
+		return nil, fmt.Errorf("bridge: waiting for a window: %w", err)
+	}
+	binding := window.Env().Get(t.Name)
 	if binding.IsUndefined() || binding.IsNull() {
 		return nil, fmt.Errorf("bridge: binding %q is not in env", t.Name)
 	}
@@ -428,7 +441,7 @@ func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		update, untrack = trackStream(abort)
 	}
 	jsReq := js.Global().Get("Request").New(req.URL.String(), opts)
-	jsResp, err := await(binding.Call("fetch", jsReq))
+	jsResp, err := awaitIn(window, binding.Call("fetch", jsReq))
 	if err != nil {
 		untrack()
 		stop()
@@ -585,13 +598,17 @@ func (c *WebSocket) drain() {
 }
 
 func DialWebSocket(ctx context.Context, bindingName, rawURL string) (*WebSocket, error) {
-	binding := Binding(ctx, bindingName)
+	window, err := CurrentWindow(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("bridge: waiting for a window: %w", err)
+	}
+	binding := window.Env().Get(bindingName)
 	background := ctx.Value(envKey{}) == nil
 	opts := js.Global().Get("Object").New()
 	headers := js.Global().Get("Object").New()
 	headers.Set("Upgrade", "websocket")
 	opts.Set("headers", headers)
-	resp, err := await(binding.Call("fetch", js.Global().Get("Request").New(rawURL, opts)))
+	resp, err := awaitIn(window, binding.Call("fetch", js.Global().Get("Request").New(rawURL, opts)))
 	if err != nil {
 		return nil, fmt.Errorf("bridge: websocket %s: %w", rawURL, err)
 	}

@@ -17,18 +17,13 @@ function instantiate(env, ctx) {
     );
   });
 }
-async function pump(binding, ms) {
-  const end = Date.now() + ms;
-  while (Date.now() < end && bindingPromise) {
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    binding.tick();
-  }
-}
 export default {
   async fetch(request, env, ctx) {
     if (!bindingPromise) bindingPromise = instantiate(env, ctx);
     const binding = await bindingPromise;
-    if (PUMP_MS > 0) ctx.waitUntil(pump(binding, PUMP_MS));
+    const windowMs = PUMP_MS > 0 ? PUMP_MS : 30_000;
+    const window = binding.openPumpWindow(env, windowMs);
+    ctx.waitUntil(new Promise((resolve) => setTimeout(() => { binding.closePumpWindow(window); resolve(); }, windowMs)));
     const raw = await request.arrayBuffer();
     const out = await binding.handleRequest(
       { method: request.method, url: request.url, headers: [...request.headers], body: raw.byteLength === 0 ? null : new Uint8Array(raw), signal: request.signal },
