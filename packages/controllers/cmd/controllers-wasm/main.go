@@ -64,11 +64,7 @@ func main() {
 			ctrl = started
 			go ctrl.Run(context.Background())
 		}
-		if hold.Reset {
-			bridge.OpenWindow(r.Context())
-		} else {
-			bridge.OpenRunWindow(r.Context())
-		}
+		bridge.OpenWindow(r.Context())
 		defer bridge.CloseWindow(r.Context())
 		w.WriteHeader(http.StatusOK)
 		if f, ok := w.(http.Flusher); ok {
