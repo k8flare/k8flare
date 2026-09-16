@@ -43,8 +43,15 @@ interface Manifest {
 }
 
 const manifests = new Map<string, Manifest>();
-export const isolateId = crypto.randomUUID().slice(0, 8);
-const bornAt = Date.now();
+let isolate = "";
+let bornAt = 0;
+export function isolateId(): string {
+  if (!isolate) {
+    isolate = crypto.randomUUID().slice(0, 8);
+    bornAt = Date.now();
+  }
+  return isolate;
+}
 const loadedWorkers = new Set<string>();
 let loading: Promise<unknown> = Promise.resolve();
 
@@ -103,11 +110,11 @@ export async function loadWasmWorker(
         ...(tail ? { tails: [tail] } : {}),
       };
       loadedWorkers.add(name);
-      console.log(`loader iso=${isolateId} age=${Math.round((Date.now() - bornAt) / 1000)}s load=${name} loaded=${loadedWorkers.size} ms=${Date.now() - started}`);
+      console.log(`loader iso=${isolateId()} age=${Math.round((Date.now() - bornAt) / 1000)}s load=${name} loaded=${loadedWorkers.size} ms=${Date.now() - started}`);
       return code;
     }),
   );
   const entrypoint = worker.getEntrypoint();
-  if (!loadedNow) console.log(`loader iso=${isolateId} hit=${name}`);
+  if (!loadedNow) console.log(`loader iso=${isolateId()} hit=${name}`);
   return entrypoint;
 }

@@ -7,7 +7,7 @@ export class APIGroups extends WorkerEntrypoint<Env> {
   async fetch(request: Request): Promise<Response> {
     const name = request.headers.get("X-K8flare-Worker") ?? "";
     if (!workerName.test(name)) return new Response(`unknown worker ${name}`, { status: 400 });
-    console.log(`apigroups iso=${isolateId} ${name}`);
+    console.log(`apigroups iso=${isolateId()} ${name}`);
     const worker = await loadWasmWorker(this.env.LOADER, this.env.ASSETS, name, {
       STORAGE: this.env.CLUSTER.get(this.env.CLUSTER.idFromName("default")),
       PRINTERS: this.ctx.exports.Printers,
