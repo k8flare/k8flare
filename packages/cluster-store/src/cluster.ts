@@ -321,7 +321,7 @@ export class Cluster extends DurableObject<Env> {
     }
     await this.rearm();
     if (due.size > 0) console.log(`wake ${[...due.keys()].join(",")}`);
-    await Promise.all([...due].map(([target, d]) => this.runTarget(target, d.hold, d.reset)));
+    for (const [target, d] of due) this.ctx.waitUntil(this.runTarget(target, d.hold, d.reset));
   }
 
   private async runTarget(target: WakeTarget, holdMs: number, reset: boolean): Promise<void> {
