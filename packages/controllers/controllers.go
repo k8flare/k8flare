@@ -291,7 +291,7 @@ func (q *queueDepths) NewWorkDurationMetric(string) workqueue.HistogramMetric { 
 func (q *queueDepths) NewLongestRunningProcessorSecondsMetric(string) workqueue.SettableGaugeMetric {
 	return &gauge{}
 }
-func (q *queueDepths) NewRetriesMetric(string) workqueue.CounterMetric { return noop{} }
+func (q *queueDepths) NewRetriesMetric(string) workqueue.CounterMetric { return &q.retries }
 
 func recovered(ctx context.Context, run func(context.Context)) {
 	defer func() {
