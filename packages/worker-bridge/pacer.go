@@ -30,7 +30,6 @@ func quiet() bool {
 
 func Quiet() bool { return quiet() }
 
-
 type Pacer struct {
 	last   string
 	streak int
