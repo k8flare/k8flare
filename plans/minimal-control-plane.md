@@ -416,6 +416,46 @@ its log, and removing it again.
   instability, which is prior to this work. CPU during the run: 6,672
   ms/min over 13.9 minutes, 78 hung, 11 memory kills.
 
+  **The production e2e series that followed (2026-09-16, all against
+  `k8flare.kooffice.workers.dev`, no local runs).** Each row is one
+  required-set run; the fix column is what was deployed before it.
+
+  | run | fix deployed before it | result | what the tail said |
+  | --- | --- | --- | --- |
+  | 4 | per-request JS keepalive in the loader bootstrap (`setInterval` while Go handles a request, so a handler blocked on a Go channel still has something pending in its own IoContext) | 18/3 | hung 78 → 0, memory kills 11 → 0 in 14 minutes; the three failures were client deadlines |
+  | 5 | (none) | 17/4 | GC "orphan pods" spec: `expect 50 pods, got 142`, the replication controller over-created |
+  | 6 | prefer the alarm-driven run window for outbound I/O | stalled, killed | API 2-6s per request, a namespace stuck Terminating; reverted |
+  | 7 | drain in-flight unary fetches for up to 5s before a window closes, abort only response streams; `pods/status` keeps `PodScheduled=True` once `spec.nodeName` is set; tail forwards `bridge:` / `pods/status:` markers | stalled, killed | 38 memory kills in the first minute, all in the parent isolate: the discovery walk loads every group worker at once and each load holds a 30-56MB assembled binary |
+  | 8 | loads serialized per isolate (peak one binary) | **19/2** | hung 0, memory 0; markers showed `fetch lost to window close` for GC controller GET/PATCH/DELETE (the 30s waitUntil cut, which drain cannot reach) and `pods/status: kept PodScheduled=True` ×7 |
+  | 9 | (none) | stalled, killed | API 4-6s per request again, store `watchers: 0`, the kubelet failing its own GETs; group workers were fast (APIGroups median 32ms) and the time sat in the front |
+  | 10 | pods created as `Pending` with a QoS class (upstream's create strategy; the NodeSelector spec polled a pod with an empty phase and returned early); poke windows 10s so drain fits under the cap | not run: preflight found no Ready node | the node had been `Unknown` since 14:12Z: its lease and status writes were timing out against a 3-7s API, and the store's lease-expiry alarm did its job |
+
+  **Open at the end of the day: every request pays a cold load.** From
+  about 14:12Z the API answered simple GETs in 3-7s. A hop-by-hop trace
+  of `GET /api/v1/nodes` shows the front's parent invocation at 260-560
+  ms CPU (assembling the 37MB front binary), the `APIGroups` invocation
+  at 250-320 ms CPU (assembling the core binary) and the core worker's
+  own invocation at 480-665 ms CPU (instantiating it), on every probe,
+  4s apart, while the coordination worker answered the kubelet's lease
+  reads warm at 56 ms. Back-to-back namespace reads went 2.0s, 0.1s,
+  5.6s: the loader cache works, but consecutive requests land on
+  different parent isolates, each with its own empty cache. Nothing in
+  the forwarded logs shows a Go exit, a panic or a memory kill, and
+  reverting the serialized loader did not change it (`edec9b1`). This
+  is the platform spreading the script over many isolates after a day
+  of deploys and e2e load; whether it settles on its own is unmeasured.
+  Until it does, the required set cannot complete: the kubelet's 10s
+  client timeout and the suite's waits are shorter than the cold loads.
+
+  The NodeSelector failure in run 8 was the empty phase, not the
+  scheduler. Run 8's other failure (`expected 25 pods, got 24`) and the
+  stalls in runs 6, 7 and 9 share a shape: after a deploy, or under the
+  e2e's four-way parallelism, parent isolates churn, every request pays
+  a cold load of 3-5s, the kubelet's watches cannot be re-established
+  faster than they die, and the suite's namespace and ServiceAccount
+  waits (5 minutes each) stack up. That churn is the platform's, and
+  the loader design pays for it in full; nothing periodic will fix it.
+
   Two node-side facts recorded on the way: the agent's tunnel reconnects
   every ~63s with `close 1012: no tunnel session, reconnect`, which is
   the NodeTunnel DO's in-memory `attached` flag not surviving

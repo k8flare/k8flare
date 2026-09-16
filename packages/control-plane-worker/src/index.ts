@@ -59,9 +59,10 @@ export default {
     for (const e of events) {
       if (e.event && "consumedEvents" in e.event) continue;
       console.log(`wasmcpu ${e.scriptName ?? "?"} ${e.entrypoint ?? "-"} ${e.outcome} ${e.cpuTime} ${e.wallTime}`);
+      for (const x of e.exceptions) console.log(`dynexc ${e.scriptName ?? "?"} ${x.name}: ${x.message.slice(0, 200)}`);
       for (const l of e.logs) {
         for (const m of l.message) {
-          if (typeof m === "string" && (m.startsWith("bridge:") || m.startsWith("pods/status:"))) console.log(m);
+          if (typeof m === "string" && (m.startsWith("bridge:") || m.startsWith("pods/status:") || m.startsWith("go program") || m.includes("panic") || m.startsWith("fatal error"))) console.log(m.slice(0, 400));
         }
       }
     }
