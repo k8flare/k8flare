@@ -5,16 +5,28 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 )
 
 const (
 	pollInterval = 2 * time.Second
 	idlePolls    = 2
+	quietPeriod  = 5 * time.Second
 	minWake      = 15 * time.Second
 	maxWake      = 5 * time.Minute
 	maxWindow    = 5 * time.Minute
 )
+
+var lastPoke atomic.Int64
+
+func Poked() {
+	lastPoke.Store(time.Now().UnixNano())
+}
+
+func quiet() bool {
+	return time.Since(time.Unix(0, lastPoke.Load())) >= quietPeriod
+}
 
 type Pacer struct {
 	last   string
@@ -84,7 +96,7 @@ func Hold(ctx context.Context, h HoldRequest, idle func() bool) {
 		if elapsed >= h.Window {
 			return
 		}
-		if elapsed >= h.Min && idle() {
+		if elapsed >= h.Min && quiet() && idle() {
 			idleFor++
 		} else {
 			idleFor = 0

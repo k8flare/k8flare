@@ -30,6 +30,7 @@ func main() {
 		pacer   bridge.Pacer
 	)
 	bridge.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bridge.Poked()
 		mu.Lock()
 		if holding {
 			mu.Unlock()
