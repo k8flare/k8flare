@@ -53,13 +53,6 @@ export function isolateId(): string {
   return isolate;
 }
 const loadedWorkers = new Set<string>();
-let loading: Promise<unknown> = Promise.resolve();
-
-function serialized<T>(fn: () => Promise<T>): Promise<T> {
-  const next = loading.then(fn, fn);
-  loading = next.catch(() => {});
-  return next;
-}
 
 async function asset(assets: Fetcher, path: string): Promise<Response> {
   const resp = await assets.fetch(`https://assets.internal/wasm/${path}`);
@@ -94,8 +87,7 @@ export async function loadWasmWorker(
   }
   const manifest = m;
   let loadedNow = false;
-  const worker = loader.get(`${name}@${manifest.sha256}@${tail ? 1 : 0}`, () =>
-    serialized(async () => {
+  const worker = loader.get(`${name}@${manifest.sha256}@${tail ? 1 : 0}`, async () => {
       loadedNow = true;
       const started = Date.now();
       const code = {
@@ -112,9 +104,7 @@ export async function loadWasmWorker(
       loadedWorkers.add(name);
       console.log(`loader iso=${isolateId()} age=${Math.round((Date.now() - bornAt) / 1000)}s load=${name} loaded=${loadedWorkers.size} ms=${Date.now() - started}`);
       return code;
-    }),
-  );
+  });
   const entrypoint = worker.getEntrypoint();
-  if (!loadedNow) console.log(`loader iso=${isolateId()} hit=${name}`);
   return entrypoint;
 }
