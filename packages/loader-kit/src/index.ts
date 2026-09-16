@@ -43,6 +43,13 @@ interface Manifest {
 }
 
 const manifests = new Map<string, Manifest>();
+let loading: Promise<unknown> = Promise.resolve();
+
+function serialized<T>(fn: () => Promise<T>): Promise<T> {
+  const next = loading.then(fn, fn);
+  loading = next.catch(() => {});
+  return next;
+}
 
 async function asset(assets: Fetcher, path: string): Promise<Response> {
   const resp = await assets.fetch(`https://assets.internal/wasm/${path}`);
@@ -80,16 +87,18 @@ export async function loadWasmWorker(
     manifests.set(name, m);
   }
   const manifest = m;
-  const worker = loader.get(`${name}@${manifest.sha256}@${tail ? 1 : 0}`, async () => ({
-    compatibilityDate: "2026-09-01",
-    mainModule: "index.js",
-    modules: {
-      "index.js": BOOTSTRAP,
-      "wasm_exec.js": await (await asset(assets, "wasm_exec.js")).text(),
-      "app.wasm": { wasm: (await assemble(assets, manifest)).buffer as ArrayBuffer },
-    },
-    env,
-    ...(tail ? { tails: [tail] } : {}),
-  }));
+  const worker = loader.get(`${name}@${manifest.sha256}@${tail ? 1 : 0}`, () =>
+    serialized(async () => ({
+      compatibilityDate: "2026-09-01",
+      mainModule: "index.js",
+      modules: {
+        "index.js": BOOTSTRAP,
+        "wasm_exec.js": await (await asset(assets, "wasm_exec.js")).text(),
+        "app.wasm": { wasm: (await assemble(assets, manifest)).buffer as ArrayBuffer },
+      },
+      env,
+      ...(tail ? { tails: [tail] } : {}),
+    })),
+  );
   return worker.getEntrypoint();
 }
