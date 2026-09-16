@@ -64,7 +64,11 @@ export default {
       for (const x of e.exceptions ?? []) console.log(`dynexc ${e.scriptName ?? "?"} ${x.name}: ${x.message.slice(0, 200)}`);
       for (const l of e.logs ?? []) {
         for (const m of l.message ?? []) {
-          if (typeof m === "string" && (m.startsWith("bridge:") || m.startsWith("pods/status:") || m.startsWith("go program") || m.includes("panic") || m.startsWith("fatal error"))) console.log(m.slice(0, 400));
+          if (typeof m !== "string") continue;
+          const resident = /^(controllers|scheduler)@/.test(e.scriptName ?? "");
+          if (m.startsWith("bridge:") || m.startsWith("pods/status:") || m.startsWith("kine:") || m.startsWith("go program") || m.includes("panic") || m.startsWith("fatal error") || (resident && /^[EW]\d{4} /.test(m))) {
+            console.log(`${resident ? e.scriptName!.split("@")[0] + " " : ""}${m.slice(0, 400)}`);
+          }
         }
       }
     }
