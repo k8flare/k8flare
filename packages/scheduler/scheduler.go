@@ -2,6 +2,9 @@ package scheduler
 
 import (
 	"context"
+	"sort"
+	"strings"
+	"sync/atomic"
 
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -17,6 +20,7 @@ type Scheduler struct {
 	sched    *scheduler.Scheduler
 	factory  informers.SharedInformerFactory
 	recorder events.EventBroadcasterAdapter
+	synced   atomic.Bool
 }
 
 func New(ctx context.Context, cfg *rest.Config) (*Scheduler, error) {
@@ -57,7 +61,25 @@ func (s *Scheduler) Run(ctx context.Context) {
 	defer s.recorder.Shutdown()
 	s.factory.Start(ctx.Done())
 	s.factory.WaitForCacheSync(ctx.Done())
+	s.synced.Store(true)
 	s.sched.Run(ctx)
+}
+
+func (s *Scheduler) Pending() string {
+	if !s.synced.Load() {
+		return "starting"
+	}
+	pods, _ := s.sched.SchedulingQueue.PendingPods()
+	uids := make([]string, 0, len(pods))
+	for _, p := range pods {
+		uids = append(uids, string(p.UID))
+	}
+	sort.Strings(uids)
+	return strings.Join(uids, ",")
+}
+
+func (s *Scheduler) Idle() bool {
+	return s.synced.Load() && s.Pending() == "" && len(s.sched.SchedulingQueue.InFlightPods()) == 0
 }
 
 var closedChannel = func() chan struct{} {

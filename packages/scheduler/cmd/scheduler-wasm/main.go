@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"net/http"
-	"strconv"
 	"sync"
 	"time"
 
@@ -14,21 +13,7 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-const (
-	pokeWindow = 20 * time.Second
-	maxWindow  = 5 * time.Minute
-)
-
-func windowFrom(r *http.Request) time.Duration {
-	ms, err := strconv.Atoi(r.URL.Query().Get("window"))
-	if err != nil || ms <= 0 {
-		return pokeWindow
-	}
-	if d := time.Duration(ms) * time.Millisecond; d < maxWindow {
-		return d
-	}
-	return maxWindow
-}
+const pokeWindow = 20 * time.Second
 
 func main() {
 	cfg := &rest.Config{
@@ -42,6 +27,7 @@ func main() {
 		mu      sync.Mutex
 		holding bool
 		sched   *scheduler.Scheduler
+		pacer   bridge.Pacer
 	)
 	bridge.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
@@ -73,9 +59,11 @@ func main() {
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
-		select {
-		case <-time.After(windowFrom(r)):
-		case <-r.Context().Done():
+		hold := bridge.ParseHold(r, pokeWindow)
+		if hold.Min == 0 {
+			pacer.Reset()
 		}
+		bridge.Hold(r.Context(), hold, sched.Idle)
+		bridge.WriteNext(w, pacer.Next(sched.Pending()))
 	}))
 }

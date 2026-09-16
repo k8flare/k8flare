@@ -6,6 +6,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	supervisor "github.com/k8flare/k8flare/packages/apiserver-supervisor"
@@ -19,6 +23,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/util/flowcontrol"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/controller-manager/pkg/informerfactory"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/controller/certificates/rootcacertpublisher"
@@ -64,16 +69,20 @@ type Controllers struct {
 	metadataFactory  metadatainformer.SharedInformerFactory
 	informersStarted chan struct{}
 	runs             []func(context.Context)
+	queues           *queueDepths
+	started          atomic.Bool
 }
 
 func New(ctx context.Context, cfg *rest.Config) (*Controllers, error) {
+	queues := &queueDepths{}
+	workqueue.SetProvider(queues)
 	client, err := kubernetes.NewForConfig(rest.AddUserAgent(cfg, "kube-controller-manager"))
 	if err != nil {
 		return nil, err
 	}
 	factory := informers.NewSharedInformerFactory(client, minResyncPeriod)
 	core, apps, batch := factory.Core().V1(), factory.Apps().V1(), factory.Batch().V1()
-	c := &Controllers{factory: factory, informersStarted: make(chan struct{})}
+	c := &Controllers{factory: factory, informersStarted: make(chan struct{}), queues: queues}
 	rc := replication.NewReplicationManager(ctx, core.Pods(), core.ReplicationControllers(), client, replication.BurstReplicas)
 	c.add(func(ctx context.Context) { rc.Run(ctx, workers) })
 	rs := replicaset.NewReplicaSetController(ctx, apps.ReplicaSets(), core.Pods(), client, replicaset.BurstReplicas)
@@ -185,8 +194,85 @@ func (c *Controllers) Run(ctx context.Context) {
 	for _, run := range c.runs {
 		go recovered(ctx, run)
 	}
+	c.started.Store(true)
 	<-ctx.Done()
 }
+
+func (c *Controllers) Pending() string {
+	if !c.started.Load() {
+		return "starting"
+	}
+	return c.queues.summary()
+}
+
+func (c *Controllers) Idle() bool {
+	return c.started.Load() && c.queues.summary() == ""
+}
+
+type queueDepths struct {
+	mu         sync.Mutex
+	depth      map[string]*gauge
+	unfinished map[string]*gauge
+}
+
+type gauge struct{ n atomic.Int64 }
+
+func (g *gauge) Inc()          { g.n.Add(1) }
+func (g *gauge) Dec()          { g.n.Add(-1) }
+func (g *gauge) Set(v float64) { g.n.Store(int64(v)) }
+
+type noop struct{}
+
+func (noop) Inc()            {}
+func (noop) Observe(float64) {}
+
+func (q *queueDepths) track(m *map[string]*gauge, name string) *gauge {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if *m == nil {
+		*m = map[string]*gauge{}
+	}
+	if g, ok := (*m)[name]; ok {
+		return g
+	}
+	g := &gauge{}
+	(*m)[name] = g
+	return g
+}
+
+func (q *queueDepths) summary() string {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	var busy []string
+	for name, g := range q.depth {
+		if g.n.Load() > 0 {
+			busy = append(busy, fmt.Sprintf("%s=%d", name, g.n.Load()))
+		}
+	}
+	for name, g := range q.unfinished {
+		if g.n.Load() > 0 {
+			busy = append(busy, name+"=working")
+		}
+	}
+	sort.Strings(busy)
+	return strings.Join(busy, ",")
+}
+
+func (q *queueDepths) NewDepthMetric(name string) workqueue.GaugeMetric {
+	return q.track(&q.depth, name)
+}
+
+func (q *queueDepths) NewUnfinishedWorkSecondsMetric(name string) workqueue.SettableGaugeMetric {
+	return q.track(&q.unfinished, name)
+}
+
+func (q *queueDepths) NewAddsMetric(string) workqueue.CounterMetric           { return noop{} }
+func (q *queueDepths) NewLatencyMetric(string) workqueue.HistogramMetric      { return noop{} }
+func (q *queueDepths) NewWorkDurationMetric(string) workqueue.HistogramMetric { return noop{} }
+func (q *queueDepths) NewLongestRunningProcessorSecondsMetric(string) workqueue.SettableGaugeMetric {
+	return &gauge{}
+}
+func (q *queueDepths) NewRetriesMetric(string) workqueue.CounterMetric { return noop{} }
 
 func recovered(ctx context.Context, run func(context.Context)) {
 	defer func() {

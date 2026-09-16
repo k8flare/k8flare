@@ -23,6 +23,9 @@ func init() {
 		store.BeginUpdate = func(ctx context.Context, obj, _ runtime.Object, _ *metav1.UpdateOptions) (genericregistry.FinishFunc, error) {
 			return pokeBothFor(obj), nil
 		}
+		store.AfterDelete = func(runtime.Object, *metav1.DeleteOptions) {
+			pokeBoth(context.Background(), true)
+		}
 	}
 	registry.Customizers["nodes"] = func(store *registry.Store, _ registry.Deps) {
 		registry.PokeControllersOn(store)
