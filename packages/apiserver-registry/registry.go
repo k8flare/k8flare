@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
@@ -78,10 +79,20 @@ func (s storeWithNames) ShortNames() []string { return s.shortNames }
 func (s storeWithNames) Categories() []string { return s.categories }
 
 func (s storeWithNames) Delete(ctx context.Context, name string, deleteValidation rest.ValidateObjectFunc, options *metav1.DeleteOptions) (runtime.Object, bool, error) {
+	var (
+		out     runtime.Object
+		deleted bool
+		err     error
+	)
 	if s.deleter != nil {
-		return s.deleter.Delete(ctx, name, deleteValidation, options)
+		out, deleted, err = s.deleter.Delete(ctx, name, deleteValidation, options)
+	} else {
+		out, deleted, err = s.Store.Delete(ctx, name, deleteValidation, options)
 	}
-	return s.Store.Delete(ctx, name, deleteValidation, options)
+	if err == nil && !deleted && pokesControllers(s.Store) && PokeControllers != nil {
+		PokeControllers(ctx)
+	}
+	return out, deleted, err
 }
 
 type Deps struct {
@@ -103,7 +114,15 @@ var (
 	WakeControllers func(ctx context.Context, delay time.Duration)
 )
 
+var pokingStores sync.Map
+
+func pokesControllers(store *Store) bool {
+	_, ok := pokingStores.Load(store)
+	return ok
+}
+
 func PokeControllersOn(store *Store) {
+	pokingStores.Store(store, struct{}{})
 	store.BeginCreate = func(context.Context, runtime.Object, *metav1.CreateOptions) (genericregistry.FinishFunc, error) {
 		return pokeControllers, nil
 	}
@@ -179,4 +198,12 @@ func NewStore(client *kine.Client, gv schema.GroupVersion, res metav1.APIResourc
 		Storage: genericregistry.DryRunnableStorage{Storage: kineStorage, Codec: codec},
 	}
 	return store, nil
+}
+
+type OrphanByDefault struct {
+	rest.RESTDeleteStrategy
+}
+
+func (OrphanByDefault) DefaultGarbageCollectionPolicy(context.Context) rest.GarbageCollectionPolicy {
+	return rest.OrphanDependents
 }

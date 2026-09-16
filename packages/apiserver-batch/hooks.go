@@ -13,7 +13,10 @@ import (
 )
 
 func init() {
-	registry.Customizers["jobs"] = func(store *registry.Store, _ registry.Deps) { registry.PokeControllersOn(store) }
+	registry.Customizers["jobs"] = func(store *registry.Store, _ registry.Deps) {
+		registry.PokeControllersOn(store)
+		store.DeleteStrategy = registry.OrphanByDefault{RESTDeleteStrategy: store.DeleteStrategy}
+	}
 	registry.Customizers["cronjobs"] = func(store *registry.Store, _ registry.Deps) {
 		registry.PokeControllersOn(store)
 		store.BeginCreate = func(_ context.Context, obj runtime.Object, _ *metav1.CreateOptions) (genericregistry.FinishFunc, error) {

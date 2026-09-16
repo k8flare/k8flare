@@ -40,7 +40,11 @@ func init() {
 			return func(context.Context, bool) {}, nil
 		}
 	}
-	for _, resource := range []string{"services", "endpoints", "replicationcontrollers", "serviceaccounts"} {
+	registry.Customizers["replicationcontrollers"] = func(store *registry.Store, _ registry.Deps) {
+		registry.PokeControllersOn(store)
+		store.DeleteStrategy = registry.OrphanByDefault{RESTDeleteStrategy: store.DeleteStrategy}
+	}
+	for _, resource := range []string{"services", "endpoints", "serviceaccounts"} {
 		registry.Customizers[resource] = func(store *registry.Store, _ registry.Deps) { registry.PokeControllersOn(store) }
 	}
 	registry.Customizers["namespaces"] = func(store *registry.Store, _ registry.Deps) {
