@@ -538,8 +538,13 @@ func DialWebSocket(ctx context.Context, bindingName, rawURL string) (*WebSocket,
 	headers := js.Global().Get("Object").New()
 	headers.Set("Upgrade", "websocket")
 	opts.Set("headers", headers)
+	endFetch := beginFetch(window)
 	resp, err := awaitIn(window, binding.Call("fetch", js.Global().Get("Request").New(rawURL, opts)))
+	endFetch()
 	if err != nil {
+		if errors.Is(err, ErrWindowClosed) {
+			println("bridge: websocket lost to window close kind="+window.kind()+" age="+time.Since(window.opened).Round(time.Second).String()+":", rawURL)
+		}
 		return nil, fmt.Errorf("bridge: websocket %s: %w", rawURL, err)
 	}
 	ws := resp.Get("webSocket")

@@ -408,7 +408,16 @@ func (s *Storage) Watch(ctx context.Context, key string, opts storage.ListOption
 		q.Set("initial", "1")
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	msgs, closeFn, err := WatchDialer(ctx, kineBase+"/watch?"+q.Encode())
+	dial := func(since int64, initial bool) (<-chan []byte, func(), error) {
+		q.Set("since", strconv.FormatInt(since, 10))
+		if initial {
+			q.Set("initial", "1")
+		} else {
+			q.Del("initial")
+		}
+		return WatchDialer(ctx, kineBase+"/watch?"+q.Encode())
+	}
+	msgs, closeFn, err := dial(int64(rv), initial)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -417,21 +426,37 @@ func (s *Storage) Watch(ctx context.Context, key string, opts storage.ListOption
 	w := watch.NewProxyWatcher(events)
 	go func() {
 		defer cancel()
-		defer closeFn()
 		defer close(events)
+		lastRev := int64(rv)
+		snapshotDone := !initial
 		for {
 			select {
 			case <-w.StopChan():
+				closeFn()
 				return
 			case msg, ok := <-msgs:
 				if !ok {
-					return
+					closeFn()
+					if ctx.Err() != nil {
+						return
+					}
+					println("kine: watch socket closed, redialing", prefix, "since", lastRev)
+					msgs, closeFn, err = dial(lastRev, !snapshotDone)
+					if err != nil {
+						println("kine: redial failed:", err.Error())
+						return
+					}
+					continue
 				}
 				var ev kineEvent
 				if err := json.Unmarshal(msg, &ev); err != nil {
 					continue
 				}
+				if ev.Rev > lastRev {
+					lastRev = ev.Rev
+				}
 				if ev.Type == "compacted" {
+					closeFn()
 					expired := apierrors.NewResourceExpired(fmt.Sprintf("resource version %d is older than the compacted revision %d", rv, ev.Rev))
 					select {
 					case events <- watch.Event{Type: watch.Error, Object: &expired.ErrStatus}:
@@ -440,6 +465,7 @@ func (s *Storage) Watch(ctx context.Context, key string, opts storage.ListOption
 					return
 				}
 				if ev.Type == "snapshot-end" {
+					snapshotDone = true
 					if opts.SendInitialEvents == nil || !*opts.SendInitialEvents {
 						continue
 					}
@@ -453,6 +479,7 @@ func (s *Storage) Watch(ctx context.Context, key string, opts storage.ListOption
 					select {
 					case events <- watch.Event{Type: watch.Bookmark, Object: bookmark}:
 					case <-w.StopChan():
+						closeFn()
 						return
 					}
 					continue
@@ -464,6 +491,7 @@ func (s *Storage) Watch(ctx context.Context, key string, opts storage.ListOption
 				select {
 				case events <- out:
 				case <-w.StopChan():
+					closeFn()
 					return
 				}
 			}
