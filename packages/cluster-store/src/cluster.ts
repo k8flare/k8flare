@@ -11,8 +11,8 @@ const NODE_LEASE_PREFIX = "/registry/leases/kube-node-lease/";
 const NODE_LEASE_GRACE_MS = 60_000;
 const NODE_LEASE_HOLD_MS = 60_000;
 const ALARM_SLACK_MS = 1_000;
-const SCHEDULER_WINDOW_MS = 20_000;
-const CONTROLLERS_WINDOW_MS = 60_000;
+const RUN_WINDOW_MS = 300_000;
+const RUN_RETRY_MS = 15_000;
 
 type WakeTarget = "scheduler" | "controllers";
 const wakeTargets: WakeTarget[] = ["scheduler", "controllers"];
@@ -37,7 +37,10 @@ export class Cluster extends DurableObject<Env> {
       )`);
       ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS kine_name_id ON kine (name, id)`);
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)`);
-      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS wakes (target TEXT NOT NULL, at INTEGER NOT NULL, hold INTEGER NOT NULL, PRIMARY KEY (target, at))`);
+      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS wakes (target TEXT NOT NULL, at INTEGER NOT NULL, hold INTEGER NOT NULL, insured INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (target, at))`);
+      try {
+        ctx.storage.sql.exec(`ALTER TABLE wakes ADD COLUMN insured INTEGER NOT NULL DEFAULT 0`);
+      } catch {}
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS node_leases (node TEXT PRIMARY KEY, seen INTEGER NOT NULL, expired INTEGER NOT NULL DEFAULT 0)`);
       ctx.storage.sql.exec(
         `INSERT INTO kine (name, deleted, value) SELECT '/k8flare/bootstrap', 0, X'' WHERE NOT EXISTS (SELECT 1 FROM kine)`,
@@ -123,9 +126,16 @@ export class Cluster extends DurableObject<Env> {
         return Response.json({ revision: this.insert(body.key, 1, cur.value, cur) });
       }
       case "POST /wake": {
-        const body = (await request.json()) as { target: WakeTarget; delayMs: number; holdMs?: number };
+        const body = (await request.json()) as { target: WakeTarget; delayMs: number; holdMs?: number; insured?: boolean };
         if (!wakeTargets.includes(body.target)) return new Response("unknown target", { status: 400 });
-        await this.scheduleWake(body.target, Date.now() + body.delayMs, body.holdMs ?? 0);
+        await this.scheduleWake(body.target, Date.now() + body.delayMs, body.holdMs ?? 0, body.insured === true);
+        return Response.json({ ok: true });
+      }
+      case "POST /wake/settle": {
+        const body = (await request.json()) as { target: WakeTarget };
+        if (!wakeTargets.includes(body.target)) return new Response("unknown target", { status: 400 });
+        this.ctx.storage.sql.exec("DELETE FROM wakes WHERE target = ? AND insured = 1", body.target);
+        await this.rearm();
         return Response.json({ ok: true });
       }
       case "GET /list": {
@@ -258,18 +268,19 @@ export class Cluster extends DurableObject<Env> {
     await this.rearm();
   }
 
-  private async scheduleWake(target: WakeTarget, at: number, holdMs: number): Promise<void> {
+  private async scheduleWake(target: WakeTarget, at: number, holdMs: number, insured = false): Promise<void> {
     const covered = this.ctx.storage.sql
       .exec("SELECT 1 FROM wakes WHERE target = ? AND at > ? AND at <= ? AND hold >= ? LIMIT 1", target, Date.now(), at, holdMs)
       .toArray();
     if (covered.length > 0) return;
     this.ctx.storage.sql.exec(
-      "INSERT INTO wakes (target, at, hold) VALUES (?, ?, ?) ON CONFLICT(target, at) DO UPDATE SET hold = MAX(wakes.hold, excluded.hold)",
+      "INSERT INTO wakes (target, at, hold, insured) VALUES (?, ?, ?, ?) ON CONFLICT(target, at) DO UPDATE SET hold = MAX(wakes.hold, excluded.hold), insured = MIN(wakes.insured, excluded.insured)",
       target,
       at,
       holdMs,
+      insured ? 1 : 0,
     );
-    console.log(`wake ${target} in ${Math.max(0, at - Date.now())}ms`);
+    console.log(`wake ${target} in ${Math.max(0, at - Date.now())}ms${insured ? " (insured)" : ""}`);
     await this.rearm();
   }
 
@@ -310,11 +321,13 @@ export class Cluster extends DurableObject<Env> {
   }
 
   private async runTarget(target: WakeTarget, holdMs: number): Promise<void> {
-    const run =
-      target === "scheduler"
-        ? this.env.SCHEDULER.run(Math.max(SCHEDULER_WINDOW_MS, holdMs), holdMs)
-        : this.env.CONTROLLERS.run(Math.max(CONTROLLERS_WINDOW_MS, holdMs), holdMs);
-    await run.catch((err) => console.error(`wake ${target}:`, err));
+    const entrypoint = target === "scheduler" ? this.env.SCHEDULER : this.env.CONTROLLERS;
+    try {
+      await entrypoint.run(RUN_WINDOW_MS, holdMs);
+    } catch (err) {
+      console.error(`wake ${target}:`, err);
+      await this.scheduleWake(target, Date.now() + RUN_RETRY_MS, holdMs);
+    }
   }
 
   async webSocketMessage(): Promise<void> {}

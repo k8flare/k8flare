@@ -24,24 +24,34 @@ func main() {
 		Transport:   bridge.BindingTransport{Name: "APISERVER", AbortOnWake: true},
 	}
 	var (
-		mu      sync.Mutex
-		holding bool
-		sched   *scheduler.Scheduler
-		pacer   bridge.Pacer
+		mu          sync.Mutex
+		pokeHolding bool
+		runHolding  bool
+		sched       *scheduler.Scheduler
+		pacer       bridge.Pacer
 	)
 	bridge.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bridge.Poked()
+		hold := bridge.ParseHold(r, pokeWindow)
 		mu.Lock()
-		if holding {
+		if runHolding || (hold.Reset && pokeHolding) {
 			mu.Unlock()
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		holding = true
+		if hold.Reset {
+			pokeHolding = true
+		} else {
+			runHolding = true
+		}
 		mu.Unlock()
 		defer func() {
 			mu.Lock()
-			holding = false
+			if hold.Reset {
+				pokeHolding = false
+			} else {
+				runHolding = false
+			}
 			mu.Unlock()
 		}()
 		if sched == nil {
@@ -60,7 +70,6 @@ func main() {
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
-		hold := bridge.ParseHold(r, pokeWindow)
 		if hold.Reset {
 			pacer.Reset()
 		}

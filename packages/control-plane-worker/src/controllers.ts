@@ -1,23 +1,17 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { loadWasmWorker } from "@k8flare/loader-kit";
-import { absorbedRetryMs, pokeDeadlineMs, retryMs, scheduleWake } from "./wake.ts";
+import { absorbedRetryMs, insuranceMs, scheduleWake, settleWake } from "./wake.ts";
 
 const writeWindowMs = 20_000;
 
 export class Controllers extends WorkerEntrypoint<Env> {
   async poke(): Promise<void> {
-    this.ctx.waitUntil(this.pokeWithDeadline());
+    await scheduleWake(this.env, "controllers", insuranceMs, 0, true);
+    this.ctx.waitUntil(this.hold(writeWindowMs, 0, true));
   }
 
   async run(windowMs: number, minMs: number): Promise<void> {
     await this.hold(windowMs, minMs, false);
-  }
-
-  private async pokeWithDeadline(): Promise<void> {
-    const deadline = new Promise<"deadline">((resolve) => setTimeout(() => resolve("deadline"), pokeDeadlineMs));
-    if ((await Promise.race([this.hold(writeWindowMs, 0, true), deadline])) === "deadline") {
-      await scheduleWake(this.env, "controllers", retryMs);
-    }
   }
 
   private async hold(windowMs: number, minMs: number, reset: boolean): Promise<void> {
@@ -31,5 +25,6 @@ export class Controllers extends WorkerEntrypoint<Env> {
     if (resp.status !== 200) return;
     const { next } = JSON.parse(text) as { next: number };
     if (next > 0) await scheduleWake(this.env, "controllers", next);
+    else await settleWake(this.env, "controllers");
   }
 }
