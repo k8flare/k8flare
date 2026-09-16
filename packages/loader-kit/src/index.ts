@@ -54,10 +54,16 @@ export function isolateId(): string {
 }
 const loadedWorkers = new Set<string>();
 
+const assetAttempts = 4;
+
 async function asset(assets: Fetcher, path: string): Promise<Response> {
-  const resp = await assets.fetch(`https://assets.internal/wasm/${path}`);
-  if (!resp.ok) throw new Error(`asset wasm/${path}: HTTP ${resp.status} (run make wasm)`);
-  return resp;
+  for (let attempt = 1; ; attempt++) {
+    const resp = await assets.fetch(`https://assets.internal/wasm/${path}`);
+    if (resp.ok) return resp;
+    if (resp.status < 500 || attempt >= assetAttempts) throw new Error(`asset wasm/${path}: HTTP ${resp.status} (run make wasm)`);
+    console.log(`loader iso=${isolateId()} asset wasm/${path} HTTP ${resp.status}, retry ${attempt}`);
+    await new Promise((r) => setTimeout(r, 300 * attempt));
+  }
 }
 
 async function assemble(assets: Fetcher, m: Manifest): Promise<Uint8Array> {
@@ -74,6 +80,23 @@ async function assemble(assets: Fetcher, m: Manifest): Promise<Uint8Array> {
 
 /** Returns the entrypoint of the dynamic worker hosting `name`, loading it on first use. */
 export async function loadWasmWorker(
+  loader: WorkerLoader,
+  assets: Fetcher,
+  name: string,
+  env: Record<string, unknown>,
+  tail?: Fetcher,
+): Promise<Fetcher> {
+  try {
+    return await loadOnce(loader, assets, name, env, tail);
+  } catch (err) {
+    if (!String(err).includes("asset wasm/")) throw err;
+    manifests.delete(name);
+    console.log(`loader iso=${isolateId()} stale manifest for ${name}, refetching`);
+    return loadOnce(loader, assets, name, env, tail);
+  }
+}
+
+async function loadOnce(
   loader: WorkerLoader,
   assets: Fetcher,
   name: string,
