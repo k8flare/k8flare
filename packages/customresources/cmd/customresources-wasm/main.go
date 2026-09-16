@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"net/http"
+	"time"
 
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	"github.com/k8flare/k8flare/packages/customresources"
@@ -19,11 +20,28 @@ func main() {
 		}
 		return ws.Messages, ws.Close, nil
 	}
+	kine.Resident = bridge.Holding
 	handler, err := customresources.NewHandler(customresources.Config{
 		Kine: &http.Client{Transport: bridge.BindingTransport{Name: "STORAGE"}},
 	})
 	if err != nil {
 		panic(err)
 	}
-	bridge.Serve(handler)
+	bridge.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bridge.Poked()
+		if r.URL.Path != "/hold" {
+			handler.ServeHTTP(w, r)
+			return
+		}
+		bridge.OpenWindow(r.Context())
+		defer bridge.CloseWindow(r.Context())
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		bridge.Hold(r.Context(), bridge.ParseHold(r, holdWindow), bridge.Quiet)
+		bridge.WriteNext(w, 0)
+	}))
 }
+
+const holdWindow = 15 * time.Second

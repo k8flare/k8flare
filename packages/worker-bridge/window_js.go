@@ -192,6 +192,17 @@ func OpenRunWindow(ctx context.Context) {
 	windowsMu.Unlock()
 }
 
+func Holding() bool {
+	windowsMu.Lock()
+	defer windowsMu.Unlock()
+	for _, w := range windows {
+		if w.holding {
+			return true
+		}
+	}
+	return false
+}
+
 func CloseWindow(ctx context.Context) {
 	w := windowFrom(ctx)
 	if w == nil {

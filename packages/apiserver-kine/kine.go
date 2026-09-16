@@ -376,6 +376,8 @@ func (s *Storage) Delete(ctx context.Context, key string, out runtime.Object, pr
 // entrypoint; host builds have none.
 var WatchDialer func(ctx context.Context, rawURL string) (<-chan []byte, func(), error)
 
+var Resident func() bool
+
 type kineEvent struct {
 	Rev   int64  `json:"rev"`
 	Type  string `json:"type"`
@@ -437,7 +439,7 @@ func (s *Storage) Watch(ctx context.Context, key string, opts storage.ListOption
 			case msg, ok := <-msgs:
 				if !ok {
 					closeFn()
-					if ctx.Err() != nil {
+					if ctx.Err() != nil || (Resident != nil && !Resident()) {
 						return
 					}
 					println("kine: watch socket closed, redialing", prefix, "since", lastRev)

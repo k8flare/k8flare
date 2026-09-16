@@ -28,6 +28,9 @@ func quiet() bool {
 	return time.Since(time.Unix(0, lastPoke.Load())) >= quietPeriod
 }
 
+func Quiet() bool { return quiet() }
+
+
 type Pacer struct {
 	last   string
 	streak int
