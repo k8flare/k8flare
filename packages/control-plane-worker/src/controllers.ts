@@ -1,18 +1,25 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { loadWasmWorker } from "@k8flare/loader-kit";
 import { clusterHasNodes } from "./cluster.ts";
-import { scheduleWake } from "./wake.ts";
+import { pokeDeadlineMs, retryMs, scheduleWake } from "./wake.ts";
 
 const writeWindowMs = 20_000;
 const safetyNetMs = 300_000;
 
 export class Controllers extends WorkerEntrypoint<Env> {
   async poke(): Promise<void> {
-    this.ctx.waitUntil(this.hold(writeWindowMs, 0, true));
+    this.ctx.waitUntil(this.pokeWithDeadline());
   }
 
   async run(windowMs: number): Promise<void> {
     await this.hold(windowMs, windowMs, false);
+  }
+
+  private async pokeWithDeadline(): Promise<void> {
+    const deadline = new Promise<"deadline">((resolve) => setTimeout(() => resolve("deadline"), pokeDeadlineMs));
+    if ((await Promise.race([this.hold(writeWindowMs, 0, true), deadline])) === "deadline") {
+      await scheduleWake(this.env, "controllers", retryMs);
+    }
   }
 
   private async hold(windowMs: number, minMs: number, reset: boolean): Promise<void> {

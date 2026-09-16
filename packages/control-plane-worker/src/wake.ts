@@ -6,6 +6,8 @@ const targets: WakeTarget[] = ["scheduler", "controllers"];
 const schedulerWindowMs = 20_000;
 const controllersWindowMs = 60_000;
 const dueSlackMs = 1_000;
+export const pokeDeadlineMs = 25_000;
+export const retryMs = 15_000;
 
 export class Wake extends DurableObject<Env> {
   async schedule(target: WakeTarget, delayMs: number): Promise<void> {

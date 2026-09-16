@@ -69,20 +69,23 @@ type Controllers struct {
 	metadataFactory  metadatainformer.SharedInformerFactory
 	informersStarted chan struct{}
 	runs             []func(context.Context)
-	queues           *queueDepths
 	started          atomic.Bool
 }
 
-func New(ctx context.Context, cfg *rest.Config) (*Controllers, error) {
-	queues := &queueDepths{}
+var queues = &queueDepths{}
+
+func init() {
 	workqueue.SetProvider(queues)
+}
+
+func New(ctx context.Context, cfg *rest.Config) (*Controllers, error) {
 	client, err := kubernetes.NewForConfig(rest.AddUserAgent(cfg, "kube-controller-manager"))
 	if err != nil {
 		return nil, err
 	}
 	factory := informers.NewSharedInformerFactory(client, minResyncPeriod)
 	core, apps, batch := factory.Core().V1(), factory.Apps().V1(), factory.Batch().V1()
-	c := &Controllers{factory: factory, informersStarted: make(chan struct{}), queues: queues}
+	c := &Controllers{factory: factory, informersStarted: make(chan struct{})}
 	rc := replication.NewReplicationManager(ctx, core.Pods(), core.ReplicationControllers(), client, replication.BurstReplicas)
 	c.add(func(ctx context.Context) { rc.Run(ctx, workers) })
 	rs := replicaset.NewReplicaSetController(ctx, apps.ReplicaSets(), core.Pods(), client, replicaset.BurstReplicas)
@@ -202,11 +205,11 @@ func (c *Controllers) Pending() string {
 	if !c.started.Load() {
 		return "starting"
 	}
-	return c.queues.summary()
+	return queues.summary()
 }
 
 func (c *Controllers) Idle() bool {
-	return c.started.Load() && c.queues.summary() == ""
+	return c.started.Load() && queues.summary() == ""
 }
 
 type queueDepths struct {
