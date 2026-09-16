@@ -306,6 +306,36 @@ its log, and removing it again.
   may cold-start 48-55MB of wasm) are unmeasured; use the 6-minute
   `wrangler tail` protocol below.
 
+  **Measured on production (2026-09-16, same node `k8flare-c1`, no
+  workloads).** A same-day baseline of the previously deployed build
+  (the shipped `c3cade6` state) was taken first, then this build was
+  deployed and tailed 3 minutes later. The baseline tail was sampled:
+  it captured 14 of the kubelet's 36 ten-second lease writes, so its
+  numbers are undercounts; the new build's tails captured 35/36 and
+  65/65.
+
+  | window | CPU ms/min | /mo | watch/min | hung | cron | notes |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | baseline, 6 min (sampled) | 3,372 | 145.7M | 145 | 27 | 1 seen | true figure higher; plan's earlier reading of this state was 5,611-5,763 |
+  | this build, 6 min, first deploy | 203 | 8.8M | 1 | 3 | 7 | not valid: the cron trigger survived a deploy that merely omitted `triggers`, and no controllers window had run since the deploy, so no safety net was armed |
+  | this build + `crons: []` + arm-on-connect, 6 min | 2,824 | 122.0M | 21 | 2 | 1 (pre-redeploy) | contains the controllers' post-deploy cold start: 66s hold at 1,725 ms, then ~60 watches cancelled at 100-800 ms each (relist) |
+  | same, 16 min, three safety-net cycles | 1,071 | 46.3M | 24 | 3 | 0 | minute 0 carried 7,866 ms from the previous cycle's teardown; minutes 2-15 average 437 ms/min (18.9M/mo) |
+
+  Per safety-net cycle on a warm isolate (cycles 2 and 3 of the 16-minute
+  window): the 60s hold costs 720-725 ms, the ~60 watch streams it opened
+  end at 2-16 ms each when the window closes, and the whole cycle lands
+  in two minutes at 1,600-1,800 ms each; the other three minutes of the
+  cycle sit at 30-150 ms. The first cycle after a deploy is the only one
+  with relist-sized cancels (98-368 ms), so the isolate survives the
+  5-minute gap and the eviction risk did not materialise at this cadence.
+  The scheduler was never woken: nothing was pending. Two mechanisms were
+  needed on top of the design to make it hold in production: `"crons":
+  []` in `wrangler.jsonc`, because wrangler leaves an existing trigger
+  in place when the key is absent, and arming the controllers' safety
+  net on `/v1-k3s/connect` when nothing is scheduled, because a node
+  joined before the deploy never writes anything that opens a
+  controllers window.
+
 - **Advisory e2e (2026-09-14, per focus group, one wrangler per group):**
   Garbage collector 3/7 after the collector landed (was 1/7): deletion
   cascades work, and the orphan and foreground cases were failing because
