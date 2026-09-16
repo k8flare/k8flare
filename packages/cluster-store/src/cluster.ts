@@ -37,10 +37,12 @@ export class Cluster extends DurableObject<Env> {
       )`);
       ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS kine_name_id ON kine (name, id)`);
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)`);
-      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS wakes (target TEXT NOT NULL, at INTEGER NOT NULL, hold INTEGER NOT NULL, insured INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (target, at))`);
-      try {
-        ctx.storage.sql.exec(`ALTER TABLE wakes ADD COLUMN insured INTEGER NOT NULL DEFAULT 0`);
-      } catch {}
+      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS wakes (target TEXT NOT NULL, at INTEGER NOT NULL, hold INTEGER NOT NULL, insured INTEGER NOT NULL DEFAULT 0, reset INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (target, at))`);
+      for (const column of ["insured", "reset"]) {
+        try {
+          ctx.storage.sql.exec(`ALTER TABLE wakes ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`);
+        } catch {}
+      }
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS node_leases (node TEXT PRIMARY KEY, seen INTEGER NOT NULL, expired INTEGER NOT NULL DEFAULT 0)`);
       ctx.storage.sql.exec(
         `INSERT INTO kine (name, deleted, value) SELECT '/k8flare/bootstrap', 0, X'' WHERE NOT EXISTS (SELECT 1 FROM kine)`,
@@ -126,9 +128,9 @@ export class Cluster extends DurableObject<Env> {
         return Response.json({ revision: this.insert(body.key, 1, cur.value, cur) });
       }
       case "POST /wake": {
-        const body = (await request.json()) as { target: WakeTarget; delayMs: number; holdMs?: number; insured?: boolean };
+        const body = (await request.json()) as { target: WakeTarget; delayMs: number; holdMs?: number; insured?: boolean; reset?: boolean };
         if (!wakeTargets.includes(body.target)) return new Response("unknown target", { status: 400 });
-        await this.scheduleWake(body.target, Date.now() + body.delayMs, body.holdMs ?? 0, body.insured === true);
+        await this.scheduleWake(body.target, Date.now() + body.delayMs, body.holdMs ?? 0, body.insured === true, body.reset === true);
         return Response.json({ ok: true });
       }
       case "POST /wake/settle": {
@@ -268,17 +270,18 @@ export class Cluster extends DurableObject<Env> {
     await this.rearm();
   }
 
-  private async scheduleWake(target: WakeTarget, at: number, holdMs: number, insured = false): Promise<void> {
+  private async scheduleWake(target: WakeTarget, at: number, holdMs: number, insured = false, reset = false): Promise<void> {
     const covered = this.ctx.storage.sql
-      .exec("SELECT 1 FROM wakes WHERE target = ? AND at > ? AND at <= ? AND hold >= ? LIMIT 1", target, Date.now(), at, holdMs)
+      .exec("SELECT 1 FROM wakes WHERE target = ? AND at > ? AND at <= ? AND hold >= ? AND reset >= ? LIMIT 1", target, Date.now(), at, holdMs, reset ? 1 : 0)
       .toArray();
     if (covered.length > 0) return;
     this.ctx.storage.sql.exec(
-      "INSERT INTO wakes (target, at, hold, insured) VALUES (?, ?, ?, ?) ON CONFLICT(target, at) DO UPDATE SET hold = MAX(wakes.hold, excluded.hold), insured = MIN(wakes.insured, excluded.insured)",
+      "INSERT INTO wakes (target, at, hold, insured, reset) VALUES (?, ?, ?, ?, ?) ON CONFLICT(target, at) DO UPDATE SET hold = MAX(wakes.hold, excluded.hold), insured = MIN(wakes.insured, excluded.insured), reset = MAX(wakes.reset, excluded.reset)",
       target,
       at,
       holdMs,
       insured ? 1 : 0,
+      reset ? 1 : 0,
     );
     console.log(`wake ${target} in ${Math.max(0, at - Date.now())}ms${insured ? " (insured)" : ""}`);
     await this.rearm();
@@ -302,9 +305,9 @@ export class Cluster extends DurableObject<Env> {
 
   async alarm(): Promise<void> {
     const now = Date.now() + ALARM_SLACK_MS;
-    const due = new Map<WakeTarget, number>();
-    for (const row of this.ctx.storage.sql.exec("SELECT target, MAX(hold) AS hold FROM wakes WHERE at <= ? GROUP BY target", now).toArray()) {
-      due.set(row.target as WakeTarget, row.hold as number);
+    const due = new Map<WakeTarget, { hold: number; reset: boolean }>();
+    for (const row of this.ctx.storage.sql.exec("SELECT target, MAX(hold) AS hold, MAX(reset) AS reset FROM wakes WHERE at <= ? GROUP BY target", now).toArray()) {
+      due.set(row.target as WakeTarget, { hold: row.hold as number, reset: (row.reset as number) === 1 });
     }
     this.ctx.storage.sql.exec("DELETE FROM wakes WHERE at <= ?", now);
     const stale = this.ctx.storage.sql
@@ -313,17 +316,18 @@ export class Cluster extends DurableObject<Env> {
     if (stale.length > 0) {
       for (const row of stale) this.ctx.storage.sql.exec("UPDATE node_leases SET expired = 1 WHERE node = ?", row.node);
       console.log(`lease expired: ${stale.map((r) => r.node).join(",")}`);
-      due.set("controllers", Math.max(due.get("controllers") ?? 0, NODE_LEASE_HOLD_MS));
+      const current = due.get("controllers");
+      due.set("controllers", { hold: Math.max(current?.hold ?? 0, NODE_LEASE_HOLD_MS), reset: current?.reset ?? false });
     }
     await this.rearm();
     if (due.size > 0) console.log(`wake ${[...due.keys()].join(",")}`);
-    await Promise.all([...due].map(([target, hold]) => this.runTarget(target, hold)));
+    await Promise.all([...due].map(([target, d]) => this.runTarget(target, d.hold, d.reset)));
   }
 
-  private async runTarget(target: WakeTarget, holdMs: number): Promise<void> {
+  private async runTarget(target: WakeTarget, holdMs: number, reset: boolean): Promise<void> {
     const entrypoint = target === "scheduler" ? this.env.SCHEDULER : this.env.CONTROLLERS;
     try {
-      await entrypoint.run(RUN_WINDOW_MS, holdMs);
+      await entrypoint.run(RUN_WINDOW_MS, holdMs, reset);
     } catch (err) {
       console.error(`wake ${target}:`, err);
       await this.scheduleWake(target, Date.now() + RUN_RETRY_MS, holdMs);

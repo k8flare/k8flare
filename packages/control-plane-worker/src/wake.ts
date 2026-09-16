@@ -1,6 +1,6 @@
 export type WakeTarget = "scheduler" | "controllers";
 
-export const insuranceMs = 25_000;
+export const pokeDelayMs = 2_000;
 export const absorbedRetryMs = 5_000;
 
 function store(env: Env): DurableObjectStub {
@@ -16,8 +16,8 @@ async function post(env: Env, path: string, body: unknown): Promise<void> {
   if (!resp.ok) console.error(`${path}: HTTP ${resp.status}`);
 }
 
-export async function scheduleWake(env: Env, target: WakeTarget, delayMs: number, holdMs = 0, insured = false): Promise<void> {
-  await post(env, "/wake", { target, delayMs, holdMs, insured });
+export async function scheduleWake(env: Env, target: WakeTarget, delayMs: number, holdMs = 0, insured = false, reset = false): Promise<void> {
+  await post(env, "/wake", { target, delayMs, holdMs, insured, reset });
 }
 
 export async function settleWake(env: Env, target: WakeTarget): Promise<void> {

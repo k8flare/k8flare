@@ -60,6 +60,7 @@ type HoldRequest struct {
 	Window time.Duration
 	Min    time.Duration
 	Reset  bool
+	Kick   bool
 }
 
 func ParseHold(r *http.Request, defaultWindow time.Duration) HoldRequest {
@@ -67,6 +68,7 @@ func ParseHold(r *http.Request, defaultWindow time.Duration) HoldRequest {
 		Window: durationParam(r, "window", defaultWindow),
 		Min:    durationParam(r, "min", 0),
 		Reset:  r.URL.Query().Get("reset") == "1",
+		Kick:   r.URL.Query().Get("kick") == "1",
 	}
 }
 

@@ -1,25 +1,31 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { loadWasmWorker } from "@k8flare/loader-kit";
-import { absorbedRetryMs, insuranceMs, scheduleWake, settleWake } from "./wake.ts";
-
-const writeWindowMs = 10_000;
+import { absorbedRetryMs, pokeDelayMs, scheduleWake, settleWake } from "./wake.ts";
 
 export class Controllers extends WorkerEntrypoint<Env> {
   async poke(): Promise<void> {
-    await scheduleWake(this.env, "controllers", insuranceMs, 0, true);
-    this.ctx.waitUntil(this.hold(writeWindowMs, 0, true));
+    await scheduleWake(this.env, "controllers", pokeDelayMs, 0, true, true);
+    this.ctx.waitUntil(this.kick());
   }
 
-  async run(windowMs: number, minMs: number): Promise<void> {
-    await this.hold(windowMs, minMs, false);
+  async run(windowMs: number, minMs: number, reset: boolean): Promise<void> {
+    await this.hold(windowMs, minMs, reset);
   }
 
-  private async hold(windowMs: number, minMs: number, reset: boolean): Promise<void> {
-    const worker = await loadWasmWorker(this.env.LOADER, this.env.ASSETS, "controllers", {
+  private async worker(): Promise<Fetcher> {
+    return loadWasmWorker(this.env.LOADER, this.env.ASSETS, "controllers", {
       APISERVER: this.env.APISERVER,
       ADMIN_TOKEN: this.env.ADMIN_TOKEN,
     }, this.env.APISERVER);
-    const resp = await worker.fetch(`https://controllers.internal/poke?window=${windowMs}&min=${minMs}&reset=${reset ? 1 : 0}`);
+  }
+
+  private async kick(): Promise<void> {
+    const resp = await (await this.worker()).fetch(`https://controllers.internal/poke?kick=1`);
+    await resp.text();
+  }
+
+  private async hold(windowMs: number, minMs: number, reset: boolean): Promise<void> {
+    const resp = await (await this.worker()).fetch(`https://controllers.internal/poke?window=${windowMs}&min=${minMs}&reset=${reset ? 1 : 0}`);
     const text = await resp.text();
     if (resp.status === 204 && minMs > 0) await scheduleWake(this.env, "controllers", absorbedRetryMs, minMs);
     if (resp.status !== 200) return;
