@@ -1,4 +1,5 @@
 import { apiserverFetch } from "./loader.ts";
+import { isolateId } from "@k8flare/loader-kit";
 
 export { Cluster } from "@k8flare/cluster-store";
 export { NodeTunnel } from "@k8flare/node-tunnel";
@@ -47,13 +48,14 @@ async function sha256Hex(s: string): Promise<string> {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const path = new URL(request.url).pathname;
+    console.log(`front iso=${isolateId} ${request.method} ${path}`);
     if (path === "/v1-k3s/connect") return acceptTunnel(request, env);
     if (path === "/stats" && request.headers.get("Authorization") === `Bearer ${env.ADMIN_TOKEN}`) {
       return env.CLUSTER.get(env.CLUSTER.idFromName("default")).fetch("https://cluster.internal/stats");
     }
-    return apiserverFetch(env, request);
+    return apiserverFetch(env, ctx, request);
   },
   tail(events: TraceItem[]): void {
     for (const e of events) {

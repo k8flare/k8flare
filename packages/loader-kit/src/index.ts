@@ -43,6 +43,16 @@ interface Manifest {
 }
 
 const manifests = new Map<string, Manifest>();
+export const isolateId = crypto.randomUUID().slice(0, 8);
+const bornAt = Date.now();
+const loadedWorkers = new Set<string>();
+let loading: Promise<unknown> = Promise.resolve();
+
+function serialized<T>(fn: () => Promise<T>): Promise<T> {
+  const next = loading.then(fn, fn);
+  loading = next.catch(() => {});
+  return next;
+}
 
 async function asset(assets: Fetcher, path: string): Promise<Response> {
   const resp = await assets.fetch(`https://assets.internal/wasm/${path}`);
@@ -51,16 +61,12 @@ async function asset(assets: Fetcher, path: string): Promise<Response> {
 }
 
 async function assemble(assets: Fetcher, m: Manifest): Promise<Uint8Array> {
+  const parts = await Promise.all(m.parts.map(async (part) => new Uint8Array(await (await asset(assets, part)).arrayBuffer())));
   const wasm = new Uint8Array(m.size);
   let off = 0;
-  for (const part of m.parts) {
-    const reader = (await asset(assets, part)).body!.getReader();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      wasm.set(value, off);
-      off += value.byteLength;
-    }
+  for (const part of parts) {
+    wasm.set(part, off);
+    off += part.byteLength;
   }
   if (off !== m.size) throw new Error(`wasm reassembly: got ${off} bytes, manifest says ${m.size}`);
   return wasm;
@@ -80,16 +86,28 @@ export async function loadWasmWorker(
     manifests.set(name, m);
   }
   const manifest = m;
-  const worker = loader.get(`${name}@${manifest.sha256}@${tail ? 1 : 0}`, async () => ({
-    compatibilityDate: "2026-09-01",
-    mainModule: "index.js",
-    modules: {
-      "index.js": BOOTSTRAP,
-      "wasm_exec.js": await (await asset(assets, "wasm_exec.js")).text(),
-      "app.wasm": { wasm: (await assemble(assets, manifest)).buffer as ArrayBuffer },
-    },
-    env,
-    ...(tail ? { tails: [tail] } : {}),
-  }));
-  return worker.getEntrypoint();
+  let loadedNow = false;
+  const worker = loader.get(`${name}@${manifest.sha256}@${tail ? 1 : 0}`, () =>
+    serialized(async () => {
+      loadedNow = true;
+      const started = Date.now();
+      const code = {
+        compatibilityDate: "2026-09-01",
+        mainModule: "index.js",
+        modules: {
+          "index.js": BOOTSTRAP,
+          "wasm_exec.js": await (await asset(assets, "wasm_exec.js")).text(),
+          "app.wasm": { wasm: (await assemble(assets, manifest)).buffer as ArrayBuffer },
+        },
+        env,
+        ...(tail ? { tails: [tail] } : {}),
+      };
+      loadedWorkers.add(name);
+      console.log(`loader iso=${isolateId} age=${Math.round((Date.now() - bornAt) / 1000)}s load=${name} loaded=${loadedWorkers.size} ms=${Date.now() - started}`);
+      return code;
+    }),
+  );
+  const entrypoint = worker.getEntrypoint();
+  if (!loadedNow) console.log(`loader iso=${isolateId} hit=${name}`);
+  return entrypoint;
 }
