@@ -59,6 +59,11 @@ export default {
     for (const e of events) {
       if (e.event && "consumedEvents" in e.event) continue;
       console.log(`wasmcpu ${e.scriptName ?? "?"} ${e.entrypoint ?? "-"} ${e.outcome} ${e.cpuTime} ${e.wallTime}`);
+      for (const l of e.logs) {
+        for (const m of l.message) {
+          if (typeof m === "string" && (m.startsWith("bridge:") || m.startsWith("pods/status:"))) console.log(m);
+        }
+      }
     }
   },
 } satisfies ExportedHandler<Env>;

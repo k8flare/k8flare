@@ -55,6 +55,9 @@ func init() {
 	registry.Subresources["pods/log"] = func(stores map[string]*registry.Store, deps registry.Deps) rest.Storage {
 		return NewLogREST(stores["pods"], stores["nodes"], deps.Kubelet)
 	}
+	registry.Subresources["pods/status"] = func(stores map[string]*registry.Store, _ registry.Deps) rest.Storage {
+		return registry.NewUpdateOnlyREST(stores["pods"], podStatusStrategy{registry.StatusOnly(stores["pods"].UpdateStrategy)})
+	}
 	registry.Subresources["pods/binding"] = func(stores map[string]*registry.Store, _ registry.Deps) rest.Storage {
 		return bindingREST{stores["pods"]}
 	}

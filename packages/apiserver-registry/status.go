@@ -23,6 +23,10 @@ func NewStatusREST(parent *genericregistry.Store) *statusREST {
 	return NewUpdateOnlyREST(parent, statusOnlyStrategy{parent.UpdateStrategy})
 }
 
+func StatusOnly(parent rest.RESTUpdateStrategy) rest.RESTUpdateStrategy {
+	return statusOnlyStrategy{parent}
+}
+
 func NewUpdateOnlyREST(parent *genericregistry.Store, strategy rest.RESTUpdateStrategy) *statusREST {
 	store := *parent
 	store.UpdateStrategy = strategy

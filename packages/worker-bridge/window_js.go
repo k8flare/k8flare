@@ -18,6 +18,7 @@ type Window struct {
 	holding bool
 	streams map[int]func()
 	nextID  int
+	pending int
 }
 
 func (w *Window) Env() js.Value         { return w.env }
@@ -25,7 +26,11 @@ func (w *Window) Done() <-chan struct{} { return w.done }
 
 type windowKey struct{}
 
-const scheduledWork = 10 * time.Second
+const (
+	scheduledWork = 10 * time.Second
+	drainTimeout  = 5 * time.Second
+	drainPoll     = 100 * time.Millisecond
+)
 
 var (
 	windowsMu sync.Mutex
@@ -49,7 +54,42 @@ func openWindow(env js.Value) *Window {
 	return w
 }
 
+func beginFetch(w *Window) func() {
+	if w == nil {
+		return func() {}
+	}
+	windowsMu.Lock()
+	w.pending++
+	windowsMu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			windowsMu.Lock()
+			w.pending--
+			windowsMu.Unlock()
+		})
+	}
+}
+
+func (w *Window) drain() {
+	deadline := time.Now().Add(drainTimeout)
+	for {
+		windowsMu.Lock()
+		n := w.pending
+		windowsMu.Unlock()
+		if n == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			println("bridge: drain timeout, in-flight fetches:", n)
+			return
+		}
+		time.Sleep(drainPoll)
+	}
+}
+
 func (w *Window) close() {
+	w.drain()
 	windowsMu.Lock()
 	for i, live := range windows {
 		if live == w {

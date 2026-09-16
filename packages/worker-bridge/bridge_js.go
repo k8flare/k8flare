@@ -354,21 +354,24 @@ func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	opts.Set("signal", controller.Get("signal"))
 	abort := func() { controller.Call("abort") }
 	stop := context.AfterFunc(req.Context(), abort)
-	update, untrack := func(func()) {}, func() {}
-	if t.AbortOnWake {
-		update, untrack = trackStream(window, abort)
-	}
 	jsReq := js.Global().Get("Request").New(req.URL.String(), opts)
+	endFetch := beginFetch(window)
 	jsResp, err := awaitIn(window, binding.Call("fetch", jsReq))
+	endFetch()
 	if err != nil {
-		untrack()
 		stop()
+		if errors.Is(err, ErrWindowClosed) {
+			println("bridge: fetch lost to window close:", req.Method, req.URL.Path)
+		}
 		return nil, fmt.Errorf("bridge: fetch %s: %w", req.URL, err)
 	}
 	header := headerFromPairs(js.Global().Get("Array").Call("from", jsResp.Get("headers").Call("entries")))
 	status := jsResp.Get("status").Int()
 	body, end := streamBody(jsResp.Get("body"), abort)
-	update(end)
+	untrack := func() {}
+	if t.AbortOnWake {
+		_, untrack = trackStream(window, end)
+	}
 	return &http.Response{
 		Status:        fmt.Sprintf("%d %s", status, http.StatusText(status)),
 		StatusCode:    status,
