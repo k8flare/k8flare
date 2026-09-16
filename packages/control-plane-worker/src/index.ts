@@ -65,9 +65,9 @@ export default {
       for (const l of e.logs ?? []) {
         for (const m of l.message ?? []) {
           if (typeof m !== "string") continue;
-          const resident = /^(controllers|scheduler)@/.test(e.scriptName ?? "");
-          if (m.startsWith("bridge:") || m.startsWith("pods/status:") || m.startsWith("kine:") || m.startsWith("go program") || m.includes("panic") || m.startsWith("fatal error") || (resident && /^[EW]\d{4} /.test(m))) {
-            console.log(`${resident ? e.scriptName!.split("@")[0] + " " : ""}${m.slice(0, 400)}`);
+          const klog = /^[EW]\d{4} /.test(m) && !m.includes("watchlist latency");
+          if (m.startsWith("bridge:") || m.startsWith("pods/status:") || m.startsWith("kine:") || m.startsWith("go program") || m.includes("panic") || m.startsWith("fatal error") || klog) {
+            console.log(m.slice(0, 400));
           }
         }
       }
