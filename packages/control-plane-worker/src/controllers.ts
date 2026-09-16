@@ -27,7 +27,11 @@ export class Controllers extends WorkerEntrypoint<Env> {
   private async hold(windowMs: number, minMs: number, reset: boolean): Promise<void> {
     const resp = await (await this.worker()).fetch(`https://controllers.internal/poke?window=${windowMs}&min=${minMs}&reset=${reset ? 1 : 0}`);
     const text = await resp.text();
-    if (resp.status === 204 && minMs > 0) await scheduleWake(this.env, "controllers", absorbedRetryMs, minMs);
+    if (resp.status === 204) {
+      const retry = Number(resp.headers.get("X-Retry-After-Ms") ?? "");
+      if (Number.isFinite(retry) && retry > 0) await scheduleWake(this.env, "controllers", retry, minMs);
+      else if (minMs > 0) await scheduleWake(this.env, "controllers", absorbedRetryMs, minMs);
+    }
     if (resp.status !== 200) return;
     const { next } = JSON.parse(text) as { next: number };
     if (next > 0) await scheduleWake(this.env, "controllers", next);

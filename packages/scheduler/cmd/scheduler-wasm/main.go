@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -41,8 +42,9 @@ func main() {
 			return
 		}
 		mu.Lock()
-		if runs > 0 && time.Since(lastRunStart) < handoverAfter {
+		if age := time.Since(lastRunStart); runs > 0 && age < handoverAfter {
 			mu.Unlock()
+			w.Header().Set("X-Retry-After-Ms", strconv.FormatInt((handoverAfter-age+time.Second).Milliseconds(), 10))
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
