@@ -22,11 +22,16 @@ export default {
     if (!bindingPromise) bindingPromise = instantiate(env, ctx);
     const binding = await bindingPromise;
     const raw = await request.arrayBuffer();
-    const out = await binding.handleRequest(
-      { method: request.method, url: request.url, headers: [...request.headers], body: raw.byteLength === 0 ? null : new Uint8Array(raw), signal: request.signal },
-      env,
-    );
-    return new Response(out.body, { status: out.status, headers: out.headers });
+    const keepalive = setInterval(() => {}, 5000);
+    try {
+      const out = await binding.handleRequest(
+        { method: request.method, url: request.url, headers: [...request.headers], body: raw.byteLength === 0 ? null : new Uint8Array(raw), signal: request.signal },
+        env,
+      );
+      return new Response(out.body, { status: out.status, headers: out.headers });
+    } finally {
+      clearInterval(keepalive);
+    }
   },
 };
 `;
