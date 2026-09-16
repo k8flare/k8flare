@@ -15,7 +15,7 @@ import (
 
 const (
 	pokeWindow    = 20 * time.Second
-	handoverAfter = 240 * time.Second
+	handoverAfter = 200 * time.Second
 )
 
 func main() {
