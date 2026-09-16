@@ -357,6 +357,36 @@ its log, and removing it again.
   lease left unrenewed logs `lease expired: s2` and `wake controllers`
   after 60s, and the CronJob alarm fires on the next boundary.
 
+  **Required e2e (2026-09-16, dev stack, OrbStack node `k8flare-agent`):
+  18 passed / 3 failed.** The three failures are the CRD specs, and the
+  wrangler dev log shows the two `customresources` "hung" cancellations
+  behind them; the other CRD specs fail on the deadline that follows.
+  The previous readings of this set were 16/5 and 17/4, so removing the
+  safety net exposed no periodic dependency in the set.
+
+  **Measured on production (2026-09-16, `k8flare-c1`, no workloads).**
+
+  | window | CPU ms/min | /mo | notes |
+  | --- | --- | --- | --- |
+  | 6 min from 3 min after deploy | 1,647 | 71.2M | post-deploy transient: 14 of 33 lease writes were cold loads of the coordination worker (parent ~280 ms to assemble 33MB + ~330 ms to instantiate); no wake fired |
+  | 12 min starting 12 min after deploy | 504 | 21.8M | minute 0 carried 3,657 ms from the transient; minutes 1-11 average 217 ms/min (9.4M/mo); 1 of 69 lease writes cold |
+
+  The steady state is a floor of 70-160 ms/min (the kubelet's lease
+  write every 10s, its node status, and the tunnel reconnect) plus one
+  spike of about 1.5s every six minutes. That spike is the kubelet's
+  watches on `nodes`, `endpointslices`, `runtimeclasses` and
+  `csidrivers` being re-dialled after the store's 6-minute
+  `WATCH_LEASE_MS` closes them, and each landing on a group worker whose
+  isolate went idle in between, so each pays a cold load. Nothing woke
+  the scheduler or the controllers in either window. The 3-minutes-after-
+  deploy protocol undercounts warm-up for this build: with no resident
+  worker touching the group workers, the post-deploy cold loads spread
+  over the first ten minutes, so measure from ten minutes after deploy.
+  The remaining lever is not a timer: it is keeping the kubelet-facing
+  group workers warm, most simply by serving the kubelet-touched groups
+  (`coordination`, `node`, `storage`, `discovery`) from the core worker
+  whose watches the kubelet holds open.
+
 - **Advisory e2e (2026-09-14, per focus group, one wrangler per group):**
   Garbage collector 3/7 after the collector landed (was 1/7): deletion
   cascades work, and the orphan and foreground cases were failing because
