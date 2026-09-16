@@ -10,10 +10,10 @@ export class APIGroups extends WorkerEntrypoint<Env> {
     console.log(`apigroups iso=${isolateId()} ${name}`);
     const worker = await loadWasmWorker(this.env.LOADER, this.env.ASSETS, name, {
       STORAGE: this.env.CLUSTER.get(this.env.CLUSTER.idFromName("default")),
-      PRINTERS: this.ctx.exports.Printers,
-      SCHEDULER: this.ctx.exports.Scheduler,
-      CONTROLLERS: this.ctx.exports.Controllers,
-      TUNNEL: this.ctx.exports.NodeTunnels,
+      PRINTERS: this.env.PRINTERS,
+      SCHEDULER: this.env.SCHEDULER,
+      CONTROLLERS: this.env.CONTROLLERS,
+      TUNNEL: this.env.TUNNEL,
       ADMIN_TOKEN: this.env.ADMIN_TOKEN,
       READONLY_TOKEN: this.env.READONLY_TOKEN,
     }, this.env.APISERVER);

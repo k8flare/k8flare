@@ -48,22 +48,22 @@ async function sha256Hex(s: string): Promise<string> {
 }
 
 export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: Env): Promise<Response> {
     const path = new URL(request.url).pathname;
     console.log(`front iso=${isolateId()} ${request.method} ${path}`);
     if (path === "/v1-k3s/connect") return acceptTunnel(request, env);
     if (path === "/stats" && request.headers.get("Authorization") === `Bearer ${env.ADMIN_TOKEN}`) {
       return env.CLUSTER.get(env.CLUSTER.idFromName("default")).fetch("https://cluster.internal/stats");
     }
-    return apiserverFetch(env, ctx, request);
+    return apiserverFetch(env, request);
   },
   tail(events: TraceItem[]): void {
     for (const e of events) {
       if (e.event && "consumedEvents" in e.event) continue;
       console.log(`wasmcpu ${e.scriptName ?? "?"} ${e.entrypoint ?? "-"} ${e.outcome} ${e.cpuTime} ${e.wallTime}`);
-      for (const x of e.exceptions) console.log(`dynexc ${e.scriptName ?? "?"} ${x.name}: ${x.message.slice(0, 200)}`);
-      for (const l of e.logs) {
-        for (const m of l.message) {
+      for (const x of e.exceptions ?? []) console.log(`dynexc ${e.scriptName ?? "?"} ${x.name}: ${x.message.slice(0, 200)}`);
+      for (const l of e.logs ?? []) {
+        for (const m of l.message ?? []) {
           if (typeof m === "string" && (m.startsWith("bridge:") || m.startsWith("pods/status:") || m.startsWith("go program") || m.includes("panic") || m.startsWith("fatal error"))) console.log(m.slice(0, 400));
         }
       }
