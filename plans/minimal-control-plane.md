@@ -433,6 +433,12 @@ its log, and removing it again.
   | 11 | (procs 1) | stalled, killed | every request cold; see below |
   | 12 | loader diagnostics (isolate id, one log per load); serialized wrapper and `ctx.exports` loopback both removed | **20/1** | loads happen once per isolate again; the one failure is the GC orphan spec waiting 3 minutes for the orphaned rc to be deleted |
 
+  | 13 | run windows drain 30s, pokes 12s; controllers keep reporting pending for four windows after a retry | 11/10 | not the build: 18 loads failed with `asset wasm/...part0: HTTP 500` from Static Assets right after the deploy |
+  | 14 | asset fetches retried on 5xx | 19/2 | one CRD namespace wait, one rc over-created (101/50); every lost fetch marker was on a **poke** window at 22s (drain bound), 30s (waitUntil cut) or 93s (a cut the Go side never saw) |
+  | 15 | markers carry the window kind and age | 18/3 | confirmed the above; 100 pods for 50 |
+  | 16 | pokes only book a run 2s ahead and send a no-window kick; all work rides uncapped run windows | 17/4 | **zero lost fetches**; the four failures were scheduler timeouts because the Cluster alarm handler awaited the controllers' five-minute run and the scheduler's wake queued behind it |
+  | 17 | due wakes run under `waitUntil`, not awaited by the alarm handler | 17/4 | scheduler specs pass; two CRD creates hung for the client's 30s timeout with no slow POST recorded at the front, one GC client-side rate-limiter deadline |
+
   **Resolved: the per-request cold load was self-inflicted.** With the
   isolate id in the tail, one isolate showed 50 front requests and 42
   loads of the front binary: the Worker Loader re-ran the code callback
