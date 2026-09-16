@@ -2,7 +2,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import { loadWasmWorker } from "@k8flare/loader-kit";
 import { absorbedRetryMs, insuranceMs, scheduleWake, settleWake } from "./wake.ts";
 
-const writeWindowMs = 20_000;
+const writeWindowMs = 10_000;
 
 export class Scheduler extends WorkerEntrypoint<Env> {
   async poke(): Promise<void> {

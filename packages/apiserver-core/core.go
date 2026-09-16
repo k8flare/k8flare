@@ -15,6 +15,7 @@ import (
 
 func init() {
 	registry.Customizers["pods"] = func(store *registry.Store, _ registry.Deps) {
+		store.CreateStrategy = podCreateStrategy{store.CreateStrategy}
 		store.DeleteStrategy = podStrategy{store.DeleteStrategy}
 		registry.PokeControllersOn(store)
 		store.BeginCreate = func(ctx context.Context, obj runtime.Object, _ *metav1.CreateOptions) (genericregistry.FinishFunc, error) {

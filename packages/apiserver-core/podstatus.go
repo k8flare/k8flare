@@ -6,7 +6,18 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apiserver/pkg/registry/rest"
+	"k8s.io/kubernetes/pkg/apis/core/v1/helper/qos"
 )
+
+type podCreateStrategy struct {
+	rest.RESTCreateStrategy
+}
+
+func (s podCreateStrategy) PrepareForCreate(ctx context.Context, obj runtime.Object) {
+	s.RESTCreateStrategy.PrepareForCreate(ctx, obj)
+	pod := obj.(*corev1.Pod)
+	pod.Status = corev1.PodStatus{Phase: corev1.PodPending, QOSClass: qos.GetPodQOS(pod)}
+}
 
 type podStatusStrategy struct {
 	rest.RESTUpdateStrategy
