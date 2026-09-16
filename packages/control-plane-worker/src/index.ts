@@ -10,6 +10,7 @@ export { Scheduler } from "./scheduler.ts";
 export { Controllers } from "./controllers.ts";
 export { NodeTunnels } from "./nodetunnel.ts";
 export { Wake } from "./wake.ts";
+import { controllersSafetyNetMs, ensureWake } from "./wake.ts";
 
 async function acceptTunnel(request: Request, env: Env): Promise<Response> {
   if (request.headers.get("Upgrade") !== "websocket") {
@@ -17,6 +18,7 @@ async function acceptTunnel(request: Request, env: Env): Promise<Response> {
   }
   const nodeName = await authenticateNode(request, env);
   if (!nodeName) return new Response("not authorized", { status: 401 });
+  await ensureWake(env, "controllers", controllersSafetyNetMs);
   const stub = env.NODE_TUNNEL.get(env.NODE_TUNNEL.idFromName(nodeName));
   const headers = new Headers(request.headers);
   headers.set("X-K8flare-Node", nodeName);

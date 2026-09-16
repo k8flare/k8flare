@@ -8,12 +8,13 @@ const controllersWindowMs = 60_000;
 const dueSlackMs = 1_000;
 export const pokeDeadlineMs = 25_000;
 export const retryMs = 15_000;
+export const controllersSafetyNetMs = 300_000;
 
 export class Wake extends DurableObject<Env> {
-  async schedule(target: WakeTarget, delayMs: number): Promise<void> {
+  async schedule(target: WakeTarget, delayMs: number, onlyIfUnarmed = false): Promise<void> {
     const at = Date.now() + delayMs;
     const current = await this.ctx.storage.get<number>(target);
-    if (current !== undefined && current <= at) return;
+    if (current !== undefined && (onlyIfUnarmed || current <= at)) return;
     await this.ctx.storage.put(target, at);
     await this.rearm();
     console.log(`wake ${target} in ${delayMs}ms`);
@@ -43,4 +44,8 @@ export class Wake extends DurableObject<Env> {
 
 export async function scheduleWake(env: Env, target: WakeTarget, delayMs: number): Promise<void> {
   await env.WAKE.get(env.WAKE.idFromName("default")).schedule(target, delayMs);
+}
+
+export async function ensureWake(env: Env, target: WakeTarget, delayMs: number): Promise<void> {
+  await env.WAKE.get(env.WAKE.idFromName("default")).schedule(target, delayMs, true);
 }
