@@ -6,19 +6,19 @@ const writeWindowMs = 20_000;
 
 export class Scheduler extends WorkerEntrypoint<Env> {
   async poke(): Promise<void> {
-    this.ctx.waitUntil(this.hold(writeWindowMs, 0));
+    this.ctx.waitUntil(this.hold(writeWindowMs, 0, true));
   }
 
   async run(windowMs: number): Promise<void> {
-    await this.hold(windowMs, windowMs);
+    await this.hold(windowMs, 0, false);
   }
 
-  private async hold(windowMs: number, minMs: number): Promise<void> {
+  private async hold(windowMs: number, minMs: number, reset: boolean): Promise<void> {
     const worker = await loadWasmWorker(this.env.LOADER, this.env.ASSETS, "scheduler", {
       APISERVER: this.env.APISERVER,
       ADMIN_TOKEN: this.env.ADMIN_TOKEN,
     }, this.env.APISERVER);
-    const resp = await worker.fetch(`https://scheduler.internal/poke?window=${windowMs}&min=${minMs}`);
+    const resp = await worker.fetch(`https://scheduler.internal/poke?window=${windowMs}&min=${minMs}&reset=${reset ? 1 : 0}`);
     const text = await resp.text();
     if (resp.status !== 200) return;
     const { next } = JSON.parse(text) as { next: number };

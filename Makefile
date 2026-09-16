@@ -130,7 +130,7 @@ agent: mirrors
 # AI-agent mode, whose observability capture buffers application/json
 # streaming responses until they close, which stalls every JSON watch.
 dev:
-	env -u CLAUDECODE -u AI_AGENT pnpm exec wrangler dev -c wrangler.jsonc --local --persist-to .wrangler/state --port 18787 --test-scheduled
+	env -u CLAUDECODE -u AI_AGENT pnpm exec wrangler dev -c wrangler.jsonc --local --persist-to .wrangler/state --port 18787
 
 devtls:
 	cd scripts && go run ./devtls -listen :6443 -upstream http://127.0.0.1:18787 -dir ../.build/devtls

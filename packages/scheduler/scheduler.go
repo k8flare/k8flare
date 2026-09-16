@@ -79,7 +79,7 @@ func (s *Scheduler) Pending() string {
 }
 
 func (s *Scheduler) Idle() bool {
-	return s.synced.Load() && s.Pending() == "" && len(s.sched.SchedulingQueue.InFlightPods()) == 0
+	return s.synced.Load() && len(s.sched.SchedulingQueue.PodsInActiveQ()) == 0 && len(s.sched.SchedulingQueue.InFlightPods()) == 0
 }
 
 var closedChannel = func() chan struct{} {

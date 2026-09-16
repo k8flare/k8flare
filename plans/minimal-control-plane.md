@@ -284,6 +284,28 @@ its log, and removing it again.
   joins the controllers worker on the same wake model; its monitors are
   re-established per wake like every other informer.
 
+- **The cron is gone; a self-parking Durable Object alarm wakes the
+  resident workers** (decision 2026-09-16, replacing the per-minute
+  cron). The cron held both workers for 55s of every minute, which paid
+  near-resident informer CPU *and* a full watch re-establishment per
+  minute, and every kubelet lease renewal opened a further 20s window on
+  the controllers, so neither worker ever went idle. Now a window closes
+  as soon as the worker is idle (`bridge.Hold`: caches synced, scheduler
+  activeQ and in-flight empty, controllers workqueue depths zero via
+  `workqueue.SetProvider`) and the response reports how soon the worker
+  wants to run again: pending work re-arms the `Wake` Durable Object's
+  alarm with a delay that doubles while the pending set is unchanged
+  (15s to 5min). The controllers keep a 5-minute safety net while a node
+  exists (nodelifecycle, CronJob, AddAfter retries) with a 60s minimum
+  hold so the node monitor can observe past its grace period, and park
+  when no node exists. Lease writes no longer poke; pod deletion now
+  pokes the scheduler as well. Verified in wrangler dev: an unschedulable
+  pod produces `wake scheduler in 15000ms`, the alarm runs, then
+  `30000ms`; the controllers schedule nothing with no node. The
+  production cost effect and the isolate-eviction risk (a sparse wake
+  may cold-start 48-55MB of wasm) are unmeasured; use the 6-minute
+  `wrangler tail` protocol below.
+
 - **Advisory e2e (2026-09-14, per focus group, one wrangler per group):**
   Garbage collector 3/7 after the collector landed (was 1/7): deletion
   cascades work, and the orphan and foreground cases were failing because

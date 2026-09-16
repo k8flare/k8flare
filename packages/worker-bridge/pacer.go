@@ -47,12 +47,14 @@ func (p *Pacer) Next(pending string) time.Duration {
 type HoldRequest struct {
 	Window time.Duration
 	Min    time.Duration
+	Reset  bool
 }
 
 func ParseHold(r *http.Request, defaultWindow time.Duration) HoldRequest {
 	return HoldRequest{
 		Window: durationParam(r, "window", defaultWindow),
 		Min:    durationParam(r, "min", 0),
+		Reset:  r.URL.Query().Get("reset") == "1",
 	}
 }
 

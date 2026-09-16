@@ -60,7 +60,7 @@ func main() {
 			f.Flush()
 		}
 		hold := bridge.ParseHold(r, pokeWindow)
-		if hold.Min == 0 {
+		if hold.Reset {
 			pacer.Reset()
 		}
 		bridge.Hold(r.Context(), hold, sched.Idle)

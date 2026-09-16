@@ -3,7 +3,8 @@ import { DurableObject } from "cloudflare:workers";
 export type WakeTarget = "scheduler" | "controllers";
 
 const targets: WakeTarget[] = ["scheduler", "controllers"];
-const alarmWindowMs = 60_000;
+const schedulerWindowMs = 20_000;
+const controllersWindowMs = 60_000;
 const dueSlackMs = 1_000;
 
 export class Wake extends DurableObject<Env> {
@@ -13,6 +14,7 @@ export class Wake extends DurableObject<Env> {
     if (current !== undefined && current <= at) return;
     await this.ctx.storage.put(target, at);
     await this.rearm();
+    console.log(`wake ${target} in ${delayMs}ms`);
   }
 
   async alarm(): Promise<void> {
@@ -21,6 +23,7 @@ export class Wake extends DurableObject<Env> {
     const due = targets.filter((target) => (pending.get(target) ?? Infinity) <= now + dueSlackMs);
     await this.ctx.storage.delete(due);
     await this.rearm();
+    console.log(`wake ${due.join(",")}`);
     await Promise.all(due.map((target) => this.run(target)));
   }
 
@@ -31,8 +34,8 @@ export class Wake extends DurableObject<Env> {
   }
 
   private async run(target: WakeTarget): Promise<void> {
-    const entrypoint = target === "scheduler" ? this.env.SCHEDULER : this.env.CONTROLLERS;
-    await entrypoint.run(alarmWindowMs).catch((err) => console.error(`wake ${target}:`, err));
+    const run = target === "scheduler" ? this.env.SCHEDULER.run(schedulerWindowMs) : this.env.CONTROLLERS.run(controllersWindowMs);
+    await run.catch((err) => console.error(`wake ${target}:`, err));
   }
 }
 
