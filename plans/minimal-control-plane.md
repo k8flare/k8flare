@@ -382,10 +382,45 @@ its log, and removing it again.
   deploy protocol undercounts warm-up for this build: with no resident
   worker touching the group workers, the post-deploy cold loads spread
   over the first ten minutes, so measure from ten minutes after deploy.
-  The remaining lever is not a timer: it is keeping the kubelet-facing
-  group workers warm, most simply by serving the kubelet-touched groups
-  (`coordination`, `node`, `storage`, `discovery`) from the core worker
-  whose watches the kubelet holds open.
+  Keeping the kubelet-facing group workers warm would remove that spike,
+  but the decision (2026-09-16) is not to: about 6M CPU-ms/month sits
+  inside the included 30M, and a cold load delays a kubelet re-watch by
+  well under a second.
+
+- **Required e2e against production (2026-09-16), and the two gaps it
+  found.** The first run on the deadline-driven build scored 11/10: the
+  `default` ServiceAccount never appeared in new namespaces and
+  ReplicaSets were never collected, because the controllers never
+  finished a cold start. Two mechanisms were missing. (1) Under e2e load
+  the parent isolate dies for memory (28 "Worker exceeded memory limit")
+  and hung requests (43), which kills a write poke's `waitUntil` and the
+  wake it would have booked at its end; the cron used to hide that with
+  an unconditional retry. Every poke now books an insured retry 25s
+  ahead *before* opening its window, and a window that closes idle
+  settles the insured rows for its target. (2) A poke window answered
+  204 to the alarm-driven run, so the long hold never happened; a run is
+  now refused only by another run, opens a second window beside a poke,
+  and gets a 5-minute window so a cold start completes, re-booking
+  itself if it fails. With both: 18/3, the three being the `[Serial]`
+  scheduling specs, which failed on the node, not the control plane: the
+  scheduler bound the pods, and the kubelet reported
+  `FailedCreatePodSandBox` because flannel never wrote
+  `/run/flannel/subnet.env`, because the `k8flare-c1` VM had no
+  `iptables` binary (`iptables binary was not found`); the dev VM has
+  it. With iptables installed and the agent restarted: **17/4**, the
+  four being two `customresources`/`APIGroups` hung cancellations, one
+  cleanup step hit by the same, and one scheduling spec whose bound and
+  running pod carried a stale `PodScheduled=False` from a failed attempt
+  that landed after the bind. Same standing as the 16/5 and 17/4 the cron
+  builds scored; the failure class left is production's hung/memory
+  instability, which is prior to this work. CPU during the run: 6,672
+  ms/min over 13.9 minutes, 78 hung, 11 memory kills.
+
+  Two node-side facts recorded on the way: the agent's tunnel reconnects
+  every ~63s with `close 1012: no tunnel session, reconnect`, which is
+  the NodeTunnel DO's in-memory `attached` flag not surviving
+  hibernation; and `nodes` PATCH/status writes from a fresh agent fail
+  for the first ~20s after a deploy while the group workers cold start.
 
 - **Advisory e2e (2026-09-14, per focus group, one wrangler per group):**
   Garbage collector 3/7 after the collector landed (was 1/7): deletion
