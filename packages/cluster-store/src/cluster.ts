@@ -12,6 +12,7 @@ const NODE_LEASE_GRACE_MS = 60_000;
 const NODE_LEASE_HOLD_MS = 60_000;
 const ALARM_SLACK_MS = 1_000;
 const RUN_WINDOW_MS = 300_000;
+const HANDOVER_AFTER_MS = 240_000;
 const RUN_RETRY_MS = 15_000;
 
 type WakeTarget = "scheduler" | "controllers";
@@ -326,11 +327,16 @@ export class Cluster extends DurableObject<Env> {
 
   private async runTarget(target: WakeTarget, holdMs: number, reset: boolean): Promise<void> {
     const entrypoint = target === "scheduler" ? this.env.SCHEDULER : this.env.CONTROLLERS;
+    const successor = setTimeout(() => {
+      this.scheduleWake(target, Date.now(), 0).catch((err) => console.error(`handover ${target}:`, err));
+    }, HANDOVER_AFTER_MS);
     try {
       await entrypoint.run(RUN_WINDOW_MS, holdMs, reset);
     } catch (err) {
       console.error(`wake ${target}:`, err);
       await this.scheduleWake(target, Date.now() + RUN_RETRY_MS, holdMs);
+    } finally {
+      clearTimeout(successor);
     }
   }
 

@@ -295,6 +295,7 @@ func dispatch(handler http.Handler, reqObj, env js.Value, started func(js.Value)
 		}))
 	}
 	handler.ServeHTTP(rw, req)
+	window.drain()
 	rw.finish()
 	return nil
 }

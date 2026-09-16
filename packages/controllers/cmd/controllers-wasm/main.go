@@ -13,7 +13,10 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-const pokeWindow = 20 * time.Second
+const (
+	pokeWindow    = 20 * time.Second
+	handoverAfter = 240 * time.Second
+)
 
 func main() {
 	cfg := &rest.Config{
@@ -24,10 +27,11 @@ func main() {
 		Transport:   bridge.BindingTransport{Name: "APISERVER", AbortOnWake: true},
 	}
 	var (
-		mu         sync.Mutex
-		runHolding bool
-		ctrl       *controllers.Controllers
-		pacer      bridge.Pacer
+		mu           sync.Mutex
+		runs         int
+		lastRunStart time.Time
+		ctrl         *controllers.Controllers
+		pacer        bridge.Pacer
 	)
 	bridge.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bridge.Poked()
@@ -37,16 +41,17 @@ func main() {
 			return
 		}
 		mu.Lock()
-		if runHolding {
+		if runs > 0 && time.Since(lastRunStart) < handoverAfter {
 			mu.Unlock()
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		runHolding = true
+		runs++
+		lastRunStart = time.Now()
 		mu.Unlock()
 		defer func() {
 			mu.Lock()
-			runHolding = false
+			runs--
 			mu.Unlock()
 		}()
 		if ctrl == nil {
@@ -68,7 +73,11 @@ func main() {
 		if hold.Reset {
 			pacer.Reset()
 		}
-		bridge.Hold(r.Context(), hold, ctrl.Idle)
+		bridge.Hold(bridge.RunContext(r.Context()), hold, ctrl.Idle)
+		if bridge.Superseded(r.Context()) {
+			bridge.WriteNext(w, -time.Millisecond)
+			return
+		}
 		bridge.WriteNext(w, pacer.Next(ctrl.Pending()))
 	}))
 }

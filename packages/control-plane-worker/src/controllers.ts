@@ -31,6 +31,6 @@ export class Controllers extends WorkerEntrypoint<Env> {
     if (resp.status !== 200) return;
     const { next } = JSON.parse(text) as { next: number };
     if (next > 0) await scheduleWake(this.env, "controllers", next);
-    else await settleWake(this.env, "controllers");
+    else if (next === 0) await settleWake(this.env, "controllers");
   }
 }

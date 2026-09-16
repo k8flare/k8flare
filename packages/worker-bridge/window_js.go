@@ -13,15 +13,16 @@ import (
 var ErrWindowClosed = errors.New("bridge: pump window closed")
 
 type Window struct {
-	env      js.Value
-	done     chan struct{}
-	holding  bool
-	streams  map[int]func()
-	nextID   int
-	pending  int
-	drainFor time.Duration
-	opened   time.Time
-	run      bool
+	env        js.Value
+	done       chan struct{}
+	holding    bool
+	streams    map[int]func()
+	nextID     int
+	pending    int
+	drainFor   time.Duration
+	opened     time.Time
+	run        bool
+	superseded chan struct{}
 }
 
 func (w *Window) kind() string {
@@ -55,7 +56,7 @@ var (
 )
 
 func openWindow(env js.Value) *Window {
-	w := &Window{env: env, done: make(chan struct{}), opened: time.Now()}
+	w := &Window{env: env, done: make(chan struct{}), opened: time.Now(), superseded: make(chan struct{})}
 	windowsMu.Lock()
 	windows = append(windows, w)
 	notify := openedCh
@@ -186,10 +187,45 @@ func OpenRunWindow(ctx context.Context) {
 		return
 	}
 	windowsMu.Lock()
+	for _, other := range windows {
+		if other != w && other.run && other.holding {
+			other.holding = false
+			close(other.superseded)
+		}
+	}
 	w.holding = true
 	w.run = true
 	w.drainFor = runDrain
 	windowsMu.Unlock()
+}
+
+func RunContext(ctx context.Context) context.Context {
+	w := windowFrom(ctx)
+	if w == nil {
+		return ctx
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	go func() {
+		select {
+		case <-w.superseded:
+			cancel()
+		case <-runCtx.Done():
+		}
+	}()
+	return runCtx
+}
+
+func Superseded(ctx context.Context) bool {
+	w := windowFrom(ctx)
+	if w == nil {
+		return false
+	}
+	select {
+	case <-w.superseded:
+		return true
+	default:
+		return false
+	}
 }
 
 func Holding() bool {

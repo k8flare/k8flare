@@ -31,6 +31,6 @@ export class Scheduler extends WorkerEntrypoint<Env> {
     if (resp.status !== 200) return;
     const { next } = JSON.parse(text) as { next: number };
     if (next > 0) await scheduleWake(this.env, "scheduler", next);
-    else await settleWake(this.env, "scheduler");
+    else if (next === 0) await settleWake(this.env, "scheduler");
   }
 }
