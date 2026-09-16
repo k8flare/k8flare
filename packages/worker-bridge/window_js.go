@@ -16,6 +16,7 @@ type Window struct {
 	env     js.Value
 	done    chan struct{}
 	holding bool
+	run     bool
 	streams map[int]func()
 	nextID  int
 }
@@ -120,6 +121,17 @@ func OpenWindow(ctx context.Context) {
 	windowsMu.Unlock()
 }
 
+func OpenRunWindow(ctx context.Context) {
+	w := windowFrom(ctx)
+	if w == nil {
+		return
+	}
+	windowsMu.Lock()
+	w.holding = true
+	w.run = true
+	windowsMu.Unlock()
+}
+
 func CloseWindow(ctx context.Context) {
 	w := windowFrom(ctx)
 	if w == nil {
@@ -165,6 +177,11 @@ func CurrentWindow(ctx context.Context) (*Window, error) {
 }
 
 func preferred() *Window {
+	for i := len(windows) - 1; i >= 0; i-- {
+		if windows[i].run {
+			return windows[i]
+		}
+	}
 	for i := len(windows) - 1; i >= 0; i-- {
 		if windows[i].holding {
 			return windows[i]
