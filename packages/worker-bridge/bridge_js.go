@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"syscall/js"
+	"time"
 )
 
 type envKey struct{}
@@ -361,7 +362,7 @@ func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		stop()
 		if errors.Is(err, ErrWindowClosed) {
-			println("bridge: fetch lost to window close:", req.Method, req.URL.Path)
+			println("bridge: fetch lost to window close kind="+window.kind()+" age="+time.Since(window.opened).Round(time.Second).String()+":", req.Method, req.URL.Path)
 		}
 		return nil, fmt.Errorf("bridge: fetch %s: %w", req.URL, err)
 	}

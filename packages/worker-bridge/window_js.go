@@ -20,6 +20,18 @@ type Window struct {
 	nextID   int
 	pending  int
 	drainFor time.Duration
+	opened   time.Time
+	run      bool
+}
+
+func (w *Window) kind() string {
+	switch {
+	case w.run:
+		return "run"
+	case w.holding || w.drainFor == pokeDrain:
+		return "poke"
+	}
+	return "dispatch"
 }
 
 func (w *Window) Env() js.Value         { return w.env }
@@ -43,7 +55,7 @@ var (
 )
 
 func openWindow(env js.Value) *Window {
-	w := &Window{env: env, done: make(chan struct{})}
+	w := &Window{env: env, done: make(chan struct{}), opened: time.Now()}
 	windowsMu.Lock()
 	windows = append(windows, w)
 	notify := openedCh
@@ -88,7 +100,7 @@ func (w *Window) drain() {
 			return
 		}
 		if time.Now().After(deadline) {
-			println("bridge: drain timeout, in-flight fetches:", n)
+			println("bridge: drain timeout kind="+w.kind()+" age="+time.Since(w.opened).Round(time.Second).String()+" in-flight:", n)
 			return
 		}
 		time.Sleep(drainPoll)
@@ -175,6 +187,7 @@ func OpenRunWindow(ctx context.Context) {
 	}
 	windowsMu.Lock()
 	w.holding = true
+	w.run = true
 	w.drainFor = runDrain
 	windowsMu.Unlock()
 }
