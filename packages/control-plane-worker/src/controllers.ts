@@ -1,7 +1,6 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { loadWasmWorker } from "@k8flare/loader-kit";
-import { clusterHasNodes } from "./cluster.ts";
-import { controllersSafetyNetMs, pokeDeadlineMs, retryMs, scheduleWake } from "./wake.ts";
+import { pokeDeadlineMs, retryMs, scheduleWake } from "./wake.ts";
 
 const writeWindowMs = 20_000;
 
@@ -10,8 +9,8 @@ export class Controllers extends WorkerEntrypoint<Env> {
     this.ctx.waitUntil(this.pokeWithDeadline());
   }
 
-  async run(windowMs: number): Promise<void> {
-    await this.hold(windowMs, windowMs, false);
+  async run(windowMs: number, minMs: number): Promise<void> {
+    await this.hold(windowMs, minMs, false);
   }
 
   private async pokeWithDeadline(): Promise<void> {
@@ -29,8 +28,7 @@ export class Controllers extends WorkerEntrypoint<Env> {
     const resp = await worker.fetch(`https://controllers.internal/poke?window=${windowMs}&min=${minMs}&reset=${reset ? 1 : 0}`);
     const text = await resp.text();
     if (resp.status !== 200) return;
-    let { next } = JSON.parse(text) as { next: number };
-    if (next === 0 && (await clusterHasNodes(this.env))) next = controllersSafetyNetMs;
+    const { next } = JSON.parse(text) as { next: number };
     if (next > 0) await scheduleWake(this.env, "controllers", next);
   }
 }

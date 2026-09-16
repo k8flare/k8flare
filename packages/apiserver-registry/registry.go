@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 
@@ -99,6 +100,7 @@ var (
 	Middleware      []func(stores map[string]*Store) func(http.Handler) http.Handler
 	Poke            func(ctx context.Context)
 	PokeControllers func(ctx context.Context)
+	WakeControllers func(ctx context.Context, delay time.Duration)
 )
 
 func PokeControllersOn(store *Store) {

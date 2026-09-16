@@ -9,8 +9,8 @@ export class Scheduler extends WorkerEntrypoint<Env> {
     this.ctx.waitUntil(this.pokeWithDeadline());
   }
 
-  async run(windowMs: number): Promise<void> {
-    await this.hold(windowMs, 0, false);
+  async run(windowMs: number, minMs: number): Promise<void> {
+    await this.hold(windowMs, minMs, false);
   }
 
   private async pokeWithDeadline(): Promise<void> {

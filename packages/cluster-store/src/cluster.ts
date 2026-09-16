@@ -7,6 +7,15 @@ import { DurableObject } from "cloudflare:workers";
 // tagged with the key prefix they asked for.
 const RETAINED_REVISIONS = 1000;
 const WATCH_LEASE_MS = 360_000;
+const NODE_LEASE_PREFIX = "/registry/leases/kube-node-lease/";
+const NODE_LEASE_GRACE_MS = 60_000;
+const NODE_LEASE_HOLD_MS = 60_000;
+const ALARM_SLACK_MS = 1_000;
+const SCHEDULER_WINDOW_MS = 20_000;
+const CONTROLLERS_WINDOW_MS = 60_000;
+
+type WakeTarget = "scheduler" | "controllers";
+const wakeTargets: WakeTarget[] = ["scheduler", "controllers"];
 
 function closeQuietly(ws: WebSocket, reason: string): void {
   try {
@@ -28,6 +37,8 @@ export class Cluster extends DurableObject<Env> {
       )`);
       ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS kine_name_id ON kine (name, id)`);
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)`);
+      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS wakes (target TEXT PRIMARY KEY, at INTEGER NOT NULL, hold INTEGER NOT NULL)`);
+      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS node_leases (node TEXT PRIMARY KEY, seen INTEGER NOT NULL, expired INTEGER NOT NULL DEFAULT 0)`);
       ctx.storage.sql.exec(
         `INSERT INTO kine (name, deleted, value) SELECT '/k8flare/bootstrap', 0, X'' WHERE NOT EXISTS (SELECT 1 FROM kine)`,
       );
@@ -111,6 +122,12 @@ export class Cluster extends DurableObject<Env> {
         if (body.revision !== 0 && cur.modRevision !== body.revision) return conflict(this.revision(), "conflict");
         return Response.json({ revision: this.insert(body.key, 1, cur.value, cur) });
       }
+      case "POST /wake": {
+        const body = (await request.json()) as { target: WakeTarget; delayMs: number; holdMs?: number };
+        if (!wakeTargets.includes(body.target)) return new Response("unknown target", { status: 400 });
+        await this.scheduleWake(body.target, Date.now() + body.delayMs, body.holdMs ?? 0);
+        return Response.json({ ok: true });
+      }
       case "GET /list": {
         const prefix = url.searchParams.get("prefix") ?? "";
         const limit = Number(url.searchParams.get("limit") ?? "0");
@@ -132,6 +149,7 @@ export class Cluster extends DurableObject<Env> {
       )
       .one().id as number;
     if (rev - this.compactRevision() >= RETAINED_REVISIONS) this.compactBefore(rev - RETAINED_REVISIONS);
+    if (name.startsWith(NODE_LEASE_PREFIX)) this.ctx.waitUntil(this.noteNodeLease(name.slice(NODE_LEASE_PREFIX.length), deleted === 1));
     const type = deleted ? "deleted" : prev ? "modified" : "created";
     this.restoreWatchers();
     this.expireWatchers();
@@ -225,6 +243,77 @@ export class Cluster extends DurableObject<Env> {
       const w = ws.deserializeAttachment() as Watcher | null;
       if (w) this.watchers.set(ws, w);
     }
+  }
+
+  private async noteNodeLease(node: string, deleted: boolean): Promise<void> {
+    if (deleted) {
+      this.ctx.storage.sql.exec("DELETE FROM node_leases WHERE node = ?", node);
+    } else {
+      this.ctx.storage.sql.exec(
+        "INSERT INTO node_leases (node, seen, expired) VALUES (?, ?, 0) ON CONFLICT(node) DO UPDATE SET seen = excluded.seen, expired = 0",
+        node,
+        Date.now(),
+      );
+    }
+    await this.rearm();
+  }
+
+  private async scheduleWake(target: WakeTarget, at: number, holdMs: number): Promise<void> {
+    const rows = this.ctx.storage.sql.exec("SELECT at, hold FROM wakes WHERE target = ?", target).toArray();
+    const current = rows[0];
+    if (current && (current.at as number) <= at && (current.hold as number) >= holdMs) return;
+    this.ctx.storage.sql.exec(
+      "INSERT INTO wakes (target, at, hold) VALUES (?, ?, ?) ON CONFLICT(target) DO UPDATE SET at = MIN(wakes.at, excluded.at), hold = MAX(wakes.hold, excluded.hold)",
+      target,
+      at,
+      holdMs,
+    );
+    console.log(`wake ${target} in ${Math.max(0, at - Date.now())}ms`);
+    await this.rearm();
+  }
+
+  private nextLeaseExpiry(): number | null {
+    const row = this.ctx.storage.sql.exec("SELECT MIN(seen) AS seen FROM node_leases WHERE expired = 0").one();
+    return row.seen === null ? null : (row.seen as number) + NODE_LEASE_GRACE_MS;
+  }
+
+  private async rearm(): Promise<void> {
+    const times = this.ctx.storage.sql.exec("SELECT at FROM wakes").toArray().map((r) => r.at as number);
+    const expiry = this.nextLeaseExpiry();
+    if (expiry !== null) times.push(expiry);
+    if (times.length === 0) {
+      await this.ctx.storage.deleteAlarm();
+      return;
+    }
+    await this.ctx.storage.setAlarm(Math.min(...times));
+  }
+
+  async alarm(): Promise<void> {
+    const now = Date.now() + ALARM_SLACK_MS;
+    const due = new Map<WakeTarget, number>();
+    for (const row of this.ctx.storage.sql.exec("SELECT target, at, hold FROM wakes WHERE at <= ?", now).toArray()) {
+      due.set(row.target as WakeTarget, row.hold as number);
+      this.ctx.storage.sql.exec("DELETE FROM wakes WHERE target = ?", row.target);
+    }
+    const stale = this.ctx.storage.sql
+      .exec("SELECT node FROM node_leases WHERE expired = 0 AND seen + ? <= ?", NODE_LEASE_GRACE_MS, now)
+      .toArray();
+    if (stale.length > 0) {
+      for (const row of stale) this.ctx.storage.sql.exec("UPDATE node_leases SET expired = 1 WHERE node = ?", row.node);
+      console.log(`lease expired: ${stale.map((r) => r.node).join(",")}`);
+      due.set("controllers", Math.max(due.get("controllers") ?? 0, NODE_LEASE_HOLD_MS));
+    }
+    await this.rearm();
+    if (due.size > 0) console.log(`wake ${[...due.keys()].join(",")}`);
+    await Promise.all([...due].map(([target, hold]) => this.runTarget(target, hold)));
+  }
+
+  private async runTarget(target: WakeTarget, holdMs: number): Promise<void> {
+    const run =
+      target === "scheduler"
+        ? this.env.SCHEDULER.run(Math.max(SCHEDULER_WINDOW_MS, holdMs), holdMs)
+        : this.env.CONTROLLERS.run(Math.max(CONTROLLERS_WINDOW_MS, holdMs), holdMs);
+    await run.catch((err) => console.error(`wake ${target}:`, err));
   }
 
   async webSocketMessage(): Promise<void> {}

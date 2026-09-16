@@ -15,13 +15,13 @@
     "bindings": [
       { "name": "CLUSTER", "class_name": "Cluster" },
       { "name": "NODE_TUNNEL", "class_name": "NodeTunnel" },
-      { "name": "WAKE", "class_name": "Wake" },
     ],
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["Cluster"] },
     { "tag": "v2", "new_sqlite_classes": ["NodeTunnel"] },
     { "tag": "v3", "new_sqlite_classes": ["Wake"] },
+    { "tag": "v4", "deleted_classes": ["Wake"] },
   ],
   "services": [
     { "binding": "PRINTERS", "service": "k8flare", "entrypoint": "Printers" },

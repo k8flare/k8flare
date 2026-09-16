@@ -336,6 +336,27 @@ its log, and removing it again.
   joined before the deploy never writes anything that opens a
   controllers window.
 
+- **No periodic wake at all; deadlines are booked by whoever knows them**
+  (decision 2026-09-16, replacing the 5-minute safety net and the
+  `Wake` Durable Object, which is deleted in migration v4). The Cluster
+  DO owns the single alarm: `POST /wake` books a target and a minimum
+  hold, and every write under `/registry/leases/kube-node-lease/`
+  records the node's last lease time, so a node whose lease stops for
+  60s wakes the controllers with a 60s hold (nodelifecycle then needs
+  its own 50s grace, so NotReady lands about two minutes after the last
+  lease). The batch worker books the CronJob's next schedule with
+  robfig/cron on every CronJob write. The controllers count workqueue
+  retries in the same provider as depths and report them as pending, so
+  a rate-limited requeue re-books a wake with the pacer's backoff. The
+  garbage collector's discovery sync moved from 30s to 10 minutes; it
+  only advances while a window is open, so in practice it runs once per
+  cold start, and a CRD added later is not monitored until then (known
+  gap). With a healthy node nothing wakes: the only recurring cost is
+  the kubelet's lease write plus one alarm row write each. Verified in
+  wrangler dev: a CronJob create logs `wake controllers in 94185ms`, a
+  lease left unrenewed logs `lease expired: s2` and `wake controllers`
+  after 60s, and the CronJob alarm fires on the next boundary.
+
 - **Advisory e2e (2026-09-14, per focus group, one wrangler per group):**
   Garbage collector 3/7 after the collector landed (was 1/7): deletion
   cascades work, and the orphan and foreground cases were failing because
