@@ -304,16 +304,34 @@ func currentWindowEnv() (js.Value, bool) {
 	return js.Value{}, false
 }
 
+var ErrFetchTimeout = errors.New("bridge: no response headers in time")
+
+const unaryHeaderTimeout = 30 * time.Second
+
 func awaitIn(w *Window, promise js.Value) (js.Value, error) {
+	return awaitInCtx(context.Background(), w, promise, 0)
+}
+
+func awaitInCtx(ctx context.Context, w *Window, promise js.Value, timeout time.Duration) (js.Value, error) {
 	ch := settle(promise)
-	if w == nil {
-		o := <-ch
-		return o.value, o.err
+	var done <-chan struct{}
+	if w != nil {
+		done = w.Done()
+	}
+	var expired <-chan time.Time
+	if timeout > 0 {
+		t := time.NewTimer(timeout)
+		defer t.Stop()
+		expired = t.C
 	}
 	select {
 	case o := <-ch:
 		return o.value, o.err
-	case <-w.Done():
+	case <-done:
 		return js.Value{}, ErrWindowClosed
+	case <-ctx.Done():
+		return js.Value{}, ctx.Err()
+	case <-expired:
+		return js.Value{}, ErrFetchTimeout
 	}
 }

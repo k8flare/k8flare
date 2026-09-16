@@ -358,10 +358,18 @@ func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	stop := context.AfterFunc(req.Context(), abort)
 	jsReq := js.Global().Get("Request").New(req.URL.String(), opts)
 	endFetch := beginFetch(window)
-	jsResp, err := awaitIn(window, binding.Call("fetch", jsReq))
+	headerTimeout := unaryHeaderTimeout
+	if req.URL.Query().Get("watch") == "true" || req.URL.Query().Get("watch") == "1" || strings.HasSuffix(req.URL.Path, "/watch") {
+		headerTimeout = 0
+	}
+	jsResp, err := awaitInCtx(req.Context(), window, binding.Call("fetch", jsReq), headerTimeout)
 	endFetch()
 	if err != nil {
 		stop()
+		if errors.Is(err, ErrFetchTimeout) {
+			abort()
+			println("bridge: fetch timed out kind="+window.kind()+" age="+time.Since(window.opened).Round(time.Second).String()+":", req.Method, req.URL.Path)
+		}
 		if errors.Is(err, ErrWindowClosed) {
 			println("bridge: fetch lost to window close kind="+window.kind()+" age="+time.Since(window.opened).Round(time.Second).String()+":", req.Method, req.URL.Path)
 		}
