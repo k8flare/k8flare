@@ -37,7 +37,7 @@ export class Cluster extends DurableObject<Env> {
       )`);
       ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS kine_name_id ON kine (name, id)`);
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)`);
-      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS wakes (target TEXT PRIMARY KEY, at INTEGER NOT NULL, hold INTEGER NOT NULL)`);
+      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS wakes (target TEXT NOT NULL, at INTEGER NOT NULL, hold INTEGER NOT NULL, PRIMARY KEY (target, at))`);
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS node_leases (node TEXT PRIMARY KEY, seen INTEGER NOT NULL, expired INTEGER NOT NULL DEFAULT 0)`);
       ctx.storage.sql.exec(
         `INSERT INTO kine (name, deleted, value) SELECT '/k8flare/bootstrap', 0, X'' WHERE NOT EXISTS (SELECT 1 FROM kine)`,
@@ -259,11 +259,12 @@ export class Cluster extends DurableObject<Env> {
   }
 
   private async scheduleWake(target: WakeTarget, at: number, holdMs: number): Promise<void> {
-    const rows = this.ctx.storage.sql.exec("SELECT at, hold FROM wakes WHERE target = ?", target).toArray();
-    const current = rows[0];
-    if (current && (current.at as number) <= at && (current.hold as number) >= holdMs) return;
+    const covered = this.ctx.storage.sql
+      .exec("SELECT 1 FROM wakes WHERE target = ? AND at > ? AND at <= ? AND hold >= ? LIMIT 1", target, Date.now(), at, holdMs)
+      .toArray();
+    if (covered.length > 0) return;
     this.ctx.storage.sql.exec(
-      "INSERT INTO wakes (target, at, hold) VALUES (?, ?, ?) ON CONFLICT(target) DO UPDATE SET at = MIN(wakes.at, excluded.at), hold = MAX(wakes.hold, excluded.hold)",
+      "INSERT INTO wakes (target, at, hold) VALUES (?, ?, ?) ON CONFLICT(target, at) DO UPDATE SET hold = MAX(wakes.hold, excluded.hold)",
       target,
       at,
       holdMs,
@@ -291,10 +292,10 @@ export class Cluster extends DurableObject<Env> {
   async alarm(): Promise<void> {
     const now = Date.now() + ALARM_SLACK_MS;
     const due = new Map<WakeTarget, number>();
-    for (const row of this.ctx.storage.sql.exec("SELECT target, at, hold FROM wakes WHERE at <= ?", now).toArray()) {
+    for (const row of this.ctx.storage.sql.exec("SELECT target, MAX(hold) AS hold FROM wakes WHERE at <= ? GROUP BY target", now).toArray()) {
       due.set(row.target as WakeTarget, row.hold as number);
-      this.ctx.storage.sql.exec("DELETE FROM wakes WHERE target = ?", row.target);
     }
+    this.ctx.storage.sql.exec("DELETE FROM wakes WHERE at <= ?", now);
     const stale = this.ctx.storage.sql
       .exec("SELECT node FROM node_leases WHERE expired = 0 AND seen + ? <= ?", NODE_LEASE_GRACE_MS, now)
       .toArray();

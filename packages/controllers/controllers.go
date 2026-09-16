@@ -208,7 +208,7 @@ func (c *Controllers) Pending() string {
 	pending := queues.summary()
 	if retries := queues.retries.n.Load(); retries != queues.retriesSeen {
 		queues.retriesSeen = retries
-		pending = strings.TrimPrefix(pending+fmt.Sprintf(",retries=%d", retries), ",")
+		pending = strings.TrimPrefix(pending+",retries", ",")
 	}
 	return pending
 }

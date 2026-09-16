@@ -1,6 +1,6 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { loadWasmWorker } from "@k8flare/loader-kit";
-import { pokeDeadlineMs, retryMs, scheduleWake } from "./wake.ts";
+import { absorbedRetryMs, pokeDeadlineMs, retryMs, scheduleWake } from "./wake.ts";
 
 const writeWindowMs = 20_000;
 
@@ -27,6 +27,7 @@ export class Controllers extends WorkerEntrypoint<Env> {
     }, this.env.APISERVER);
     const resp = await worker.fetch(`https://controllers.internal/poke?window=${windowMs}&min=${minMs}&reset=${reset ? 1 : 0}`);
     const text = await resp.text();
+    if (resp.status === 204 && minMs > 0) await scheduleWake(this.env, "controllers", absorbedRetryMs, minMs);
     if (resp.status !== 200) return;
     const { next } = JSON.parse(text) as { next: number };
     if (next > 0) await scheduleWake(this.env, "controllers", next);
