@@ -61,8 +61,9 @@ const (
 	namespaceSyncPeriod         = 5 * time.Minute
 	namespaceWorkers            = 10
 	garbageCollectorWorkers     = 20
-	garbageCollectorSyncPeriod  = 10 * time.Minute
-	retryFollowUps              = 4
+	garbageCollectorSyncPeriod  = 30 * time.Second
+	retryQuiet                  = 20 * time.Second
+	retryPendingFor             = 5 * time.Minute
 )
 
 type Controllers struct {
@@ -207,28 +208,30 @@ func (c *Controllers) Pending() string {
 		return "starting"
 	}
 	pending := queues.summary()
-	if retries := queues.retries.n.Load(); retries != queues.retriesSeen {
-		queues.retriesSeen = retries
-		queues.retriesFollow = retryFollowUps
-	}
-	if queues.retriesFollow > 0 {
-		queues.retriesFollow--
+	if queues.retries.recent(retryPendingFor) {
 		pending = strings.TrimPrefix(pending+",retries", ",")
 	}
 	return pending
 }
 
 func (c *Controllers) Idle() bool {
-	return c.started.Load() && queues.summary() == ""
+	return c.started.Load() && queues.summary() == "" && !queues.retries.recent(retryQuiet)
 }
 
 type queueDepths struct {
-	mu            sync.Mutex
-	depth         map[string]*gauge
-	unfinished    map[string]*gauge
-	retries       gauge
-	retriesSeen   int64
-	retriesFollow int
+	mu         sync.Mutex
+	depth      map[string]*gauge
+	unfinished map[string]*gauge
+	retries    retryClock
+}
+
+type retryClock struct{ last atomic.Int64 }
+
+func (r *retryClock) Inc() { r.last.Store(time.Now().UnixNano()) }
+
+func (r *retryClock) recent(d time.Duration) bool {
+	last := r.last.Load()
+	return last != 0 && time.Since(time.Unix(0, last)) < d
 }
 
 type gauge struct{ n atomic.Int64 }

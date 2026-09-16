@@ -61,7 +61,8 @@ export default {
     for (const e of events) {
       if (e.event && "consumedEvents" in e.event) continue;
       console.log(`wasmcpu ${e.scriptName ?? "?"} ${e.entrypoint ?? "-"} ${e.outcome} ${e.cpuTime} ${e.wallTime}`);
-      for (const x of e.exceptions ?? []) console.log(`dynexc ${e.scriptName ?? "?"} ${x.name}: ${x.message.slice(0, 200)}`);
+      const where = e.event && "request" in e.event ? `${e.event.request.method} ${new URL(e.event.request.url).pathname}` : e.entrypoint ?? "?";
+      for (const x of e.exceptions ?? []) console.log(`dynexc ${where} ${x.name}: ${x.message.slice(0, 200)}`);
       for (const l of e.logs ?? []) {
         for (const m of l.message ?? []) {
           if (typeof m !== "string") continue;

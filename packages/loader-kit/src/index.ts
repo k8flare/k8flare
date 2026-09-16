@@ -23,15 +23,42 @@ export default {
     const binding = await bindingPromise;
     const raw = await request.arrayBuffer();
     const keepalive = setInterval(() => {}, 5000);
+    let out;
     try {
-      const out = await binding.handleRequest(
+      out = await binding.handleRequest(
         { method: request.method, url: request.url, headers: [...request.headers], body: raw.byteLength === 0 ? null : new Uint8Array(raw), signal: request.signal },
         env,
       );
-      return new Response(out.body, { status: out.status, headers: out.headers });
-    } finally {
+    } catch (err) {
       clearInterval(keepalive);
+      throw err;
     }
+    if (!out.body || typeof out.body.getReader !== "function") {
+      clearInterval(keepalive);
+      return new Response(out.body, { status: out.status, headers: out.headers });
+    }
+    const reader = out.body.getReader();
+    const body = new ReadableStream({
+      async pull(controller) {
+        try {
+          const { done, value } = await reader.read();
+          if (done) {
+            clearInterval(keepalive);
+            controller.close();
+          } else {
+            controller.enqueue(value);
+          }
+        } catch (err) {
+          clearInterval(keepalive);
+          controller.error(err);
+        }
+      },
+      cancel(reason) {
+        clearInterval(keepalive);
+        return reader.cancel(reason);
+      },
+    });
+    return new Response(body, { status: out.status, headers: out.headers });
   },
 };
 `;
