@@ -13,12 +13,13 @@ import (
 var ErrWindowClosed = errors.New("bridge: pump window closed")
 
 type Window struct {
-	env     js.Value
-	done    chan struct{}
-	holding bool
-	streams map[int]func()
-	nextID  int
-	pending int
+	env      js.Value
+	done     chan struct{}
+	holding  bool
+	streams  map[int]func()
+	nextID   int
+	pending  int
+	drainFor time.Duration
 }
 
 func (w *Window) Env() js.Value         { return w.env }
@@ -29,6 +30,8 @@ type windowKey struct{}
 const (
 	scheduledWork = 10 * time.Second
 	drainTimeout  = 5 * time.Second
+	pokeDrain     = 12 * time.Second
+	runDrain      = 30 * time.Second
 	drainPoll     = 100 * time.Millisecond
 )
 
@@ -72,7 +75,11 @@ func beginFetch(w *Window) func() {
 }
 
 func (w *Window) drain() {
-	deadline := time.Now().Add(drainTimeout)
+	limit := drainTimeout
+	if w.drainFor > 0 {
+		limit = w.drainFor
+	}
+	deadline := time.Now().Add(limit)
 	for {
 		windowsMu.Lock()
 		n := w.pending
@@ -157,6 +164,18 @@ func OpenWindow(ctx context.Context) {
 	}
 	windowsMu.Lock()
 	w.holding = true
+	w.drainFor = pokeDrain
+	windowsMu.Unlock()
+}
+
+func OpenRunWindow(ctx context.Context) {
+	w := windowFrom(ctx)
+	if w == nil {
+		return
+	}
+	windowsMu.Lock()
+	w.holding = true
+	w.drainFor = runDrain
 	windowsMu.Unlock()
 }
 

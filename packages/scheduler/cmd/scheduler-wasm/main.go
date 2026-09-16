@@ -64,7 +64,11 @@ func main() {
 			sched = started
 			go sched.Run(context.Background())
 		}
-		bridge.OpenWindow(r.Context())
+		if hold.Reset {
+			bridge.OpenWindow(r.Context())
+		} else {
+			bridge.OpenRunWindow(r.Context())
+		}
 		defer bridge.CloseWindow(r.Context())
 		w.WriteHeader(http.StatusOK)
 		if f, ok := w.(http.Flusher); ok {

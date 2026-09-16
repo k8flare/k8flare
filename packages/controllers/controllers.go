@@ -62,6 +62,7 @@ const (
 	namespaceWorkers            = 10
 	garbageCollectorWorkers     = 20
 	garbageCollectorSyncPeriod  = 10 * time.Minute
+	retryFollowUps              = 4
 )
 
 type Controllers struct {
@@ -208,6 +209,10 @@ func (c *Controllers) Pending() string {
 	pending := queues.summary()
 	if retries := queues.retries.n.Load(); retries != queues.retriesSeen {
 		queues.retriesSeen = retries
+		queues.retriesFollow = retryFollowUps
+	}
+	if queues.retriesFollow > 0 {
+		queues.retriesFollow--
 		pending = strings.TrimPrefix(pending+",retries", ",")
 	}
 	return pending
@@ -218,11 +223,12 @@ func (c *Controllers) Idle() bool {
 }
 
 type queueDepths struct {
-	mu          sync.Mutex
-	depth       map[string]*gauge
-	unfinished  map[string]*gauge
-	retries     gauge
-	retriesSeen int64
+	mu            sync.Mutex
+	depth         map[string]*gauge
+	unfinished    map[string]*gauge
+	retries       gauge
+	retriesSeen   int64
+	retriesFollow int
 }
 
 type gauge struct{ n atomic.Int64 }

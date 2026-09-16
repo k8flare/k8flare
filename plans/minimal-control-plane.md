@@ -430,6 +430,22 @@ its log, and removing it again.
   | 9 | (none) | stalled, killed | API 4-6s per request again, store `watchers: 0`, the kubelet failing its own GETs; group workers were fast (APIGroups median 32ms) and the time sat in the front |
   | 10 | pods created as `Pending` with a QoS class (upstream's create strategy; the NodeSelector spec polled a pod with an empty phase and returned early); poke windows 10s so drain fits under the cap | not run: preflight found no Ready node | the node had been `Unknown` since 14:12Z: its lease and status writes were timing out against a 3-7s API, and the store's lease-expiry alarm did its job |
 
+  | 11 | (procs 1) | stalled, killed | every request cold; see below |
+  | 12 | loader diagnostics (isolate id, one log per load); serialized wrapper and `ctx.exports` loopback both removed | **20/1** | loads happen once per isolate again; the one failure is the GC orphan spec waiting 3 minutes for the orphaned rc to be deleted |
+
+  **Resolved: the per-request cold load was self-inflicted.** With the
+  isolate id in the tail, one isolate showed 50 front requests and 42
+  loads of the front binary: the Worker Loader re-ran the code callback
+  on nearly every request. Two of the day's changes did that. The
+  serialized-load wrapper chained the callback on a module-global
+  promise, and the `ctx.exports` loopback bindings put request-scoped
+  objects into the code object's env; either way the loader could not
+  keep the worker. With plain service bindings and no wrapper, loads are
+  one per isolate per worker and a warm request costs 0.1s. What
+  remains is real: a request that lands on a parent isolate that has
+  not loaded the front and the core worker pays 3-4s once, and a client
+  opening many connections meets many isolates.
+
   **Open at the end of the day: every request pays a cold load.** From
   about 14:12Z the API answered simple GETs in 3-7s. A hop-by-hop trace
   of `GET /api/v1/nodes` shows the front's parent invocation at 260-560
