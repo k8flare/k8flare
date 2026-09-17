@@ -22,7 +22,8 @@ export default {
     if (!bindingPromise) bindingPromise = instantiate(env, ctx);
     const binding = await bindingPromise;
     const raw = await request.arrayBuffer();
-    const drive = /\/(poke|hold)$/.test(new URL(request.url).pathname) && typeof binding.tick === "function";
+    const path = new URL(request.url).pathname;
+    const drive = (path.endsWith("/poke") || path.endsWith("/hold")) && typeof binding.tick === "function";
     const keepalive = drive ? setInterval(() => binding.tick(), 1000) : setInterval(() => {}, 5000);
     let out;
     try {
