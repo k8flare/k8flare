@@ -439,7 +439,15 @@ func (s *Storage) Watch(ctx context.Context, key string, opts storage.ListOption
 			case msg, ok := <-msgs:
 				if !ok {
 					closeFn()
-					if ctx.Err() != nil || (Resident != nil && !Resident()) {
+					if ctx.Err() != nil {
+						return
+					}
+					if Resident != nil && !Resident() {
+						expired := apierrors.NewResourceExpired("watch socket closed outside a resident window; relist")
+						select {
+						case events <- watch.Event{Type: watch.Error, Object: &expired.ErrStatus}:
+						case <-w.StopChan():
+						}
 						return
 					}
 					println("kine: watch socket closed, redialing", prefix, "since", lastRev)

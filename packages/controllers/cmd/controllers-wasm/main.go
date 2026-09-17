@@ -46,7 +46,11 @@ func main() {
 		mu.Lock()
 		if age := time.Since(lastRunStart); runs > 0 && age < handoverAfter && time.Since(lastBeat) < deadRunAfter {
 			mu.Unlock()
-			w.Header().Set("X-Retry-After-Ms", strconv.FormatInt((handoverAfter-age+time.Second).Milliseconds(), 10))
+			retry := handoverAfter - age
+			if dead := deadRunAfter - time.Since(lastBeat); dead < retry {
+				retry = dead
+			}
+			w.Header().Set("X-Retry-After-Ms", strconv.FormatInt((retry+time.Second).Milliseconds(), 10))
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}

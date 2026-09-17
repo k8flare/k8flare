@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/emicklei/go-restful/v3"
@@ -134,8 +136,9 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	openAPIV3Controller := openapiv3.NewController(crdInformer)
 	go openAPIV3Controller.Run(openAPIV3Service, ctx.Done())
 
-	mux.Handle("/apis", rootAPIs(crdInformer.Lister(), codecs))
-	mux.Handle("/apis/", afterSync(discoverySynced, crdHandler))
+	fresh := freshCRDs{client: client, lister: crdInformer.Lister()}
+	mux.Handle("/apis", fresh.gate(rootAPIs(crdInformer.Lister(), codecs)))
+	mux.Handle("/apis/", fresh.gate(afterSync(discoverySynced, crdHandler)))
 	mux.Handle("/openapi/v3", openAPIV3Mux)
 	mux.Handle("/openapi/v3/", openAPIV3Mux)
 	return handler, nil
@@ -231,4 +234,68 @@ func containsVersion(list []metav1.GroupVersionForDiscovery, gv metav1.GroupVers
 		}
 	}
 	return false
+}
+
+const (
+	crdStoragePrefix = "/registry/apiextensions.k8s.io/customresourcedefinitions/"
+	freshWait        = 5 * time.Second
+	freshPoll        = 200 * time.Millisecond
+)
+
+type freshCRDs struct {
+	client *kine.Client
+	lister listers.CustomResourceDefinitionLister
+}
+
+func (f freshCRDs) gate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isDiscoveryPath(r.URL.Path) {
+			f.waitFresh(r.Context())
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isDiscoveryPath(path string) bool {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	return len(parts) <= 3 && parts[0] == "apis"
+}
+
+func (f freshCRDs) waitFresh(ctx context.Context) {
+	kvs, _, _, err := f.client.List(ctx, crdStoragePrefix, "", 0)
+	if err != nil {
+		return
+	}
+	want := make(map[string]string, len(kvs))
+	for _, kv := range kvs {
+		want[strings.TrimPrefix(kv.Key, crdStoragePrefix)] = strconv.FormatInt(kv.ModRevision, 10)
+	}
+	deadline := time.Now().Add(freshWait)
+	for {
+		if f.matches(want) {
+			return
+		}
+		if time.Now().After(deadline) {
+			println("customresources: discovery served from a stale CRD cache")
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(freshPoll):
+		}
+	}
+}
+
+func (f freshCRDs) matches(want map[string]string) bool {
+	crds, err := f.lister.List(labels.Everything())
+	if err != nil || len(crds) != len(want) {
+		return false
+	}
+	for _, crd := range crds {
+		if rv, ok := want[crd.Name]; !ok || rv != crd.ResourceVersion {
+			return false
+		}
+	}
+	return true
 }
