@@ -28,18 +28,30 @@ const (
 
 type refillableInformer struct {
 	cache.SharedIndexInformer
-	mu       sync.Mutex
-	handlers []cache.ResourceEventHandler
+	mu         sync.Mutex
+	handlers   []cache.ResourceEventHandler
+	synced     atomic.Bool
+	syncedOnce sync.Once
+	syncedCh   chan struct{}
 }
 
 func registerRefillable(factory informers.SharedInformerFactory) *refillableInformer {
-	r := &refillableInformer{}
+	r := &refillableInformer{syncedCh: make(chan struct{})}
 	factory.InformerFor(&apiextensionsv1.CustomResourceDefinition{}, func(client clientset.Interface, resync time.Duration) cache.SharedIndexInformer {
 		r.SharedIndexInformer = apiextensionsinformers.NewCustomResourceDefinitionInformer(client, resync, cache.Indexers{})
 		return r
 	})
 	return r
 }
+
+func (r *refillableInformer) HasSynced() bool { return r.synced.Load() }
+
+func (r *refillableInformer) HasSyncedChecker() cache.DoneChecker { return syncedChecker{r.syncedCh} }
+
+type syncedChecker struct{ done chan struct{} }
+
+func (c syncedChecker) Name() string          { return "crd-refill" }
+func (c syncedChecker) Done() <-chan struct{} { return c.done }
 
 func (r *refillableInformer) AddEventHandler(h cache.ResourceEventHandler) (cache.ResourceEventHandlerRegistration, error) {
 	r.mu.Lock()
@@ -117,6 +129,10 @@ func (r *refillableInformer) refill(kvs []kine.KV) int {
 			h.OnUpdate(old, crd)
 		}
 	}
+	r.syncedOnce.Do(func() {
+		r.synced.Store(true)
+		close(r.syncedCh)
+	})
 	return changed
 }
 

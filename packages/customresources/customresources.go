@@ -112,7 +112,6 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	}
 	ctx := context.Background()
 	discoveryController := apiextensionsapiserver.NewDiscoveryController(crdInformer, versionDiscovery, groupDiscovery, nil)
-	factory.Start(ctx.Done())
 	discoverySynced := make(chan struct{})
 	go discoveryController.Run(ctx.Done(), discoverySynced)
 
