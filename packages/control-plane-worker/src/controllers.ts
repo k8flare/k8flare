@@ -1,40 +1,23 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { loadWasmWorker } from "@k8flare/loader-kit";
-import { absorbedRetryMs, pokeDelayMs, scheduleWake, settleWake } from "./wake.ts";
+
+export interface RunResult {
+  status: number;
+  nextMs: number;
+  retryAfterMs: number;
+}
 
 export class Controllers extends WorkerEntrypoint<Env> {
-  async poke(): Promise<void> {
-    await scheduleWake(this.env, "controllers", pokeDelayMs, 0, true, true);
-    this.ctx.waitUntil(this.kick());
-  }
-
-  async run(windowMs: number, minMs: number, reset: boolean): Promise<void> {
-    await this.hold(windowMs, minMs, reset);
-  }
-
-  private async worker(): Promise<Fetcher> {
-    return loadWasmWorker(this.env.LOADER, this.env.ASSETS, "controllers", {
+  async run(windowMs: number, minMs: number, reset: boolean): Promise<RunResult> {
+    const worker = await loadWasmWorker(this.env.LOADER, this.env.ASSETS, "controllers", {
       APISERVER: this.env.APISERVER,
       ADMIN_TOKEN: this.env.ADMIN_TOKEN,
     }, this.env.APISERVER);
-  }
-
-  private async kick(): Promise<void> {
-    const resp = await (await this.worker()).fetch(`https://controllers.internal/poke?kick=1`);
-    await resp.text();
-  }
-
-  private async hold(windowMs: number, minMs: number, reset: boolean): Promise<void> {
-    const resp = await (await this.worker()).fetch(`https://controllers.internal/poke?window=${windowMs}&min=${minMs}&reset=${reset ? 1 : 0}`);
+    const resp = await worker.fetch(`https://controllers.internal/poke?window=${windowMs}&min=${minMs}&reset=${reset ? 1 : 0}`);
     const text = await resp.text();
-    if (resp.status === 204) {
-      const retry = Number(resp.headers.get("X-Retry-After-Ms") ?? "");
-      if (Number.isFinite(retry) && retry > 0) await scheduleWake(this.env, "controllers", retry, minMs);
-      else if (minMs > 0) await scheduleWake(this.env, "controllers", absorbedRetryMs, minMs);
-    }
-    if (resp.status !== 200) return;
+    const retryAfterMs = Number(resp.headers.get("X-Retry-After-Ms") ?? "0") || 0;
+    if (resp.status !== 200) return { status: resp.status, nextMs: 0, retryAfterMs };
     const { next } = JSON.parse(text) as { next: number };
-    if (next > 0) await scheduleWake(this.env, "controllers", next);
-    else if (next === 0) await settleWake(this.env, "controllers");
+    return { status: 200, nextMs: next, retryAfterMs };
   }
 }

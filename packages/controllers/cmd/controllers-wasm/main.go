@@ -39,10 +39,6 @@ func main() {
 	bridge.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bridge.Poked()
 		hold := bridge.ParseHold(r, pokeWindow)
-		if hold.Kick {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
 		mu.Lock()
 		if age := time.Since(lastRunStart); runs > 0 && age < handoverAfter && bridge.SinceTick() < deadRunAfter {
 			mu.Unlock()

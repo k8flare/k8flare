@@ -14,11 +14,9 @@ import (
 
 func init() {
 	registry.Customizers["jobs"] = func(store *registry.Store, _ registry.Deps) {
-		registry.PokeControllersOn(store)
 		store.DeleteStrategy = registry.OrphanByDefault{RESTDeleteStrategy: store.DeleteStrategy}
 	}
 	registry.Customizers["cronjobs"] = func(store *registry.Store, _ registry.Deps) {
-		registry.PokeControllersOn(store)
 		store.BeginCreate = func(_ context.Context, obj runtime.Object, _ *metav1.CreateOptions) (genericregistry.FinishFunc, error) {
 			return wakeAtNextSchedule(obj.(*batchv1.CronJob)), nil
 		}
@@ -30,15 +28,11 @@ func init() {
 
 func wakeAtNextSchedule(cj *batchv1.CronJob) genericregistry.FinishFunc {
 	return func(ctx context.Context, success bool) {
-		if !success || registry.PokeControllers == nil {
-			return
-		}
-		registry.PokeControllers(ctx)
-		if registry.WakeControllers == nil || (cj.Spec.Suspend != nil && *cj.Spec.Suspend) {
+		if !success || registry.EnqueueControllers == nil || (cj.Spec.Suspend != nil && *cj.Spec.Suspend) {
 			return
 		}
 		if next, ok := nextSchedule(cj, time.Now()); ok {
-			registry.WakeControllers(ctx, time.Until(next))
+			registry.EnqueueControllers(ctx, time.Until(next))
 		}
 	}
 }

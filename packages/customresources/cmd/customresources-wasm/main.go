@@ -31,11 +31,6 @@ func main() {
 		bridge.Poked()
 		if r.URL.Path != "/hold" {
 			handler.ServeHTTP(w, r)
-			if r.Method != http.MethodGet && bridge.HasBinding(r.Context(), "CONTROLLERS") {
-				if _, err := bridge.Call(r.Context(), "CONTROLLERS", "poke"); err != nil {
-					println("customresources: controllers poke:", err.Error())
-				}
-			}
 			return
 		}
 		bridge.OpenWindow(r.Context())

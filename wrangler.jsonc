@@ -33,5 +33,15 @@
     { "binding": "TUNNEL", "service": "k8flare", "entrypoint": "NodeTunnels" },
     { "binding": "APISERVER", "service": "k8flare" },
   ],
+  "queues": {
+    "producers": [
+      { "binding": "CTRL_Q", "queue": "k8flare-controllers" },
+      { "binding": "SCHED_Q", "queue": "k8flare-scheduler" },
+    ],
+    "consumers": [
+      { "queue": "k8flare-controllers", "max_batch_size": 100, "max_batch_timeout": 1, "max_retries": 10, "max_concurrency": 1, "dead_letter_queue": "k8flare-dlq" },
+      { "queue": "k8flare-scheduler", "max_batch_size": 100, "max_batch_timeout": 1, "max_retries": 10, "max_concurrency": 1, "dead_letter_queue": "k8flare-dlq" },
+    ],
+  },
   "observability": { "enabled": true },
 }

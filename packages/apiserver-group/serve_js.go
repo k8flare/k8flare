@@ -37,30 +37,16 @@ func Serve(groupVersion string) {
 		}
 		return table, err
 	}
-	registry.Poke = func(ctx context.Context) {
-		if bridge.HasBinding(ctx, "SCHEDULER") {
-			if _, err := bridge.Call(ctx, "SCHEDULER", "poke"); err != nil {
-				println("scheduler poke:", err.Error())
-			}
-		}
-	}
-	registry.PokeControllers = func(ctx context.Context) {
-		if bridge.HasBinding(ctx, "CONTROLLERS") {
-			if _, err := bridge.Call(ctx, "CONTROLLERS", "poke"); err != nil {
-				println("controllers poke:", err.Error())
-			}
-		}
-	}
-	registry.WakeControllers = func(ctx context.Context, delay time.Duration) {
+	registry.EnqueueControllers = func(ctx context.Context, delay time.Duration) {
 		body := strings.NewReader(fmt.Sprintf(`{"target":"controllers","delayMs":%d}`, delay.Milliseconds()))
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://cluster.internal/wake", body)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://cluster.internal/enqueue", body)
 		if err != nil {
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := (&http.Client{Transport: bridge.BindingTransport{Name: "STORAGE"}}).Do(req)
 		if err != nil {
-			println("controllers wake:", err.Error())
+			println("controllers enqueue:", err.Error())
 			return
 		}
 		resp.Body.Close()

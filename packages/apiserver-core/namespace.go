@@ -81,9 +81,6 @@ func (d namespaceDeleter) beginTermination(ctx context.Context, name string, del
 		}
 		return nil, false, err
 	}
-	if registry.PokeControllers != nil {
-		registry.PokeControllers(ctx)
-	}
 	return out, false, nil
 }
 

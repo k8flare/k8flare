@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"sync"
 	"time"
 
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
@@ -79,20 +78,10 @@ func (s storeWithNames) ShortNames() []string { return s.shortNames }
 func (s storeWithNames) Categories() []string { return s.categories }
 
 func (s storeWithNames) Delete(ctx context.Context, name string, deleteValidation rest.ValidateObjectFunc, options *metav1.DeleteOptions) (runtime.Object, bool, error) {
-	var (
-		out     runtime.Object
-		deleted bool
-		err     error
-	)
 	if s.deleter != nil {
-		out, deleted, err = s.deleter.Delete(ctx, name, deleteValidation, options)
-	} else {
-		out, deleted, err = s.Store.Delete(ctx, name, deleteValidation, options)
+		return s.deleter.Delete(ctx, name, deleteValidation, options)
 	}
-	if err == nil && !deleted && pokesControllers(s.Store) && PokeControllers != nil {
-		PokeControllers(ctx)
-	}
-	return out, deleted, err
+	return s.Store.Delete(ctx, name, deleteValidation, options)
 }
 
 type Deps struct {
@@ -104,43 +93,13 @@ type Deps struct {
 type Store = genericregistry.Store
 
 var (
-	Resources       = map[string]func(gv schema.GroupVersion, res metav1.APIResource, deps Deps) rest.Storage{}
-	Customizers     = map[string]func(store *Store, deps Deps){}
-	Deleters        = map[string]func(store *Store) rest.GracefulDeleter{}
-	Subresources    = map[string]func(stores map[string]*Store, deps Deps) rest.Storage{}
-	Middleware      []func(stores map[string]*Store) func(http.Handler) http.Handler
-	Poke            func(ctx context.Context)
-	PokeControllers func(ctx context.Context)
-	WakeControllers func(ctx context.Context, delay time.Duration)
+	Resources          = map[string]func(gv schema.GroupVersion, res metav1.APIResource, deps Deps) rest.Storage{}
+	Customizers        = map[string]func(store *Store, deps Deps){}
+	Deleters           = map[string]func(store *Store) rest.GracefulDeleter{}
+	Subresources       = map[string]func(stores map[string]*Store, deps Deps) rest.Storage{}
+	Middleware         []func(stores map[string]*Store) func(http.Handler) http.Handler
+	EnqueueControllers func(ctx context.Context, delay time.Duration)
 )
-
-var pokingStores sync.Map
-
-func pokesControllers(store *Store) bool {
-	_, ok := pokingStores.Load(store)
-	return ok
-}
-
-func PokeControllersOn(store *Store) {
-	pokingStores.Store(store, struct{}{})
-	store.BeginCreate = func(context.Context, runtime.Object, *metav1.CreateOptions) (genericregistry.FinishFunc, error) {
-		return pokeControllers, nil
-	}
-	store.BeginUpdate = func(context.Context, runtime.Object, runtime.Object, *metav1.UpdateOptions) (genericregistry.FinishFunc, error) {
-		return pokeControllers, nil
-	}
-	store.AfterDelete = func(runtime.Object, *metav1.DeleteOptions) {
-		if PokeControllers != nil {
-			PokeControllers(context.Background())
-		}
-	}
-}
-
-func pokeControllers(ctx context.Context, success bool) {
-	if success && PokeControllers != nil {
-		PokeControllers(ctx)
-	}
-}
 
 func NewStore(client *kine.Client, gv schema.GroupVersion, res metav1.APIResource) (*genericregistry.Store, error) {
 	gvk := gv.WithKind(res.Kind)

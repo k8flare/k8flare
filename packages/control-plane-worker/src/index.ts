@@ -1,5 +1,7 @@
 import { apiserverFetch } from "./loader.ts";
 import { isolateId } from "@k8flare/loader-kit";
+import type { QueueMessage } from "@k8flare/cluster-store";
+import { consume } from "./queues.ts";
 
 export { Cluster } from "@k8flare/cluster-store";
 export { NodeTunnel } from "@k8flare/node-tunnel";
@@ -56,6 +58,9 @@ export default {
       return env.CLUSTER.get(env.CLUSTER.idFromName("default")).fetch("https://cluster.internal/stats");
     }
     return apiserverFetch(env, request);
+  },
+  async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
+    await consume(batch as MessageBatch<QueueMessage>, env);
   },
   tail(events: TraceItem[]): void {
     for (const e of events) {

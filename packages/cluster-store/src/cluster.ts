@@ -8,15 +8,18 @@ import { DurableObject } from "cloudflare:workers";
 const RETAINED_REVISIONS = 1000;
 const WATCH_LEASE_MS = 360_000;
 const NODE_LEASE_PREFIX = "/registry/leases/kube-node-lease/";
-const NODE_LEASE_GRACE_MS = 60_000;
-const NODE_LEASE_HOLD_MS = 60_000;
-const ALARM_SLACK_MS = 1_000;
-const RUN_WINDOW_MS = 300_000;
-const HANDOVER_AFTER_MS = 240_000;
-const RUN_RETRY_MS = 15_000;
+const LEASE_CHECK_DELAY_S = 60;
+const LEASE_CHECK_EVERY_MS = 50_000;
+const OUTBOX_BATCH = 100;
+const MAX_DELAY_S = 86_400;
 
-type WakeTarget = "scheduler" | "controllers";
-const wakeTargets: WakeTarget[] = ["scheduler", "controllers"];
+type Target = "scheduler" | "controllers";
+const targets: Target[] = ["scheduler", "controllers"];
+
+export type QueueMessage =
+  | { kind: "change"; key: string; type: string; rev: number }
+  | { kind: "lease-check"; node: string }
+  | { kind: "retry" };
 
 function closeQuietly(ws: WebSocket, reason: string): void {
   try {
@@ -38,13 +41,8 @@ export class Cluster extends DurableObject<Env> {
       )`);
       ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS kine_name_id ON kine (name, id)`);
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)`);
-      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS wakes (target TEXT NOT NULL, at INTEGER NOT NULL, hold INTEGER NOT NULL, insured INTEGER NOT NULL DEFAULT 0, reset INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (target, at))`);
-      for (const column of ["insured", "reset"]) {
-        try {
-          ctx.storage.sql.exec(`ALTER TABLE wakes ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`);
-        } catch {}
-      }
-      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS node_leases (node TEXT PRIMARY KEY, seen INTEGER NOT NULL, expired INTEGER NOT NULL DEFAULT 0)`);
+      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, target TEXT NOT NULL, rev INTEGER NOT NULL, key TEXT NOT NULL, type TEXT NOT NULL)`);
+      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS lease_checks (node TEXT PRIMARY KEY, sent INTEGER NOT NULL)`);
       ctx.storage.sql.exec(
         `INSERT INTO kine (name, deleted, value) SELECT '/k8flare/bootstrap', 0, X'' WHERE NOT EXISTS (SELECT 1 FROM kine)`,
       );
@@ -128,17 +126,11 @@ export class Cluster extends DurableObject<Env> {
         if (body.revision !== 0 && cur.modRevision !== body.revision) return conflict(this.revision(), "conflict");
         return Response.json({ revision: this.insert(body.key, 1, cur.value, cur) });
       }
-      case "POST /wake": {
-        const body = (await request.json()) as { target: WakeTarget; delayMs: number; holdMs?: number; insured?: boolean; reset?: boolean };
-        if (!wakeTargets.includes(body.target)) return new Response("unknown target", { status: 400 });
-        await this.scheduleWake(body.target, Date.now() + body.delayMs, body.holdMs ?? 0, body.insured === true, body.reset === true);
-        return Response.json({ ok: true });
-      }
-      case "POST /wake/settle": {
-        const body = (await request.json()) as { target: WakeTarget };
-        if (!wakeTargets.includes(body.target)) return new Response("unknown target", { status: 400 });
-        this.ctx.storage.sql.exec("DELETE FROM wakes WHERE target = ? AND insured = 1", body.target);
-        await this.rearm();
+      case "POST /enqueue": {
+        const body = (await request.json()) as { target: Target; delayMs: number };
+        if (!targets.includes(body.target)) return new Response("unknown target", { status: 400 });
+        const delaySeconds = Math.min(MAX_DELAY_S, Math.max(0, Math.ceil(body.delayMs / 1000)));
+        await this.queue(body.target).send({ kind: "retry" } satisfies QueueMessage, { delaySeconds });
         return Response.json({ ok: true });
       }
       case "GET /list": {
@@ -162,8 +154,8 @@ export class Cluster extends DurableObject<Env> {
       )
       .one().id as number;
     if (rev - this.compactRevision() >= RETAINED_REVISIONS) this.compactBefore(rev - RETAINED_REVISIONS);
-    if (name.startsWith(NODE_LEASE_PREFIX)) this.ctx.waitUntil(this.noteNodeLease(name.slice(NODE_LEASE_PREFIX.length), deleted === 1));
     const type = deleted ? "deleted" : prev ? "modified" : "created";
+    this.record(name, type, rev, value, prev);
     this.restoreWatchers();
     this.expireWatchers();
     const targets = [...this.watchers].filter(([, w]) => (w.exact ? name === w.prefix : name.startsWith(w.prefix)));
@@ -211,6 +203,7 @@ export class Cluster extends DurableObject<Env> {
     this.restoreWatchers();
     this.expireWatchers();
     this.watchers.set(server, watcher);
+    this.ctx.waitUntil(this.flushOutbox());
     if (initial) {
       for (const kv of this.latest(watcher.prefix, watcher.exact, watcher.prefix, -1)) {
         server.send(JSON.stringify({ rev: kv.modRevision, type: "created", key: kv.key, value: toBase64(kv.value), prev: "" }));
@@ -258,85 +251,68 @@ export class Cluster extends DurableObject<Env> {
     }
   }
 
-  private async noteNodeLease(node: string, deleted: boolean): Promise<void> {
-    if (deleted) {
-      this.ctx.storage.sql.exec("DELETE FROM node_leases WHERE node = ?", node);
-    } else {
-      this.ctx.storage.sql.exec(
-        "INSERT INTO node_leases (node, seen, expired) VALUES (?, ?, 0) ON CONFLICT(node) DO UPDATE SET seen = excluded.seen, expired = 0",
-        node,
-        Date.now(),
-      );
-    }
-    await this.rearm();
+  private queue(target: Target): Queue<QueueMessage> {
+    return target === "scheduler" ? this.env.SCHED_Q : this.env.CTRL_Q;
   }
 
-  private async scheduleWake(target: WakeTarget, at: number, holdMs: number, insured = false, reset = false): Promise<void> {
-    const covered = this.ctx.storage.sql
-      .exec("SELECT 1 FROM wakes WHERE target = ? AND at > ? AND at <= ? AND hold >= ? AND reset >= ? LIMIT 1", target, Date.now(), at, holdMs, reset ? 1 : 0)
-      .toArray();
-    if (covered.length > 0) return;
-    this.ctx.storage.sql.exec(
-      "INSERT INTO wakes (target, at, hold, insured, reset) VALUES (?, ?, ?, ?, ?) ON CONFLICT(target, at) DO UPDATE SET hold = MAX(wakes.hold, excluded.hold), insured = MIN(wakes.insured, excluded.insured), reset = MAX(wakes.reset, excluded.reset)",
-      target,
-      at,
-      holdMs,
-      insured ? 1 : 0,
-      reset ? 1 : 0,
-    );
-    console.log(`wake ${target} in ${Math.max(0, at - Date.now())}ms${insured ? " (insured)" : ""}`);
-    await this.rearm();
-  }
-
-  private nextLeaseExpiry(): number | null {
-    const row = this.ctx.storage.sql.exec("SELECT MIN(seen) AS seen FROM node_leases WHERE expired = 0").one();
-    return row.seen === null ? null : (row.seen as number) + NODE_LEASE_GRACE_MS;
-  }
-
-  private async rearm(): Promise<void> {
-    const times = this.ctx.storage.sql.exec("SELECT at FROM wakes").toArray().map((r) => r.at as number);
-    const expiry = this.nextLeaseExpiry();
-    if (expiry !== null) times.push(expiry);
-    if (times.length === 0) {
-      await this.ctx.storage.deleteAlarm();
+  // record turns a committed write into queue messages: the scheduler hears
+  // about unbound pods, pod deletions and node changes that affect
+  // placement; the controllers hear about every registry write except
+  // events and node leases. A node lease instead schedules a delayed
+  // check, at most once per node every LEASE_CHECK_EVERY_MS.
+  private record(name: string, type: string, rev: number, value: Uint8Array, prev: KV | null): void {
+    if (!name.startsWith("/registry/") || name.startsWith("/registry/events/")) return;
+    if (name.startsWith(NODE_LEASE_PREFIX)) {
+      if (type !== "deleted") this.ctx.waitUntil(this.checkLeaseLater(name.slice(NODE_LEASE_PREFIX.length)));
       return;
     }
-    await this.ctx.storage.setAlarm(Math.min(...times));
+    const routes: Target[] = ["controllers"];
+    if (name.startsWith("/registry/pods/")) {
+      if (type === "deleted" || !podBound(value)) routes.push("scheduler");
+    } else if (name.startsWith("/registry/minions/") || name.startsWith("/registry/nodes/")) {
+      if (type !== "modified" || nodeChanged(prev!.value, value)) routes.push("scheduler");
+      else routes.length = 0;
+    }
+    for (const target of routes) {
+      this.ctx.storage.sql.exec("INSERT INTO outbox (target, rev, key, type) VALUES (?, ?, ?, ?)", target, rev, name, type);
+    }
+    if (routes.length > 0) this.ctx.waitUntil(this.flushOutbox());
   }
 
-  async alarm(): Promise<void> {
-    const now = Date.now() + ALARM_SLACK_MS;
-    const due = new Map<WakeTarget, { hold: number; reset: boolean }>();
-    for (const row of this.ctx.storage.sql.exec("SELECT target, MAX(hold) AS hold, MAX(reset) AS reset FROM wakes WHERE at <= ? GROUP BY target", now).toArray()) {
-      due.set(row.target as WakeTarget, { hold: row.hold as number, reset: (row.reset as number) === 1 });
-    }
-    this.ctx.storage.sql.exec("DELETE FROM wakes WHERE at <= ?", now);
-    const stale = this.ctx.storage.sql
-      .exec("SELECT node FROM node_leases WHERE expired = 0 AND seen + ? <= ?", NODE_LEASE_GRACE_MS, now)
-      .toArray();
-    if (stale.length > 0) {
-      for (const row of stale) this.ctx.storage.sql.exec("UPDATE node_leases SET expired = 1 WHERE node = ?", row.node);
-      console.log(`lease expired: ${stale.map((r) => r.node).join(",")}`);
-      const current = due.get("controllers");
-      due.set("controllers", { hold: Math.max(current?.hold ?? 0, NODE_LEASE_HOLD_MS), reset: current?.reset ?? false });
-    }
-    await this.rearm();
-    if (due.size > 0) console.log(`wake ${[...due.keys()].join(",")}`);
-    for (const [target, d] of due) this.ctx.waitUntil(this.runTarget(target, d.hold, d.reset));
+  private async checkLeaseLater(node: string): Promise<void> {
+    const now = Date.now();
+    const rows = this.ctx.storage.sql.exec("SELECT sent FROM lease_checks WHERE node = ?", node).toArray();
+    if (rows.length > 0 && now - (rows[0].sent as number) < LEASE_CHECK_EVERY_MS) return;
+    this.ctx.storage.sql.exec(
+      "INSERT INTO lease_checks (node, sent) VALUES (?, ?) ON CONFLICT(node) DO UPDATE SET sent = excluded.sent",
+      node,
+      now,
+    );
+    await this.env.CTRL_Q.send({ kind: "lease-check", node } satisfies QueueMessage, { delaySeconds: LEASE_CHECK_DELAY_S });
   }
 
-  private async runTarget(target: WakeTarget, holdMs: number, reset: boolean): Promise<void> {
-    const entrypoint = target === "scheduler" ? this.env.SCHEDULER : this.env.CONTROLLERS;
-    const successor = setTimeout(() => {
-      this.scheduleWake(target, Date.now(), 0).catch((err) => console.error(`handover ${target}:`, err));
-    }, HANDOVER_AFTER_MS);
+  private flushing = false;
+
+  private async flushOutbox(): Promise<void> {
+    if (this.flushing) return;
+    this.flushing = true;
     try {
-      await entrypoint.run(RUN_WINDOW_MS, holdMs, reset);
+      for (;;) {
+        const rows = this.ctx.storage.sql.exec("SELECT id, target, rev, key, type FROM outbox ORDER BY id LIMIT ?", OUTBOX_BATCH).toArray();
+        if (rows.length === 0) return;
+        for (const target of targets) {
+          const batch = rows.filter((r) => r.target === target);
+          if (batch.length === 0) continue;
+          await this.queue(target).sendBatch(
+            batch.map((r) => ({ body: { kind: "change", key: r.key as string, type: r.type as string, rev: r.rev as number } satisfies QueueMessage })),
+          );
+        }
+        this.ctx.storage.sql.exec("DELETE FROM outbox WHERE id <= ?", rows[rows.length - 1].id);
+      }
     } catch (err) {
-      console.error(`wake ${target}:`, err);
-      await this.scheduleWake(target, Date.now() + RUN_RETRY_MS, holdMs);
+      console.error("outbox flush:", err);
     } finally {
-      clearTimeout(successor);
+      this.flushing = false;
     }
   }
 
@@ -397,4 +373,33 @@ function fromBase64(s: string): Uint8Array {
 
 function conflict(revision: number, error: string): Response {
   return Response.json({ revision, error }, { status: 409 });
+}
+
+function decodeJSON(value: Uint8Array): Record<string, any> | null {
+  try {
+    return JSON.parse(new TextDecoder().decode(value));
+  } catch {
+    return null;
+  }
+}
+
+function podBound(value: Uint8Array): boolean {
+  return Boolean(decodeJSON(value)?.spec?.nodeName);
+}
+
+function readyStatus(node: Record<string, any> | null): string {
+  const conditions = (node?.status?.conditions ?? []) as { type: string; status: string }[];
+  return conditions.find((c) => c.type === "Ready")?.status ?? "Unknown";
+}
+
+function nodeChanged(before: Uint8Array, after: Uint8Array): boolean {
+  const a = decodeJSON(before);
+  const b = decodeJSON(after);
+  if (!a || !b) return true;
+  return (
+    JSON.stringify(a.spec ?? {}) !== JSON.stringify(b.spec ?? {}) ||
+    JSON.stringify(a.metadata?.labels ?? {}) !== JSON.stringify(b.metadata?.labels ?? {}) ||
+    JSON.stringify(a.status?.allocatable ?? {}) !== JSON.stringify(b.status?.allocatable ?? {}) ||
+    readyStatus(a) !== readyStatus(b)
+  );
 }
