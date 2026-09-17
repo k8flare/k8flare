@@ -6,6 +6,7 @@ const leaseGraceMs = 60_000;
 const leaseHoldMs = 60_000;
 const refusedRetryMs = 5_000;
 const leasePrefix = "/registry/leases/kube-node-lease/";
+const crdPrefix = "/registry/apiextensions.k8s.io/customresourcedefinitions/";
 
 type Target = "scheduler" | "controllers";
 
@@ -45,6 +46,7 @@ export async function consume(batch: MessageBatch<QueueMessage>, env: Env): Prom
   let needRun = false;
   let minMs = 0;
   let reset = false;
+  let crdChanged = false;
   for (const msg of batch.messages) {
     const body = msg.body;
     if (body.kind === "lease-check") {
@@ -56,7 +58,13 @@ export async function consume(batch: MessageBatch<QueueMessage>, env: Env): Prom
       continue;
     }
     needRun = true;
-    if (body.kind === "change") reset = true;
+    if (body.kind === "change") {
+      reset = true;
+      if (body.key.startsWith(crdPrefix)) crdChanged = true;
+    }
+  }
+  if (crdChanged && target === "controllers") {
+    await env.CUSTOMRESOURCES.fetch("https://customresources.internal/apis").then((r) => r.text()).catch(() => {});
   }
   if (!needRun) {
     batch.ackAll();
