@@ -3,9 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
-	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -24,15 +22,12 @@ import (
 	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/controller-manager/pkg/informerfactory"
-	"k8s.io/klog/v2"
-	"k8s.io/kubernetes/pkg/controller/certificates/rootcacertpublisher"
 	"k8s.io/kubernetes/pkg/controller/cronjob"
 	"k8s.io/kubernetes/pkg/controller/garbagecollector"
 	"k8s.io/kubernetes/pkg/controller/namespace"
 	"k8s.io/kubernetes/pkg/controller/nodeipam"
 	"k8s.io/kubernetes/pkg/controller/nodeipam/ipam"
 	"k8s.io/kubernetes/pkg/controller/nodelifecycle"
-	"k8s.io/kubernetes/pkg/controller/serviceaccount"
 	"k8s.io/kubernetes/pkg/controller/tainteviction"
 )
 
@@ -98,11 +93,6 @@ func New(ctx context.Context, cfg *rest.Config) (*Controllers, error) {
 		return nil, err
 	}
 	c.add(taints.Run)
-	accounts, err := serviceaccount.NewServiceAccountsController(klog.FromContext(ctx), core.ServiceAccounts(), core.Namespaces(), client, serviceaccount.DefaultServiceAccountsControllerOptions())
-	if err != nil {
-		return nil, err
-	}
-	c.add(func(ctx context.Context) { accounts.Run(ctx, 1) })
 	metadataClient, err := metadata.NewForConfig(cfg)
 	if err != nil {
 		return nil, err
@@ -119,36 +109,7 @@ func New(ctx context.Context, cfg *rest.Config) (*Controllers, error) {
 	c.add(func(ctx context.Context) { collector.Run(ctx, garbageCollectorWorkers, garbageCollectorSyncPeriod) })
 	c.add(func(ctx context.Context) { collector.Sync(ctx, client.Discovery(), garbageCollectorSyncPeriod) })
 	c.add(func(ctx context.Context) { wait.Until(mapper.Reset, garbageCollectorSyncPeriod, ctx.Done()) })
-	rootCA, err := serverCA(ctx, cfg)
-	if err != nil {
-		return nil, err
-	}
-	publisher, err := rootcacertpublisher.NewPublisher(core.ConfigMaps(), core.Namespaces(), client, rootCA)
-	if err != nil {
-		return nil, err
-	}
-	c.add(func(ctx context.Context) { publisher.Run(ctx, 1) })
 	return c, nil
-}
-
-func serverCA(ctx context.Context, cfg *rest.Config) ([]byte, error) {
-	httpClient, err := rest.HTTPClientFor(cfg)
-	if err != nil {
-		return nil, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.Host+"/cacerts", nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("cacerts: HTTP %d", resp.StatusCode)
-	}
-	return io.ReadAll(resp.Body)
 }
 
 func (c *Controllers) add(run func(context.Context)) {

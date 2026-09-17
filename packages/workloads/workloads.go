@@ -16,6 +16,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/flowcontrol"
+	"k8s.io/klog/v2"
+	"k8s.io/kubernetes/pkg/controller/certificates/rootcacertpublisher"
 	"k8s.io/kubernetes/pkg/controller/daemon"
 	"k8s.io/kubernetes/pkg/controller/deployment"
 	"k8s.io/kubernetes/pkg/controller/endpoint"
@@ -23,6 +25,7 @@ import (
 	"k8s.io/kubernetes/pkg/controller/job"
 	"k8s.io/kubernetes/pkg/controller/replicaset"
 	"k8s.io/kubernetes/pkg/controller/replication"
+	"k8s.io/kubernetes/pkg/controller/serviceaccount"
 	"k8s.io/kubernetes/pkg/controller/statefulset"
 )
 
@@ -97,13 +100,22 @@ func sources(client kubernetes.Interface) []source {
 		{"persistentvolumeclaims", &v1.PersistentVolumeClaim{}, func(ctx context.Context, o metav1.ListOptions) (runtime.Object, error) {
 			return core.PersistentVolumeClaims("").List(ctx, o)
 		}},
+		{"namespaces", &v1.Namespace{}, func(ctx context.Context, o metav1.ListOptions) (runtime.Object, error) {
+			return core.Namespaces().List(ctx, o)
+		}},
+		{"serviceaccounts", &v1.ServiceAccount{}, func(ctx context.Context, o metav1.ListOptions) (runtime.Object, error) {
+			return core.ServiceAccounts("").List(ctx, o)
+		}},
+		{"configmaps", &v1.ConfigMap{}, func(ctx context.Context, o metav1.ListOptions) (runtime.Object, error) {
+			return core.ConfigMaps("").List(ctx, o)
+		}},
 		{"nodes", &v1.Node{}, func(ctx context.Context, o metav1.ListOptions) (runtime.Object, error) {
 			return core.Nodes().List(ctx, o)
 		}},
 	}
 }
 
-func Sync(ctx context.Context, client kubernetes.Interface) (*Result, error) {
+func Sync(ctx context.Context, client kubernetes.Interface, rootCA []byte) (*Result, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -154,6 +166,17 @@ func Sync(ctx context.Context, client kubernetes.Interface) (*Result, error) {
 		return nil, err
 	}
 	runs = append(runs, func(ctx context.Context) { jobs.Run(ctx, workers) })
+
+	accounts, err := serviceaccount.NewServiceAccountsController(klog.FromContext(ctx), core.ServiceAccounts(), core.Namespaces(), client, serviceaccount.DefaultServiceAccountsControllerOptions())
+	if err != nil {
+		return nil, err
+	}
+	runs = append(runs, func(ctx context.Context) { accounts.Run(ctx, 1) })
+	publisher, err := rootcacertpublisher.NewPublisher(core.ConfigMaps(), core.Namespaces(), client, rootCA)
+	if err != nil {
+		return nil, err
+	}
+	runs = append(runs, func(ctx context.Context) { publisher.Run(ctx, 1) })
 
 	for _, l := range all {
 		l.informer.fill(l.objs)

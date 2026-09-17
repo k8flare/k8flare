@@ -52,7 +52,7 @@ func TestSyncCreatesReplicaSetThenPods(t *testing.T) {
 	rsCreates, podCreates := 0, 0
 	for i := 0; i < 4; i++ {
 		client.ClearActions()
-		if _, err := Sync(context.Background(), client); err != nil {
+		if _, err := Sync(context.Background(), client, []byte("ca")); err != nil {
 			t.Fatal(err)
 		}
 		rsCreates += creates(client, "replicasets")
@@ -62,7 +62,7 @@ func TestSyncCreatesReplicaSetThenPods(t *testing.T) {
 		t.Fatalf("replicaset creates = %d, pod creates = %d", rsCreates, podCreates)
 	}
 	client.ClearActions()
-	if _, err := Sync(context.Background(), client); err != nil {
+	if _, err := Sync(context.Background(), client, []byte("ca")); err != nil {
 		t.Fatal(err)
 	}
 	if got := creates(client, "pods") + creates(client, "replicasets"); got != 0 {

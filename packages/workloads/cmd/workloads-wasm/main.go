@@ -24,8 +24,18 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	var rootCA []byte
 	bridge.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		result, err := workloads.Sync(r.Context(), client)
+		if rootCA == nil {
+			ca, err := client.CoreV1().RESTClient().Get().AbsPath("/cacerts").DoRaw(r.Context())
+			if err != nil {
+				println("workloads: cacerts failed:", err.Error())
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			rootCA = ca
+		}
+		result, err := workloads.Sync(r.Context(), client, rootCA)
 		if err != nil {
 			println("workloads: sync failed:", err.Error())
 			http.Error(w, err.Error(), http.StatusInternalServerError)
