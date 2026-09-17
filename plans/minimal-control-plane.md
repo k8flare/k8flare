@@ -1483,3 +1483,10 @@ been re-measured over a full quiet hour.
 - Fix: bound the WebSocket dial at 10s, give watch requests a 20s header timeout, retry the first dial through the existing backoff helper, and log dial start/ok/timeout with the live socket count. Also stopped filtering the kubelet's watchlist klog lines out of tail.
 - Production after the fix: 863 dials with 1 timeout, zero `awaiting required bookmark` warnings, a fresh pod running in 12s, and required e2e 21/21 twice in a row.
 - Note: the wedged watches from before the fix survived in the running kubelet; the node needed one final restart to pick up the fixed path.
+
+## Phase 4 steps 0-2 (2026-09-18)
+
+- Step 0: the loopback transport serves requests synchronously into a buffer. CRD focus 10 runs 50/50 and zero `read/write on closed pipe` lines (was 150).
+- Step 1: the nodes store allocates the pod CIDR in `BeginCreate`/`BeginUpdate` from the free /24 blocks in the cluster CIDR; the nodeipam controller is gone. Deleting the node object and restarting the agent gave it `10.42.0.0/24` in 6s and a pod ran in 6s.
+- Step 2: the CronJob controller runs in the workloads batch; the batch returns the soonest next fire as `nextMs`, which the consumer turns into a delayed message. The apiserver-side cronjob wake hooks are gone. A `* * * * *` cronjob produced a completed job per minute.
+- Required e2e after these: 21/21 twice.
