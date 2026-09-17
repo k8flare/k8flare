@@ -3,14 +3,12 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"net"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	supervisor "github.com/k8flare/k8flare/packages/apiserver-supervisor"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/discovery/cached/memory"
@@ -25,15 +23,12 @@ import (
 	"k8s.io/kubernetes/pkg/controller/cronjob"
 	"k8s.io/kubernetes/pkg/controller/garbagecollector"
 	"k8s.io/kubernetes/pkg/controller/namespace"
-	"k8s.io/kubernetes/pkg/controller/nodeipam"
-	"k8s.io/kubernetes/pkg/controller/nodeipam/ipam"
 	"k8s.io/kubernetes/pkg/controller/nodelifecycle"
 	"k8s.io/kubernetes/pkg/controller/tainteviction"
 )
 
 const (
 	workers                     = 5
-	nodeCIDRMaskSize            = 24
 	nodeMonitorPeriod           = 5 * time.Second
 	nodeStartupGracePeriod      = 60 * time.Second
 	nodeMonitorGracePeriod      = 50 * time.Second
@@ -77,11 +72,6 @@ func New(ctx context.Context, cfg *rest.Config) (*Controllers, error) {
 		return nil, err
 	}
 	c.add(func(ctx context.Context) { cron.Run(ctx, workers) })
-	ipam, err := nodeipam.NewNodeIpamController(ctx, core.Nodes(), nil, client, []*net.IPNet{supervisor.ClusterCIDR}, supervisor.ServiceCIDR, nil, []int{nodeCIDRMaskSize}, ipam.RangeAllocatorType)
-	if err != nil {
-		return nil, err
-	}
-	c.add(ipam.Run)
 	lifecycle, err := nodelifecycle.NewNodeLifecycleController(ctx, factory.Coordination().V1().Leases(), core.Pods(), core.Nodes(), apps.DaemonSets(), client,
 		nodeMonitorPeriod, nodeStartupGracePeriod, nodeMonitorGracePeriod, evictionLimiterQPS, secondaryEvictionLimiterQPS, largeClusterThreshold, unhealthyZoneThreshold)
 	if err != nil {
