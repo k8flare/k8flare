@@ -1405,3 +1405,10 @@ Cost after these changes, from the same run's tail: the e2e minutes ran
 controllers' pending retries decayed, settling to 50-85 ms/min by the end
 of the window. The steady idle figure from before (217 ms/min) has not
 been re-measured over a full quiet hour.
+
+## Phase 1 after dropping the recent-adds idle rule (2026-09-17)
+
+- Required e2e on production: 21 Passed, 0 Failed.
+- Idle CPU per minute after the e2e run (first three minutes are the e2e tail-off): 8147, 7797, 1281, 255, 251, 2188, 294, 728, 125, 36, 42, 343, 410, 167, 134, 415, 663, 69.
+- Steady idle average excluding the tail-off: 408 ms/min (previous Phase 1 baseline: 1,134 ms/min).
+- Controllers runs now end at the 30s minimum hold with nothing pending instead of holding to the 5-minute cap.
