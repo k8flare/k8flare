@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/robfig/cron/v3"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	v1 "k8s.io/api/core/v1"
@@ -18,6 +19,7 @@ import (
 	"k8s.io/client-go/util/flowcontrol"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/controller/certificates/rootcacertpublisher"
+	"k8s.io/kubernetes/pkg/controller/cronjob"
 	"k8s.io/kubernetes/pkg/controller/daemon"
 	"k8s.io/kubernetes/pkg/controller/deployment"
 	"k8s.io/kubernetes/pkg/controller/endpoint"
@@ -37,6 +39,7 @@ const (
 	maxEndpointsPerSlice = 100
 	daemonSetWorkers     = 2
 	unfinishedJobRecheck = 10 * time.Second
+	maxDelay             = 24 * time.Hour
 )
 
 func init() {
@@ -88,6 +91,9 @@ func sources(client kubernetes.Interface) []source {
 		{"jobs", &batchv1.Job{}, func(ctx context.Context, o metav1.ListOptions) (runtime.Object, error) {
 			return client.BatchV1().Jobs("").List(ctx, o)
 		}},
+		{"cronjobs", &batchv1.CronJob{}, func(ctx context.Context, o metav1.ListOptions) (runtime.Object, error) {
+			return client.BatchV1().CronJobs("").List(ctx, o)
+		}},
 		{"statefulsets", &appsv1.StatefulSet{}, func(ctx context.Context, o metav1.ListOptions) (runtime.Object, error) {
 			return apps.StatefulSets("").List(ctx, o)
 		}},
@@ -135,6 +141,11 @@ func Sync(ctx context.Context, client kubernetes.Interface, rootCA []byte) (*Res
 		if s.name == "jobs" && anyUnfinished(objs) {
 			result.NextMs = unfinishedJobRecheck.Milliseconds()
 		}
+		if s.name == "cronjobs" {
+			if next, ok := nextCronRun(objs); ok {
+				result.NextMs = soonest(result.NextMs, next)
+			}
+		}
 		result.Objects[s.name] = len(objs)
 		all = append(all, loaded{register(factory, s.example), objs})
 	}
@@ -167,6 +178,11 @@ func Sync(ctx context.Context, client kubernetes.Interface, rootCA []byte) (*Res
 		return nil, err
 	}
 	runs = append(runs, func(ctx context.Context) { jobs.Run(ctx, workers) })
+	cron, err := cronjob.NewControllerV2(ctx, factory.Batch().V1().Jobs(), factory.Batch().V1().CronJobs(), client)
+	if err != nil {
+		return nil, err
+	}
+	runs = append(runs, func(ctx context.Context) { cron.Run(ctx, workers) })
 
 	accounts, err := serviceaccount.NewServiceAccountsController(klog.FromContext(ctx), core.ServiceAccounts(), core.Namespaces(), client, serviceaccount.DefaultServiceAccountsControllerOptions())
 	if err != nil {
@@ -259,4 +275,56 @@ func drain(owned func(string) bool) bool {
 		}
 	}
 	return false
+}
+
+func nextCronRun(objs []runtime.Object) (time.Duration, bool) {
+	var soonestRun time.Duration
+	found := false
+	now := time.Now()
+	for _, o := range objs {
+		cj := o.(*batchv1.CronJob)
+		if cj.DeletionTimestamp != nil || (cj.Spec.Suspend != nil && *cj.Spec.Suspend) {
+			continue
+		}
+		next, ok := nextSchedule(cj, now)
+		if !ok {
+			continue
+		}
+		wait := time.Until(next)
+		if wait < time.Second {
+			wait = time.Second
+		}
+		if wait > maxDelay {
+			wait = maxDelay
+		}
+		if !found || wait < soonestRun {
+			soonestRun = wait
+			found = true
+		}
+	}
+	return soonestRun, found
+}
+
+func soonest(currentMs int64, next time.Duration) int64 {
+	nextMs := next.Milliseconds()
+	if currentMs <= 0 || nextMs < currentMs {
+		return nextMs
+	}
+	return currentMs
+}
+
+func nextSchedule(cj *batchv1.CronJob, now time.Time) (time.Time, bool) {
+	schedule := cj.Spec.Schedule
+	if cj.Spec.TimeZone != nil && *cj.Spec.TimeZone != "" {
+		schedule = "TZ=" + *cj.Spec.TimeZone + " " + schedule
+	}
+	parsed, err := cron.ParseStandard(schedule)
+	if err != nil {
+		return time.Time{}, false
+	}
+	next := parsed.Next(now)
+	if next.IsZero() {
+		return time.Time{}, false
+	}
+	return next, true
 }

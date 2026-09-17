@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -377,7 +378,7 @@ func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	endFetch := beginFetch(window)
 	headerTimeout := unaryHeaderTimeout
 	if req.URL.Query().Get("watch") == "true" || req.URL.Query().Get("watch") == "1" || strings.HasSuffix(req.URL.Path, "/watch") {
-		headerTimeout = 0
+		headerTimeout = watchHeaderTimeout
 	}
 	jsResp, err := awaitInCtx(req.Context(), window, binding.Call("fetch", jsReq), headerTimeout)
 	endFetch()
@@ -565,9 +566,16 @@ func DialWebSocket(ctx context.Context, bindingName, rawURL string) (*WebSocket,
 	headers.Set("Upgrade", "websocket")
 	opts.Set("headers", headers)
 	endFetch := beginFetch(window)
-	resp, err := awaitIn(window, binding.Call("fetch", js.Global().Get("Request").New(rawURL, opts)))
+	started := time.Now()
+	live := liveSockets.Add(1)
+	println("bridge: ws dial start live="+strconv.FormatInt(live, 10)+" kind="+window.kind()+":", rawURL)
+	resp, err := awaitInCtx(ctx, window, binding.Call("fetch", js.Global().Get("Request").New(rawURL, opts)), wsDialTimeout)
 	endFetch()
 	if err != nil {
+		liveSockets.Add(-1)
+		if errors.Is(err, ErrFetchTimeout) {
+			println("bridge: ws dial timed out after "+time.Since(started).Round(time.Millisecond).String()+":", rawURL)
+		}
 		if errors.Is(err, ErrWindowClosed) {
 			println("bridge: websocket lost to window close kind="+window.kind()+" age="+time.Since(window.opened).Round(time.Second).String()+":", rawURL)
 		}
@@ -575,8 +583,10 @@ func DialWebSocket(ctx context.Context, bindingName, rawURL string) (*WebSocket,
 	}
 	ws := resp.Get("webSocket")
 	if ws.IsNull() || ws.IsUndefined() {
+		liveSockets.Add(-1)
 		return nil, fmt.Errorf("bridge: websocket %s: status %d", rawURL, resp.Get("status").Int())
 	}
+	println("bridge: ws dial ok in "+time.Since(started).Round(time.Millisecond).String()+":", rawURL)
 	msgs := make(chan []byte)
 	c := &WebSocket{ws: ws, Messages: msgs, msgs: msgs, closed: make(chan struct{}), notify: make(chan struct{}, 1)}
 	c.id = register(c)
@@ -621,6 +631,7 @@ func (c *WebSocket) finish() {
 	case <-c.closed:
 	default:
 		close(c.closed)
+		liveSockets.Add(-1)
 		if c.untrack != nil {
 			c.untrack()
 		}

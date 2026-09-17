@@ -420,11 +420,15 @@ func (s *Storage) Watch(ctx context.Context, key string, opts storage.ListOption
 		}
 		return WatchDialer(ctx, kineBase+"/watch?"+q.Encode())
 	}
-	msgs, closeFn, err := dial(int64(rv), initial)
+	println("kine: watch dial start", prefix, "since", strconv.FormatUint(rv, 10))
+	dialStart := time.Now()
+	msgs, closeFn, err := redial(ctx, func() (<-chan []byte, func(), error) { return dial(int64(rv), initial) })
 	if err != nil {
 		cancel()
+		println("kine: watch dial failed", prefix+":", err.Error())
 		return nil, err
 	}
+	println("kine: watch dial ok", prefix, "in", time.Since(dialStart).Round(time.Millisecond).String())
 	events := make(chan watch.Event, 64)
 	w := watch.NewProxyWatcher(events)
 	go func() {

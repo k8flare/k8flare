@@ -16,7 +16,7 @@ const MAX_DELAY_S = 86_400;
 type Target = "scheduler" | "controllers" | "workloads" | "crds";
 const targets: Target[] = ["scheduler", "controllers", "workloads", "crds"];
 const CRD_PREFIX = "/registry/apiextensions.k8s.io/customresourcedefinitions/";
-const WORKLOAD_PREFIXES = ["/registry/pods/", "/registry/replicasets/", "/registry/deployments/", "/registry/replicationcontrollers/", "/registry/services/", "/registry/endpoints/", "/registry/endpointslices/", "/registry/jobs/", "/registry/statefulsets/", "/registry/daemonsets/", "/registry/controllerrevisions/", "/registry/persistentvolumeclaims/", "/registry/namespaces/", "/registry/serviceaccounts/", "/registry/configmaps/"];
+const WORKLOAD_PREFIXES = ["/registry/pods/", "/registry/replicasets/", "/registry/deployments/", "/registry/replicationcontrollers/", "/registry/services/", "/registry/endpoints/", "/registry/endpointslices/", "/registry/jobs/", "/registry/statefulsets/", "/registry/daemonsets/", "/registry/controllerrevisions/", "/registry/persistentvolumeclaims/", "/registry/namespaces/", "/registry/serviceaccounts/", "/registry/configmaps/", "/registry/cronjobs/"];
 
 export type QueueMessage =
   | { kind: "change"; key: string; type: string; rev: number }

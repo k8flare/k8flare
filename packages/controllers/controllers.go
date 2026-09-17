@@ -20,7 +20,6 @@ import (
 	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/controller-manager/pkg/informerfactory"
-	"k8s.io/kubernetes/pkg/controller/cronjob"
 	"k8s.io/kubernetes/pkg/controller/garbagecollector"
 	"k8s.io/kubernetes/pkg/controller/namespace"
 	"k8s.io/kubernetes/pkg/controller/nodelifecycle"
@@ -65,13 +64,8 @@ func New(ctx context.Context, cfg *rest.Config) (*Controllers, error) {
 		return nil, err
 	}
 	factory := informers.NewSharedInformerFactory(client, minResyncPeriod)
-	core, apps, batch := factory.Core().V1(), factory.Apps().V1(), factory.Batch().V1()
+	core, apps := factory.Core().V1(), factory.Apps().V1()
 	c := &Controllers{factory: factory, informersStarted: make(chan struct{})}
-	cron, err := cronjob.NewControllerV2(ctx, batch.Jobs(), batch.CronJobs(), client)
-	if err != nil {
-		return nil, err
-	}
-	c.add(func(ctx context.Context) { cron.Run(ctx, workers) })
 	lifecycle, err := nodelifecycle.NewNodeLifecycleController(ctx, factory.Coordination().V1().Leases(), core.Pods(), core.Nodes(), apps.DaemonSets(), client,
 		nodeMonitorPeriod, nodeStartupGracePeriod, nodeMonitorGracePeriod, evictionLimiterQPS, secondaryEvictionLimiterQPS, largeClusterThreshold, unhealthyZoneThreshold)
 	if err != nil {
