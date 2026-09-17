@@ -1440,3 +1440,10 @@ been re-measured over a full quiet hour.
 - Services, endpoints, endpointslices and meaningful node changes route to the workloads queue.
 - Production: a service's EndpointSlice and Endpoints got the pod IP in 36s.
 - Required e2e on production: 21 Passed, 0 Failed.
+
+## Phase 3 slice 4: Job, StatefulSet and DaemonSet in the workloads consumer (2026-09-17)
+
+- Jobs, statefulsets, daemonsets, controllerrevisions and persistentvolumeclaims route to the workloads queue; unfinished jobs schedule a 10s recheck because delayed requeues are invisible to the drain check.
+- Found and fixed a pre-existing gap: job creates did not generate the controller-uid selector and template labels, so no pods were ever created.
+- Production: a 3-second busybox job completed in 33s.
+- Required e2e on production: 21 Passed, 0 Failed.
