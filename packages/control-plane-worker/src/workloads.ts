@@ -13,9 +13,20 @@ export interface NodeHealthResult {
   nextMs: number;
 }
 
+export interface NamespaceResult {
+  terminating: number;
+  deleted: number;
+  remaining: number;
+  nextMs: number;
+}
+
 export class Workloads extends WorkerEntrypoint<Env> {
   async sync(): Promise<SyncResult | null> {
     return this.call<SyncResult>("/sync");
+  }
+
+  async namespaces(): Promise<NamespaceResult | null> {
+    return this.call<NamespaceResult>("/namespaces");
   }
 
   async nodeHealth(node: string): Promise<NodeHealthResult | null> {

@@ -9,6 +9,7 @@ import (
 	bridge "github.com/k8flare/k8flare/packages/worker-bridge"
 	"github.com/k8flare/k8flare/packages/workloads"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/metadata"
 	"k8s.io/client-go/rest"
 )
 
@@ -24,6 +25,10 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	metadataClient, err := metadata.NewForConfig(rest.AddUserAgent(cfg, "kube-controller-manager"))
+	if err != nil {
+		panic(err)
+	}
 	var rootCA []byte
 	bridge.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if rootCA == nil {
@@ -34,6 +39,17 @@ func main() {
 				return
 			}
 			rootCA = ca
+		}
+		if r.URL.Path == "/namespaces" {
+			result, err := workloads.DeleteTerminating(r.Context(), client, metadataClient)
+			if err != nil {
+				println("workloads: namespace delete failed:", err.Error())
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(result)
+			return
 		}
 		if node := r.URL.Query().Get("node"); r.URL.Path == "/nodehealth" && node != "" {
 			health, err := workloads.NodeHealth(r.Context(), client, node)

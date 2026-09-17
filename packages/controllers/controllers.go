@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/informers"
@@ -21,14 +20,11 @@ import (
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/controller-manager/pkg/informerfactory"
 	"k8s.io/kubernetes/pkg/controller/garbagecollector"
-	"k8s.io/kubernetes/pkg/controller/namespace"
 )
 
 const (
 	workers                    = 5
 	minResyncPeriod            = 12 * time.Hour
-	namespaceSyncPeriod        = 5 * time.Minute
-	namespaceWorkers           = 10
 	garbageCollectorWorkers    = 20
 	garbageCollectorSyncPeriod = 30 * time.Second
 	retryQuiet                 = 20 * time.Second
@@ -55,14 +51,11 @@ func New(ctx context.Context, cfg *rest.Config) (*Controllers, error) {
 		return nil, err
 	}
 	factory := informers.NewSharedInformerFactory(client, minResyncPeriod)
-	core := factory.Core().V1()
 	c := &Controllers{factory: factory, informersStarted: make(chan struct{})}
 	metadataClient, err := metadata.NewForConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
-	namespaces := namespace.NewNamespaceController(ctx, client, metadataClient, client.Discovery().ServerPreferredNamespacedResources, core.Namespaces(), namespaceSyncPeriod, corev1.FinalizerKubernetes)
-	c.add(func(ctx context.Context) { namespaces.Run(ctx, namespaceWorkers) })
 	c.metadataFactory = metadatainformer.NewSharedInformerFactory(metadataClient, minResyncPeriod)
 	mapper := restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(client.Discovery()))
 	graph := garbagecollector.NewDependencyGraphBuilder(ctx, metadataClient, mapper, garbagecollector.DefaultIgnoredResources(), informerfactory.NewInformerFactory(factory, c.metadataFactory), c.informersStarted)

@@ -63,7 +63,15 @@ async function consumeScheduler(batch: MessageBatch<QueueMessage>, env: Env): Pr
   batch.ackAll();
 }
 
+const namespacePrefix = "/registry/namespaces/";
+
 async function consumeWorkloads(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
+  if (batch.messages.some((m) => m.body.kind === "change" && m.body.key.startsWith(namespacePrefix))) {
+    const namespaces = await env.WORKLOADS.namespaces();
+    if (namespaces) console.log(`namespaces: terminating=${namespaces.terminating} deleted=${namespaces.deleted} remaining=${namespaces.remaining}`);
+    const delayMs = namespaces ? namespaces.nextMs : refusedRetryMs;
+    if (delayMs > 0) await env.WL_Q.send({ kind: "change", key: namespacePrefix, type: "modified", rev: 0 } satisfies QueueMessage, { delaySeconds: Math.ceil(delayMs / 1000) });
+  }
   const result = await env.WORKLOADS.sync();
   if (!result) {
     await env.WL_Q.send({ kind: "retry" } satisfies QueueMessage, { delaySeconds: refusedRetryMs / 1000 });
