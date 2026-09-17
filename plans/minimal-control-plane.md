@@ -1428,3 +1428,9 @@ been re-measured over a full quiet hour.
 - Production: a 2-replica deployment became available in 54s; scaling to 1 took 7s.
 - Required e2e on production: 21 Passed, 0 Failed.
 - Unrelated gap found: `deployments/scale` is not served, so `kubectl scale deploy` returns NotFound.
+
+## Phase 3 slice 2: ReplicationController in the workloads consumer (2026-09-17)
+
+- RC moved from the resident controllers into the workloads batch; `/registry/replicationcontrollers/` routes to the workloads queue.
+- Production: a 2-replica RC became ready in 30s.
+- Required e2e on production (includes the RC garbage collector specs): 21 Passed, 0 Failed.
