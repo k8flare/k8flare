@@ -128,11 +128,7 @@ func Sync(ctx context.Context, client kubernetes.Interface, rootCA []byte) (*Res
 	work.reset(workloadQueue)
 	factory := informers.NewSharedInformerFactory(client, 0)
 	result := &Result{Objects: map[string]int{}}
-	type loaded struct {
-		informer *snapshotInformer
-		objs     []runtime.Object
-	}
-	var all []loaded
+	var all []loadedSource
 	for _, s := range sources(client) {
 		objs, err := list(ctx, s.page)
 		if err != nil {
@@ -147,7 +143,7 @@ func Sync(ctx context.Context, client kubernetes.Interface, rootCA []byte) (*Res
 			}
 		}
 		result.Objects[s.name] = len(objs)
-		all = append(all, loaded{register(factory, s.example), objs})
+		all = append(all, loadedSource{register(factory, s.example), objs})
 	}
 
 	apps, core := factory.Apps().V1(), factory.Core().V1()
@@ -206,6 +202,9 @@ func Sync(ctx context.Context, client kubernetes.Interface, rootCA []byte) (*Res
 		go func() { run(ctx); done <- struct{}{} }()
 	}
 
+	if err := clearRecoveredNodes(ctx, client, nodesOf(all)); err != nil {
+		println("workloads: clearing node taints failed:", err.Error())
+	}
 	result.Drained = drain(workloadQueue)
 	cancel()
 	for range runs {
@@ -327,4 +326,51 @@ func nextSchedule(cj *batchv1.CronJob, now time.Time) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return next, true
+}
+
+func nodesOf(all []loadedSource) []*v1.Node {
+	for _, l := range all {
+		if len(l.objs) == 0 {
+			continue
+		}
+		if _, ok := l.objs[0].(*v1.Node); !ok {
+			continue
+		}
+		nodes := make([]*v1.Node, 0, len(l.objs))
+		for _, o := range l.objs {
+			nodes = append(nodes, o.(*v1.Node))
+		}
+		return nodes
+	}
+	return nil
+}
+
+func clearRecoveredNodes(ctx context.Context, client kubernetes.Interface, nodes []*v1.Node) error {
+	for _, node := range nodes {
+		if !nodeReady(node) {
+			continue
+		}
+		fresh := node.DeepCopy()
+		if !removeUnreachableTaints(fresh) {
+			continue
+		}
+		if _, err := client.CoreV1().Nodes().Update(ctx, fresh, metav1.UpdateOptions{}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func nodeReady(node *v1.Node) bool {
+	for _, c := range node.Status.Conditions {
+		if c.Type == v1.NodeReady {
+			return c.Status == v1.ConditionTrue
+		}
+	}
+	return false
+}
+
+type loadedSource struct {
+	informer *snapshotInformer
+	objs     []runtime.Object
 }

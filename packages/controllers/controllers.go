@@ -22,26 +22,17 @@ import (
 	"k8s.io/controller-manager/pkg/informerfactory"
 	"k8s.io/kubernetes/pkg/controller/garbagecollector"
 	"k8s.io/kubernetes/pkg/controller/namespace"
-	"k8s.io/kubernetes/pkg/controller/nodelifecycle"
-	"k8s.io/kubernetes/pkg/controller/tainteviction"
 )
 
 const (
-	workers                     = 5
-	nodeMonitorPeriod           = 5 * time.Second
-	nodeStartupGracePeriod      = 60 * time.Second
-	nodeMonitorGracePeriod      = 50 * time.Second
-	evictionLimiterQPS          = 0.1
-	secondaryEvictionLimiterQPS = 0.01
-	largeClusterThreshold       = 50
-	unhealthyZoneThreshold      = 0.55
-	minResyncPeriod             = 12 * time.Hour
-	namespaceSyncPeriod         = 5 * time.Minute
-	namespaceWorkers            = 10
-	garbageCollectorWorkers     = 20
-	garbageCollectorSyncPeriod  = 30 * time.Second
-	retryQuiet                  = 20 * time.Second
-	retryPendingFor             = 5 * time.Minute
+	workers                    = 5
+	minResyncPeriod            = 12 * time.Hour
+	namespaceSyncPeriod        = 5 * time.Minute
+	namespaceWorkers           = 10
+	garbageCollectorWorkers    = 20
+	garbageCollectorSyncPeriod = 30 * time.Second
+	retryQuiet                 = 20 * time.Second
+	retryPendingFor            = 5 * time.Minute
 )
 
 type Controllers struct {
@@ -64,19 +55,8 @@ func New(ctx context.Context, cfg *rest.Config) (*Controllers, error) {
 		return nil, err
 	}
 	factory := informers.NewSharedInformerFactory(client, minResyncPeriod)
-	core, apps := factory.Core().V1(), factory.Apps().V1()
+	core := factory.Core().V1()
 	c := &Controllers{factory: factory, informersStarted: make(chan struct{})}
-	lifecycle, err := nodelifecycle.NewNodeLifecycleController(ctx, factory.Coordination().V1().Leases(), core.Pods(), core.Nodes(), apps.DaemonSets(), client,
-		nodeMonitorPeriod, nodeStartupGracePeriod, nodeMonitorGracePeriod, evictionLimiterQPS, secondaryEvictionLimiterQPS, largeClusterThreshold, unhealthyZoneThreshold)
-	if err != nil {
-		return nil, err
-	}
-	c.add(lifecycle.Run)
-	taints, err := tainteviction.New(ctx, client, core.Pods(), core.Nodes(), "taint-eviction-controller")
-	if err != nil {
-		return nil, err
-	}
-	c.add(taints.Run)
 	metadataClient, err := metadata.NewForConfig(cfg)
 	if err != nil {
 		return nil, err

@@ -3,7 +3,6 @@ import type { RunResult } from "./controllers.ts";
 
 const runWindowMs = 300_000;
 const leaseGraceMs = 60_000;
-const leaseHoldMs = 60_000;
 const refusedRetryMs = 5_000;
 const unschedulableMaxDelayS = 60;
 const leasePrefix = "/registry/leases/kube-node-lease/";
@@ -102,9 +101,12 @@ export async function consume(batch: MessageBatch<QueueMessage>, env: Env): Prom
     const body = msg.body;
     if (body.kind === "lease-check") {
       if (await leaseExpired(env, body.node)) {
-        console.log(`lease expired: ${body.node}`);
-        needRun = true;
-        minMs = Math.max(minMs, leaseHoldMs);
+        const health = await env.WORKLOADS.nodeHealth(body.node);
+        console.log(`lease expired: ${body.node} evicted=${health?.evicted} waiting=${health?.waiting}`);
+        const delayMs = health ? health.nextMs : refusedRetryMs;
+        if (delayMs > 0) {
+          await env.CTRL_Q.send({ kind: "lease-check", node: body.node } satisfies QueueMessage, { delaySeconds: Math.ceil(delayMs / 1000) });
+        }
       }
       continue;
     }

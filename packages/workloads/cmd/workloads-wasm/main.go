@@ -35,6 +35,17 @@ func main() {
 			}
 			rootCA = ca
 		}
+		if node := r.URL.Query().Get("node"); r.URL.Path == "/nodehealth" && node != "" {
+			health, err := workloads.NodeHealth(r.Context(), client, node)
+			if err != nil {
+				println("workloads: node health failed:", err.Error())
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(health)
+			return
+		}
 		result, err := workloads.Sync(r.Context(), client, rootCA)
 		if err != nil {
 			println("workloads: sync failed:", err.Error())

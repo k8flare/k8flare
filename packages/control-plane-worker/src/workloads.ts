@@ -7,9 +7,19 @@ export interface SyncResult {
   nextMs: number;
 }
 
+export interface NodeHealthResult {
+  evicted: number;
+  waiting: number;
+  nextMs: number;
+}
+
 export class Workloads extends WorkerEntrypoint<Env> {
   async sync(): Promise<SyncResult | null> {
     return this.call<SyncResult>("/sync");
+  }
+
+  async nodeHealth(node: string): Promise<NodeHealthResult | null> {
+    return this.call<NodeHealthResult>(`/nodehealth?node=${encodeURIComponent(node)}`);
   }
 
   private async call<T>(path: string): Promise<T | null> {
