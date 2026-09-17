@@ -6,6 +6,7 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/metadata"
@@ -21,21 +22,30 @@ type NamespaceResult struct {
 	NextMs      int64 `json:"nextMs"`
 }
 
-func DeleteTerminating(ctx context.Context, client kubernetes.Interface, metadataClient metadata.Interface) (*NamespaceResult, error) {
-	list, err := client.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	deleter := deletion.NewNamespacedResourcesDeleter(ctx, client.CoreV1().Namespaces(), metadataClient, client.CoreV1(),
-		client.Discovery().ServerPreferredNamespacedResources, v1.FinalizerKubernetes)
+type Deleter struct {
+	deleter deletion.NamespacedResourcesDeleterInterface
+}
+
+func NewDeleter(ctx context.Context, client kubernetes.Interface, metadataClient metadata.Interface) *Deleter {
+	return &Deleter{deleter: deletion.NewNamespacedResourcesDeleter(ctx, client.CoreV1().Namespaces(), metadataClient, client.CoreV1(),
+		client.Discovery().ServerPreferredNamespacedResources, v1.FinalizerKubernetes)}
+}
+
+func (d *Deleter) DeleteTerminating(ctx context.Context, client kubernetes.Interface, names []string) (*NamespaceResult, error) {
 	result := &NamespaceResult{}
-	for i := range list.Items {
-		ns := &list.Items[i]
+	for _, name := range names {
+		ns, err := client.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
 		if ns.DeletionTimestamp == nil {
 			continue
 		}
 		result.Terminating++
-		err := deleter.Delete(ctx, ns.Name)
+		err = d.deleter.Delete(ctx, ns.Name)
 		var remaining *deletion.ResourcesRemainingError
 		switch {
 		case err == nil:

@@ -5,6 +5,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	bridge "github.com/k8flare/k8flare/packages/worker-bridge"
 	"github.com/k8flare/k8flare/packages/workloads"
@@ -30,6 +31,7 @@ func main() {
 		panic(err)
 	}
 	var rootCA []byte
+	var deleter *workloads.Deleter
 	bridge.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if rootCA == nil {
 			ca, err := client.CoreV1().RESTClient().Get().AbsPath("/cacerts").DoRaw(r.Context())
@@ -41,7 +43,11 @@ func main() {
 			rootCA = ca
 		}
 		if r.URL.Path == "/namespaces" {
-			result, err := workloads.DeleteTerminating(r.Context(), client, metadataClient)
+			if deleter == nil {
+				deleter = workloads.NewDeleter(r.Context(), client, metadataClient)
+			}
+			names := strings.Split(r.URL.Query().Get("names"), ",")
+			result, err := deleter.DeleteTerminating(r.Context(), client, names)
 			if err != nil {
 				println("workloads: namespace delete failed:", err.Error())
 				http.Error(w, err.Error(), http.StatusInternalServerError)

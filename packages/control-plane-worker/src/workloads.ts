@@ -25,8 +25,8 @@ export class Workloads extends WorkerEntrypoint<Env> {
     return this.call<SyncResult>("/sync");
   }
 
-  async namespaces(): Promise<NamespaceResult | null> {
-    return this.call<NamespaceResult>("/namespaces");
+  async namespaces(names: string[]): Promise<NamespaceResult | null> {
+    return this.call<NamespaceResult>(`/namespaces?names=${encodeURIComponent(names.join(","))}`);
   }
 
   async nodeHealth(node: string): Promise<NodeHealthResult | null> {

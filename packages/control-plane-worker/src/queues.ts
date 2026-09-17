@@ -66,11 +66,20 @@ async function consumeScheduler(batch: MessageBatch<QueueMessage>, env: Env): Pr
 const namespacePrefix = "/registry/namespaces/";
 
 async function consumeWorkloads(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
-  if (batch.messages.some((m) => m.body.kind === "change" && m.body.key.startsWith(namespacePrefix))) {
-    const namespaces = await env.WORKLOADS.namespaces();
-    if (namespaces) console.log(`namespaces: terminating=${namespaces.terminating} deleted=${namespaces.deleted} remaining=${namespaces.remaining}`);
+  const terminating = new Set<string>();
+  for (const msg of batch.messages) {
+    if (msg.body.kind === "change" && msg.body.key.startsWith(namespacePrefix)) terminating.add(msg.body.key.slice(namespacePrefix.length));
+  }
+  if (terminating.size > 0) {
+    const names = [...terminating];
+    const namespaces = await env.WORKLOADS.namespaces(names);
+    if (namespaces) console.log(`namespaces: asked=${names.length} terminating=${namespaces.terminating} deleted=${namespaces.deleted} remaining=${namespaces.remaining}`);
     const delayMs = namespaces ? namespaces.nextMs : refusedRetryMs;
-    if (delayMs > 0) await env.WL_Q.send({ kind: "change", key: namespacePrefix, type: "modified", rev: 0 } satisfies QueueMessage, { delaySeconds: Math.ceil(delayMs / 1000) });
+    if (delayMs > 0) {
+      await env.WL_Q.sendBatch(
+        names.map((name) => ({ body: { kind: "change", key: namespacePrefix + name, type: "modified", rev: 0 } satisfies QueueMessage, delaySeconds: Math.ceil(delayMs / 1000) })),
+      );
+    }
   }
   const result = await env.WORKLOADS.sync();
   if (!result) {
