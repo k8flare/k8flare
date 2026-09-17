@@ -1447,3 +1447,16 @@ been re-measured over a full quiet hour.
 - Found and fixed a pre-existing gap: job creates did not generate the controller-uid selector and template labels, so no pods were ever created.
 - Production: a 3-second busybox job completed in 33s.
 - Required e2e on production: 21 Passed, 0 Failed.
+
+## CRD e2e flake: root cause and fix (2026-09-18)
+
+- Symptom: `CustomResourceDefinition resources` specs timed out on create, CR defaulting, and delete; a settled baseline failed 9 of 25 specs.
+- Root cause, from wrangler tail timelines analyzed with a Plan agent:
+  - Discovery and CR serving in customresources read a watch-fed CRD cache. When the Cluster DO dropped all sockets, the CRD watch redial waited about 34s, and the freshness gate served stale discovery after its 5s poll.
+  - The CRD finalizer and establishing controllers ran as resident goroutines; their fetches issued outside a live request never reached the DO (`bridge: fetch timed out kind=poke GET /kv` while DO /kv max was 443ms).
+  - The crds queue delivery lagged up to 61s, so queue-only establishment could not meet the 30s fixture wait.
+- Fix, step by step, each validated on a settled deployment:
+  1. The gate refills the CRD cache from the DO list on every request and calls the registered handlers synchronously (defaulting failures gone).
+  2. `packages/crdreconcile`: naming, establishing, schema and approval conditions over a per-run snapshot, and a finalizer that deletes CRs by kine prefix. customresources runs it inside the request with single-flight; the crds queue only triggers that path.
+- Result: CRD focus 10 runs, 50/50 specs, each run about 40s instead of 2 minutes. Required: 20/21, 21/21, 21/21. The one failure was the resident GC controller spec right after a Cluster DO reset that was not caused by a deploy.
+- Open: 36 `read/write on closed pipe` errors from the in-request condition controllers (retried, specs pass); DO resets without a deploy; step 4 (remove watch, hold and Resident from customresources) is next.
