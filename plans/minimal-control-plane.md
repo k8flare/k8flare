@@ -1474,3 +1474,12 @@ been re-measured over a full quiet hour.
 - 26 idle minutes after the e2e runs: 103 ms/min of CPU (Phase 1 after the adds-rule removal: 408 ms/min; before that: 1,134).
 - Per component over that window: APIGroups 1,302 ms in 1,075 invocations, Cluster DO 595 ms in 3,607, Workloads 250 ms in 4, CustomResources 231 ms in 235, front worker 180 ms in 2,860, NodeTunnel 124 ms in 31, Controllers 0 ms in 10.
 - The remaining idle traffic is the node's lease and status writes plus the tunnel reconnect loop.
+
+## The kubelet stall was a wedged watch dial (2026-09-18)
+
+- Symptom: pods bound but stuck Pending for hours; only `systemctl restart k8flare-agent` recovered them. Hit four times.
+- Real cause: the kubelet could not start containers because its **services** informer had never synced (`CreateContainerConfigError: services have not yet been read at least once, cannot construct envvars`). Its watch was open and silent.
+- Why silent: `Storage.Watch` dials the Cluster DO WebSocket before returning, and `DialWebSocket` waited with no timeout, so no response headers were ever written. Nothing bounded it: the apiserver timeout filter skips watches, the bridge used no header timeout for watches, client-go has no header timeout, and neither side wrote bytes so the connection stayed open.
+- Fix: bound the WebSocket dial at 10s, give watch requests a 20s header timeout, retry the first dial through the existing backoff helper, and log dial start/ok/timeout with the live socket count. Also stopped filtering the kubelet's watchlist klog lines out of tail.
+- Production after the fix: 863 dials with 1 timeout, zero `awaiting required bookmark` warnings, a fresh pod running in 12s, and required e2e 21/21 twice in a row.
+- Note: the wedged watches from before the fix survived in the running kubelet; the node needed one final restart to pick up the fixed path.
