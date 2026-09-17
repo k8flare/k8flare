@@ -32,7 +32,6 @@ func main() {
 		mu           sync.Mutex
 		runs         int
 		lastRunStart time.Time
-		lastBeat     time.Time
 		sched        *scheduler.Scheduler
 		pacer        bridge.Pacer
 	)
@@ -44,10 +43,10 @@ func main() {
 			return
 		}
 		mu.Lock()
-		if age := time.Since(lastRunStart); runs > 0 && age < handoverAfter && time.Since(lastBeat) < deadRunAfter {
+		if age := time.Since(lastRunStart); runs > 0 && age < handoverAfter && bridge.SinceTick() < deadRunAfter {
 			mu.Unlock()
 			retry := handoverAfter - age
-			if dead := deadRunAfter - time.Since(lastBeat); dead < retry {
+			if dead := deadRunAfter - bridge.SinceTick(); dead < retry {
 				retry = dead
 			}
 			w.Header().Set("X-Retry-After-Ms", strconv.FormatInt((retry+time.Second).Milliseconds(), 10))
@@ -56,7 +55,7 @@ func main() {
 		}
 		runs++
 		lastRunStart = time.Now()
-		lastBeat = lastRunStart
+		bridge.MarkTick()
 		mu.Unlock()
 		defer func() {
 			mu.Lock()
@@ -82,12 +81,7 @@ func main() {
 		if hold.Reset {
 			pacer.Reset()
 		}
-		bridge.Hold(bridge.RunContext(r.Context()), hold, func() bool {
-			mu.Lock()
-			lastBeat = time.Now()
-			mu.Unlock()
-			return sched.Idle()
-		})
+		bridge.Hold(bridge.RunContext(r.Context()), hold, sched.Idle)
 		if bridge.Superseded(r.Context()) {
 			bridge.WriteNext(w, -time.Millisecond)
 			return

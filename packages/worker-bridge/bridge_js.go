@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall/js"
 	"time"
 )
@@ -98,6 +99,10 @@ func Getenv(name string) string {
 func Serve(handler http.Handler) {
 	rt := js.Global().Get("context")
 	binding := rt.Get("binding")
+	binding.Set("tick", js.FuncOf(func(js.Value, []js.Value) any {
+		lastTick.Store(time.Now().UnixNano())
+		return nil
+	}))
 	binding.Set("handleRequest", js.FuncOf(func(_ js.Value, args []js.Value) any {
 		reqObj := args[0]
 		env := args[1]
@@ -325,6 +330,18 @@ func headerToPairs(h http.Header) js.Value {
 // the named Fetcher on the current request's env (a service or DO binding).
 // Plain HTTP needs no transport of its own: net/http's default transport is
 // fetch-based on GOOS=js and streams response bodies.
+var lastTick atomic.Int64
+
+func MarkTick() { lastTick.Store(time.Now().UnixNano()) }
+
+func SinceTick() time.Duration {
+	last := lastTick.Load()
+	if last == 0 {
+		return time.Duration(1<<63 - 1)
+	}
+	return time.Since(time.Unix(0, last))
+}
+
 type BindingTransport struct {
 	Name        string
 	AbortOnWake bool
