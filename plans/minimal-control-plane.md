@@ -1460,3 +1460,11 @@ been re-measured over a full quiet hour.
   2. `packages/crdreconcile`: naming, establishing, schema and approval conditions over a per-run snapshot, and a finalizer that deletes CRs by kine prefix. customresources runs it inside the request with single-flight; the crds queue only triggers that path.
 - Result: CRD focus 10 runs, 50/50 specs, each run about 40s instead of 2 minutes. Required: 20/21, 21/21, 21/21. The one failure was the resident GC controller spec right after a Cluster DO reset that was not caused by a deploy.
 - Open: 36 `read/write on closed pipe` errors from the in-request condition controllers (retried, specs pass); DO resets without a deploy; step 4 (remove watch, hold and Resident from customresources) is next.
+
+## Phase 3 step 4: customresources without a watch or hold (2026-09-18)
+
+- Removed the CRD informer watch start, the rolling `/hold` and `kine.Resident` from customresources; the CRD cache is refilled from the store on every request and marked synced after the first refill.
+- CRD focus e2e: 10 runs, 50/50 specs. Zero `drain timeout kind=poke` lines in the capture.
+- The first required runs failed three SchedulerPredicates specs: pods were bound but stayed Pending with no kubelet status. The node's kubelet had gone silent at 02:03 (last log lines are container cleanups, no error). Restarting `k8flare-agent` fixed it; a fresh pod ran in 12s. Cause of the kubelet stall is unknown.
+- After the node restart: required 20/21, 21/21, 21/21. The one failure was a garbage collector orphan spec, still served by the resident controllers.
+- Open issues: 150 `read/write on closed pipe` errors from the in-request CRD condition controllers (retried, specs pass); Cluster DO resets with no deploy; the node tunnel reconnecting about every 63s; the kubelet stall.
