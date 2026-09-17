@@ -64,7 +64,6 @@ const (
 	garbageCollectorSyncPeriod  = 30 * time.Second
 	retryQuiet                  = 20 * time.Second
 	retryPendingFor             = 5 * time.Minute
-	addQuiet                    = 10 * time.Second
 )
 
 type Controllers struct {
@@ -216,7 +215,7 @@ func (c *Controllers) Pending() string {
 }
 
 func (c *Controllers) Idle() bool {
-	return c.started.Load() && queues.summary() == "" && !queues.retries.recent(retryQuiet) && !queues.adds.recent(addQuiet)
+	return c.started.Load() && queues.summary() == "" && !queues.retries.recent(retryQuiet)
 }
 
 type queueDepths struct {
@@ -224,7 +223,6 @@ type queueDepths struct {
 	depth      map[string]*gauge
 	unfinished map[string]*gauge
 	retries    retryClock
-	adds       retryClock
 }
 
 type retryClock struct{ last atomic.Int64 }
@@ -287,7 +285,7 @@ func (q *queueDepths) NewUnfinishedWorkSecondsMetric(name string) workqueue.Sett
 	return q.track(&q.unfinished, name)
 }
 
-func (q *queueDepths) NewAddsMetric(string) workqueue.CounterMetric           { return &q.adds }
+func (q *queueDepths) NewAddsMetric(string) workqueue.CounterMetric           { return noop{} }
 func (q *queueDepths) NewLatencyMetric(string) workqueue.HistogramMetric      { return noop{} }
 func (q *queueDepths) NewWorkDurationMetric(string) workqueue.HistogramMetric { return noop{} }
 func (q *queueDepths) NewLongestRunningProcessorSecondsMetric(string) workqueue.SettableGaugeMetric {
