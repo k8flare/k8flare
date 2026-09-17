@@ -8,7 +8,6 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
-	eventsv1 "k8s.io/api/events/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/informers"
@@ -239,23 +238,27 @@ func (r *syncRecorder) Eventf(regarding runtime.Object, related runtime.Object, 
 	if ns == "" {
 		ns = metav1.NamespaceDefault
 	}
-	event := &eventsv1.Event{
+	stamp := metav1.Time{Time: now}
+	event := &v1.Event{
 		ObjectMeta:          metav1.ObjectMeta{Name: fmt.Sprintf("%v.%x", ref.Name, now.UnixNano()), Namespace: ns},
-		EventTime:           metav1.MicroTime{Time: now},
+		InvolvedObject:      *ref,
+		Reason:              reason,
+		Message:             fmt.Sprintf(note, args...),
+		Source:              v1.EventSource{Component: reportingActor},
+		FirstTimestamp:      stamp,
+		LastTimestamp:       stamp,
+		Count:               1,
+		Type:                eventtype,
+		Action:              action,
 		ReportingController: reportingActor,
 		ReportingInstance:   r.instance,
-		Action:              action,
-		Reason:              reason,
-		Regarding:           *ref,
-		Note:                fmt.Sprintf(note, args...),
-		Type:                eventtype,
 	}
 	if related != nil {
 		if rel, err := reference.GetReference(scheme.Scheme, related); err == nil {
 			event.Related = rel
 		}
 	}
-	if _, err := r.client.EventsV1().Events(ns).Create(context.Background(), event, metav1.CreateOptions{}); err != nil {
+	if _, err := r.client.CoreV1().Events(ns).Create(context.Background(), event, metav1.CreateOptions{}); err != nil {
 		println("scheduler: event create failed:", err.Error())
 	}
 }
