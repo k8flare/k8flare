@@ -19,8 +19,9 @@ import (
 )
 
 type CRDResult struct {
-	CRDs    int  `json:"crds"`
-	Drained bool `json:"drained"`
+	CRDs          int  `json:"crds"`
+	Unestablished int  `json:"unestablished"`
+	Drained       bool `json:"drained"`
 }
 
 func SyncCRDs(ctx context.Context, client clientset.Interface) (*CRDResult, error) {
@@ -43,9 +44,14 @@ func SyncCRDs(ctx context.Context, client clientset.Interface) (*CRDResult, erro
 	apiApproval := apiapproval.NewKubernetesAPIApprovalPolicyConformantConditionController(crds, client.ApiextensionsV1())
 	snap.fill(objs)
 	snap.replay(objs)
+	unestablished := 0
 	for _, o := range objs {
 		crd := o.(*apiextensionsv1.CustomResourceDefinition)
-		if apihelpers.IsCRDConditionTrue(crd, apiextensionsv1.NamesAccepted) && !apihelpers.IsCRDConditionTrue(crd, apiextensionsv1.Established) {
+		if apihelpers.IsCRDConditionTrue(crd, apiextensionsv1.Established) || crd.DeletionTimestamp != nil {
+			continue
+		}
+		unestablished++
+		if apihelpers.IsCRDConditionTrue(crd, apiextensionsv1.NamesAccepted) {
 			establishing.QueueCRD(crd.Name, 0)
 		}
 	}
@@ -59,7 +65,7 @@ func SyncCRDs(ctx context.Context, client clientset.Interface) (*CRDResult, erro
 	for _, run := range runs {
 		go func() { run(ctx); done <- struct{}{} }()
 	}
-	result := &CRDResult{CRDs: len(objs), Drained: drain(crdQueue)}
+	result := &CRDResult{CRDs: len(objs), Unestablished: unestablished, Drained: drain(crdQueue)}
 	cancel()
 	for range runs {
 		<-done

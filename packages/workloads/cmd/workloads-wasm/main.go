@@ -41,7 +41,13 @@ func main() {
 			rootCA = ca
 		}
 		if r.URL.Path == "/crds" {
-			crds, err := workloads.SyncCRDs(r.Context(), crdClient)
+			var crds *workloads.CRDResult
+			for pass := 0; pass < crdPasses; pass++ {
+				crds, err = workloads.SyncCRDs(r.Context(), crdClient)
+				if err != nil || crds.Unestablished == 0 {
+					break
+				}
+			}
 			if err != nil {
 				println("workloads: crd sync failed:", err.Error())
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -61,3 +67,5 @@ func main() {
 		json.NewEncoder(w).Encode(result)
 	}))
 }
+
+const crdPasses = 3
