@@ -235,20 +235,32 @@ type freshCRDs struct {
 
 func (f freshCRDs) gate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isDiscoveryPath(r.URL.Path) {
-			if kvs, _, _, err := f.client.List(r.Context(), crdStoragePrefix, "", 0); err == nil {
-				n := f.informer.refill(kvs)
-				if n > 0 {
-					settleDiscovery(r.Context())
-				}
-				refillHeader(w, n)
+		w.Header().Set("X-CRD-Instance", instanceID)
+		kvs, _, _, err := f.client.List(r.Context(), crdStoragePrefix, "", 0)
+		if err == nil {
+			n := f.informer.refill(kvs)
+			if n > 0 {
+				settleDiscovery(r.Context())
+			}
+			refillHeader(w, n)
+		}
+		if name := crdNameForPath(r.URL.Path); name != "" {
+			if obj, exists, _ := f.informer.GetIndexer().GetByKey(name); exists {
+				w.Header().Set("X-CRD-RV", obj.(*apiextensionsv1.CustomResourceDefinition).ResourceVersion)
 			}
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
-func isDiscoveryPath(path string) bool {
+func crdNameForPath(path string) string {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
-	return len(parts) <= 3 && parts[0] == "apis"
+	if len(parts) < 4 || parts[0] != "apis" {
+		return ""
+	}
+	plural := parts[3]
+	if plural == "namespaces" && len(parts) >= 6 {
+		plural = parts[5]
+	}
+	return plural + "." + parts[1]
 }

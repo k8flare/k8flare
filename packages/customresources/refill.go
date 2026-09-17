@@ -178,6 +178,8 @@ func (a *discoveryActivity) NewLongestRunningProcessorSecondsMetric(string) work
 }
 func (a *discoveryActivity) NewRetriesMetric(string) workqueue.CounterMetric { return noopMetric{} }
 
+var instanceID = strconv.FormatInt(time.Now().UnixNano()%1_000_000_007, 36)
+
 func refillHeader(w http.ResponseWriter, n int) {
 	w.Header().Set("X-CRD-Refill", strconv.Itoa(n))
 }

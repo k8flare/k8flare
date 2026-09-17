@@ -21,6 +21,12 @@ export class CustomResources extends WorkerEntrypoint<Env> {
           }),
       );
     }
-    return worker.fetch(request);
+    const method = request.method;
+    const path = new URL(request.url).pathname;
+    const resp = await worker.fetch(request);
+    console.log(
+      `crd-diag inst=${resp.headers.get("X-CRD-Instance")} refill=${resp.headers.get("X-CRD-Refill")} rv=${resp.headers.get("X-CRD-RV")} status=${resp.status} ${method} ${path}`,
+    );
+    return resp;
   }
 }
