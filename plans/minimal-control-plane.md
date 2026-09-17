@@ -1372,3 +1372,36 @@ difference is 42% less CPU and no memory pressure.
   three cascade from the node going briefly unschedulable during it.
 - **Watch churn is still 236/min** against roughly 6/min expected from
   the reflector's own 5-10 minute timeout.
+
+### Production e2e, 2026-09-17: required set 21/21
+
+The loop of production-only runs (garbage-collector focus first, then the
+full required set against `k8flare.kooffice.workers.dev`) ended with
+`SUCCESS! -- 21 Passed | 0 Failed`. What each remaining failure turned out
+to be, in the order fixed:
+
+| symptom in the e2e | cause | fix |
+| --- | --- | --- |
+| rc deleted with empty options took its pods | core/v1 ReplicationController and batch/v1 Job default to OrphanDependents upstream | `registry.OrphanByDefault` on both stores |
+| owner waited minutes after an orphan or foreground delete | a delete deferred by finalizers returns before `AfterDelete`, so nothing woke the controllers | the store wrapper pokes on a deferred delete |
+| GC never monitored a new CRD | discovery sync every 10 minutes, and customresources writes never woke the controllers | sync every 30s; customresources pokes after writes |
+| retries dropped out of the pending signal | the workqueue retries and adds metrics were wired to no-ops | count them; stay busy 20s after a retry and 10s after an add |
+| creates lost and watches cut at the 300s run cap | drain ran after the response finished, so the runtime had already cancelled the subrequests; one run per isolate | drain before finish; successor run booked at 240s, accepted from 200s, older run superseded |
+| GC workers pinned for minutes | a runtime-cancelled fetch never settles | 30s response-header timeout and context cancellation on unary fetches |
+| a refused run was never retried | it booked nothing, or booked the ~3 minute handover time | retry at the sooner of handover and the holding run's death |
+| a dead run blocked new runs | its liveness beat was refreshed by the refused runs that woke Go | liveness from a tick that only the run's own request sends |
+| CRD discovery stale for minutes | the CRD watch closed outside a resident window and the reflector never relisted | Expired on that close; discovery waits up to 5s for the CRD cache to match storage |
+| run fetches and store GETs hung while the run was alive | Go runs in whichever JS frame resumed it, so its fetches and timers belonged to short requests that had already ended | every request calls `binding.tick` once a second until it answers; `/poke` and `/hold` keep ticking for their whole stream |
+| a new namespace's ServiceAccount never appeared | a reopened run closed as idle after 8s, before its informers had relisted | every run holds at least 30s |
+
+One self-inflicted outage on the way: a regex written inside the loader's
+BOOTSTRAP template literal turned `\/` into `//` and every dynamic worker
+failed to parse for about 11 minutes (10:40-10:51 JST). Bootstrap changes
+are now parsed locally before deploy.
+
+Cost after these changes, from the same run's tail: the e2e minutes ran
+1-12 CPU-s/min; after the last e2e request the next 15 minutes averaged
+803 CPU-ms/min (34.7M/mo) with a 2 CPU-s spike every four minutes as the
+controllers' pending retries decayed, settling to 50-85 ms/min by the end
+of the window. The steady idle figure from before (217 ms/min) has not
+been re-measured over a full quiet hour.
