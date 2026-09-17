@@ -1468,3 +1468,9 @@ been re-measured over a full quiet hour.
 - The first required runs failed three SchedulerPredicates specs: pods were bound but stayed Pending with no kubelet status. The node's kubelet had gone silent at 02:03 (last log lines are container cleanups, no error). Restarting `k8flare-agent` fixed it; a fresh pod ran in 12s. Cause of the kubelet stall is unknown.
 - After the node restart: required 20/21, 21/21, 21/21. The one failure was a garbage collector orphan spec, still served by the resident controllers.
 - Open issues: 150 `read/write on closed pipe` errors from the in-request CRD condition controllers (retried, specs pass); Cluster DO resets with no deploy; the node tunnel reconnecting about every 63s; the kubelet stall.
+
+## Phase 3 idle cost (2026-09-18)
+
+- 26 idle minutes after the e2e runs: 103 ms/min of CPU (Phase 1 after the adds-rule removal: 408 ms/min; before that: 1,134).
+- Per component over that window: APIGroups 1,302 ms in 1,075 invocations, Cluster DO 595 ms in 3,607, Workloads 250 ms in 4, CustomResources 231 ms in 235, front worker 180 ms in 2,860, NodeTunnel 124 ms in 31, Controllers 0 ms in 10.
+- The remaining idle traffic is the node's lease and status writes plus the tunnel reconnect loop.
