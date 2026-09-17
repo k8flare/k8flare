@@ -18,6 +18,7 @@ const (
 	pokeWindow    = 20 * time.Second
 	handoverAfter = 200 * time.Second
 	deadRunAfter  = 10 * time.Second
+	minRunHold    = 30 * time.Second
 )
 
 func main() {
@@ -80,6 +81,9 @@ func main() {
 		}
 		if hold.Reset {
 			pacer.Reset()
+		}
+		if hold.Min < minRunHold {
+			hold.Min = minRunHold
 		}
 		bridge.Hold(bridge.RunContext(r.Context()), hold, sched.Idle)
 		if bridge.Superseded(r.Context()) {
