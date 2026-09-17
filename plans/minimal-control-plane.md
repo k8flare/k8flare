@@ -1498,3 +1498,11 @@ been re-measured over a full quiet hour.
 - Production: stopping the agent marked the node Unknown with both taints in 72s and the test pod was deleted; starting it again cleared the taints immediately and a pod ran in 6s.
 - Required e2e: 21/21.
 - Operational note: the node agent runs as a transient systemd unit, so stopping it removes the unit. The start command has to be recovered from the journal; it should be a persistent unit file.
+
+## Phase 4 step 4: namespace deletion from the queue (2026-09-18)
+
+- The resident namespace controller is gone. A namespace change routes to the workloads queue, and the consumer runs upstream's NamespacedResourcesDeleter inside that request for the namespaces named in the batch only, reusing one deleter per Go instance. Remaining content schedules a delayed re-check from the deleter's own estimate.
+- Production: a namespace holding a pod was deleted in 32s; the DELETE call itself returned in 2s.
+- Required e2e: all 21 specs passed.
+- Advisory `Namespaces [Serial]` still fails: those specs create 100 namespaces at once and the cluster cannot keep up, and the pod-log specs fail through the tunnel. Both are pre-existing limits, not the new path.
+- Only the garbage collector is left in the resident controllers.
