@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync/atomic"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -57,7 +58,8 @@ func Schedule(ctx context.Context, client kubernetes.Interface) (*Result, error)
 	}
 	config.Profiles[0].Plugins.MultiPoint.Enabled = enabled
 	factory := scheduler.NewInformerFactory(client, 0)
-	sched, err := scheduler.New(ctx, client, factory, nil, syncRecorderFactory(client),
+	var scheduled atomic.Int64
+	sched, err := scheduler.New(ctx, client, factory, nil, syncRecorderFactory(client, &scheduled),
 		scheduler.WithComponentConfigVersion(config.TypeMeta.APIVersion),
 		scheduler.WithProfiles(config.Profiles...),
 		scheduler.WithPercentageOfNodesToScore(config.PercentageOfNodesToScore),
@@ -114,7 +116,11 @@ func Schedule(ctx context.Context, client kubernetes.Interface) (*Result, error)
 		sched.ScheduleOne(ctx)
 	}
 	deadline := time.Now().Add(inFlightWait)
-	for len(sched.SchedulingQueue.InFlightPods()) > 0 && time.Now().Before(deadline) {
+	for time.Now().Before(deadline) {
+		pending, _ := sched.SchedulingQueue.PendingPods()
+		if len(sched.SchedulingQueue.InFlightPods()) == 0 && int(scheduled.Load())+len(pending) >= len(queued) {
+			break
+		}
 		time.Sleep(inFlightPoll)
 	}
 
@@ -131,11 +137,7 @@ func Schedule(ctx context.Context, client kubernetes.Interface) (*Result, error)
 			result.Unschedulable = append(result.Unschedulable, PodRef{Namespace: p.Namespace, Name: p.Name, UID: string(p.UID)})
 		}
 	}
-	for _, p := range queued {
-		if !waiting[string(p.UID)] {
-			result.Bound++
-		}
-	}
+	result.Bound = int(scheduled.Load())
 	return result, nil
 }
 
@@ -210,20 +212,24 @@ func fillSupporting(ctx context.Context, client kubernetes.Interface, factory in
 }
 
 type syncRecorder struct {
-	client   kubernetes.Interface
-	instance string
+	client    kubernetes.Interface
+	instance  string
+	scheduled *atomic.Int64
 }
 
-func syncRecorderFactory(client kubernetes.Interface) func(string) events.EventRecorderLogger {
+func syncRecorderFactory(client kubernetes.Interface, scheduled *atomic.Int64) func(string) events.EventRecorderLogger {
 	host, _ := os.Hostname()
 	return func(string) events.EventRecorderLogger {
-		return &syncRecorder{client: client, instance: reportingActor + "-" + host}
+		return &syncRecorder{client: client, instance: reportingActor + "-" + host, scheduled: scheduled}
 	}
 }
 
 func (r *syncRecorder) WithLogger(klog.Logger) events.EventRecorderLogger { return r }
 
 func (r *syncRecorder) Eventf(regarding runtime.Object, related runtime.Object, eventtype, reason, action, note string, args ...interface{}) {
+	if reason == "Scheduled" {
+		r.scheduled.Add(1)
+	}
 	ref, err := reference.GetReference(scheme.Scheme, regarding)
 	if err != nil {
 		return
