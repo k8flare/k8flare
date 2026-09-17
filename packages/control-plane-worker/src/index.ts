@@ -10,6 +10,7 @@ export { OpenAPI } from "./openapi.ts";
 export { CustomResources } from "./customresources.ts";
 export { APIGroups } from "./apigroups.ts";
 export { Scheduler } from "./scheduler.ts";
+export { Workloads } from "./workloads.ts";
 export { Controllers } from "./controllers.ts";
 export { NodeTunnels } from "./nodetunnel.ts";
 

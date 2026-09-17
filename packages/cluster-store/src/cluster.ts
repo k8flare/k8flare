@@ -13,8 +13,9 @@ const LEASE_CHECK_EVERY_MS = 50_000;
 const OUTBOX_BATCH = 100;
 const MAX_DELAY_S = 86_400;
 
-type Target = "scheduler" | "controllers";
-const targets: Target[] = ["scheduler", "controllers"];
+type Target = "scheduler" | "controllers" | "workloads";
+const targets: Target[] = ["scheduler", "controllers", "workloads"];
+const WORKLOAD_PREFIXES = ["/registry/pods/", "/registry/replicasets/", "/registry/deployments/"];
 
 export type QueueMessage =
   | { kind: "change"; key: string; type: string; rev: number }
@@ -252,7 +253,9 @@ export class Cluster extends DurableObject<Env> {
   }
 
   private queue(target: Target): Queue<QueueMessage> {
-    return target === "scheduler" ? this.env.SCHED_Q : this.env.CTRL_Q;
+    if (target === "scheduler") return this.env.SCHED_Q;
+    if (target === "workloads") return this.env.WL_Q;
+    return this.env.CTRL_Q;
   }
 
   // record turns a committed write into queue messages: the scheduler hears
@@ -267,6 +270,7 @@ export class Cluster extends DurableObject<Env> {
       return;
     }
     const routes: Target[] = ["controllers"];
+    if (WORKLOAD_PREFIXES.some((p) => name.startsWith(p))) routes.push("workloads");
     if (name.startsWith("/registry/pods/")) {
       if (type === "deleted" || !podBound(value)) routes.push("scheduler");
     } else if (name.startsWith("/registry/minions/") || name.startsWith("/registry/nodes/")) {

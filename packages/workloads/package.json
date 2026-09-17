@@ -1,0 +1,7 @@
+{
+  "name": "@k8flare/workloads",
+  "private": true,
+  "type": "module",
+  "description": "The ReplicaSet and Deployment controllers as a Loader dynamic worker: one reconcile pass over a fresh snapshot per queue batch.",
+  "scripts": { "build": "cd ../.. && make wasm" }
+}

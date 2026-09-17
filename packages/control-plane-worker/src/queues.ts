@@ -9,11 +9,12 @@ const unschedulableMaxDelayS = 60;
 const leasePrefix = "/registry/leases/kube-node-lease/";
 const crdPrefix = "/registry/apiextensions.k8s.io/customresourcedefinitions/";
 
-type Target = "scheduler" | "controllers";
+type Target = "scheduler" | "controllers" | "workloads";
 
 function targetOf(queueName: string): Target | null {
   if (queueName.endsWith("-scheduler")) return "scheduler";
   if (queueName.endsWith("-controllers")) return "controllers";
+  if (queueName.endsWith("-workloads")) return "workloads";
   return null;
 }
 
@@ -62,6 +63,17 @@ async function consumeScheduler(batch: MessageBatch<QueueMessage>, env: Env): Pr
   batch.ackAll();
 }
 
+async function consumeWorkloads(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
+  const result = await env.WORKLOADS.sync();
+  if (!result) {
+    await env.WL_Q.send({ kind: "retry" } satisfies QueueMessage, { delaySeconds: refusedRetryMs / 1000 });
+  } else {
+    console.log(`workloads: pods=${result.pods} replicaSets=${result.replicaSets} deployments=${result.deployments} drained=${result.drained}`);
+    if (!result.drained) await env.WL_Q.send({ kind: "retry" } satisfies QueueMessage, { delaySeconds: refusedRetryMs / 1000 });
+  }
+  batch.ackAll();
+}
+
 export async function consume(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
   const target = targetOf(batch.queue);
   if (!target) {
@@ -69,6 +81,7 @@ export async function consume(batch: MessageBatch<QueueMessage>, env: Env): Prom
     return;
   }
   if (target === "scheduler") return consumeScheduler(batch, env);
+  if (target === "workloads") return consumeWorkloads(batch, env);
   let needRun = false;
   let minMs = 0;
   let reset = false;
