@@ -7,16 +7,7 @@ export interface SyncResult {
   nextMs: number;
 }
 
-export interface CRDSyncResult {
-  crds: number;
-  drained: boolean;
-}
-
 export class Workloads extends WorkerEntrypoint<Env> {
-  async syncCRDs(): Promise<CRDSyncResult | null> {
-    return this.call<CRDSyncResult>("/crds");
-  }
-
   async sync(): Promise<SyncResult | null> {
     return this.call<SyncResult>("/sync");
   }

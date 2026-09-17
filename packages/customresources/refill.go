@@ -62,7 +62,7 @@ func (r *refillableInformer) AddEventHandlerWithOptions(h cache.ResourceEventHan
 	return r.SharedIndexInformer.AddEventHandlerWithOptions(h, opts)
 }
 
-func (r *refillableInformer) refill(kvs []kine.KV) int {
+func decodeAll(kvs []kine.KV) map[string]*apiextensionsv1.CustomResourceDefinition {
 	want := make(map[string]*apiextensionsv1.CustomResourceDefinition, len(kvs))
 	for _, kv := range kvs {
 		data, err := base64.StdEncoding.DecodeString(kv.Value)
@@ -76,6 +76,11 @@ func (r *refillableInformer) refill(kvs []kine.KV) int {
 		crd.ResourceVersion = strconv.FormatInt(kv.ModRevision, 10)
 		want[strings.TrimPrefix(kv.Key, crdStoragePrefix)] = crd
 	}
+	return want
+}
+
+func (r *refillableInformer) refill(kvs []kine.KV) int {
+	want := decodeAll(kvs)
 	indexer := r.GetIndexer()
 	r.mu.Lock()
 	handlers := append([]cache.ResourceEventHandler(nil), r.handlers...)
@@ -115,19 +120,48 @@ func (r *refillableInformer) refill(kvs []kine.KV) int {
 	return changed
 }
 
-type discoveryActivity struct {
-	pending atomic.Int64
+type queueActivity struct {
+	mu      sync.Mutex
+	pending map[string]*atomic.Int64
 }
 
-var discoveryWork = &discoveryActivity{}
+var queueWork = &queueActivity{pending: map[string]*atomic.Int64{}}
 
 func init() {
-	workqueue.SetProvider(discoveryWork)
+	workqueue.SetProvider(queueWork)
+}
+
+func (a *queueActivity) of(name string) *atomic.Int64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	c, ok := a.pending[name]
+	if !ok {
+		c = &atomic.Int64{}
+		a.pending[name] = c
+	}
+	return c
+}
+
+func (a *queueActivity) drained(names ...string) bool {
+	for _, name := range names {
+		if a.of(name).Load() > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func (a *queueActivity) reset(names ...string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, name := range names {
+		delete(a.pending, name)
+	}
 }
 
 func settleDiscovery(ctx context.Context) {
 	deadline := time.Now().Add(discoverySettle)
-	for discoveryWork.pending.Load() > 0 && time.Now().Before(deadline) {
+	for !queueWork.drained(discoveryQueue) && time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
 			return
@@ -136,18 +170,14 @@ func settleDiscovery(ctx context.Context) {
 	}
 }
 
-type pendingGauge struct{ a *discoveryActivity }
+type pendingGauge struct{ c *atomic.Int64 }
 
-func (g pendingGauge) Inc() { g.a.pending.Add(1) }
+func (g pendingGauge) Inc() { g.c.Add(1) }
 func (g pendingGauge) Dec() {}
 
-type startCounter struct{ a *discoveryActivity }
+type doneCounter struct{ c *atomic.Int64 }
 
-func (c startCounter) Observe(float64) {}
-
-type doneCounter struct{ a *discoveryActivity }
-
-func (c doneCounter) Observe(float64) { c.a.pending.Add(-1) }
+func (d doneCounter) Observe(float64) { d.c.Add(-1) }
 
 type noopMetric struct{}
 
@@ -156,27 +186,21 @@ func (noopMetric) Dec()            {}
 func (noopMetric) Set(float64)     {}
 func (noopMetric) Observe(float64) {}
 
-func (a *discoveryActivity) NewDepthMetric(name string) workqueue.GaugeMetric {
-	if name == discoveryQueue {
-		return pendingGauge{a}
-	}
+func (a *queueActivity) NewDepthMetric(name string) workqueue.GaugeMetric {
+	return pendingGauge{a.of(name)}
+}
+func (a *queueActivity) NewAddsMetric(string) workqueue.CounterMetric      { return noopMetric{} }
+func (a *queueActivity) NewLatencyMetric(string) workqueue.HistogramMetric { return noopMetric{} }
+func (a *queueActivity) NewWorkDurationMetric(name string) workqueue.HistogramMetric {
+	return doneCounter{a.of(name)}
+}
+func (a *queueActivity) NewUnfinishedWorkSecondsMetric(string) workqueue.SettableGaugeMetric {
 	return noopMetric{}
 }
-func (a *discoveryActivity) NewAddsMetric(string) workqueue.CounterMetric      { return noopMetric{} }
-func (a *discoveryActivity) NewLatencyMetric(string) workqueue.HistogramMetric { return noopMetric{} }
-func (a *discoveryActivity) NewWorkDurationMetric(name string) workqueue.HistogramMetric {
-	if name == discoveryQueue {
-		return doneCounter{a}
-	}
+func (a *queueActivity) NewLongestRunningProcessorSecondsMetric(string) workqueue.SettableGaugeMetric {
 	return noopMetric{}
 }
-func (a *discoveryActivity) NewUnfinishedWorkSecondsMetric(string) workqueue.SettableGaugeMetric {
-	return noopMetric{}
-}
-func (a *discoveryActivity) NewLongestRunningProcessorSecondsMetric(string) workqueue.SettableGaugeMetric {
-	return noopMetric{}
-}
-func (a *discoveryActivity) NewRetriesMetric(string) workqueue.CounterMetric { return noopMetric{} }
+func (a *queueActivity) NewRetriesMetric(string) workqueue.CounterMetric { return noopMetric{} }
 
 var instanceID = strconv.FormatInt(time.Now().UnixNano()%1_000_000_007, 36)
 

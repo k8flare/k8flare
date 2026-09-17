@@ -4,12 +4,14 @@ import (
 	"context"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/emicklei/go-restful/v3"
 	auth "github.com/k8flare/k8flare/packages/apiserver-auth"
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
+	"github.com/k8flare/k8flare/packages/crdreconcile"
 	apiextensionshelpers "k8s.io/apiextensions-apiserver/pkg/apihelpers"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apiextensionsapiserver "k8s.io/apiextensions-apiserver/pkg/apiserver"
@@ -17,7 +19,6 @@ import (
 	informers "k8s.io/apiextensions-apiserver/pkg/client/informers/externalversions"
 	listers "k8s.io/apiextensions-apiserver/pkg/client/listers/apiextensions/v1"
 	"k8s.io/apiextensions-apiserver/pkg/controller/establish"
-	"k8s.io/apiextensions-apiserver/pkg/controller/finalizer"
 	"k8s.io/apiextensions-apiserver/pkg/controller/openapiv3"
 	"k8s.io/apiextensions-apiserver/pkg/registry/customresourcedefinition"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -111,10 +112,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	}
 	ctx := context.Background()
 	discoveryController := apiextensionsapiserver.NewDiscoveryController(crdInformer, versionDiscovery, groupDiscovery, nil)
-	finalizing := finalizer.NewCRDFinalizer(crdInformer, crdClient.ApiextensionsV1(), crdHandler)
 	factory.Start(ctx.Done())
-	go establishing.RunWithContext(ctx)
-	go finalizing.RunWithContext(5, ctx)
 	discoverySynced := make(chan struct{})
 	go discoveryController.Run(ctx.Done(), discoverySynced)
 
@@ -126,7 +124,11 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	openAPIV3Controller := openapiv3.NewController(crdInformer)
 	go openAPIV3Controller.Run(openAPIV3Service, ctx.Done())
 
-	fresh := freshCRDs{client: client, informer: refillable}
+	fresh := freshCRDs{client: client, informer: refillable, reconciler: &reconciler{deps: crdreconcile.Deps{
+		Client:  crdClient,
+		Kine:    client,
+		Drained: func() bool { return queueWork.drained(crdreconcile.QueueNames...) },
+	}}}
 	mux.Handle("/apis", fresh.gate(rootAPIs(crdInformer.Lister(), codecs)))
 	mux.Handle("/apis/", fresh.gate(afterSync(discoverySynced, crdHandler)))
 	mux.Handle("/openapi/v3", openAPIV3Mux)
@@ -229,20 +231,30 @@ func containsVersion(list []metav1.GroupVersionForDiscovery, gv metav1.GroupVers
 const crdStoragePrefix = "/registry/apiextensions.k8s.io/customresourcedefinitions/"
 
 type freshCRDs struct {
-	client   *kine.Client
-	informer *refillableInformer
+	client     *kine.Client
+	informer   *refillableInformer
+	reconciler *reconciler
 }
 
 func (f freshCRDs) gate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-CRD-Instance", instanceID)
 		kvs, _, _, err := f.client.List(r.Context(), crdStoragePrefix, "", 0)
+		if err == nil && f.reconciler.run(r.Context(), decodeCRDs(kvs)) {
+			kvs, _, _, err = f.client.List(r.Context(), crdStoragePrefix, "", 0)
+		}
 		if err == nil {
 			n := f.informer.refill(kvs)
 			if n > 0 {
 				settleDiscovery(r.Context())
 			}
 			refillHeader(w, n)
+			pending, finalize := pendingWork(decodeCRDs(kvs))
+			count := len(finalize)
+			if pending {
+				count++
+			}
+			w.Header().Set("X-CRD-Pending", strconv.Itoa(count))
 		}
 		if name := crdNameForPath(r.URL.Path); name != "" {
 			if obj, exists, _ := f.informer.GetIndexer().GetByKey(name); exists {

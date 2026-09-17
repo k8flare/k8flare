@@ -1,0 +1,6 @@
+{
+  "name": "@k8flare/crdreconcile",
+  "private": true,
+  "type": "module",
+  "description": "CRD naming, establishing, schema, approval and cleanup reconciliation run inside a request over a snapshot."
+}

@@ -77,9 +77,11 @@ async function consumeWorkloads(batch: MessageBatch<QueueMessage>, env: Env): Pr
 }
 
 async function consumeCRDs(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
-  const result = await env.WORKLOADS.syncCRDs();
-  if (result) console.log(`crds: crds=${result.crds} drained=${result.drained}`);
-  if (!result || !result.drained) await env.CRD_Q.send({ kind: "retry" } satisfies QueueMessage, { delaySeconds: refusedRetryMs / 1000 });
+  const resp = await env.CUSTOMRESOURCES.fetch("https://customresources.internal/apis");
+  await resp.text();
+  const pending = Number(resp.headers.get("X-CRD-Pending") ?? "1") || 0;
+  console.log(`crds: status=${resp.status} pending=${pending}`);
+  if (resp.status !== 200 || pending > 0) await env.CRD_Q.send({ kind: "retry" } satisfies QueueMessage, { delaySeconds: refusedRetryMs / 1000 });
   batch.ackAll();
 }
 

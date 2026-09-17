@@ -1,7 +1,6 @@
 package workloads
 
 import (
-	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -56,11 +55,7 @@ func (a *activity) reset(owned func(string) bool) {
 	}
 }
 
-func crdQueue(name string) bool {
-	return strings.Contains(strings.ToLower(name), "crd") || strings.Contains(name, "non_structural") || strings.Contains(name, "api_approval")
-}
-
-func workloadQueue(name string) bool { return !crdQueue(name) }
+func workloadQueue(string) bool { return true }
 
 type depthGauge struct{ c *counters }
 

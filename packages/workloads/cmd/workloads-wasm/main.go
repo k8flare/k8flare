@@ -8,7 +8,6 @@ import (
 
 	bridge "github.com/k8flare/k8flare/packages/worker-bridge"
 	"github.com/k8flare/k8flare/packages/workloads"
-	crdclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -25,10 +24,6 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	crdClient, err := crdclientset.NewForConfig(rest.AddUserAgent(cfg, "kube-apiserver-apiextensions"))
-	if err != nil {
-		panic(err)
-	}
 	var rootCA []byte
 	bridge.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if rootCA == nil {
@@ -40,23 +35,6 @@ func main() {
 			}
 			rootCA = ca
 		}
-		if r.URL.Path == "/crds" {
-			var crds *workloads.CRDResult
-			for pass := 0; pass < crdPasses; pass++ {
-				crds, err = workloads.SyncCRDs(r.Context(), crdClient)
-				if err != nil || crds.Unestablished == 0 {
-					break
-				}
-			}
-			if err != nil {
-				println("workloads: crd sync failed:", err.Error())
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(crds)
-			return
-		}
 		result, err := workloads.Sync(r.Context(), client, rootCA)
 		if err != nil {
 			println("workloads: sync failed:", err.Error())
@@ -67,5 +45,3 @@ func main() {
 		json.NewEncoder(w).Encode(result)
 	}))
 }
-
-const crdPasses = 3
