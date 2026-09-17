@@ -15,15 +15,15 @@ func node(name, cpu string) *v1.Node {
 	res := v1.ResourceList{v1.ResourceCPU: resource.MustParse(cpu), v1.ResourceMemory: resource.MustParse("1Gi"), v1.ResourcePods: resource.MustParse("110")}
 	return &v1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Labels: map[string]string{"kubernetes.io/hostname": name}},
-		Status: v1.NodeStatus{Capacity: res, Allocatable: res, Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}},
+		Status:     v1.NodeStatus{Capacity: res, Allocatable: res, Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}},
 	}
 }
 
 func pod(name, uid, cpu string) *v1.Pod {
 	return &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default", UID: types.UID("uid-" + uid)},
-		Spec: v1.PodSpec{SchedulerName: "default-scheduler", Containers: []v1.Container{{Name: "c", Image: "i", Resources: v1.ResourceRequirements{Requests: v1.ResourceList{v1.ResourceCPU: resource.MustParse(cpu)}}}}},
-		Status: v1.PodStatus{Phase: v1.PodPending},
+		Spec:       v1.PodSpec{SchedulerName: "default-scheduler", Containers: []v1.Container{{Name: "c", Image: "i", Resources: v1.ResourceRequirements{Requests: v1.ResourceList{v1.ResourceCPU: resource.MustParse(cpu)}}}}},
+		Status:     v1.PodStatus{Phase: v1.PodPending},
 	}
 }
 
