@@ -37,7 +37,6 @@ import (
 	"k8s.io/kubernetes/pkg/controller/nodeipam"
 	"k8s.io/kubernetes/pkg/controller/nodeipam/ipam"
 	"k8s.io/kubernetes/pkg/controller/nodelifecycle"
-	"k8s.io/kubernetes/pkg/controller/replication"
 	"k8s.io/kubernetes/pkg/controller/serviceaccount"
 	"k8s.io/kubernetes/pkg/controller/statefulset"
 	"k8s.io/kubernetes/pkg/controller/tainteviction"
@@ -86,8 +85,6 @@ func New(ctx context.Context, cfg *rest.Config) (*Controllers, error) {
 	factory := informers.NewSharedInformerFactory(client, minResyncPeriod)
 	core, apps, batch := factory.Core().V1(), factory.Apps().V1(), factory.Batch().V1()
 	c := &Controllers{factory: factory, informersStarted: make(chan struct{})}
-	rc := replication.NewReplicationManager(ctx, core.Pods(), core.ReplicationControllers(), client, replication.BurstReplicas)
-	c.add(func(ctx context.Context) { rc.Run(ctx, workers) })
 	ds, err := daemon.NewDaemonSetsController(ctx, apps.DaemonSets(), apps.ControllerRevisions(), core.Pods(), core.Nodes(), client, flowcontrol.NewBackOff(time.Second, 15*time.Minute))
 	if err != nil {
 		return nil, err

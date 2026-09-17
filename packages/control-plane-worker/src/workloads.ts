@@ -5,6 +5,7 @@ export interface SyncResult {
   pods: number;
   replicaSets: number;
   deployments: number;
+  replicationControllers: number;
   drained: boolean;
 }
 
