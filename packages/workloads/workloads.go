@@ -119,6 +119,7 @@ func Sync(ctx context.Context, client kubernetes.Interface, rootCA []byte) (*Res
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	work.reset(workloadQueue)
 	factory := informers.NewSharedInformerFactory(client, 0)
 	result := &Result{Objects: map[string]int{}}
 	type loaded struct {
@@ -189,7 +190,7 @@ func Sync(ctx context.Context, client kubernetes.Interface, rootCA []byte) (*Res
 		go func() { run(ctx); done <- struct{}{} }()
 	}
 
-	result.Drained = drain()
+	result.Drained = drain(workloadQueue)
 	cancel()
 	for range runs {
 		<-done
@@ -243,12 +244,12 @@ func anyUnfinished(objs []runtime.Object) bool {
 	return false
 }
 
-func drain() bool {
+func drain(owned func(string) bool) bool {
 	deadline := time.Now().Add(maxDrain)
 	quiet := 0
 	for time.Now().Before(deadline) {
 		time.Sleep(drainPoll)
-		if work.idle() {
+		if work.idle(owned) {
 			quiet++
 		} else {
 			quiet = 0

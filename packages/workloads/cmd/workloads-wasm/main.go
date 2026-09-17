@@ -40,10 +40,15 @@ func main() {
 			}
 			rootCA = ca
 		}
-		crds, err := workloads.SyncCRDs(r.Context(), crdClient)
-		if err != nil {
-			println("workloads: crd sync failed:", err.Error())
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		if r.URL.Path == "/crds" {
+			crds, err := workloads.SyncCRDs(r.Context(), crdClient)
+			if err != nil {
+				println("workloads: crd sync failed:", err.Error())
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(crds)
 			return
 		}
 		result, err := workloads.Sync(r.Context(), client, rootCA)
@@ -52,8 +57,6 @@ func main() {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		result.Objects["customresourcedefinitions"] = crds.CRDs
-		result.Drained = result.Drained && crds.Drained
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(result)
 	}))

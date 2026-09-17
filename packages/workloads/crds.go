@@ -32,6 +32,7 @@ func SyncCRDs(ctx context.Context, client clientset.Interface) (*CRDResult, erro
 	if err != nil {
 		return nil, err
 	}
+	work.reset(crdQueue)
 	factory := informers.NewSharedInformerFactory(client, 0)
 	snap := newSnapshotInformer(&apiextensionsv1.CustomResourceDefinition{})
 	factory.InformerFor(&apiextensionsv1.CustomResourceDefinition{}, func(clientset.Interface, time.Duration) cache.SharedIndexInformer { return snap })
@@ -58,7 +59,7 @@ func SyncCRDs(ctx context.Context, client clientset.Interface) (*CRDResult, erro
 	for _, run := range runs {
 		go func() { run(ctx); done <- struct{}{} }()
 	}
-	result := &CRDResult{CRDs: len(objs), Drained: drain()}
+	result := &CRDResult{CRDs: len(objs), Drained: drain(crdQueue)}
 	cancel()
 	for range runs {
 		<-done

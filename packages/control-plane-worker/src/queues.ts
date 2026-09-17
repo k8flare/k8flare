@@ -9,12 +9,13 @@ const unschedulableMaxDelayS = 60;
 const leasePrefix = "/registry/leases/kube-node-lease/";
 const crdPrefix = "/registry/apiextensions.k8s.io/customresourcedefinitions/";
 
-type Target = "scheduler" | "controllers" | "workloads";
+type Target = "scheduler" | "controllers" | "workloads" | "crds";
 
 function targetOf(queueName: string): Target | null {
   if (queueName.endsWith("-scheduler")) return "scheduler";
   if (queueName.endsWith("-controllers")) return "controllers";
   if (queueName.endsWith("-workloads")) return "workloads";
+  if (queueName.endsWith("-crds")) return "crds";
   return null;
 }
 
@@ -75,6 +76,13 @@ async function consumeWorkloads(batch: MessageBatch<QueueMessage>, env: Env): Pr
   batch.ackAll();
 }
 
+async function consumeCRDs(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
+  const result = await env.WORKLOADS.syncCRDs();
+  if (result) console.log(`crds: crds=${result.crds} drained=${result.drained}`);
+  if (!result || !result.drained) await env.CRD_Q.send({ kind: "retry" } satisfies QueueMessage, { delaySeconds: refusedRetryMs / 1000 });
+  batch.ackAll();
+}
+
 export async function consume(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
   const target = targetOf(batch.queue);
   if (!target) {
@@ -83,6 +91,7 @@ export async function consume(batch: MessageBatch<QueueMessage>, env: Env): Prom
   }
   if (target === "scheduler") return consumeScheduler(batch, env);
   if (target === "workloads") return consumeWorkloads(batch, env);
+  if (target === "crds") return consumeCRDs(batch, env);
   let needRun = false;
   let minMs = 0;
   let reset = false;

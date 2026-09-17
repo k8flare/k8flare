@@ -1,36 +1,79 @@
 package workloads
 
 import (
+	"strings"
+	"sync"
 	"sync/atomic"
 
 	"k8s.io/client-go/util/workqueue"
 )
 
-type activity struct {
+type counters struct {
 	depth    atomic.Int64
 	inFlight atomic.Int64
 }
 
-var work = &activity{}
+type activity struct {
+	mu     sync.Mutex
+	queues map[string]*counters
+}
+
+var work = &activity{queues: map[string]*counters{}}
 
 func init() {
 	workqueue.SetProvider(work)
 }
 
-func (a *activity) idle() bool { return a.depth.Load() == 0 && a.inFlight.Load() == 0 }
+func (a *activity) of(name string) *counters {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	c, ok := a.queues[name]
+	if !ok {
+		c = &counters{}
+		a.queues[name] = c
+	}
+	return c
+}
 
-type depthGauge struct{ a *activity }
+func (a *activity) idle(owned func(string) bool) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for name, c := range a.queues {
+		if owned(name) && (c.depth.Load() != 0 || c.inFlight.Load() != 0) {
+			return false
+		}
+	}
+	return true
+}
 
-func (g depthGauge) Inc() { g.a.depth.Add(1) }
-func (g depthGauge) Dec() { g.a.depth.Add(-1) }
+func (a *activity) reset(owned func(string) bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for name := range a.queues {
+		if owned(name) {
+			delete(a.queues, name)
+		}
+	}
+}
 
-type getCounter struct{ a *activity }
+func crdQueue(name string) bool {
+	return strings.Contains(strings.ToLower(name), "crd") || strings.Contains(name, "non_structural") || strings.Contains(name, "api_approval")
+}
 
-func (c getCounter) Observe(float64) { c.a.inFlight.Add(1) }
+func workloadQueue(name string) bool { return !crdQueue(name) }
 
-type doneCounter struct{ a *activity }
+type depthGauge struct{ c *counters }
 
-func (c doneCounter) Observe(float64) { c.a.inFlight.Add(-1) }
+func (g depthGauge) Inc() { g.c.depth.Add(1) }
+func (g depthGauge) Dec() { g.c.depth.Add(-1) }
+
+type getCounter struct{ c *counters }
+
+func (g getCounter) Observe(float64) { g.c.inFlight.Add(1) }
+
+type doneCounter struct{ c *counters }
+
+func (g doneCounter) Observe(float64) { g.c.inFlight.Add(-1) }
 
 type noop struct{}
 
@@ -38,10 +81,14 @@ func (noop) Inc()            {}
 func (noop) Set(float64)     {}
 func (noop) Observe(float64) {}
 
-func (a *activity) NewDepthMetric(string) workqueue.GaugeMetric            { return depthGauge{a} }
-func (a *activity) NewAddsMetric(string) workqueue.CounterMetric           { return noop{} }
-func (a *activity) NewLatencyMetric(string) workqueue.HistogramMetric      { return getCounter{a} }
-func (a *activity) NewWorkDurationMetric(string) workqueue.HistogramMetric { return doneCounter{a} }
+func (a *activity) NewDepthMetric(name string) workqueue.GaugeMetric { return depthGauge{a.of(name)} }
+func (a *activity) NewAddsMetric(string) workqueue.CounterMetric     { return noop{} }
+func (a *activity) NewLatencyMetric(name string) workqueue.HistogramMetric {
+	return getCounter{a.of(name)}
+}
+func (a *activity) NewWorkDurationMetric(name string) workqueue.HistogramMetric {
+	return doneCounter{a.of(name)}
+}
 func (a *activity) NewUnfinishedWorkSecondsMetric(string) workqueue.SettableGaugeMetric {
 	return noop{}
 }

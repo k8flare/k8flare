@@ -7,18 +7,31 @@ export interface SyncResult {
   nextMs: number;
 }
 
+export interface CRDSyncResult {
+  crds: number;
+  drained: boolean;
+}
+
 export class Workloads extends WorkerEntrypoint<Env> {
+  async syncCRDs(): Promise<CRDSyncResult | null> {
+    return this.call<CRDSyncResult>("/crds");
+  }
+
   async sync(): Promise<SyncResult | null> {
+    return this.call<SyncResult>("/sync");
+  }
+
+  private async call<T>(path: string): Promise<T | null> {
     const worker = await loadWasmWorker(this.env.LOADER, this.env.ASSETS, "workloads", {
       APISERVER: this.env.APISERVER,
       ADMIN_TOKEN: this.env.ADMIN_TOKEN,
     }, this.env.APISERVER);
-    const resp = await worker.fetch("https://workloads.internal/sync", { method: "POST" });
+    const resp = await worker.fetch(`https://workloads.internal${path}`, { method: "POST" });
     const text = await resp.text();
     if (resp.status !== 200) {
-      console.log(`workloads: sync status=${resp.status} ${text.slice(0, 200)}`);
+      console.log(`workloads: ${path} status=${resp.status} ${text.slice(0, 200)}`);
       return null;
     }
-    return JSON.parse(text) as SyncResult;
+    return JSON.parse(text) as T;
   }
 }

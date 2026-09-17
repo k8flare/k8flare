@@ -13,9 +13,10 @@ const LEASE_CHECK_EVERY_MS = 50_000;
 const OUTBOX_BATCH = 100;
 const MAX_DELAY_S = 86_400;
 
-type Target = "scheduler" | "controllers" | "workloads";
-const targets: Target[] = ["scheduler", "controllers", "workloads"];
-const WORKLOAD_PREFIXES = ["/registry/pods/", "/registry/replicasets/", "/registry/deployments/", "/registry/replicationcontrollers/", "/registry/services/", "/registry/endpoints/", "/registry/endpointslices/", "/registry/jobs/", "/registry/statefulsets/", "/registry/daemonsets/", "/registry/controllerrevisions/", "/registry/persistentvolumeclaims/", "/registry/namespaces/", "/registry/serviceaccounts/", "/registry/configmaps/", "/registry/apiextensions.k8s.io/customresourcedefinitions/"];
+type Target = "scheduler" | "controllers" | "workloads" | "crds";
+const targets: Target[] = ["scheduler", "controllers", "workloads", "crds"];
+const CRD_PREFIX = "/registry/apiextensions.k8s.io/customresourcedefinitions/";
+const WORKLOAD_PREFIXES = ["/registry/pods/", "/registry/replicasets/", "/registry/deployments/", "/registry/replicationcontrollers/", "/registry/services/", "/registry/endpoints/", "/registry/endpointslices/", "/registry/jobs/", "/registry/statefulsets/", "/registry/daemonsets/", "/registry/controllerrevisions/", "/registry/persistentvolumeclaims/", "/registry/namespaces/", "/registry/serviceaccounts/", "/registry/configmaps/"];
 
 export type QueueMessage =
   | { kind: "change"; key: string; type: string; rev: number }
@@ -255,6 +256,7 @@ export class Cluster extends DurableObject<Env> {
   private queue(target: Target): Queue<QueueMessage> {
     if (target === "scheduler") return this.env.SCHED_Q;
     if (target === "workloads") return this.env.WL_Q;
+    if (target === "crds") return this.env.CRD_Q;
     return this.env.CTRL_Q;
   }
 
@@ -271,6 +273,7 @@ export class Cluster extends DurableObject<Env> {
     }
     const routes: Target[] = ["controllers"];
     if (WORKLOAD_PREFIXES.some((p) => name.startsWith(p))) routes.push("workloads");
+    if (name.startsWith(CRD_PREFIX)) routes.push("crds");
     if (name.startsWith("/registry/pods/")) {
       if (type === "deleted" || !podBound(value)) routes.push("scheduler");
     } else if (name.startsWith("/registry/minions/") || name.startsWith("/registry/nodes/")) {
