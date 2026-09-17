@@ -1,23 +1,23 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { loadWasmWorker } from "@k8flare/loader-kit";
 
-export interface RunResult {
-  status: number;
-  nextMs: number;
-  retryAfterMs: number;
+export interface ScheduleResult {
+  bound: number;
+  unschedulable: { ns: string; name: string; uid: string }[];
 }
 
 export class Scheduler extends WorkerEntrypoint<Env> {
-  async run(windowMs: number, minMs: number, reset: boolean): Promise<RunResult> {
+  async schedule(): Promise<ScheduleResult | null> {
     const worker = await loadWasmWorker(this.env.LOADER, this.env.ASSETS, "scheduler", {
       APISERVER: this.env.APISERVER,
       ADMIN_TOKEN: this.env.ADMIN_TOKEN,
     }, this.env.APISERVER);
-    const resp = await worker.fetch(`https://scheduler.internal/poke?window=${windowMs}&min=${minMs}&reset=${reset ? 1 : 0}`);
+    const resp = await worker.fetch("https://scheduler.internal/schedule", { method: "POST" });
     const text = await resp.text();
-    const retryAfterMs = Number(resp.headers.get("X-Retry-After-Ms") ?? "0") || 0;
-    if (resp.status !== 200) return { status: resp.status, nextMs: 0, retryAfterMs };
-    const { next } = JSON.parse(text) as { next: number };
-    return { status: 200, nextMs: next, retryAfterMs };
+    if (resp.status !== 200) {
+      console.log(`scheduler: schedule status=${resp.status} ${text.slice(0, 200)}`);
+      return null;
+    }
+    return JSON.parse(text) as ScheduleResult;
   }
 }

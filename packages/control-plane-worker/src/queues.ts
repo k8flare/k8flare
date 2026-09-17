@@ -1,10 +1,11 @@
 import type { QueueMessage } from "@k8flare/cluster-store";
-import type { RunResult } from "./scheduler.ts";
+import type { RunResult } from "./controllers.ts";
 
 const runWindowMs = 300_000;
 const leaseGraceMs = 60_000;
 const leaseHoldMs = 60_000;
 const refusedRetryMs = 5_000;
+const unschedulableMaxDelayS = 60;
 const leasePrefix = "/registry/leases/kube-node-lease/";
 const crdPrefix = "/registry/apiextensions.k8s.io/customresourcedefinitions/";
 
@@ -27,14 +28,38 @@ async function leaseExpired(env: Env, node: string): Promise<boolean> {
   return !Number.isFinite(renewed) || Date.now() - renewed >= leaseGraceMs;
 }
 
-async function followUp(env: Env, target: Target, result: RunResult): Promise<void> {
+async function followUp(env: Env, result: RunResult): Promise<void> {
   let delayMs = 0;
   if (result.status === 204) delayMs = result.retryAfterMs > 0 ? result.retryAfterMs : refusedRetryMs;
   else if (result.status === 200 && result.nextMs > 0) delayMs = result.nextMs;
   else if (result.status !== 200) delayMs = refusedRetryMs;
   if (delayMs <= 0) return;
-  const queue = target === "scheduler" ? env.SCHED_Q : env.CTRL_Q;
-  await queue.send({ kind: "retry" } satisfies QueueMessage, { delaySeconds: Math.ceil(delayMs / 1000) });
+  await env.CTRL_Q.send({ kind: "retry" } satisfies QueueMessage, { delaySeconds: Math.ceil(delayMs / 1000) });
+}
+
+async function consumeScheduler(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
+  let attempt = -1;
+  for (const msg of batch.messages) {
+    const body = msg.body;
+    if (body.kind === "change") attempt = Math.max(attempt, 0);
+    else if (body.kind === "retry") attempt = Math.max(attempt, (body.attempt ?? 0) + 1);
+  }
+  if (attempt < 0) {
+    batch.ackAll();
+    return;
+  }
+  if (batch.messages.some((m) => m.body.kind === "change")) attempt = 0;
+  const result = await env.SCHEDULER.schedule();
+  if (!result) {
+    await env.SCHED_Q.send({ kind: "retry", attempt: 0 } satisfies QueueMessage, { delaySeconds: refusedRetryMs / 1000 });
+  } else {
+    console.log(`scheduler: bound=${result.bound} unschedulable=${result.unschedulable.length} attempt=${attempt}`);
+    if (result.unschedulable.length > 0) {
+      const delaySeconds = Math.min(unschedulableMaxDelayS, 2 ** attempt);
+      await env.SCHED_Q.send({ kind: "retry", attempt } satisfies QueueMessage, { delaySeconds });
+    }
+  }
+  batch.ackAll();
 }
 
 export async function consume(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
@@ -43,6 +68,7 @@ export async function consume(batch: MessageBatch<QueueMessage>, env: Env): Prom
     batch.ackAll();
     return;
   }
+  if (target === "scheduler") return consumeScheduler(batch, env);
   let needRun = false;
   let minMs = 0;
   let reset = false;
@@ -70,8 +96,7 @@ export async function consume(batch: MessageBatch<QueueMessage>, env: Env): Prom
     batch.ackAll();
     return;
   }
-  const entrypoint = target === "scheduler" ? env.SCHEDULER : env.CONTROLLERS;
-  const result = (await entrypoint.run(runWindowMs, minMs, reset)) as RunResult;
-  await followUp(env, target, result);
+  const result = (await env.CONTROLLERS.run(runWindowMs, minMs, reset)) as RunResult;
+  await followUp(env, result);
   batch.ackAll();
 }

@@ -19,7 +19,7 @@ const targets: Target[] = ["scheduler", "controllers"];
 export type QueueMessage =
   | { kind: "change"; key: string; type: string; rev: number }
   | { kind: "lease-check"; node: string }
-  | { kind: "retry" };
+  | { kind: "retry"; attempt?: number };
 
 function closeQuietly(ws: WebSocket, reason: string): void {
   try {
