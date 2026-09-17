@@ -1,9 +1,9 @@
 package customresources
 
 import (
+	"bytes"
 	"io"
 	"net/http"
-	"sync"
 
 	"k8s.io/apiserver/pkg/authentication/user"
 )
@@ -16,19 +16,8 @@ func (l loopback) RoundTrip(req *http.Request) (*http.Response, error) {
 	req = req.Clone(req.Context())
 	req.Header.Set("X-Remote-User", user.APIServerUser)
 	req.Header.Set("X-Remote-Group", user.SystemPrivilegedGroup)
-	pr, pw := io.Pipe()
-	w := &pipeResponse{header: http.Header{}, body: pw, started: make(chan struct{}), closed: make(chan bool, 1)}
-	go func() {
-		l.handler.ServeHTTP(w, req)
-		w.start(http.StatusOK)
-		pw.Close()
-	}()
-	go func() {
-		<-req.Context().Done()
-		w.closed <- true
-		pr.CloseWithError(req.Context().Err())
-	}()
-	<-w.started
+	w := &bufferResponse{header: http.Header{}, status: http.StatusOK}
+	l.handler.ServeHTTP(w, req)
 	return &http.Response{
 		StatusCode:    w.status,
 		Status:        http.StatusText(w.status),
@@ -36,37 +25,31 @@ func (l loopback) RoundTrip(req *http.Request) (*http.Response, error) {
 		ProtoMajor:    1,
 		ProtoMinor:    1,
 		Header:        w.header,
-		Body:          pr,
-		ContentLength: -1,
+		Body:          io.NopCloser(bytes.NewReader(w.body.Bytes())),
+		ContentLength: int64(w.body.Len()),
 		Request:       req,
 	}, nil
 }
 
-type pipeResponse struct {
+type bufferResponse struct {
 	header  http.Header
-	body    *io.PipeWriter
+	body    bytes.Buffer
 	status  int
-	once    sync.Once
-	started chan struct{}
-	closed  chan bool
+	written bool
 }
 
-func (p *pipeResponse) Header() http.Header { return p.header }
+func (b *bufferResponse) Header() http.Header { return b.header }
 
-func (p *pipeResponse) start(code int) {
-	p.once.Do(func() {
-		p.status = code
-		close(p.started)
-	})
+func (b *bufferResponse) WriteHeader(code int) {
+	if !b.written {
+		b.status = code
+		b.written = true
+	}
 }
 
-func (p *pipeResponse) WriteHeader(code int) { p.start(code) }
-
-func (p *pipeResponse) Write(b []byte) (int, error) {
-	p.start(http.StatusOK)
-	return p.body.Write(b)
+func (b *bufferResponse) Write(p []byte) (int, error) {
+	b.WriteHeader(http.StatusOK)
+	return b.body.Write(p)
 }
 
-func (p *pipeResponse) Flush() { p.start(http.StatusOK) }
-
-func (p *pipeResponse) CloseNotify() <-chan bool { return p.closed }
+func (b *bufferResponse) Flush() { b.WriteHeader(http.StatusOK) }
