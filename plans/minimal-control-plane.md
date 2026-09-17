@@ -1412,3 +1412,11 @@ been re-measured over a full quiet hour.
 - Idle CPU per minute after the e2e run (first three minutes are the e2e tail-off): 8147, 7797, 1281, 255, 251, 2188, 294, 728, 125, 36, 42, 343, 410, 167, 134, 415, 663, 69.
 - Steady idle average excluding the tail-off: 408 ms/min (previous Phase 1 baseline: 1,134 ms/min).
 - Controllers runs now end at the 30s minimum hold with nothing pending instead of holding to the 5-minute cap.
+
+## Phase 2: stateless scheduler per queue batch (2026-09-17)
+
+- Each SCHED_Q batch builds a fresh kube-scheduler, loads nodes, pods, namespaces and services from the apiserver, runs ScheduleOne until the active queue is empty, waits for bindings, and exits.
+- Unschedulable pods are retried through a delayed queue message with backoff 1s, 2s, 4s up to 60s; change messages reset the backoff.
+- Fixes found on production: the batch context was cancelled before async bindings finished (bind failed with context canceled); scheduling events must be written through core v1 events for the SchedulerPredicates specs.
+- Bind latency for a fresh pod: 7s.
+- Required e2e on production: 21 Passed, 0 Failed.
