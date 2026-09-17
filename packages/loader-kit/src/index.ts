@@ -23,8 +23,9 @@ export default {
     const binding = await bindingPromise;
     const raw = await request.arrayBuffer();
     const path = new URL(request.url).pathname;
-    const drive = (path.endsWith("/poke") || path.endsWith("/hold")) && typeof binding.tick === "function";
-    const keepalive = drive ? setInterval(() => binding.tick(), 1000) : setInterval(() => {}, 5000);
+    const canTick = typeof binding.tick === "function";
+    const driveStream = (path.endsWith("/poke") || path.endsWith("/hold")) && canTick;
+    let keepalive = setInterval(() => (canTick ? binding.tick() : undefined), 1000);
     let out;
     try {
       out = await binding.handleRequest(
@@ -38,6 +39,10 @@ export default {
     if (!out.body || typeof out.body.getReader !== "function") {
       clearInterval(keepalive);
       return new Response(out.body, { status: out.status, headers: out.headers });
+    }
+    if (!driveStream) {
+      clearInterval(keepalive);
+      keepalive = setInterval(() => {}, 5000);
     }
     const reader = out.body.getReader();
     const body = new ReadableStream({
