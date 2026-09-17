@@ -17,12 +17,9 @@ import (
 	clientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	informers "k8s.io/apiextensions-apiserver/pkg/client/informers/externalversions"
 	listers "k8s.io/apiextensions-apiserver/pkg/client/listers/apiextensions/v1"
-	"k8s.io/apiextensions-apiserver/pkg/controller/apiapproval"
 	"k8s.io/apiextensions-apiserver/pkg/controller/establish"
 	"k8s.io/apiextensions-apiserver/pkg/controller/finalizer"
-	"k8s.io/apiextensions-apiserver/pkg/controller/nonstructuralschema"
 	"k8s.io/apiextensions-apiserver/pkg/controller/openapiv3"
-	"k8s.io/apiextensions-apiserver/pkg/controller/status"
 	"k8s.io/apiextensions-apiserver/pkg/registry/customresourcedefinition"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -45,7 +42,6 @@ import (
 	"k8s.io/apiserver/pkg/storage/storagebackend/factory"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/klog/v2"
 	"k8s.io/kube-openapi/pkg/handler3"
 )
 
@@ -115,15 +111,9 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	}
 	ctx := context.Background()
 	discoveryController := apiextensionsapiserver.NewDiscoveryController(crdInformer, versionDiscovery, groupDiscovery, nil)
-	naming := status.NewNamingConditionController(klog.Background(), crdInformer, crdClient.ApiextensionsV1())
-	nonStructural := nonstructuralschema.NewConditionController(crdInformer, crdClient.ApiextensionsV1())
-	apiApproval := apiapproval.NewKubernetesAPIApprovalPolicyConformantConditionController(crdInformer, crdClient.ApiextensionsV1())
 	finalizing := finalizer.NewCRDFinalizer(crdInformer, crdClient.ApiextensionsV1(), crdHandler)
 	factory.Start(ctx.Done())
-	go naming.RunWithContext(ctx)
 	go establishing.RunWithContext(ctx)
-	go nonStructural.RunWithContext(5, ctx)
-	go apiApproval.RunWithContext(5, ctx)
 	go finalizing.RunWithContext(5, ctx)
 	discoverySynced := make(chan struct{})
 	go discoveryController.Run(ctx.Done(), discoverySynced)

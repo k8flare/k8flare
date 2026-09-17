@@ -189,20 +189,7 @@ func Sync(ctx context.Context, client kubernetes.Interface, rootCA []byte) (*Res
 		go func() { run(ctx); done <- struct{}{} }()
 	}
 
-	deadline := time.Now().Add(maxDrain)
-	quiet := 0
-	for time.Now().Before(deadline) {
-		time.Sleep(drainPoll)
-		if work.idle() {
-			quiet++
-		} else {
-			quiet = 0
-		}
-		if quiet >= 2 {
-			result.Drained = true
-			break
-		}
-	}
+	result.Drained = drain()
 	cancel()
 	for range runs {
 		<-done
@@ -250,6 +237,23 @@ func anyUnfinished(objs []runtime.Object) bool {
 			}
 		}
 		if !finished && j.DeletionTimestamp == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func drain() bool {
+	deadline := time.Now().Add(maxDrain)
+	quiet := 0
+	for time.Now().Before(deadline) {
+		time.Sleep(drainPoll)
+		if work.idle() {
+			quiet++
+		} else {
+			quiet = 0
+		}
+		if quiet >= 2 {
 			return true
 		}
 	}
