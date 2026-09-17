@@ -72,7 +72,7 @@ export default {
         for (const m of l.message ?? []) {
           if (typeof m !== "string") continue;
           const klog = /^[EW]\d{4} /.test(m) && !m.includes("watchlist latency");
-          if (m.startsWith("bridge:") || m.startsWith("pods/status:") || m.startsWith("kine:") || m.startsWith("go program") || m.includes("panic") || m.startsWith("fatal error") || klog) {
+          if (m.startsWith("bridge:") || m.startsWith("pods/status:") || m.startsWith("kine:") || m.startsWith("controllers:") || m.startsWith("go program") || m.includes("panic") || m.startsWith("fatal error") || klog) {
             console.log(m.slice(0, 400));
           }
         }

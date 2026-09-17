@@ -81,11 +81,14 @@ func main() {
 		if hold.Min < minRunHold {
 			hold.Min = minRunHold
 		}
+		start := time.Now()
 		bridge.Hold(bridge.RunContext(r.Context()), hold, ctrl.Idle)
 		if bridge.Superseded(r.Context()) {
 			bridge.WriteNext(w, -time.Millisecond)
 			return
 		}
-		bridge.WriteNext(w, pacer.Next(ctrl.Pending()))
+		pending := ctrl.Pending()
+		println("controllers: run ended after", time.Since(start).Round(time.Second).String(), "pending="+pending)
+		bridge.WriteNext(w, pacer.Next(pending))
 	}))
 }
