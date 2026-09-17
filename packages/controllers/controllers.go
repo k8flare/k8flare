@@ -22,27 +22,22 @@ import (
 	"k8s.io/client-go/metadata/metadatainformer"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
-	"k8s.io/client-go/util/flowcontrol"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/controller-manager/pkg/informerfactory"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/controller/certificates/rootcacertpublisher"
 	"k8s.io/kubernetes/pkg/controller/cronjob"
-	"k8s.io/kubernetes/pkg/controller/daemon"
 	"k8s.io/kubernetes/pkg/controller/garbagecollector"
-	"k8s.io/kubernetes/pkg/controller/job"
 	"k8s.io/kubernetes/pkg/controller/namespace"
 	"k8s.io/kubernetes/pkg/controller/nodeipam"
 	"k8s.io/kubernetes/pkg/controller/nodeipam/ipam"
 	"k8s.io/kubernetes/pkg/controller/nodelifecycle"
 	"k8s.io/kubernetes/pkg/controller/serviceaccount"
-	"k8s.io/kubernetes/pkg/controller/statefulset"
 	"k8s.io/kubernetes/pkg/controller/tainteviction"
 )
 
 const (
 	workers                     = 5
-	daemonSetWorkers            = 2
 	nodeCIDRMaskSize            = 24
 	nodeMonitorPeriod           = 5 * time.Second
 	nodeStartupGracePeriod      = 60 * time.Second
@@ -82,18 +77,6 @@ func New(ctx context.Context, cfg *rest.Config) (*Controllers, error) {
 	factory := informers.NewSharedInformerFactory(client, minResyncPeriod)
 	core, apps, batch := factory.Core().V1(), factory.Apps().V1(), factory.Batch().V1()
 	c := &Controllers{factory: factory, informersStarted: make(chan struct{})}
-	ds, err := daemon.NewDaemonSetsController(ctx, apps.DaemonSets(), apps.ControllerRevisions(), core.Pods(), core.Nodes(), client, flowcontrol.NewBackOff(time.Second, 15*time.Minute))
-	if err != nil {
-		return nil, err
-	}
-	c.add(func(ctx context.Context) { ds.Run(ctx, daemonSetWorkers) })
-	ss := statefulset.NewStatefulSetController(ctx, core.Pods(), apps.StatefulSets(), core.PersistentVolumeClaims(), apps.ControllerRevisions(), client)
-	c.add(func(ctx context.Context) { ss.Run(ctx, workers) })
-	jobs, err := job.NewController(ctx, client, core.Pods(), batch.Jobs(), nil, nil)
-	if err != nil {
-		return nil, err
-	}
-	c.add(func(ctx context.Context) { jobs.Run(ctx, workers) })
 	cron, err := cronjob.NewControllerV2(ctx, batch.Jobs(), batch.CronJobs(), client)
 	if err != nil {
 		return nil, err

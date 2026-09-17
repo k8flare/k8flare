@@ -69,7 +69,8 @@ async function consumeWorkloads(batch: MessageBatch<QueueMessage>, env: Env): Pr
     await env.WL_Q.send({ kind: "retry" } satisfies QueueMessage, { delaySeconds: refusedRetryMs / 1000 });
   } else {
     console.log(`workloads: ${Object.entries(result.objects).map(([k, v]) => `${k}=${v}`).join(" ")} drained=${result.drained}`);
-    if (!result.drained) await env.WL_Q.send({ kind: "retry" } satisfies QueueMessage, { delaySeconds: refusedRetryMs / 1000 });
+    const delayMs = result.drained ? result.nextMs : refusedRetryMs;
+    if (delayMs > 0) await env.WL_Q.send({ kind: "retry" } satisfies QueueMessage, { delaySeconds: Math.ceil(delayMs / 1000) });
   }
   batch.ackAll();
 }

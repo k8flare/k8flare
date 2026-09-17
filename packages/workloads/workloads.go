@@ -5,6 +5,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	v1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -14,11 +15,15 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/flowcontrol"
+	"k8s.io/kubernetes/pkg/controller/daemon"
 	"k8s.io/kubernetes/pkg/controller/deployment"
 	"k8s.io/kubernetes/pkg/controller/endpoint"
 	"k8s.io/kubernetes/pkg/controller/endpointslice"
+	"k8s.io/kubernetes/pkg/controller/job"
 	"k8s.io/kubernetes/pkg/controller/replicaset"
 	"k8s.io/kubernetes/pkg/controller/replication"
+	"k8s.io/kubernetes/pkg/controller/statefulset"
 )
 
 const (
@@ -27,17 +32,22 @@ const (
 	drainPoll            = 200 * time.Millisecond
 	maxDrain             = 60 * time.Second
 	maxEndpointsPerSlice = 100
+	daemonSetWorkers     = 2
+	unfinishedJobRecheck = 10 * time.Second
 )
 
 func init() {
-	if err := utilfeature.DefaultMutableFeatureGate.Set("StaleControllerConsistencyReplicaSet=false"); err != nil {
-		panic(err)
+	for _, gate := range []string{"ReplicaSet", "Job", "StatefulSet", "DaemonSet"} {
+		if err := utilfeature.DefaultMutableFeatureGate.Set("StaleControllerConsistency" + gate + "=false"); err != nil {
+			panic(err)
+		}
 	}
 }
 
 type Result struct {
 	Objects map[string]int `json:"objects"`
 	Drained bool           `json:"drained"`
+	NextMs  int64          `json:"nextMs"`
 }
 
 type pageFunc func(context.Context, metav1.ListOptions) (runtime.Object, error)
@@ -72,6 +82,21 @@ func sources(client kubernetes.Interface) []source {
 		{"endpointslices", &discoveryv1.EndpointSlice{}, func(ctx context.Context, o metav1.ListOptions) (runtime.Object, error) {
 			return client.DiscoveryV1().EndpointSlices("").List(ctx, o)
 		}},
+		{"jobs", &batchv1.Job{}, func(ctx context.Context, o metav1.ListOptions) (runtime.Object, error) {
+			return client.BatchV1().Jobs("").List(ctx, o)
+		}},
+		{"statefulsets", &appsv1.StatefulSet{}, func(ctx context.Context, o metav1.ListOptions) (runtime.Object, error) {
+			return apps.StatefulSets("").List(ctx, o)
+		}},
+		{"daemonsets", &appsv1.DaemonSet{}, func(ctx context.Context, o metav1.ListOptions) (runtime.Object, error) {
+			return apps.DaemonSets("").List(ctx, o)
+		}},
+		{"controllerrevisions", &appsv1.ControllerRevision{}, func(ctx context.Context, o metav1.ListOptions) (runtime.Object, error) {
+			return apps.ControllerRevisions("").List(ctx, o)
+		}},
+		{"persistentvolumeclaims", &v1.PersistentVolumeClaim{}, func(ctx context.Context, o metav1.ListOptions) (runtime.Object, error) {
+			return core.PersistentVolumeClaims("").List(ctx, o)
+		}},
 		{"nodes", &v1.Node{}, func(ctx context.Context, o metav1.ListOptions) (runtime.Object, error) {
 			return core.Nodes().List(ctx, o)
 		}},
@@ -94,6 +119,9 @@ func Sync(ctx context.Context, client kubernetes.Interface) (*Result, error) {
 		if err != nil {
 			return nil, err
 		}
+		if s.name == "jobs" && anyUnfinished(objs) {
+			result.NextMs = unfinishedJobRecheck.Milliseconds()
+		}
 		result.Objects[s.name] = len(objs)
 		all = append(all, loaded{register(factory, s.example), objs})
 	}
@@ -113,6 +141,19 @@ func Sync(ctx context.Context, client kubernetes.Interface) (*Result, error) {
 	runs = append(runs, func(ctx context.Context) { ep.Run(ctx, workers) })
 	eps := endpointslice.NewController(ctx, core.Pods(), core.Services(), core.Nodes(), factory.Discovery().V1().EndpointSlices(), maxEndpointsPerSlice, client, 0)
 	runs = append(runs, func(ctx context.Context) { eps.Run(ctx, workers) })
+
+	ds, err := daemon.NewDaemonSetsController(ctx, apps.DaemonSets(), apps.ControllerRevisions(), core.Pods(), core.Nodes(), client, flowcontrol.NewBackOff(time.Second, 15*time.Minute))
+	if err != nil {
+		return nil, err
+	}
+	runs = append(runs, func(ctx context.Context) { ds.Run(ctx, daemonSetWorkers) })
+	ss := statefulset.NewStatefulSetController(ctx, core.Pods(), apps.StatefulSets(), core.PersistentVolumeClaims(), apps.ControllerRevisions(), client)
+	runs = append(runs, func(ctx context.Context) { ss.Run(ctx, workers) })
+	jobs, err := job.NewController(ctx, client, core.Pods(), factory.Batch().V1().Jobs(), nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	runs = append(runs, func(ctx context.Context) { jobs.Run(ctx, workers) })
 
 	for _, l := range all {
 		l.informer.fill(l.objs)
@@ -174,4 +215,20 @@ func list(ctx context.Context, page pageFunc) ([]runtime.Object, error) {
 		}
 		opts.Continue = lm.GetContinue()
 	}
+}
+
+func anyUnfinished(objs []runtime.Object) bool {
+	for _, o := range objs {
+		j := o.(*batchv1.Job)
+		finished := false
+		for _, c := range j.Status.Conditions {
+			if (c.Type == batchv1.JobComplete || c.Type == batchv1.JobFailed) && c.Status == v1.ConditionTrue {
+				finished = true
+			}
+		}
+		if !finished && j.DeletionTimestamp == nil {
+			return true
+		}
+	}
+	return false
 }

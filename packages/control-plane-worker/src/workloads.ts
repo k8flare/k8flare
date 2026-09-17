@@ -4,6 +4,7 @@ import { loadWasmWorker } from "@k8flare/loader-kit";
 export interface SyncResult {
   objects: Record<string, number>;
   drained: boolean;
+  nextMs: number;
 }
 
 export class Workloads extends WorkerEntrypoint<Env> {
