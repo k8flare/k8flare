@@ -29,8 +29,6 @@ import (
 	"k8s.io/kubernetes/pkg/controller/certificates/rootcacertpublisher"
 	"k8s.io/kubernetes/pkg/controller/cronjob"
 	"k8s.io/kubernetes/pkg/controller/daemon"
-	"k8s.io/kubernetes/pkg/controller/endpoint"
-	"k8s.io/kubernetes/pkg/controller/endpointslice"
 	"k8s.io/kubernetes/pkg/controller/garbagecollector"
 	"k8s.io/kubernetes/pkg/controller/job"
 	"k8s.io/kubernetes/pkg/controller/namespace"
@@ -45,7 +43,6 @@ import (
 const (
 	workers                     = 5
 	daemonSetWorkers            = 2
-	maxEndpointsPerSlice        = 100
 	nodeCIDRMaskSize            = 24
 	nodeMonitorPeriod           = 5 * time.Second
 	nodeStartupGracePeriod      = 60 * time.Second
@@ -102,10 +99,6 @@ func New(ctx context.Context, cfg *rest.Config) (*Controllers, error) {
 		return nil, err
 	}
 	c.add(func(ctx context.Context) { cron.Run(ctx, workers) })
-	ep := endpoint.NewEndpointController(ctx, core.Pods(), core.Services(), core.Endpoints(), client, 0)
-	c.add(func(ctx context.Context) { ep.Run(ctx, workers) })
-	eps := endpointslice.NewController(ctx, core.Pods(), core.Services(), core.Nodes(), factory.Discovery().V1().EndpointSlices(), maxEndpointsPerSlice, client, 0)
-	c.add(func(ctx context.Context) { eps.Run(ctx, workers) })
 	ipam, err := nodeipam.NewNodeIpamController(ctx, core.Nodes(), nil, client, []*net.IPNet{supervisor.ClusterCIDR}, supervisor.ServiceCIDR, nil, []int{nodeCIDRMaskSize}, ipam.RangeAllocatorType)
 	if err != nil {
 		return nil, err

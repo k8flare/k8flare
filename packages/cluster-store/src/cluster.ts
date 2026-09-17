@@ -15,7 +15,7 @@ const MAX_DELAY_S = 86_400;
 
 type Target = "scheduler" | "controllers" | "workloads";
 const targets: Target[] = ["scheduler", "controllers", "workloads"];
-const WORKLOAD_PREFIXES = ["/registry/pods/", "/registry/replicasets/", "/registry/deployments/", "/registry/replicationcontrollers/"];
+const WORKLOAD_PREFIXES = ["/registry/pods/", "/registry/replicasets/", "/registry/deployments/", "/registry/replicationcontrollers/", "/registry/services/", "/registry/endpoints/", "/registry/endpointslices/"];
 
 export type QueueMessage =
   | { kind: "change"; key: string; type: string; rev: number }
@@ -274,7 +274,7 @@ export class Cluster extends DurableObject<Env> {
     if (name.startsWith("/registry/pods/")) {
       if (type === "deleted" || !podBound(value)) routes.push("scheduler");
     } else if (name.startsWith("/registry/minions/") || name.startsWith("/registry/nodes/")) {
-      if (type !== "modified" || nodeChanged(prev!.value, value)) routes.push("scheduler");
+      if (type !== "modified" || nodeChanged(prev!.value, value)) routes.push("scheduler", "workloads");
       else routes.length = 0;
     }
     for (const target of routes) {

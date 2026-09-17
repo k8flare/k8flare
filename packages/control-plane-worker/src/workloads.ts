@@ -2,10 +2,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import { loadWasmWorker } from "@k8flare/loader-kit";
 
 export interface SyncResult {
-  pods: number;
-  replicaSets: number;
-  deployments: number;
-  replicationControllers: number;
+  objects: Record<string, number>;
   drained: boolean;
 }
 

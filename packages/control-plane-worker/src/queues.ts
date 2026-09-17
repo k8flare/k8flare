@@ -68,7 +68,7 @@ async function consumeWorkloads(batch: MessageBatch<QueueMessage>, env: Env): Pr
   if (!result) {
     await env.WL_Q.send({ kind: "retry" } satisfies QueueMessage, { delaySeconds: refusedRetryMs / 1000 });
   } else {
-    console.log(`workloads: pods=${result.pods} replicaSets=${result.replicaSets} deployments=${result.deployments} rcs=${result.replicationControllers} drained=${result.drained}`);
+    console.log(`workloads: ${Object.entries(result.objects).map(([k, v]) => `${k}=${v}`).join(" ")} drained=${result.drained}`);
     if (!result.drained) await env.WL_Q.send({ kind: "retry" } satisfies QueueMessage, { delaySeconds: refusedRetryMs / 1000 });
   }
   batch.ackAll();
