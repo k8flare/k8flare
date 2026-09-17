@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -451,7 +452,7 @@ func (s *Storage) Watch(ctx context.Context, key string, opts storage.ListOption
 						return
 					}
 					println("kine: watch socket closed, redialing", prefix, "since", lastRev)
-					msgs, closeFn, err = dial(lastRev, !snapshotDone)
+					msgs, closeFn, err = redial(ctx, func() (<-chan []byte, func(), error) { return dial(lastRev, !snapshotDone) })
 					if err != nil {
 						println("kine: redial failed:", err.Error())
 						return
@@ -571,3 +572,25 @@ func (s *Storage) ReadinessCheck() error                               { return 
 func (s *Storage) RequestWatchProgress(context.Context) error          { return nil }
 func (s *Storage) EnableResourceSizeEstimation(storage.KeysFunc) error { return nil }
 func (s *Storage) CompactRevision() int64                              { return 0 }
+
+const (
+	redialAttempts = 5
+	redialDelay    = 500 * time.Millisecond
+)
+
+func redial(ctx context.Context, dial func() (<-chan []byte, func(), error)) (<-chan []byte, func(), error) {
+	var err error
+	for attempt := 0; attempt < redialAttempts; attempt++ {
+		var msgs <-chan []byte
+		var closeFn func()
+		if msgs, closeFn, err = dial(); err == nil {
+			return msgs, closeFn, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		case <-time.After(redialDelay << attempt):
+		}
+	}
+	return nil, nil, err
+}
