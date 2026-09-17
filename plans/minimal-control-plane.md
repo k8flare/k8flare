@@ -1420,3 +1420,11 @@ been re-measured over a full quiet hour.
 - Fixes found on production: the batch context was cancelled before async bindings finished (bind failed with context canceled); scheduling events must be written through core v1 events for the SchedulerPredicates specs.
 - Bind latency for a fresh pod: 7s.
 - Required e2e on production: 21 Passed, 0 Failed.
+
+## Phase 3 slice 1: ReplicaSet and Deployment as a queue consumer (2026-09-17)
+
+- New `workloads` wasm (41MB) and `k8flare-workloads` queue; pods, replicasets and deployments changes route to it.
+- Each batch lists pods, replicasets and deployments, fills snapshot informers that report synced, replays OnAdd, runs the upstream controllers until their work queues drain, and exits.
+- Production: a 2-replica deployment became available in 54s; scaling to 1 took 7s.
+- Required e2e on production: 21 Passed, 0 Failed.
+- Unrelated gap found: `deployments/scale` is not served, so `kubectl scale deploy` returns NotFound.
