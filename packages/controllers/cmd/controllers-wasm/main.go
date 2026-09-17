@@ -17,6 +17,7 @@ import (
 const (
 	pokeWindow    = 20 * time.Second
 	handoverAfter = 200 * time.Second
+	deadRunAfter  = 10 * time.Second
 )
 
 func main() {
@@ -31,6 +32,7 @@ func main() {
 		mu           sync.Mutex
 		runs         int
 		lastRunStart time.Time
+		lastBeat     time.Time
 		ctrl         *controllers.Controllers
 		pacer        bridge.Pacer
 	)
@@ -42,7 +44,7 @@ func main() {
 			return
 		}
 		mu.Lock()
-		if age := time.Since(lastRunStart); runs > 0 && age < handoverAfter {
+		if age := time.Since(lastRunStart); runs > 0 && age < handoverAfter && time.Since(lastBeat) < deadRunAfter {
 			mu.Unlock()
 			w.Header().Set("X-Retry-After-Ms", strconv.FormatInt((handoverAfter-age+time.Second).Milliseconds(), 10))
 			w.WriteHeader(http.StatusNoContent)
@@ -50,6 +52,7 @@ func main() {
 		}
 		runs++
 		lastRunStart = time.Now()
+		lastBeat = lastRunStart
 		mu.Unlock()
 		defer func() {
 			mu.Lock()
@@ -75,7 +78,12 @@ func main() {
 		if hold.Reset {
 			pacer.Reset()
 		}
-		bridge.Hold(bridge.RunContext(r.Context()), hold, ctrl.Idle)
+		bridge.Hold(bridge.RunContext(r.Context()), hold, func() bool {
+			mu.Lock()
+			lastBeat = time.Now()
+			mu.Unlock()
+			return ctrl.Idle()
+		})
 		if bridge.Superseded(r.Context()) {
 			bridge.WriteNext(w, -time.Millisecond)
 			return

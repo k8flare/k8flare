@@ -100,7 +100,7 @@ func Hold(ctx context.Context, h HoldRequest, idle func() bool) {
 		if elapsed >= h.Window {
 			return
 		}
-		if elapsed >= h.Min && quiet() && idle() {
+		if isIdle := idle(); elapsed >= h.Min && quiet() && isIdle {
 			idleFor++
 		} else {
 			idleFor = 0
