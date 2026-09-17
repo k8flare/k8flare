@@ -1490,3 +1490,11 @@ been re-measured over a full quiet hour.
 - Step 1: the nodes store allocates the pod CIDR in `BeginCreate`/`BeginUpdate` from the free /24 blocks in the cluster CIDR; the nodeipam controller is gone. Deleting the node object and restarting the agent gave it `10.42.0.0/24` in 6s and a pod ran in 6s.
 - Step 2: the CronJob controller runs in the workloads batch; the batch returns the soonest next fire as `nextMs`, which the consumer turns into a delayed message. The apiserver-side cronjob wake hooks are gone. A `* * * * *` cronjob produced a completed job per minute.
 - Required e2e after these: 21/21 twice.
+
+## Phase 4 step 3: node health from the lease-check message (2026-09-18)
+
+- The nodelifecycle and tainteviction controllers are gone. When a lease is older than the grace period the queue consumer calls the workloads wasm `/nodehealth`, which sets Ready/MemoryPressure/DiskPressure/PIDPressure to Unknown, adds the unreachable NoSchedule and NoExecute taints, and deletes pods that do not tolerate the taint (DaemonSet pods are skipped). Pods with a toleration window get a delayed re-check.
+- The workloads batch removes the unreachable and not-ready taints from nodes whose kubelet is posting Ready again.
+- Production: stopping the agent marked the node Unknown with both taints in 72s and the test pod was deleted; starting it again cleared the taints immediately and a pod ran in 6s.
+- Required e2e: 21/21.
+- Operational note: the node agent runs as a transient systemd unit, so stopping it removes the unit. The start command has to be recovered from the journal; it should be a persistent unit file.
