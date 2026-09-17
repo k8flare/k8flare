@@ -1,0 +1,6 @@
+{
+  "name": "@k8flare/gc",
+  "private": true,
+  "type": "module",
+  "description": "Garbage collection as a queue consumer: one owner-reference pass over a store snapshot per batch."
+}

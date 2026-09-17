@@ -79,6 +79,16 @@ $(BUILD)/scheduler.opt.wasm: $(BUILD)/scheduler.raw.wasm
 $(ASSETS)/scheduler.manifest.json: $(BUILD)/scheduler.opt.wasm
 	cd scripts && go run ./wasmpack chunk ../$< ../$(ASSETS) scheduler
 
+$(BUILD)/gc.raw.wasm: $(GO_SRC) | mirrors
+	mkdir -p $(BUILD)
+	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/gc/cmd/gc-wasm
+
+$(BUILD)/gc.opt.wasm: $(BUILD)/gc.raw.wasm
+	$(OPTIMIZE)
+
+$(ASSETS)/gc.manifest.json: $(BUILD)/gc.opt.wasm
+	cd scripts && go run ./wasmpack chunk ../$< ../$(ASSETS) gc
+
 $(BUILD)/workloads.raw.wasm: $(GO_SRC) | mirrors
 	mkdir -p $(BUILD)
 	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/workloads/cmd/workloads-wasm
@@ -128,7 +138,7 @@ $(NODE_TUNNEL_WASM): $(BUILD)/node-tunnel.opt.wasm
 	mkdir -p $(dir $@)
 	cp $< $@
 
-wasm: $(ASSETS)/wasm_exec.js $(ASSETS)/apiserver.manifest.json $(foreach g,$(API_GROUPS),$(ASSETS)/apiserver-$(g).manifest.json) $(ASSETS)/openapi.manifest.json $(ASSETS)/customresources.manifest.json $(ASSETS)/scheduler.manifest.json $(ASSETS)/controllers.manifest.json $(ASSETS)/workloads.manifest.json $(foreach g,$(GROUPS),$(ASSETS)/printers-$(g).manifest.json) $(NODE_TUNNEL_WASM)
+wasm: $(ASSETS)/wasm_exec.js $(ASSETS)/apiserver.manifest.json $(foreach g,$(API_GROUPS),$(ASSETS)/apiserver-$(g).manifest.json) $(ASSETS)/openapi.manifest.json $(ASSETS)/customresources.manifest.json $(ASSETS)/scheduler.manifest.json $(ASSETS)/controllers.manifest.json $(ASSETS)/workloads.manifest.json $(ASSETS)/gc.manifest.json $(foreach g,$(GROUPS),$(ASSETS)/printers-$(g).manifest.json) $(NODE_TUNNEL_WASM)
 
 gen:
 	cd scripts && go run ./genresources && go run ./genprinters && go run ./genopenapi

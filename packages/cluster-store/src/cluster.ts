@@ -13,8 +13,8 @@ const LEASE_CHECK_EVERY_MS = 50_000;
 const OUTBOX_BATCH = 100;
 const MAX_DELAY_S = 86_400;
 
-type Target = "scheduler" | "controllers" | "workloads" | "crds";
-const targets: Target[] = ["scheduler", "controllers", "workloads", "crds"];
+type Target = "scheduler" | "controllers" | "workloads" | "crds" | "gc";
+const targets: Target[] = ["scheduler", "controllers", "workloads", "crds", "gc"];
 const CRD_PREFIX = "/registry/apiextensions.k8s.io/customresourcedefinitions/";
 const WORKLOAD_PREFIXES = ["/registry/pods/", "/registry/replicasets/", "/registry/deployments/", "/registry/replicationcontrollers/", "/registry/services/", "/registry/endpoints/", "/registry/endpointslices/", "/registry/jobs/", "/registry/statefulsets/", "/registry/daemonsets/", "/registry/controllerrevisions/", "/registry/persistentvolumeclaims/", "/registry/namespaces/", "/registry/serviceaccounts/", "/registry/configmaps/", "/registry/cronjobs/"];
 
@@ -257,6 +257,7 @@ export class Cluster extends DurableObject<Env> {
     if (target === "scheduler") return this.env.SCHED_Q;
     if (target === "workloads") return this.env.WL_Q;
     if (target === "crds") return this.env.CRD_Q;
+    if (target === "gc") return this.env.GC_Q;
     return this.env.CTRL_Q;
   }
 
@@ -274,6 +275,7 @@ export class Cluster extends DurableObject<Env> {
     const routes: Target[] = ["controllers"];
     if (WORKLOAD_PREFIXES.some((p) => name.startsWith(p))) routes.push("workloads");
     if (name.startsWith(CRD_PREFIX)) routes.push("crds");
+    if (type === "deleted" || collectable(value)) routes.push("gc");
     if (name.startsWith("/registry/pods/")) {
       if (type === "deleted" || !podBound(value)) routes.push("scheduler");
     } else if (name.startsWith("/registry/minions/") || name.startsWith("/registry/nodes/")) {
@@ -388,6 +390,14 @@ function decodeJSON(value: Uint8Array): Record<string, any> | null {
   } catch {
     return null;
   }
+}
+
+function collectable(value: Uint8Array): boolean {
+  const meta = (decodeJSON(value) as { metadata?: { ownerReferences?: unknown[]; finalizers?: string[]; deletionTimestamp?: string } } | null)?.metadata;
+  if (!meta) return false;
+  if (meta.ownerReferences && meta.ownerReferences.length > 0) return true;
+  if (meta.deletionTimestamp && meta.finalizers && meta.finalizers.length > 0) return true;
+  return false;
 }
 
 function podBound(value: Uint8Array): boolean {

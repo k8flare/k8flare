@@ -9,17 +9,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/metadata"
 	"k8s.io/client-go/metadata/metadatainformer"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/util/workqueue"
-	"k8s.io/controller-manager/pkg/informerfactory"
-	"k8s.io/kubernetes/pkg/controller/garbagecollector"
 )
 
 const (
@@ -50,23 +44,9 @@ func New(ctx context.Context, cfg *rest.Config) (*Controllers, error) {
 	if err != nil {
 		return nil, err
 	}
+	_ = client
 	factory := informers.NewSharedInformerFactory(client, minResyncPeriod)
-	c := &Controllers{factory: factory, informersStarted: make(chan struct{})}
-	metadataClient, err := metadata.NewForConfig(cfg)
-	if err != nil {
-		return nil, err
-	}
-	c.metadataFactory = metadatainformer.NewSharedInformerFactory(metadataClient, minResyncPeriod)
-	mapper := restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(client.Discovery()))
-	graph := garbagecollector.NewDependencyGraphBuilder(ctx, metadataClient, mapper, garbagecollector.DefaultIgnoredResources(), informerfactory.NewInformerFactory(factory, c.metadataFactory), c.informersStarted)
-	collector, err := garbagecollector.NewComposedGarbageCollector(ctx, client, metadataClient, mapper, graph)
-	if err != nil {
-		return nil, err
-	}
-	c.add(func(ctx context.Context) { collector.Run(ctx, garbageCollectorWorkers, garbageCollectorSyncPeriod) })
-	c.add(func(ctx context.Context) { collector.Sync(ctx, client.Discovery(), garbageCollectorSyncPeriod) })
-	c.add(func(ctx context.Context) { wait.Until(mapper.Reset, garbageCollectorSyncPeriod, ctx.Done()) })
-	return c, nil
+	return &Controllers{factory: factory, informersStarted: make(chan struct{})}, nil
 }
 
 func (c *Controllers) add(run func(context.Context)) {
