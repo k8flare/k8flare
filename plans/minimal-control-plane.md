@@ -1434,3 +1434,9 @@ been re-measured over a full quiet hour.
 - RC moved from the resident controllers into the workloads batch; `/registry/replicationcontrollers/` routes to the workloads queue.
 - Production: a 2-replica RC became ready in 30s.
 - Required e2e on production (includes the RC garbage collector specs): 21 Passed, 0 Failed.
+
+## Phase 3 slice 3: Endpoints and EndpointSlice in the workloads consumer (2026-09-17)
+
+- Services, endpoints, endpointslices and meaningful node changes route to the workloads queue.
+- Production: a service's EndpointSlice and Endpoints got the pod IP in 36s.
+- Required e2e on production: 21 Passed, 0 Failed.
