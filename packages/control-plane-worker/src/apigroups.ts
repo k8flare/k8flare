@@ -9,7 +9,7 @@ export class APIGroups extends WorkerEntrypoint<Env> {
     if (!workerName.test(name)) return new Response(`unknown worker ${name}`, { status: 400 });
     console.log(`apigroups iso=${isolateId()} ${name}`);
     const worker = await loadWasmWorker(this.env.LOADER, this.env.ASSETS, name, {
-      STORAGE: this.env.CLUSTER.get(this.env.CLUSTER.idFromName("default")),
+      STORAGE: this.env.STORAGE_SVC,
       PRINTERS: this.env.PRINTERS,
       TUNNEL: this.env.TUNNEL,
       ADMIN_TOKEN: this.env.ADMIN_TOKEN,

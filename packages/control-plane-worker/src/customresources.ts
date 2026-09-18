@@ -4,7 +4,7 @@ import { loadWasmWorker } from "@k8flare/loader-kit";
 export class CustomResources extends WorkerEntrypoint<Env> {
   async fetch(request: Request): Promise<Response> {
     const worker = await loadWasmWorker(this.env.LOADER, this.env.ASSETS, "customresources", {
-      STORAGE: this.env.CLUSTER.get(this.env.CLUSTER.idFromName("default")),
+      STORAGE: this.env.STORAGE_SVC,
     }, this.env.APISERVER);
     const method = request.method;
     const path = new URL(request.url).pathname;

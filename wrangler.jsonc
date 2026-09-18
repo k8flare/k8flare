@@ -31,6 +31,7 @@
     { "binding": "SCHEDULER", "service": "k8flare", "entrypoint": "Scheduler" },
     { "binding": "WORKLOADS", "service": "k8flare", "entrypoint": "Workloads" },
     { "binding": "GC", "service": "k8flare", "entrypoint": "GarbageCollector" },
+    { "binding": "STORAGE_SVC", "service": "k8flare", "entrypoint": "Storage" },
     { "binding": "TUNNEL", "service": "k8flare", "entrypoint": "NodeTunnels" },
     { "binding": "APISERVER", "service": "k8flare" },
   ],

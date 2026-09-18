@@ -12,7 +12,7 @@ export class GarbageCollector extends WorkerEntrypoint<Env> {
   async collect(): Promise<CollectResult | null> {
     const worker = await loadWasmWorker(this.env.LOADER, this.env.ASSETS, "gc", {
       APISERVER: this.env.APISERVER,
-      STORAGE: this.env.CLUSTER.get(this.env.CLUSTER.idFromName("default")),
+      STORAGE: this.env.STORAGE_SVC,
       ADMIN_TOKEN: this.env.ADMIN_TOKEN,
     }, this.env.APISERVER);
     const resp = await worker.fetch("https://gc.internal/collect", { method: "POST" });

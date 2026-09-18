@@ -2,7 +2,7 @@ import { loadWasmWorker } from "@k8flare/loader-kit";
 
 export async function apiserverFetch(env: Env, request: Request): Promise<Response> {
   const worker = await loadWasmWorker(env.LOADER, env.ASSETS, "apiserver", {
-    STORAGE: env.CLUSTER.get(env.CLUSTER.idFromName("default")),
+    STORAGE: env.STORAGE_SVC,
     APIGROUPS: env.APIGROUPS,
     OPENAPI: env.OPENAPI,
     CUSTOMRESOURCES: env.CUSTOMRESOURCES,

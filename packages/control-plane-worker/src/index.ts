@@ -12,6 +12,7 @@ export { APIGroups } from "./apigroups.ts";
 export { Scheduler } from "./scheduler.ts";
 export { Workloads } from "./workloads.ts";
 export { GarbageCollector } from "./gc.ts";
+export { Storage } from "./storage.ts";
 export { NodeTunnels } from "./nodetunnel.ts";
 
 async function acceptTunnel(request: Request, env: Env): Promise<Response> {
