@@ -17,7 +17,7 @@ type Target = "scheduler" | "workloads" | "crds" | "gc" | "accounts";
 const targets: Target[] = ["scheduler", "workloads", "crds", "gc", "accounts"];
 const NAMESPACE_PREFIX = "/registry/namespaces/";
 const CRD_PREFIX = "/registry/apiextensions.k8s.io/customresourcedefinitions/";
-const WORKLOAD_PREFIXES = ["/registry/pods/", "/registry/replicasets/", "/registry/deployments/", "/registry/replicationcontrollers/", "/registry/services/", "/registry/endpoints/", "/registry/endpointslices/", "/registry/jobs/", "/registry/statefulsets/", "/registry/daemonsets/", "/registry/controllerrevisions/", "/registry/persistentvolumeclaims/", "/registry/namespaces/", "/registry/serviceaccounts/", "/registry/configmaps/", "/registry/cronjobs/"];
+const WORKLOAD_PREFIXES = ["/registry/replicasets/", "/registry/deployments/", "/registry/replicationcontrollers/", "/registry/services/", "/registry/endpoints/", "/registry/endpointslices/", "/registry/jobs/", "/registry/statefulsets/", "/registry/daemonsets/", "/registry/controllerrevisions/", "/registry/persistentvolumeclaims/", "/registry/namespaces/", "/registry/serviceaccounts/", "/registry/configmaps/", "/registry/cronjobs/"];
 
 export type QueueMessage =
   | { kind: "change"; key: string; type: string; rev: number }
@@ -322,9 +322,10 @@ export class Cluster extends DurableObject<Env> {
     if (name.startsWith(CRD_PREFIX)) routes.push("crds");
     if (type === "deleted" || collectable(value)) routes.push("gc");
     if (name.startsWith("/registry/pods/")) {
+      if (type !== "modified" || !prev || podWorkChanged(prev.value, value)) routes.push("workloads");
       if (type === "deleted" || !podBound(value)) routes.push("scheduler");
     } else if (name.startsWith("/registry/minions/") || name.startsWith("/registry/nodes/")) {
-      if (type !== "modified" || nodeChanged(prev!.value, value)) routes.push("scheduler", "workloads");
+      if (type !== "modified" || !prev || nodeChanged(prev.value, value)) routes.push("scheduler", "workloads");
     }
     for (const target of routes) {
       this.ctx.storage.sql.exec("INSERT INTO outbox (target, rev, key, type) VALUES (?, ?, ?, ?)", target, rev, name, type);
@@ -447,6 +448,19 @@ function collectable(value: Uint8Array): boolean {
 
 function podBound(value: Uint8Array): boolean {
   return Boolean(decodeJSON(value)?.spec?.nodeName);
+}
+
+function podWorkChanged(before: Uint8Array, after: Uint8Array): boolean {
+  const a = decodeJSON(before);
+  const b = decodeJSON(after);
+  if (!a || !b) return true;
+  return (
+    JSON.stringify(a.spec ?? {}) !== JSON.stringify(b.spec ?? {}) ||
+    JSON.stringify(a.metadata?.labels ?? {}) !== JSON.stringify(b.metadata?.labels ?? {}) ||
+    a.metadata?.deletionTimestamp !== b.metadata?.deletionTimestamp ||
+    a.status?.phase !== b.status?.phase ||
+    a.status?.podIP !== b.status?.podIP
+  );
 }
 
 function readyStatus(node: Record<string, any> | null): string {
