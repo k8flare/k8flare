@@ -5,7 +5,7 @@ const refusedRetryMs = 5_000;
 const unschedulableMaxDelayS = 60;
 const leasePrefix = "/registry/leases/kube-node-lease/";
 
-type Target = "scheduler" | "leases" | "workloads" | "crds" | "gc";
+type Target = "scheduler" | "leases" | "workloads" | "crds" | "gc" | "accounts";
 
 function targetOf(queueName: string): Target | null {
   if (queueName.endsWith("-scheduler")) return "scheduler";
@@ -13,6 +13,7 @@ function targetOf(queueName: string): Target | null {
   if (queueName.endsWith("-workloads")) return "workloads";
   if (queueName.endsWith("-crds")) return "crds";
   if (queueName.endsWith("-gc")) return "gc";
+  if (queueName.endsWith("-accounts")) return "accounts";
   return null;
 }
 
@@ -108,6 +109,17 @@ async function consumeGC(batch: MessageBatch<QueueMessage>, env: Env): Promise<v
   batch.ackAll();
 }
 
+async function consumeAccounts(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
+  const result = await env.WORKLOADS.sync(["namespaces", "serviceaccounts", "configmaps"]);
+  if (!result) {
+    await env.ACCT_Q.send({ kind: "retry" } satisfies QueueMessage, { delaySeconds: refusedRetryMs / 1000 });
+  } else {
+    console.log(`accounts: ${Object.entries(result.objects).map(([k, v]) => `${k}=${v}`).join(" ")} drained=${result.drained}`);
+    if (!result.drained) await env.ACCT_Q.send({ kind: "retry" } satisfies QueueMessage, { delaySeconds: refusedRetryMs / 1000 });
+  }
+  batch.ackAll();
+}
+
 async function consumeLeases(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
   for (const msg of batch.messages) {
     const body = msg.body;
@@ -132,6 +144,8 @@ export async function consume(batch: MessageBatch<QueueMessage>, env: Env): Prom
       return consumeCRDs(batch, env);
     case "gc":
       return consumeGC(batch, env);
+    case "accounts":
+      return consumeAccounts(batch, env);
     case "leases":
       return consumeLeases(batch, env);
   }

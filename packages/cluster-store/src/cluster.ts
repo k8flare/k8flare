@@ -13,8 +13,9 @@ const LEASE_CHECK_EVERY_MS = 50_000;
 const OUTBOX_BATCH = 100;
 const MAX_DELAY_S = 86_400;
 
-type Target = "scheduler" | "workloads" | "crds" | "gc";
-const targets: Target[] = ["scheduler", "workloads", "crds", "gc"];
+type Target = "scheduler" | "workloads" | "crds" | "gc" | "accounts";
+const targets: Target[] = ["scheduler", "workloads", "crds", "gc", "accounts"];
+const NAMESPACE_PREFIX = "/registry/namespaces/";
 const CRD_PREFIX = "/registry/apiextensions.k8s.io/customresourcedefinitions/";
 const WORKLOAD_PREFIXES = ["/registry/pods/", "/registry/replicasets/", "/registry/deployments/", "/registry/replicationcontrollers/", "/registry/services/", "/registry/endpoints/", "/registry/endpointslices/", "/registry/jobs/", "/registry/statefulsets/", "/registry/daemonsets/", "/registry/controllerrevisions/", "/registry/persistentvolumeclaims/", "/registry/namespaces/", "/registry/serviceaccounts/", "/registry/configmaps/", "/registry/cronjobs/"];
 
@@ -298,6 +299,7 @@ export class Cluster extends DurableObject<Env> {
     if (target === "workloads") return this.env.WL_Q;
     if (target === "crds") return this.env.CRD_Q;
     if (target === "gc") return this.env.GC_Q;
+    if (target === "accounts") return this.env.ACCT_Q;
     return this.env.CTRL_Q;
   }
 
@@ -314,6 +316,7 @@ export class Cluster extends DurableObject<Env> {
     }
     const routes: Target[] = [];
     if (WORKLOAD_PREFIXES.some((p) => name.startsWith(p))) routes.push("workloads");
+    if (name.startsWith(NAMESPACE_PREFIX)) routes.push("accounts");
     if (name.startsWith(CRD_PREFIX)) routes.push("crds");
     if (type === "deleted" || collectable(value)) routes.push("gc");
     if (name.startsWith("/registry/pods/")) {
