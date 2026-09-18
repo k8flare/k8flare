@@ -251,6 +251,24 @@ const (
 
 var liveSockets atomic.Int64
 
+// currentTurn names the window whose JS stack is currently running Go, so a
+// fetch issued for another window can be reported instead of hanging.
+var currentTurn atomic.Pointer[Window]
+
+func EnterTurn(w *Window) func() {
+	previous := currentTurn.Swap(w)
+	return func() { currentTurn.Store(previous) }
+}
+
+func (w *Window) Owns() bool { return currentTurn.Load() == w }
+
+func turnName() string {
+	if w := currentTurn.Load(); w != nil {
+		return w.kind() + "/" + time.Since(w.opened).Round(time.Second).String()
+	}
+	return "none"
+}
+
 func awaitIn(w *Window, promise js.Value) (js.Value, error) {
 	return awaitInCtx(context.Background(), w, promise, 0)
 }

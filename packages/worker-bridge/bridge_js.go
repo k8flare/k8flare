@@ -79,6 +79,7 @@ func Env(ctx context.Context) js.Value {
 		}
 	}
 	if env, ok := currentWindowEnv(); ok {
+		println("bridge: env borrowed from another request")
 		return env
 	}
 	return js.Global().Get("context").Get("env")
@@ -287,6 +288,8 @@ func dispatch(handler http.Handler, reqObj, env js.Value, started func(js.Value)
 	}
 	window := openWindow(env)
 	defer window.close()
+	leaveTurn := EnterTurn(window)
+	defer leaveTurn()
 	ctx, cancel := context.WithCancel(context.WithValue(context.WithValue(context.Background(), envKey{}, env), windowKey{}, window))
 	defer cancel()
 	req = req.WithContext(ctx)
@@ -379,6 +382,9 @@ func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	headerTimeout := unaryHeaderTimeout
 	if req.URL.Query().Get("watch") == "true" || req.URL.Query().Get("watch") == "1" || strings.HasSuffix(req.URL.Path, "/watch") {
 		headerTimeout = watchHeaderTimeout
+	}
+	if !window.Owns() {
+		println("bridge: fetch off turn owner="+window.kind()+" turn="+turnName()+":", req.Method, req.URL.Path)
 	}
 	jsResp, err := awaitInCtx(req.Context(), window, binding.Call("fetch", jsReq), headerTimeout)
 	endFetch()
@@ -568,7 +574,7 @@ func DialWebSocket(ctx context.Context, bindingName, rawURL string) (*WebSocket,
 	endFetch := beginFetch(window)
 	started := time.Now()
 	live := liveSockets.Add(1)
-	println("bridge: ws dial start live="+strconv.FormatInt(live, 10)+" kind="+window.kind()+":", rawURL)
+	println("bridge: ws dial start live="+strconv.FormatInt(live, 10)+" kind="+window.kind()+" turn="+turnName()+":", rawURL)
 	resp, err := awaitInCtx(ctx, window, binding.Call("fetch", js.Global().Get("Request").New(rawURL, opts)), wsDialTimeout)
 	endFetch()
 	if err != nil {
