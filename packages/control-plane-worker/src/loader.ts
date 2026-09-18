@@ -9,6 +9,6 @@ export async function apiserverFetch(env: Env, request: Request): Promise<Respon
     ADMIN_TOKEN: env.ADMIN_TOKEN,
     READONLY_TOKEN: env.READONLY_TOKEN,
     JOIN_TOKEN: env.JOIN_TOKEN,
-  });
+  }, env.APISERVER);
   return worker.fetch(request);
 }

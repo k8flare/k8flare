@@ -441,6 +441,11 @@ func (s *Storage) Watch(ctx context.Context, key string, opts storage.ListOption
 			case <-w.StopChan():
 				closeFn()
 				return
+			case <-time.After(watchIdleTimeout):
+				closeFn()
+				println("kine: watch end", prefix, "reason=idle-watchdog since", strconv.FormatInt(lastRev, 10))
+				expire(events, w, "no watch progress; relist")
+				return
 			case msg, ok := <-msgs:
 				if !ok {
 					closeFn()
@@ -458,7 +463,8 @@ func (s *Storage) Watch(ctx context.Context, key string, opts storage.ListOption
 					println("kine: watch socket closed, redialing", prefix, "since", lastRev)
 					msgs, closeFn, err = redial(ctx, func() (<-chan []byte, func(), error) { return dial(lastRev, !snapshotDone) })
 					if err != nil {
-						println("kine: redial failed:", err.Error())
+						println("kine: watch end", prefix, "reason=redial-exhausted:", err.Error())
+						expire(events, w, "watch source is gone; relist")
 						return
 					}
 					continue
@@ -478,6 +484,20 @@ func (s *Storage) Watch(ctx context.Context, key string, opts storage.ListOption
 					case <-w.StopChan():
 					}
 					return
+				}
+				if ev.Type == "progress" {
+					if opts.Predicate.AllowWatchBookmarks {
+						bookmark := s.newFunc()
+						if versioner.UpdateObject(bookmark, uint64(ev.Rev)) == nil {
+							select {
+							case events <- watch.Event{Type: watch.Bookmark, Object: bookmark}:
+							case <-w.StopChan():
+								closeFn()
+								return
+							}
+						}
+					}
+					continue
 				}
 				if ev.Type == "snapshot-end" {
 					snapshotDone = true
@@ -578,8 +598,9 @@ func (s *Storage) EnableResourceSizeEstimation(storage.KeysFunc) error { return 
 func (s *Storage) CompactRevision() int64                              { return 0 }
 
 const (
-	redialAttempts = 5
-	redialDelay    = 500 * time.Millisecond
+	watchIdleTimeout = 90 * time.Second
+	redialAttempts   = 5
+	redialDelay      = 500 * time.Millisecond
 )
 
 func redial(ctx context.Context, dial func() (<-chan []byte, func(), error)) (<-chan []byte, func(), error) {
@@ -597,4 +618,12 @@ func redial(ctx context.Context, dial func() (<-chan []byte, func(), error)) (<-
 		}
 	}
 	return nil, nil, err
+}
+
+func expire(events chan watch.Event, w *watch.ProxyWatcher, message string) {
+	status := apierrors.NewResourceExpired(message)
+	select {
+	case events <- watch.Event{Type: watch.Error, Object: &status.ErrStatus}:
+	case <-w.StopChan():
+	}
 }

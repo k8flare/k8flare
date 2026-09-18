@@ -10,6 +10,7 @@ const WATCH_LEASE_MS = 360_000;
 const NODE_LEASE_PREFIX = "/registry/leases/kube-node-lease/";
 const LEASE_CHECK_DELAY_S = 60;
 const LEASE_CHECK_EVERY_MS = 50_000;
+const PROGRESS_EVERY_MS = 30_000;
 const OUTBOX_BATCH = 100;
 const MAX_DELAY_S = 86_400;
 
@@ -206,6 +207,7 @@ export class Cluster extends DurableObject<Env> {
     this.expireWatchers();
     this.watchers.set(server, watcher);
     this.ctx.waitUntil(this.flushOutbox());
+    this.ctx.waitUntil(this.armProgress());
     if (initial) {
       for (const kv of this.latest(watcher.prefix, watcher.exact, watcher.prefix, -1)) {
         server.send(JSON.stringify({ rev: kv.modRevision, type: "created", key: kv.key, value: toBase64(kv.value), prev: "" }));
@@ -235,11 +237,40 @@ export class Cluster extends DurableObject<Env> {
 
   private expireWatchers(): void {
     const cutoff = Date.now() - WATCH_LEASE_MS;
+    const rev = this.revision();
     for (const [ws, w] of this.watchers) {
       if (w.openedAt < cutoff) {
         this.watchers.delete(ws);
+        this.sendProgress(ws, rev);
         closeQuietly(ws, "lease");
       }
+    }
+  }
+
+  private sendProgress(ws: WebSocket, rev: number): void {
+    try {
+      ws.send(JSON.stringify({ rev, type: "progress", key: "", value: "", prev: "" }));
+    } catch {
+      closeQuietly(ws, "send failed");
+    }
+  }
+
+  // Idle watches are indistinguishable from dead ones, so every open socket
+  // gets the current revision on a timer the client uses as a liveness signal.
+  async alarm(): Promise<void> {
+    this.restoreWatchers();
+    const sockets = this.ctx.getWebSockets();
+    if (sockets.length === 0) return;
+    const rev = this.revision();
+    for (const ws of sockets) {
+      this.sendProgress(ws, rev);
+    }
+    await this.ctx.storage.setAlarm(Date.now() + PROGRESS_EVERY_MS);
+  }
+
+  private async armProgress(): Promise<void> {
+    if ((await this.ctx.storage.getAlarm()) === null) {
+      await this.ctx.storage.setAlarm(Date.now() + PROGRESS_EVERY_MS);
     }
   }
 
