@@ -2,6 +2,7 @@ package workloads
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -128,12 +129,32 @@ func Sync(ctx context.Context, client kubernetes.Interface, rootCA []byte) (*Res
 	work.reset(workloadQueue)
 	factory := informers.NewSharedInformerFactory(client, 0)
 	result := &Result{Objects: map[string]int{}}
+	src := sources(client)
+	loaded := make([][]runtime.Object, len(src))
+	var listErr error
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	for i, s := range src {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			objs, err := list(ctx, s.page)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				listErr = err
+				return
+			}
+			loaded[i] = objs
+		}()
+	}
+	wg.Wait()
+	if listErr != nil {
+		return nil, listErr
+	}
 	var all []loadedSource
-	for _, s := range sources(client) {
-		objs, err := list(ctx, s.page)
-		if err != nil {
-			return nil, err
-		}
+	for i, s := range src {
+		objs := loaded[i]
 		if s.name == "jobs" && anyUnfinished(objs) {
 			result.NextMs = unfinishedJobRecheck.Milliseconds()
 		}
