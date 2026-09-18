@@ -36,7 +36,7 @@ const (
 	workers              = 5
 	listPage             = 500
 	drainPoll            = 200 * time.Millisecond
-	maxDrain             = 60 * time.Second
+	maxDrain             = 10 * time.Second
 	maxEndpointsPerSlice = 100
 	daemonSetWorkers     = 2
 	unfinishedJobRecheck = 10 * time.Second
@@ -360,6 +360,11 @@ func anyUnfinished(objs []runtime.Object) bool {
 
 func drain(owned func(string) bool) bool {
 	deadline := time.Now().Add(maxDrain)
+	defer func() {
+		if busy := work.busy(owned); busy != "" {
+			println("workloads: drain gave up with", busy)
+		}
+	}()
 	quiet := 0
 	for time.Now().Before(deadline) {
 		time.Sleep(drainPoll)

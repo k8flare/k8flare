@@ -1,6 +1,8 @@
 package workloads
 
 import (
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -53,6 +55,18 @@ func (a *activity) reset(owned func(string) bool) {
 			delete(a.queues, name)
 		}
 	}
+}
+
+func (a *activity) busy(owned func(string) bool) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var names []string
+	for name, c := range a.queues {
+		if owned(name) && (c.depth.Load() != 0 || c.inFlight.Load() != 0) {
+			names = append(names, name+"="+strconv.FormatInt(c.depth.Load(), 10)+"/"+strconv.FormatInt(c.inFlight.Load(), 10))
+		}
+	}
+	return strings.Join(names, " ")
 }
 
 func workloadQueue(string) bool { return true }
