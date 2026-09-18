@@ -1535,3 +1535,16 @@ been re-measured over a full quiet hour.
 - The timeouts did not go away: 102 in a 20-minute window over three required runs, 47 of them on `PUT /kv`. Required runs were 18/21, 15/21 and 17/21, always losing garbage collector specs.
 - The Cluster DO is not the bottleneck: 8,549 `/kv` calls at about 20ms each, 500 requests/min, 400 ms/min of CPU. Worth noting for later: the RBAC authorizer lists clusterroles 3,851 times and clusterrolebindings 949 times in that window, and the new GC scan reads 306 pages of `/registry/`.
 - So the remaining cause is the one diagnosed during the CRD work: Go runs in whichever JS turn resumed it, so a fetch can be issued in a turn belonging to an already-finished request and never settles. A per-request fetch pump in the loader bootstrap is the candidate fix and is being designed.
+
+## Per-request fetch pump and workloads batch cost (2026-09-18)
+
+- The loader bootstrap now issues outbound fetches on the owning request's turn through a per-window job queue, and `waitUntil` holds that request open until its window drains. Cross-frame fetches went from 474 to 0; fetch timeouts from 89–102 to about 8–16 per required run.
+- Workloads then listed snapshot sources in parallel, ran only the controllers whose inputs changed, and stopped draining a batch after 10s (was 60s) so a long reconcile cannot hold the single-concurrency queue. A 10-pod Deployment went from 80s to 42s to become Ready.
+- Required e2e after the drain cap: 20/21, 20/21, 21/21. The two failures were `should orphan RS created by deployment` waiting for ReplicaSet status (the e2e client's rate limiter hit the 60s context). The run immediately after deploy lost `should not be blocked by dependency circle`.
+
+## Garbage collector circle deadlock (2026-09-18)
+
+- The circle spec left all three pods with `deletionTimestamp`, `foregroundDeletion` and `blockOwnerDeletion`. Once every member of the cycle is deleting, `checkOwners` never runs, `finishForeground` waits for a blocker that will never go away, and GC reports `pending=0` after a lucky pass that dropped the finalizer work.
+- `finishForeground` now clears `blockOwnerDeletion` on dependents that are themselves deleting, and a patch conflict is no longer treated as success. Isolated focus of the circle and orphan-RS specs: 2/2 in 53s.
+- Workloads also runs the ReplicaSet controller when a Deployment batch runs, so the first RS create and its status update share a batch more often.
+- Required e2e after that is not green: 19/21, 19/21, 18/21. Failures rotate among orphan/delete RS, RC pods not appearing in 30s, LimitRange waiting for a default ServiceAccount, and a SchedulerPredicates filler pod that stayed Pending after bind. The common signature is still a backed-up workloads queue or a slow apiserver (client-go `rate limiter Wait: context deadline exceeded`), not a wrong GC decision.

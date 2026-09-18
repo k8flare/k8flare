@@ -52,6 +52,24 @@ func TestOwnerClassification(t *testing.T) {
 	}
 }
 
+func TestCircleBlockersAreAlreadyDeleting(t *testing.T) {
+	p1 := owned("p1", ref("p3", true))
+	p2 := owned("p2", ref("p1", true))
+	p3 := owned("p3", ref("p2", true))
+	now := metav1.Now()
+	for _, p := range []*item{p1, p2, p3} {
+		p.DeletionTimestamp = &now
+		p.Finalizers = []string{foregroundFinalizer}
+	}
+	g := graphOf(p1, p2, p3)
+	for _, p := range []*item{p1, p2, p3} {
+		live, deleting := splitBlockers(g, p)
+		if len(live) != 0 || len(deleting) != 1 {
+			t.Fatalf("%s: live=%d deleting=%d", p.Name, len(live), len(deleting))
+		}
+	}
+}
+
 func TestPropagationFromFinalizers(t *testing.T) {
 	c := &collector{}
 	orphaned := owned("rc-orphan")

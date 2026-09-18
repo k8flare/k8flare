@@ -136,6 +136,11 @@ var controllerNeeds = map[string][]string{
 	"rootca":          {"namespaces", "configmaps"},
 }
 
+var controllerFollows = map[string][]string{
+	"deployment": {"replicaset"},
+	"cronjob":    {"job"},
+}
+
 // wanted picks the controllers whose inputs changed in this batch and the
 // sources they read, so a batch only pays for the work it can actually do.
 func wanted(changed []string) (map[string]bool, map[string]bool) {
@@ -161,6 +166,17 @@ func wanted(changed []string) (map[string]bool, map[string]bool) {
 		}
 		if controllers[name] {
 			for _, need := range needs {
+				needed[need] = true
+			}
+		}
+	}
+	for name := range controllers {
+		for _, follow := range controllerFollows[name] {
+			if controllers[follow] {
+				continue
+			}
+			controllers[follow] = true
+			for _, need := range controllerNeeds[follow] {
 				needed[need] = true
 			}
 		}

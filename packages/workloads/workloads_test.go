@@ -72,7 +72,7 @@ func TestSyncCreatesReplicaSetThenPods(t *testing.T) {
 
 func TestWantedSelectsControllersForChangedResources(t *testing.T) {
 	controllers, needed := wanted([]string{"deployments"})
-	if !controllers["deployment"] || controllers["job"] {
+	if !controllers["deployment"] || !controllers["replicaset"] || controllers["job"] {
 		t.Fatalf("controllers = %v", controllers)
 	}
 	for _, want := range []string{"pods", "replicasets", "deployments"} {

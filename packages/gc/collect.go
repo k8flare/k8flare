@@ -70,12 +70,30 @@ func (c *collector) sync(ctx context.Context, it *item) error {
 }
 
 func (c *collector) finishForeground(ctx context.Context, it *item) error {
-	for _, dep := range c.graph.dependents[it.UID] {
-		if blocks(dep, it.UID) {
-			return nil
+	live, deleting := splitBlockers(c.graph, it)
+	for _, dep := range deleting {
+		if err := c.unblockOwners(ctx, dep); err != nil {
+			return err
 		}
 	}
+	if len(live) > 0 {
+		return nil
+	}
 	return c.removeFinalizer(ctx, it, foregroundFinalizer)
+}
+
+func splitBlockers(g *graph, it *item) (live, deleting []*item) {
+	for _, dep := range g.dependents[it.UID] {
+		if !blocks(dep, it.UID) {
+			continue
+		}
+		if dep.DeletionTimestamp != nil {
+			deleting = append(deleting, dep)
+		} else {
+			live = append(live, dep)
+		}
+	}
+	return
 }
 
 func (c *collector) orphanDependents(ctx context.Context, it *item) error {
@@ -148,7 +166,11 @@ func (c *collector) unblockOwners(ctx context.Context, it *item) error {
 	if !changed {
 		return nil
 	}
-	return c.patchMeta(ctx, it, map[string]any{"ownerReferences": refs})
+	if err := c.patchMeta(ctx, it, map[string]any{"ownerReferences": refs}); err != nil {
+		return err
+	}
+	it.OwnerReferences = refs
+	return nil
 }
 
 func (c *collector) propagationFor(it *item) metav1.DeletionPropagation {
@@ -243,7 +265,7 @@ func (c *collector) patchMeta(ctx context.Context, it *item, fields map[string]a
 		return err
 	}
 	_, err = res.Patch(ctx, it.Name, types.MergePatchType, patch, metav1.PatchOptions{})
-	if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
+	if apierrors.IsNotFound(err) {
 		return nil
 	}
 	if err != nil {
