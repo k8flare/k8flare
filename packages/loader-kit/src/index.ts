@@ -31,6 +31,7 @@ export default {
       out = await binding.handleRequest(
         { method: request.method, url: request.url, headers: [...request.headers], body: raw.byteLength === 0 ? null : new Uint8Array(raw), signal: request.signal },
         env,
+        ctx,
       );
     } catch (err) {
       clearInterval(keepalive);

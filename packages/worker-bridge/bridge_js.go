@@ -108,6 +108,10 @@ func Serve(handler http.Handler) {
 	binding.Set("handleRequest", js.FuncOf(func(_ js.Value, args []js.Value) any {
 		reqObj := args[0]
 		env := args[1]
+		var execCtx js.Value
+		if len(args) > 2 {
+			execCtx = args[2]
+		}
 		var executor js.Func
 		executor = js.FuncOf(func(_ js.Value, p []js.Value) any {
 			defer executor.Release()
@@ -120,7 +124,7 @@ func Serve(handler http.Handler) {
 					}
 					yieldToEventLoop()
 				}()
-				if err := dispatch(handler, reqObj, env, func(v js.Value) { resolve.Invoke(v) }); err != nil {
+				if err := dispatch(handler, reqObj, env, execCtx, func(v js.Value) { resolve.Invoke(v) }); err != nil {
 					reject.Invoke(js.Global().Get("Error").New(err.Error()))
 				}
 			}()
@@ -130,6 +134,27 @@ func Serve(handler http.Handler) {
 	}))
 	rt.Call("ready")
 	select {}
+}
+
+// extend keeps the request's I/O context alive past the response so writes
+// started near the end of a handler can still reach their binding.
+func extend(execCtx js.Value) func() {
+	if execCtx.IsUndefined() || execCtx.IsNull() || execCtx.Get("waitUntil").Type() != js.TypeFunction {
+		return func() {}
+	}
+	done := make(chan struct{})
+	var executor js.Func
+	executor = js.FuncOf(func(_ js.Value, p []js.Value) any {
+		defer executor.Release()
+		resolve := p[0]
+		go func() {
+			<-done
+			resolve.Invoke(js.Undefined())
+		}()
+		return js.Undefined()
+	})
+	execCtx.Call("waitUntil", js.Global().Get("Promise").New(executor))
+	return func() { close(done) }
 }
 
 func yieldToEventLoop() {
@@ -265,7 +290,7 @@ func fromUint8Array(v js.Value) []byte {
 	return b
 }
 
-func dispatch(handler http.Handler, reqObj, env js.Value, started func(js.Value)) (err error) {
+func dispatch(handler http.Handler, reqObj, env, execCtx js.Value, started func(js.Value)) (err error) {
 	u, err := url.Parse(reqObj.Get("url").String())
 	if err != nil {
 		return err
@@ -287,9 +312,14 @@ func dispatch(handler http.Handler, reqObj, env js.Value, started func(js.Value)
 		RequestURI:    u.RequestURI(),
 	}
 	window := openWindow(env)
-	defer window.close()
 	leaveTurn := EnterTurn(window)
 	defer leaveTurn()
+	finished := extend(execCtx)
+	defer func() {
+		window.drain()
+		window.close()
+		finished()
+	}()
 	ctx, cancel := context.WithCancel(context.WithValue(context.WithValue(context.Background(), envKey{}, env), windowKey{}, window))
 	defer cancel()
 	req = req.WithContext(ctx)
@@ -304,7 +334,6 @@ func dispatch(handler http.Handler, reqObj, env js.Value, started func(js.Value)
 		}))
 	}
 	handler.ServeHTTP(rw, req)
-	window.drain()
 	rw.finish()
 	return nil
 }
