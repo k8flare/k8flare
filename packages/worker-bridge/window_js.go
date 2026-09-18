@@ -14,24 +14,19 @@ import (
 var ErrWindowClosed = errors.New("bridge: pump window closed")
 
 type Window struct {
-	env        js.Value
-	done       chan struct{}
-	holding    bool
-	streams    map[int]func()
-	nextID     int
-	pending    int
-	drainFor   time.Duration
-	opened     time.Time
-	run        bool
-	superseded chan struct{}
+	env      js.Value
+	done     chan struct{}
+	holding  bool
+	streams  map[int]func()
+	nextID   int
+	pending  int
+	drainFor time.Duration
+	opened   time.Time
 }
 
 func (w *Window) kind() string {
-	switch {
-	case w.run:
-		return "run"
-	case w.holding || w.drainFor == pokeDrain:
-		return "poke"
+	if w.holding {
+		return "hold"
 	}
 	return "dispatch"
 }
@@ -45,7 +40,6 @@ const (
 	scheduledWork = 10 * time.Second
 	drainTimeout  = 5 * time.Second
 	pokeDrain     = 12 * time.Second
-	runDrain      = 30 * time.Second
 	drainPoll     = 100 * time.Millisecond
 )
 
@@ -57,7 +51,7 @@ var (
 )
 
 func openWindow(env js.Value) *Window {
-	w := &Window{env: env, done: make(chan struct{}), opened: time.Now(), superseded: make(chan struct{})}
+	w := &Window{env: env, done: make(chan struct{}), opened: time.Now()}
 	windowsMu.Lock()
 	windows = append(windows, w)
 	notify := openedCh
@@ -180,64 +174,6 @@ func OpenWindow(ctx context.Context) {
 	w.holding = true
 	w.drainFor = pokeDrain
 	windowsMu.Unlock()
-}
-
-func OpenRunWindow(ctx context.Context) {
-	w := windowFrom(ctx)
-	if w == nil {
-		return
-	}
-	windowsMu.Lock()
-	for _, other := range windows {
-		if other != w && other.run && other.holding {
-			other.holding = false
-			close(other.superseded)
-		}
-	}
-	w.holding = true
-	w.run = true
-	w.drainFor = runDrain
-	windowsMu.Unlock()
-}
-
-func RunContext(ctx context.Context) context.Context {
-	w := windowFrom(ctx)
-	if w == nil {
-		return ctx
-	}
-	runCtx, cancel := context.WithCancel(ctx)
-	go func() {
-		select {
-		case <-w.superseded:
-			cancel()
-		case <-runCtx.Done():
-		}
-	}()
-	return runCtx
-}
-
-func Superseded(ctx context.Context) bool {
-	w := windowFrom(ctx)
-	if w == nil {
-		return false
-	}
-	select {
-	case <-w.superseded:
-		return true
-	default:
-		return false
-	}
-}
-
-func Holding() bool {
-	windowsMu.Lock()
-	defer windowsMu.Unlock()
-	for _, w := range windows {
-		if w.holding {
-			return true
-		}
-	}
-	return false
 }
 
 func CloseWindow(ctx context.Context) {

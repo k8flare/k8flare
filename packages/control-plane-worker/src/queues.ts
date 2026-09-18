@@ -1,18 +1,15 @@
 import type { QueueMessage } from "@k8flare/cluster-store";
-import type { RunResult } from "./controllers.ts";
 
-const runWindowMs = 300_000;
 const leaseGraceMs = 60_000;
 const refusedRetryMs = 5_000;
 const unschedulableMaxDelayS = 60;
 const leasePrefix = "/registry/leases/kube-node-lease/";
-const crdPrefix = "/registry/apiextensions.k8s.io/customresourcedefinitions/";
 
-type Target = "scheduler" | "controllers" | "workloads" | "crds" | "gc";
+type Target = "scheduler" | "leases" | "workloads" | "crds" | "gc";
 
 function targetOf(queueName: string): Target | null {
   if (queueName.endsWith("-scheduler")) return "scheduler";
-  if (queueName.endsWith("-controllers")) return "controllers";
+  if (queueName.endsWith("-controllers")) return "leases";
   if (queueName.endsWith("-workloads")) return "workloads";
   if (queueName.endsWith("-crds")) return "crds";
   if (queueName.endsWith("-gc")) return "gc";
@@ -28,15 +25,6 @@ async function leaseExpired(env: Env, node: string): Promise<boolean> {
   const lease = JSON.parse(atob(data.kv.value)) as { spec?: { renewTime?: string } };
   const renewed = Date.parse(lease.spec?.renewTime ?? "");
   return !Number.isFinite(renewed) || Date.now() - renewed >= leaseGraceMs;
-}
-
-async function followUp(env: Env, result: RunResult): Promise<void> {
-  let delayMs = 0;
-  if (result.status === 204) delayMs = result.retryAfterMs > 0 ? result.retryAfterMs : refusedRetryMs;
-  else if (result.status === 200 && result.nextMs > 0) delayMs = result.nextMs;
-  else if (result.status !== 200) delayMs = refusedRetryMs;
-  if (delayMs <= 0) return;
-  await env.CTRL_Q.send({ kind: "retry" } satisfies QueueMessage, { delaySeconds: Math.ceil(delayMs / 1000) });
 }
 
 async function consumeScheduler(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
@@ -114,47 +102,32 @@ async function consumeGC(batch: MessageBatch<QueueMessage>, env: Env): Promise<v
   batch.ackAll();
 }
 
-export async function consume(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
-  const target = targetOf(batch.queue);
-  if (!target) {
-    batch.ackAll();
-    return;
-  }
-  if (target === "scheduler") return consumeScheduler(batch, env);
-  if (target === "workloads") return consumeWorkloads(batch, env);
-  if (target === "crds") return consumeCRDs(batch, env);
-  if (target === "gc") return consumeGC(batch, env);
-  let needRun = false;
-  let minMs = 0;
-  let reset = false;
-  let crdChanged = false;
+async function consumeLeases(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
   for (const msg of batch.messages) {
     const body = msg.body;
-    if (body.kind === "lease-check") {
-      if (await leaseExpired(env, body.node)) {
-        const health = await env.WORKLOADS.nodeHealth(body.node);
-        console.log(`lease expired: ${body.node} evicted=${health?.evicted} waiting=${health?.waiting}`);
-        const delayMs = health ? health.nextMs : refusedRetryMs;
-        if (delayMs > 0) {
-          await env.CTRL_Q.send({ kind: "lease-check", node: body.node } satisfies QueueMessage, { delaySeconds: Math.ceil(delayMs / 1000) });
-        }
-      }
-      continue;
-    }
-    needRun = true;
-    if (body.kind === "change") {
-      reset = true;
-      if (body.key.startsWith(crdPrefix)) crdChanged = true;
+    if (body.kind !== "lease-check" || !(await leaseExpired(env, body.node))) continue;
+    const health = await env.WORKLOADS.nodeHealth(body.node);
+    console.log(`lease expired: ${body.node} evicted=${health?.evicted} waiting=${health?.waiting}`);
+    const delayMs = health ? health.nextMs : refusedRetryMs;
+    if (delayMs > 0) {
+      await env.CTRL_Q.send({ kind: "lease-check", node: body.node } satisfies QueueMessage, { delaySeconds: Math.ceil(delayMs / 1000) });
     }
   }
-  if (crdChanged && target === "controllers") {
-    await env.CUSTOMRESOURCES.fetch("https://customresources.internal/apis").then((r) => r.text()).catch(() => {});
+  batch.ackAll();
+}
+
+export async function consume(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
+  switch (targetOf(batch.queue)) {
+    case "scheduler":
+      return consumeScheduler(batch, env);
+    case "workloads":
+      return consumeWorkloads(batch, env);
+    case "crds":
+      return consumeCRDs(batch, env);
+    case "gc":
+      return consumeGC(batch, env);
+    case "leases":
+      return consumeLeases(batch, env);
   }
-  if (!needRun) {
-    batch.ackAll();
-    return;
-  }
-  const result = (await env.CONTROLLERS.run(runWindowMs, minMs, reset)) as RunResult;
-  await followUp(env, result);
   batch.ackAll();
 }

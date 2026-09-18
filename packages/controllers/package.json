@@ -1,7 +1,0 @@
-{
-  "name": "@k8flare/controllers",
-  "private": true,
-  "type": "module",
-  "description": "The real kube-controller-manager controllers as a Loader dynamic worker: woken by writes to the resources they reconcile, pumped for a bounded window per wake-up.",
-  "scripts": { "build": "cd ../.. && make wasm" }
-}

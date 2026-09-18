@@ -14,8 +14,8 @@ const PROGRESS_EVERY_MS = 30_000;
 const OUTBOX_BATCH = 100;
 const MAX_DELAY_S = 86_400;
 
-type Target = "scheduler" | "controllers" | "workloads" | "crds" | "gc";
-const targets: Target[] = ["scheduler", "controllers", "workloads", "crds", "gc"];
+type Target = "scheduler" | "workloads" | "crds" | "gc";
+const targets: Target[] = ["scheduler", "workloads", "crds", "gc"];
 const CRD_PREFIX = "/registry/apiextensions.k8s.io/customresourcedefinitions/";
 const WORKLOAD_PREFIXES = ["/registry/pods/", "/registry/replicasets/", "/registry/deployments/", "/registry/replicationcontrollers/", "/registry/services/", "/registry/endpoints/", "/registry/endpointslices/", "/registry/jobs/", "/registry/statefulsets/", "/registry/daemonsets/", "/registry/controllerrevisions/", "/registry/persistentvolumeclaims/", "/registry/namespaces/", "/registry/serviceaccounts/", "/registry/configmaps/", "/registry/cronjobs/"];
 
@@ -303,7 +303,7 @@ export class Cluster extends DurableObject<Env> {
       if (type !== "deleted") this.ctx.waitUntil(this.checkLeaseLater(name.slice(NODE_LEASE_PREFIX.length)));
       return;
     }
-    const routes: Target[] = ["controllers"];
+    const routes: Target[] = [];
     if (WORKLOAD_PREFIXES.some((p) => name.startsWith(p))) routes.push("workloads");
     if (name.startsWith(CRD_PREFIX)) routes.push("crds");
     if (type === "deleted" || collectable(value)) routes.push("gc");
@@ -311,7 +311,6 @@ export class Cluster extends DurableObject<Env> {
       if (type === "deleted" || !podBound(value)) routes.push("scheduler");
     } else if (name.startsWith("/registry/minions/") || name.startsWith("/registry/nodes/")) {
       if (type !== "modified" || nodeChanged(prev!.value, value)) routes.push("scheduler", "workloads");
-      else routes.length = 0;
     }
     for (const target of routes) {
       this.ctx.storage.sql.exec("INSERT INTO outbox (target, rev, key, type) VALUES (?, ?, ?, ?)", target, rev, name, type);
