@@ -122,7 +122,54 @@ func sources(client kubernetes.Interface) []source {
 	}
 }
 
-func Sync(ctx context.Context, client kubernetes.Interface, rootCA []byte) (*Result, error) {
+var controllerNeeds = map[string][]string{
+	"replicaset":      {"pods", "replicasets"},
+	"replication":     {"pods", "replicationcontrollers"},
+	"deployment":      {"pods", "replicasets", "deployments"},
+	"endpoints":       {"pods", "services", "endpoints"},
+	"endpointslice":   {"pods", "services", "endpointslices", "nodes"},
+	"job":             {"pods", "jobs"},
+	"cronjob":         {"jobs", "cronjobs"},
+	"statefulset":     {"pods", "statefulsets", "persistentvolumeclaims", "controllerrevisions"},
+	"daemonset":       {"pods", "daemonsets", "controllerrevisions", "nodes"},
+	"serviceaccounts": {"namespaces", "serviceaccounts"},
+	"rootca":          {"namespaces", "configmaps"},
+}
+
+// wanted picks the controllers whose inputs changed in this batch and the
+// sources they read, so a batch only pays for the work it can actually do.
+func wanted(changed []string) (map[string]bool, map[string]bool) {
+	if len(changed) == 0 {
+		all := map[string]bool{}
+		for name := range controllerNeeds {
+			all[name] = true
+		}
+		return all, nil
+	}
+	touched := map[string]bool{}
+	for _, name := range changed {
+		touched[name] = true
+	}
+	controllers := map[string]bool{}
+	needed := map[string]bool{}
+	for name, needs := range controllerNeeds {
+		for _, need := range needs {
+			if touched[need] {
+				controllers[name] = true
+				break
+			}
+		}
+		if controllers[name] {
+			for _, need := range needs {
+				needed[need] = true
+			}
+		}
+	}
+	return controllers, needed
+}
+
+func Sync(ctx context.Context, client kubernetes.Interface, rootCA []byte, changed []string) (*Result, error) {
+	controllers, needed := wanted(changed)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -130,6 +177,15 @@ func Sync(ctx context.Context, client kubernetes.Interface, rootCA []byte) (*Res
 	factory := informers.NewSharedInformerFactory(client, 0)
 	result := &Result{Objects: map[string]int{}}
 	src := sources(client)
+	if needed != nil {
+		kept := src[:0]
+		for _, s := range src {
+			if needed[s.name] {
+				kept = append(kept, s)
+			}
+		}
+		src = kept
+	}
 	loaded := make([][]runtime.Object, len(src))
 	var listErr error
 	var wg sync.WaitGroup
@@ -169,48 +225,70 @@ func Sync(ctx context.Context, client kubernetes.Interface, rootCA []byte) (*Res
 
 	apps, core := factory.Apps().V1(), factory.Core().V1()
 	runs := []func(context.Context){}
-	rs := replicaset.NewReplicaSetController(ctx, apps.ReplicaSets(), core.Pods(), client, replicaset.BurstReplicas)
-	runs = append(runs, func(ctx context.Context) { rs.Run(ctx, workers) })
-	rc := replication.NewReplicationManager(ctx, core.Pods(), core.ReplicationControllers(), client, replication.BurstReplicas)
-	runs = append(runs, func(ctx context.Context) { rc.Run(ctx, workers) })
-	dc, err := deployment.NewDeploymentController(ctx, apps.Deployments(), apps.ReplicaSets(), core.Pods(), client)
-	if err != nil {
-		return nil, err
+	if controllers["replicaset"] {
+		rs := replicaset.NewReplicaSetController(ctx, apps.ReplicaSets(), core.Pods(), client, replicaset.BurstReplicas)
+		runs = append(runs, func(ctx context.Context) { rs.Run(ctx, workers) })
 	}
-	runs = append(runs, func(ctx context.Context) { dc.Run(ctx, workers) })
-	ep := endpoint.NewEndpointController(ctx, core.Pods(), core.Services(), core.Endpoints(), client, 0)
-	runs = append(runs, func(ctx context.Context) { ep.Run(ctx, workers) })
-	eps := endpointslice.NewController(ctx, core.Pods(), core.Services(), core.Nodes(), factory.Discovery().V1().EndpointSlices(), maxEndpointsPerSlice, client, 0)
-	runs = append(runs, func(ctx context.Context) { eps.Run(ctx, workers) })
+	if controllers["replication"] {
+		rc := replication.NewReplicationManager(ctx, core.Pods(), core.ReplicationControllers(), client, replication.BurstReplicas)
+		runs = append(runs, func(ctx context.Context) { rc.Run(ctx, workers) })
+	}
+	if controllers["deployment"] {
+		dc, err := deployment.NewDeploymentController(ctx, apps.Deployments(), apps.ReplicaSets(), core.Pods(), client)
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, func(ctx context.Context) { dc.Run(ctx, workers) })
+	}
+	if controllers["endpoints"] {
+		ep := endpoint.NewEndpointController(ctx, core.Pods(), core.Services(), core.Endpoints(), client, 0)
+		runs = append(runs, func(ctx context.Context) { ep.Run(ctx, workers) })
+	}
+	if controllers["endpointslice"] {
+		eps := endpointslice.NewController(ctx, core.Pods(), core.Services(), core.Nodes(), factory.Discovery().V1().EndpointSlices(), maxEndpointsPerSlice, client, 0)
+		runs = append(runs, func(ctx context.Context) { eps.Run(ctx, workers) })
+	}
 
-	ds, err := daemon.NewDaemonSetsController(ctx, apps.DaemonSets(), apps.ControllerRevisions(), core.Pods(), core.Nodes(), client, flowcontrol.NewBackOff(time.Second, 15*time.Minute))
-	if err != nil {
-		return nil, err
+	if controllers["daemonset"] {
+		ds, err := daemon.NewDaemonSetsController(ctx, apps.DaemonSets(), apps.ControllerRevisions(), core.Pods(), core.Nodes(), client, flowcontrol.NewBackOff(time.Second, 15*time.Minute))
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, func(ctx context.Context) { ds.Run(ctx, daemonSetWorkers) })
 	}
-	runs = append(runs, func(ctx context.Context) { ds.Run(ctx, daemonSetWorkers) })
-	ss := statefulset.NewStatefulSetController(ctx, core.Pods(), apps.StatefulSets(), core.PersistentVolumeClaims(), apps.ControllerRevisions(), client)
-	runs = append(runs, func(ctx context.Context) { ss.Run(ctx, workers) })
-	jobs, err := job.NewController(ctx, client, core.Pods(), factory.Batch().V1().Jobs(), nil, nil)
-	if err != nil {
-		return nil, err
+	if controllers["statefulset"] {
+		ss := statefulset.NewStatefulSetController(ctx, core.Pods(), apps.StatefulSets(), core.PersistentVolumeClaims(), apps.ControllerRevisions(), client)
+		runs = append(runs, func(ctx context.Context) { ss.Run(ctx, workers) })
 	}
-	runs = append(runs, func(ctx context.Context) { jobs.Run(ctx, workers) })
-	cron, err := cronjob.NewControllerV2(ctx, factory.Batch().V1().Jobs(), factory.Batch().V1().CronJobs(), client)
-	if err != nil {
-		return nil, err
+	if controllers["job"] {
+		jobs, err := job.NewController(ctx, client, core.Pods(), factory.Batch().V1().Jobs(), nil, nil)
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, func(ctx context.Context) { jobs.Run(ctx, workers) })
 	}
-	runs = append(runs, func(ctx context.Context) { cron.Run(ctx, workers) })
+	if controllers["cronjob"] {
+		cron, err := cronjob.NewControllerV2(ctx, factory.Batch().V1().Jobs(), factory.Batch().V1().CronJobs(), client)
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, func(ctx context.Context) { cron.Run(ctx, workers) })
+	}
 
-	accounts, err := serviceaccount.NewServiceAccountsController(klog.FromContext(ctx), core.ServiceAccounts(), core.Namespaces(), client, serviceaccount.DefaultServiceAccountsControllerOptions())
-	if err != nil {
-		return nil, err
+	if controllers["serviceaccounts"] {
+		accounts, err := serviceaccount.NewServiceAccountsController(klog.FromContext(ctx), core.ServiceAccounts(), core.Namespaces(), client, serviceaccount.DefaultServiceAccountsControllerOptions())
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, func(ctx context.Context) { accounts.Run(ctx, 1) })
 	}
-	runs = append(runs, func(ctx context.Context) { accounts.Run(ctx, 1) })
-	publisher, err := rootcacertpublisher.NewPublisher(core.ConfigMaps(), core.Namespaces(), client, rootCA)
-	if err != nil {
-		return nil, err
+	if controllers["rootca"] {
+		publisher, err := rootcacertpublisher.NewPublisher(core.ConfigMaps(), core.Namespaces(), client, rootCA)
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, func(ctx context.Context) { publisher.Run(ctx, 1) })
 	}
-	runs = append(runs, func(ctx context.Context) { publisher.Run(ctx, 1) })
 
 	for _, l := range all {
 		l.informer.fill(l.objs)

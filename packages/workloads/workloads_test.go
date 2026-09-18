@@ -52,7 +52,7 @@ func TestSyncCreatesReplicaSetThenPods(t *testing.T) {
 	rsCreates, podCreates := 0, 0
 	for i := 0; i < 4; i++ {
 		client.ClearActions()
-		if _, err := Sync(context.Background(), client, []byte("ca")); err != nil {
+		if _, err := Sync(context.Background(), client, []byte("ca"), nil); err != nil {
 			t.Fatal(err)
 		}
 		rsCreates += creates(client, "replicasets")
@@ -62,10 +62,29 @@ func TestSyncCreatesReplicaSetThenPods(t *testing.T) {
 		t.Fatalf("replicaset creates = %d, pod creates = %d", rsCreates, podCreates)
 	}
 	client.ClearActions()
-	if _, err := Sync(context.Background(), client, []byte("ca")); err != nil {
+	if _, err := Sync(context.Background(), client, []byte("ca"), nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := creates(client, "pods") + creates(client, "replicasets"); got != 0 {
 		t.Fatalf("creates on settled state = %d", got)
+	}
+}
+
+func TestWantedSelectsControllersForChangedResources(t *testing.T) {
+	controllers, needed := wanted([]string{"deployments"})
+	if !controllers["deployment"] || controllers["job"] {
+		t.Fatalf("controllers = %v", controllers)
+	}
+	for _, want := range []string{"pods", "replicasets", "deployments"} {
+		if !needed[want] {
+			t.Fatalf("needed is missing %s: %v", want, needed)
+		}
+	}
+	if needed["cronjobs"] {
+		t.Fatalf("needed should not include cronjobs: %v", needed)
+	}
+	all, none := wanted(nil)
+	if len(all) != len(controllerNeeds) || none != nil {
+		t.Fatalf("an empty batch must run everything: %d %v", len(all), none)
 	}
 }

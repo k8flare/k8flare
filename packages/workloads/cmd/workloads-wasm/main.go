@@ -68,7 +68,11 @@ func main() {
 			json.NewEncoder(w).Encode(health)
 			return
 		}
-		result, err := workloads.Sync(r.Context(), client, rootCA)
+		changed := []string{}
+		if raw := r.URL.Query().Get("changed"); raw != "" {
+			changed = strings.Split(raw, ",")
+		}
+		result, err := workloads.Sync(r.Context(), client, rootCA, changed)
 		if err != nil {
 			println("workloads: sync failed:", err.Error())
 			http.Error(w, err.Error(), http.StatusInternalServerError)

@@ -70,7 +70,13 @@ async function consumeWorkloads(batch: MessageBatch<QueueMessage>, env: Env): Pr
       );
     }
   }
-  const result = await env.WORKLOADS.sync();
+  const changed = new Set<string>();
+  for (const msg of batch.messages) {
+    if (msg.body.kind !== "change") continue;
+    const parts = msg.body.key.split("/");
+    if (parts.length > 2) changed.add(parts[2]);
+  }
+  const result = await env.WORKLOADS.sync([...changed]);
   if (!result) {
     await env.WL_Q.send({ kind: "retry" } satisfies QueueMessage, { delaySeconds: refusedRetryMs / 1000 });
   } else {

@@ -21,8 +21,8 @@ export interface NamespaceResult {
 }
 
 export class Workloads extends WorkerEntrypoint<Env> {
-  async sync(): Promise<SyncResult | null> {
-    return this.call<SyncResult>("/sync");
+  async sync(changed: string[]): Promise<SyncResult | null> {
+    return this.call<SyncResult>(`/sync?changed=${encodeURIComponent(changed.join(","))}`);
   }
 
   async namespaces(names: string[]): Promise<NamespaceResult | null> {
