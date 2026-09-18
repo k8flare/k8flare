@@ -180,8 +180,10 @@ export class Cluster extends DurableObject<Env> {
         }
       }
     }
-    for (const [ws] of this.watchers) {
-      if (!notified.has(ws)) this.sendProgress(ws, rev);
+    if (name.startsWith(NODE_LEASE_PREFIX)) {
+      for (const [ws] of this.watchers) {
+        if (!notified.has(ws)) this.sendProgress(ws, rev);
+      }
     }
     return rev;
   }
