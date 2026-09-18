@@ -41,7 +41,7 @@ func startDevURL(t *testing.T) (string, *kubernetes.Clientset) {
 	t.Helper()
 	_, file, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(file), "../..")
-	workers := []string{"apiserver", "openapi", "customresources", "scheduler", "controllers"}
+	workers := []string{"apiserver", "openapi", "customresources", "scheduler", "workloads", "gc"}
 	for _, g := range []string{"core", "coordination", "discovery", "node", "storage", "authentication", "authorization", "apps", "policy", "resource", "rbac", "batch"} {
 		workers = append(workers, "apiserver-"+g)
 	}

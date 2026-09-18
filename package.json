@@ -1,6 +1,7 @@
 {
   "name": "k8flare",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --local --persist-to .wrangler/state",

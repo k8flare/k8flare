@@ -4,10 +4,7 @@ package group
 
 import (
 	"context"
-	"fmt"
 	"net/http"
-	"strings"
-	"time"
 
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
@@ -36,20 +33,6 @@ func Serve(groupVersion string) {
 			return nil, registry.ErrNoTableSource
 		}
 		return table, err
-	}
-	registry.EnqueueControllers = func(ctx context.Context, delay time.Duration) {
-		body := strings.NewReader(fmt.Sprintf(`{"target":"controllers","delayMs":%d}`, delay.Milliseconds()))
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://cluster.internal/enqueue", body)
-		if err != nil {
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := (&http.Client{Transport: bridge.BindingTransport{Name: "STORAGE"}}).Do(req)
-		if err != nil {
-			println("controllers enqueue:", err.Error())
-			return
-		}
-		resp.Body.Close()
 	}
 	kubelet := registry.KubeletProxy{Transport: bridge.BindingTransport{Name: "TUNNEL"}, Base: "https://nodetunnel.internal"}
 	handler, err := NewHandler(gv, Config{

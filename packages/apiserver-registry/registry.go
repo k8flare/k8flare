@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"time"
 
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 
@@ -93,12 +92,11 @@ type Deps struct {
 type Store = genericregistry.Store
 
 var (
-	Resources          = map[string]func(gv schema.GroupVersion, res metav1.APIResource, deps Deps) rest.Storage{}
-	Customizers        = map[string]func(store *Store, deps Deps){}
-	Deleters           = map[string]func(store *Store) rest.GracefulDeleter{}
-	Subresources       = map[string]func(stores map[string]*Store, deps Deps) rest.Storage{}
-	Middleware         []func(stores map[string]*Store) func(http.Handler) http.Handler
-	EnqueueControllers func(ctx context.Context, delay time.Duration)
+	Resources    = map[string]func(gv schema.GroupVersion, res metav1.APIResource, deps Deps) rest.Storage{}
+	Customizers  = map[string]func(store *Store, deps Deps){}
+	Deleters     = map[string]func(store *Store) rest.GracefulDeleter{}
+	Subresources = map[string]func(stores map[string]*Store, deps Deps) rest.Storage{}
+	Middleware   []func(stores map[string]*Store) func(http.Handler) http.Handler
 )
 
 func NewStore(client *kine.Client, gv schema.GroupVersion, res metav1.APIResource) (*genericregistry.Store, error) {

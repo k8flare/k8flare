@@ -6,7 +6,9 @@ dist/
 *.wasm
 .dev.vars
 .secrets/
-/kubeconfig.yaml
+kubeconfig.yaml
+*.kubeconfig
+.claude/
 .DS_Store
 /bin/
 /worker-configuration.d.ts
