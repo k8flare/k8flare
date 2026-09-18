@@ -1506,3 +1506,18 @@ been re-measured over a full quiet hour.
 - Required e2e: all 21 specs passed.
 - Advisory `Namespaces [Serial]` still fails: those specs create 100 namespaces at once and the cluster cannot keep up, and the pod-log specs fail through the tunnel. Both are pre-existing limits, not the new path.
 - Only the garbage collector is left in the resident controllers.
+
+## Phase 4 step 5: garbage collection as a queue consumer (2026-09-18)
+
+- New `packages/gc` and `k8flare-gc` queue: each batch reads the store, rebuilds the owner graph by UID, applies the upstream rules and mutates only through the apiserver with a per-batch RESTMapper. No dependency graph, no metadata informers. The wasm is 35MB; the resident controllers package is now empty (34MB).
+- Routing: deletes and writes that carry owner references or garbage collection finalizers go to the gc queue.
+- Three fixes found on production: owner references that wait for foreground deletion must also be patched out when another owner is solid; a dependency circle needs its blockOwnerDeletion cleared before the foreground delete; and a pass that changes nothing must still re-check while objects hold garbage collection finalizers.
+- Garbage collector focus specs: 11 of 11 passed.
+
+## Watch liveness (2026-09-18)
+
+- The kubelet stall returned in a second shape: a watch stream ended with an HTTP/2 INTERNAL_ERROR, the reflector rewatched, and the new watch was connected but silent forever. This apiserver has no watch cache, so it never sent bookmarks, and nothing ever told the client to relist.
+- Fix: the Cluster DO sends a `progress` frame with the current revision to every open socket every 30s through an alarm, and one final frame before a lease close; kine turns it into a watch bookmark and advances its revision, expires the watch with ResourceExpired after 90s of silence, and also expires it when the redial retries run out. The apiserver dynamic worker's tail events now reach the front worker's log handler.
+- Validation: bookmarks arrive about every 15-30s; after a deploy reset every watch, a fresh pod ran in 16s; after a 30-minute soak with no node restart a pod ran in 14s; no INTERNAL_ERROR on the node.
+- Still open: 29 `bridge: fetch timed out` in that window, mostly namespace and GC writes from dynamic workers, and the required set lost two GC specs under that load. The earlier analysis blamed a per-isolate baked Durable Object stub plus the 6-connection budget.
+- Attempted follow-up that had to be reverted: passing the CLUSTER namespace into the dynamic worker env and creating the stub per request broke every apiserver request in production (`InternalError` on all verbs). Rolled back and redeployed; the cluster recovered and a pod ran in 9s. A different approach is needed for the stub lifetime.
