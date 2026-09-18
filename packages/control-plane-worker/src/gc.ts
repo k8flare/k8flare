@@ -5,6 +5,7 @@ export interface CollectResult {
   items: number;
   deleted: number;
   patched: number;
+  pending: number;
 }
 
 export class GarbageCollector extends WorkerEntrypoint<Env> {

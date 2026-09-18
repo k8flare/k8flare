@@ -26,6 +26,7 @@ type Result struct {
 	Items   int `json:"items"`
 	Deleted int `json:"deleted"`
 	Patched int `json:"patched"`
+	Pending int `json:"pending"`
 }
 
 type collector struct {
@@ -46,6 +47,9 @@ func Collect(ctx context.Context, client kubernetes.Interface, dyn dynamic.Inter
 	}
 	c := &collector{dynamic: dyn, mapper: restmapper.NewDiscoveryRESTMapper(groups), graph: g, result: &Result{Items: len(g.items)}}
 	for _, it := range g.items {
+		if it.DeletionTimestamp != nil && (it.hasFinalizer(foregroundFinalizer) || it.hasFinalizer(orphanFinalizer)) {
+			c.result.Pending++
+		}
 		if err := c.sync(ctx, it); err != nil {
 			println("gc:", it.key, "failed:", err.Error())
 		}

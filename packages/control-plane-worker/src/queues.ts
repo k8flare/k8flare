@@ -106,8 +106,8 @@ const gcSettleMs = 2_000;
 
 async function consumeGC(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
   const result = await env.GC.collect();
-  if (result) console.log(`gc: items=${result.items} deleted=${result.deleted} patched=${result.patched}`);
-  const changed = !result || result.deleted > 0 || result.patched > 0;
+  if (result) console.log(`gc: items=${result.items} deleted=${result.deleted} patched=${result.patched} pending=${result.pending}`);
+  const changed = !result || result.deleted > 0 || result.patched > 0 || result.pending > 0;
   if (changed) {
     await env.GC_Q.send({ kind: "retry" } satisfies QueueMessage, { delaySeconds: Math.ceil((result ? gcSettleMs : refusedRetryMs) / 1000) });
   }
