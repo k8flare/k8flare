@@ -70,6 +70,37 @@ func TestSyncCreatesReplicaSetThenPods(t *testing.T) {
 	}
 }
 
+func TestSyncDeploymentBatchCreatesPods(t *testing.T) {
+	labels := map[string]string{"app": "web"}
+	d := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "default", UID: "d1"},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: ptr.To[int32](2),
+			Strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType},
+			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Template: v1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels}, Spec: v1.PodSpec{Containers: []v1.Container{{Name: "c", Image: "i"}}}},
+		},
+	}
+	client := fake.NewSimpleClientset(d)
+	uids := 0
+	client.PrependReactor("create", "*", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		if obj, err := meta.Accessor(action.(k8stesting.CreateAction).GetObject()); err == nil && obj.GetUID() == "" {
+			uids++
+			obj.SetUID(types.UID(fmt.Sprintf("uid-%d", uids)))
+			if obj.GetName() == "" {
+				obj.SetName(fmt.Sprintf("%s%d", obj.GetGenerateName(), uids))
+			}
+		}
+		return false, nil, nil
+	})
+	if _, err := Sync(context.Background(), client, []byte("ca"), []string{"deployments"}); err != nil {
+		t.Fatal(err)
+	}
+	if gotRS, gotPods := creates(client, "replicasets"), creates(client, "pods"); gotRS != 1 || gotPods != 2 {
+		t.Fatalf("replicaset creates = %d, pod creates = %d", gotRS, gotPods)
+	}
+}
+
 func TestWantedSelectsControllersForChangedResources(t *testing.T) {
 	controllers, needed := wanted([]string{"deployments"})
 	if !controllers["deployment"] || !controllers["replicaset"] || controllers["job"] {

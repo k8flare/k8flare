@@ -184,7 +184,31 @@ func wanted(changed []string) (map[string]bool, map[string]bool) {
 	return controllers, needed
 }
 
+func needsFollowUp(controllers map[string]bool) bool {
+	return controllers["deployment"] || controllers["replication"] || controllers["replicaset"]
+}
+
 func Sync(ctx context.Context, client kubernetes.Interface, rootCA []byte, changed []string) (*Result, error) {
+	result, err := syncPass(ctx, client, rootCA, changed, maxDrain)
+	controllers, _ := wanted(changed)
+	if err != nil || !needsFollowUp(controllers) {
+		return result, err
+	}
+	follow, err := syncPass(ctx, client, rootCA, []string{"pods", "replicasets", "replicationcontrollers", "deployments"}, 2*time.Second)
+	if err != nil {
+		return result, err
+	}
+	for k, v := range follow.Objects {
+		result.Objects[k] = v
+	}
+	result.Drained = result.Drained && follow.Drained
+	if follow.NextMs > 0 && (result.NextMs <= 0 || follow.NextMs < result.NextMs) {
+		result.NextMs = follow.NextMs
+	}
+	return result, nil
+}
+
+func syncPass(ctx context.Context, client kubernetes.Interface, rootCA []byte, changed []string, drainFor time.Duration) (*Result, error) {
 	controllers, needed := wanted(changed)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -320,7 +344,7 @@ func Sync(ctx context.Context, client kubernetes.Interface, rootCA []byte, chang
 	if err := clearRecoveredNodes(ctx, client, nodesOf(all)); err != nil {
 		println("workloads: clearing node taints failed:", err.Error())
 	}
-	result.Drained = drain(workloadQueue)
+	result.Drained = drain(workloadQueue, drainFor)
 	cancel()
 	for range runs {
 		<-done
@@ -374,8 +398,8 @@ func anyUnfinished(objs []runtime.Object) bool {
 	return false
 }
 
-func drain(owned func(string) bool) bool {
-	deadline := time.Now().Add(maxDrain)
+func drain(owned func(string) bool, limit time.Duration) bool {
+	deadline := time.Now().Add(limit)
 	defer func() {
 		if busy := work.busy(owned); busy != "" {
 			println("workloads: drain gave up with", busy)

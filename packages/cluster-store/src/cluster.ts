@@ -10,7 +10,6 @@ const WATCH_LEASE_MS = 360_000;
 const NODE_LEASE_PREFIX = "/registry/leases/kube-node-lease/";
 const LEASE_CHECK_DELAY_S = 60;
 const LEASE_CHECK_EVERY_MS = 50_000;
-const PROGRESS_EVERY_MS = 30_000;
 const OUTBOX_BATCH = 100;
 const MAX_DELAY_S = 86_400;
 
@@ -161,8 +160,9 @@ export class Cluster extends DurableObject<Env> {
     this.record(name, type, rev, value, prev);
     this.restoreWatchers();
     this.expireWatchers();
-    const targets = [...this.watchers].filter(([, w]) => (w.exact ? name === w.prefix : name.startsWith(w.prefix)));
-    if (targets.length > 0) {
+    const notified = new Set<WebSocket>();
+    const matched = [...this.watchers].filter(([, w]) => (w.exact ? name === w.prefix : name.startsWith(w.prefix)));
+    if (matched.length > 0) {
       const msg = JSON.stringify({
         rev,
         type,
@@ -170,13 +170,17 @@ export class Cluster extends DurableObject<Env> {
         value: toBase64(value),
         prev: type === "modified" ? toBase64(prev!.value) : "",
       });
-      for (const [ws] of targets) {
+      for (const [ws] of matched) {
+        notified.add(ws);
         try {
           ws.send(msg);
         } catch {
           closeQuietly(ws, "send failed");
         }
       }
+    }
+    for (const [ws] of this.watchers) {
+      if (!notified.has(ws)) this.sendProgress(ws, rev);
     }
     return rev;
   }
@@ -207,7 +211,7 @@ export class Cluster extends DurableObject<Env> {
     this.expireWatchers();
     this.watchers.set(server, watcher);
     this.ctx.waitUntil(this.flushOutbox());
-    this.ctx.waitUntil(this.armProgress());
+    this.ctx.waitUntil(this.armWatchLease());
     if (initial) {
       for (const kv of this.latest(watcher.prefix, watcher.exact, watcher.prefix, -1)) {
         server.send(JSON.stringify({ rev: kv.modRevision, type: "created", key: kv.key, value: toBase64(kv.value), prev: "" }));
@@ -255,22 +259,27 @@ export class Cluster extends DurableObject<Env> {
     }
   }
 
-  // Idle watches are indistinguishable from dead ones, so every open socket
-  // gets the current revision on a timer the client uses as a liveness signal.
   async alarm(): Promise<void> {
     this.restoreWatchers();
-    const sockets = this.ctx.getWebSockets();
-    if (sockets.length === 0) return;
-    const rev = this.revision();
-    for (const ws of sockets) {
-      this.sendProgress(ws, rev);
-    }
-    await this.ctx.storage.setAlarm(Date.now() + PROGRESS_EVERY_MS);
+    this.expireWatchers();
+    await this.armWatchLease();
   }
 
-  private async armProgress(): Promise<void> {
-    if ((await this.ctx.storage.getAlarm()) === null) {
-      await this.ctx.storage.setAlarm(Date.now() + PROGRESS_EVERY_MS);
+  private async armWatchLease(): Promise<void> {
+    this.restoreWatchers();
+    let next = 0;
+    for (const w of this.watchers.values()) {
+      const due = w.openedAt + WATCH_LEASE_MS;
+      if (next === 0 || due < next) next = due;
+    }
+    if (next === 0) {
+      await this.ctx.storage.deleteAlarm();
+      return;
+    }
+    const soonest = Math.max(next, Date.now() + 1000);
+    const existing = await this.ctx.storage.getAlarm();
+    if (existing === null || existing > soonest) {
+      await this.ctx.storage.setAlarm(soonest);
     }
   }
 
@@ -360,6 +369,7 @@ export class Cluster extends DurableObject<Env> {
   async webSocketClose(ws: WebSocket): Promise<void> {
     this.watchers.delete(ws);
     closeQuietly(ws, "peer");
+    this.ctx.waitUntil(this.armWatchLease());
   }
 
   async webSocketError(ws: WebSocket): Promise<void> {

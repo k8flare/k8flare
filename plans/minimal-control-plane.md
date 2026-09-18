@@ -1548,3 +1548,9 @@ been re-measured over a full quiet hour.
 - `finishForeground` now clears `blockOwnerDeletion` on dependents that are themselves deleting, and a patch conflict is no longer treated as success. Isolated focus of the circle and orphan-RS specs: 2/2 in 53s.
 - Workloads also runs the ReplicaSet controller when a Deployment batch runs, so the first RS create and its status update share a batch more often.
 - Required e2e after that is not green: 19/21, 19/21, 18/21. Failures rotate among orphan/delete RS, RC pods not appearing in 30s, LimitRange waiting for a default ServiceAccount, and a SchedulerPredicates filler pod that stayed Pending after bind. The common signature is still a backed-up workloads queue or a slow apiserver (client-go `rate limiter Wait: context deadline exceeded`), not a wrong GC decision.
+
+## No heartbeat alarm; watch liveness rides writes (2026-09-18)
+
+- The Cluster DO had a 30s `alarm()` that sent a progress frame to every open watch. With a joined node that is a 24/7 paid wake (`setAlarm` is a row write; each alarm is a request). Cloudflare's guidance is one coalesced alarm set as far out as correctness allows, not a polling loop.
+- Watches now get a progress frame on any store write that did not already match them (node leases already arrive ~every 10s). The only alarm is the soonest watch lease expiry (`WATCH_LEASE_MS`, 6 minutes from accept), and it is cleared when no sockets remain.
+- A Deployment/RC/RS batch does a 2s follow-up pass over pods and replica objects in the same queue message, so the first RS create also creates its pods without waiting behind the single-concurrency workloads queue.
