@@ -1521,3 +1521,10 @@ been re-measured over a full quiet hour.
 - Validation: bookmarks arrive about every 15-30s; after a deploy reset every watch, a fresh pod ran in 16s; after a 30-minute soak with no node restart a pod ran in 14s; no INTERNAL_ERROR on the node.
 - Still open: 29 `bridge: fetch timed out` in that window, mostly namespace and GC writes from dynamic workers, and the required set lost two GC specs under that load. The earlier analysis blamed a per-isolate baked Durable Object stub plus the 6-connection budget.
 - Attempted follow-up that had to be reverted: passing the CLUSTER namespace into the dynamic worker env and creating the stub per request broke every apiserver request in production (`InternalError` on all verbs). Rolled back and redeployed; the cluster recovered and a pod ran in 9s. A different approach is needed for the stub lifetime.
+
+## Phase 4 step 6: teardown (2026-09-18)
+
+- Deleted `packages/controllers`, its wasm and asset, the `Controllers` entrypoint and binding, the `controllers` route in the store, `packages/worker-bridge/pacer.go`, and the run-window half of `window_js.go` (OpenRunWindow, RunContext, Superseded, Holding, the run drain and the run window kind). CTRL_Q now carries only node lease checks.
+- Control loops are queue consumers only: scheduler, workloads (ReplicaSet, ReplicationController, Deployment, Endpoints, EndpointSlice, Job, CronJob, StatefulSet, DaemonSet, ServiceAccounts, root CA), CRD conditions, garbage collection, node health.
+- Idle CPU after the teardown: 70 ms/min over 18 minutes (was 103 after Phase 3, 1,134 at the start of Phase 1).
+- Required e2e is not green yet: 19/21 and 16/21 across two runs, always the garbage collector specs, with 51 `bridge: fetch timed out` lines in the same window. The hung outbound fetch from dynamic workers is the last blocker.
