@@ -14,6 +14,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/restmapper"
+	"k8s.io/utils/ptr"
 )
 
 const (
@@ -91,6 +92,7 @@ func classify(g *graph, it *item) (solid, waiting int, stale map[types.UID]bool)
 			stale[ref.UID] = true
 		case owner.DeletionTimestamp != nil && owner.hasFinalizer(foregroundFinalizer):
 			waiting++
+			stale[ref.UID] = true
 		default:
 			solid++
 		}
@@ -110,9 +112,39 @@ func (c *collector) checkOwners(ctx context.Context, it *item) error {
 		return c.dropOwners(ctx, it, stale)
 	}
 	if waiting > 0 {
+		if c.hasForegroundDependents(it) {
+			if err := c.unblockOwners(ctx, it); err != nil {
+				return err
+			}
+		}
 		return c.deleteItem(ctx, it, metav1.DeletePropagationForeground)
 	}
 	return c.deleteItem(ctx, it, c.propagationFor(it))
+}
+
+func (c *collector) hasForegroundDependents(it *item) bool {
+	for _, dep := range c.graph.dependents[it.UID] {
+		if dep.DeletionTimestamp != nil && dep.hasFinalizer(foregroundFinalizer) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *collector) unblockOwners(ctx context.Context, it *item) error {
+	refs := make([]metav1.OwnerReference, len(it.OwnerReferences))
+	copy(refs, it.OwnerReferences)
+	changed := false
+	for i := range refs {
+		if refs[i].BlockOwnerDeletion != nil && *refs[i].BlockOwnerDeletion {
+			refs[i].BlockOwnerDeletion = ptr.To(false)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return c.patchMeta(ctx, it, map[string]any{"ownerReferences": refs})
 }
 
 func (c *collector) propagationFor(it *item) metav1.DeletionPropagation {
