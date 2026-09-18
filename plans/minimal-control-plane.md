@@ -1528,3 +1528,10 @@ been re-measured over a full quiet hour.
 - Control loops are queue consumers only: scheduler, workloads (ReplicaSet, ReplicationController, Deployment, Endpoints, EndpointSlice, Job, CronJob, StatefulSet, DaemonSet, ServiceAccounts, root CA), CRD conditions, garbage collection, node health.
 - Idle CPU after the teardown: 70 ms/min over 18 minutes (was 103 after Phase 3, 1,134 at the start of Phase 1).
 - Required e2e is not green yet: 19/21 and 16/21 across two runs, always the garbage collector specs, with 51 `bridge: fetch timed out` lines in the same window. The hung outbound fetch from dynamic workers is the last blocker.
+
+## The hung fetch is the Go frame problem, not the stub (2026-09-18)
+
+- Moved every dynamic worker's store access to a `Storage` WorkerEntrypoint so the Durable Object stub is created inside a live request. The WebSocket upgrade survives the hop (a probe got 101 plus the first frame), CRD focus stayed 5/5, and the cluster stayed healthy.
+- The timeouts did not go away: 102 in a 20-minute window over three required runs, 47 of them on `PUT /kv`. Required runs were 18/21, 15/21 and 17/21, always losing garbage collector specs.
+- The Cluster DO is not the bottleneck: 8,549 `/kv` calls at about 20ms each, 500 requests/min, 400 ms/min of CPU. Worth noting for later: the RBAC authorizer lists clusterroles 3,851 times and clusterrolebindings 949 times in that window, and the new GC scan reads 306 pages of `/registry/`.
+- So the remaining cause is the one diagnosed during the CRD work: Go runs in whichever JS turn resumed it, so a fetch can be issued in a turn belonging to an already-finished request and never settles. A per-request fetch pump in the loader bootstrap is the candidate fix and is being designed.
