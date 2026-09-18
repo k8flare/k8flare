@@ -56,21 +56,6 @@ async function consumeScheduler(batch: MessageBatch<QueueMessage>, env: Env): Pr
 const namespacePrefix = "/registry/namespaces/";
 
 async function consumeWorkloads(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
-  const terminating = new Set<string>();
-  for (const msg of batch.messages) {
-    if (msg.body.kind === "change" && msg.body.key.startsWith(namespacePrefix)) terminating.add(msg.body.key.slice(namespacePrefix.length));
-  }
-  if (terminating.size > 0) {
-    const names = [...terminating];
-    const namespaces = await env.WORKLOADS.namespaces(names);
-    if (namespaces) console.log(`namespaces: asked=${names.length} terminating=${namespaces.terminating} deleted=${namespaces.deleted} remaining=${namespaces.remaining}`);
-    const delayMs = namespaces ? namespaces.nextMs : refusedRetryMs;
-    if (delayMs > 0) {
-      await env.WL_Q.sendBatch(
-        names.map((name) => ({ body: { kind: "change", key: namespacePrefix + name, type: "modified", rev: 0 } satisfies QueueMessage, delaySeconds: Math.ceil(delayMs / 1000) })),
-      );
-    }
-  }
   const changed = new Set<string>();
   for (const msg of batch.messages) {
     if (msg.body.kind !== "change") continue;
@@ -110,6 +95,21 @@ async function consumeGC(batch: MessageBatch<QueueMessage>, env: Env): Promise<v
 }
 
 async function consumeAccounts(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
+  const terminating = new Set<string>();
+  for (const msg of batch.messages) {
+    if (msg.body.kind === "change" && msg.body.key.startsWith(namespacePrefix)) terminating.add(msg.body.key.slice(namespacePrefix.length));
+  }
+  if (terminating.size > 0) {
+    const names = [...terminating];
+    const namespaces = await env.WORKLOADS.namespaces(names);
+    if (namespaces) console.log(`namespaces: asked=${names.length} terminating=${namespaces.terminating} deleted=${namespaces.deleted} remaining=${namespaces.remaining}`);
+    const delayMs = namespaces ? namespaces.nextMs : refusedRetryMs;
+    if (delayMs > 0) {
+      await env.ACCT_Q.sendBatch(
+        names.map((name) => ({ body: { kind: "change", key: namespacePrefix + name, type: "modified", rev: 0 } satisfies QueueMessage, delaySeconds: Math.ceil(delayMs / 1000) })),
+      );
+    }
+  }
   const result = await env.WORKLOADS.sync(["namespaces", "serviceaccounts", "configmaps"]);
   if (!result) {
     await env.ACCT_Q.send({ kind: "retry" } satisfies QueueMessage, { delaySeconds: refusedRetryMs / 1000 });

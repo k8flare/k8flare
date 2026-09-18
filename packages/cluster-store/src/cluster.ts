@@ -16,8 +16,9 @@ const MAX_DELAY_S = 86_400;
 type Target = "scheduler" | "workloads" | "crds" | "gc" | "accounts";
 const targets: Target[] = ["scheduler", "workloads", "crds", "gc", "accounts"];
 const NAMESPACE_PREFIX = "/registry/namespaces/";
+const ACCOUNT_PREFIXES = [NAMESPACE_PREFIX, "/registry/serviceaccounts/", "/registry/configmaps/"];
 const CRD_PREFIX = "/registry/apiextensions.k8s.io/customresourcedefinitions/";
-const WORKLOAD_PREFIXES = ["/registry/replicasets/", "/registry/deployments/", "/registry/replicationcontrollers/", "/registry/services/", "/registry/endpoints/", "/registry/endpointslices/", "/registry/jobs/", "/registry/statefulsets/", "/registry/daemonsets/", "/registry/controllerrevisions/", "/registry/persistentvolumeclaims/", "/registry/namespaces/", "/registry/serviceaccounts/", "/registry/configmaps/", "/registry/cronjobs/"];
+const WORKLOAD_PREFIXES = ["/registry/replicasets/", "/registry/deployments/", "/registry/replicationcontrollers/", "/registry/services/", "/registry/endpoints/", "/registry/endpointslices/", "/registry/jobs/", "/registry/statefulsets/", "/registry/daemonsets/", "/registry/controllerrevisions/", "/registry/persistentvolumeclaims/", "/registry/cronjobs/"];
 
 export type QueueMessage =
   | { kind: "change"; key: string; type: string; rev: number }
@@ -318,7 +319,7 @@ export class Cluster extends DurableObject<Env> {
     }
     const routes: Target[] = [];
     if (WORKLOAD_PREFIXES.some((p) => name.startsWith(p))) routes.push("workloads");
-    if (name.startsWith(NAMESPACE_PREFIX)) routes.push("accounts");
+    if (ACCOUNT_PREFIXES.some((p) => name.startsWith(p))) routes.push("accounts");
     if (name.startsWith(CRD_PREFIX)) routes.push("crds");
     if (type === "deleted" || collectable(value)) routes.push("gc");
     if (name.startsWith("/registry/pods/")) {
