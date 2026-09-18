@@ -105,12 +105,30 @@ func Serve(handler http.Handler) {
 		lastTick.Store(time.Now().UnixNano())
 		return nil
 	}))
+	binding.Set("pump", js.FuncOf(func(_ js.Value, args []js.Value) any {
+		lastTick.Store(time.Now().UnixNano())
+		if len(args) == 0 || args[0].Type() != js.TypeNumber {
+			return nil
+		}
+		w := windowByID(args[0].Int())
+		if w == nil {
+			return nil
+		}
+		leave := EnterTurn(w)
+		defer leave()
+		w.pump()
+		return nil
+	}))
 	binding.Set("handleRequest", js.FuncOf(func(_ js.Value, args []js.Value) any {
 		reqObj := args[0]
 		env := args[1]
 		var execCtx js.Value
 		if len(args) > 2 {
 			execCtx = args[2]
+		}
+		requestID := 0
+		if len(args) > 3 && args[3].Type() == js.TypeNumber {
+			requestID = args[3].Int()
 		}
 		var executor js.Func
 		executor = js.FuncOf(func(_ js.Value, p []js.Value) any {
@@ -124,7 +142,7 @@ func Serve(handler http.Handler) {
 					}
 					yieldToEventLoop()
 				}()
-				if err := dispatch(handler, reqObj, env, execCtx, func(v js.Value) { resolve.Invoke(v) }); err != nil {
+				if err := dispatch(handler, reqObj, env, execCtx, requestID, func(v js.Value) { resolve.Invoke(v) }); err != nil {
 					reject.Invoke(js.Global().Get("Error").New(err.Error()))
 				}
 			}()
@@ -290,7 +308,7 @@ func fromUint8Array(v js.Value) []byte {
 	return b
 }
 
-func dispatch(handler http.Handler, reqObj, env, execCtx js.Value, started func(js.Value)) (err error) {
+func dispatch(handler http.Handler, reqObj, env, execCtx js.Value, requestID int, started func(js.Value)) (err error) {
 	u, err := url.Parse(reqObj.Get("url").String())
 	if err != nil {
 		return err
@@ -311,7 +329,8 @@ func dispatch(handler http.Handler, reqObj, env, execCtx js.Value, started func(
 		Host:          u.Host,
 		RequestURI:    u.RequestURI(),
 	}
-	window := openWindow(env)
+	window := openWindowFor(requestID, env)
+	defer forgetWindow(requestID)
 	leaveTurn := EnterTurn(window)
 	defer leaveTurn()
 	finished := extend(execCtx)
@@ -412,10 +431,12 @@ func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.URL.Query().Get("watch") == "true" || req.URL.Query().Get("watch") == "1" || strings.HasSuffix(req.URL.Path, "/watch") {
 		headerTimeout = watchHeaderTimeout
 	}
-	if !window.Owns() {
-		println("bridge: fetch off turn owner="+window.kind()+" turn="+turnName()+":", req.Method, req.URL.Path)
+	var pending js.Value
+	if err := window.Run(func() { pending = binding.Call("fetch", jsReq) }); err != nil {
+		stop()
+		return nil, fmt.Errorf("bridge: fetch %s: %w", req.URL, err)
 	}
-	jsResp, err := awaitInCtx(req.Context(), window, binding.Call("fetch", jsReq), headerTimeout)
+	jsResp, err := awaitInCtx(req.Context(), window, pending, headerTimeout)
 	endFetch()
 	if err != nil {
 		stop()

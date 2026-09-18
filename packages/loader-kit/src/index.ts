@@ -6,6 +6,7 @@ const BOOTSTRAP = `
 import "./wasm_exec.js";
 import wasmModule from "./app.wasm";
 let bindingPromise = null;
+let requestSeq = 0;
 function instantiate(env, ctx) {
   return new Promise((resolve, reject) => {
     const go = new Go();
@@ -23,15 +24,19 @@ export default {
     const binding = await bindingPromise;
     const raw = await request.arrayBuffer();
     const path = new URL(request.url).pathname;
+    const requestId = ++requestSeq;
+    const canPump = typeof binding.pump === "function";
     const canTick = typeof binding.tick === "function";
-    const driveStream = (path.endsWith("/poke") || path.endsWith("/hold")) && canTick;
-    let keepalive = setInterval(() => (canTick ? binding.tick() : undefined), 1000);
+    const drive = () => (canPump ? binding.pump(requestId) : canTick ? binding.tick() : undefined);
+    const driveStream = (path.endsWith("/poke") || path.endsWith("/hold")) && (canPump || canTick);
+    let keepalive = setInterval(drive, canPump ? 25 : 1000);
     let out;
     try {
       out = await binding.handleRequest(
         { method: request.method, url: request.url, headers: [...request.headers], body: raw.byteLength === 0 ? null : new Uint8Array(raw), signal: request.signal },
         env,
         ctx,
+        requestId,
       );
     } catch (err) {
       clearInterval(keepalive);
@@ -43,12 +48,13 @@ export default {
     }
     if (!driveStream) {
       clearInterval(keepalive);
-      keepalive = setInterval(() => {}, 5000);
+      keepalive = setInterval(drive, canPump ? 100 : 5000);
     }
     const reader = out.body.getReader();
     const body = new ReadableStream({
       async pull(controller) {
         try {
+          drive();
           const { done, value } = await reader.read();
           if (done) {
             clearInterval(keepalive);

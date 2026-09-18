@@ -13,7 +13,14 @@ import (
 
 var ErrWindowClosed = errors.New("bridge: pump window closed")
 
+type job struct {
+	fn    func()
+	reply chan struct{}
+}
+
 type Window struct {
+	id       int
+	jobs     chan *job
 	env      js.Value
 	done     chan struct{}
 	holding  bool
@@ -29,6 +36,62 @@ func (w *Window) kind() string {
 		return "hold"
 	}
 	return "dispatch"
+}
+
+var (
+	byIDMu sync.Mutex
+	byID   = map[int]*Window{}
+)
+
+func windowByID(id int) *Window {
+	byIDMu.Lock()
+	defer byIDMu.Unlock()
+	return byID[id]
+}
+
+func forgetWindow(id int) {
+	byIDMu.Lock()
+	delete(byID, id)
+	byIDMu.Unlock()
+}
+
+// Run executes fn on the JS stack of the request that owns this window, so
+// the I/O it starts belongs to a live request. It runs inline when this
+// goroutine was already resumed by that request.
+func (w *Window) Run(fn func()) error {
+	if w == nil || w.Owns() {
+		if w == nil {
+			fn()
+			return nil
+		}
+		fn()
+		return nil
+	}
+	j := &job{fn: fn, reply: make(chan struct{})}
+	select {
+	case w.jobs <- j:
+	case <-w.done:
+		return ErrWindowClosed
+	}
+	select {
+	case <-j.reply:
+		return nil
+	case <-w.done:
+		return ErrWindowClosed
+	}
+}
+
+// pump runs the queued jobs; it must be called from the owning request.
+func (w *Window) pump() {
+	for {
+		select {
+		case j := <-w.jobs:
+			j.fn()
+			close(j.reply)
+		default:
+			return
+		}
+	}
 }
 
 func (w *Window) Env() js.Value         { return w.env }
@@ -50,8 +113,13 @@ var (
 	idle      chan struct{}
 )
 
-func openWindow(env js.Value) *Window {
-	w := &Window{env: env, done: make(chan struct{}), opened: time.Now()}
+func openWindowFor(id int, env js.Value) *Window {
+	w := &Window{id: id, jobs: make(chan *job, 64), env: env, done: make(chan struct{}), opened: time.Now()}
+	if id != 0 {
+		byIDMu.Lock()
+		byID[id] = w
+		byIDMu.Unlock()
+	}
 	windowsMu.Lock()
 	windows = append(windows, w)
 	notify := openedCh
