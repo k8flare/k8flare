@@ -96,7 +96,10 @@ and also at `/svc/{namespace}/{name}` on the Worker hostname.
 
 Build the agent with `make agent`. The machine needs a stock `k3s`
 binary run once (it unpacks containerd, runc, and CNI plugins) and must
-not be on WARP. `kubectl logs` reaches the kubelet through the NodeTunnel
+not run WARP in full-tunnel mode, which captures DNS so that
+`host.orb.internal` stops resolving; split-tunnel Include mode, or
+`--mesh-ip-as-node-ip` on the Cloudflare Mesh interface, is fine.
+`kubectl logs` reaches the kubelet through the NodeTunnel
 Durable Object, so the node does not need a public address.
 
 OrbStack example:
