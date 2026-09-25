@@ -23,7 +23,6 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -133,60 +132,6 @@ func TestSyncDeploymentBatchCreatesPods(t *testing.T) {
 	}
 	if gotRS, gotPods := creates(client, "replicasets"), creates(client, "pods"); gotRS != 1 || gotPods != 2 {
 		t.Fatalf("replicaset creates = %d, pod creates = %d", gotRS, gotPods)
-	}
-}
-
-func TestSyncResourceQuotaCalculatesStatus(t *testing.T) {
-	rq := &v1.ResourceQuota{
-		ObjectMeta: metav1.ObjectMeta{Name: "q", Namespace: "default"},
-		Spec: v1.ResourceQuotaSpec{
-			Hard: v1.ResourceList{v1.ResourceQuotas: resource.MustParse("2")},
-		},
-		Status: v1.ResourceQuotaStatus{
-			Hard: v1.ResourceList{v1.ResourceQuotas: resource.MustParse("9")},
-		},
-	}
-	client := fake.NewSimpleClientset(rq)
-	if _, err := workloads.Sync(context.Background(), client, []byte("ca"), nil, nil, []string{"resourcequotas"}); err != nil {
-		t.Fatal(err)
-	}
-	got, err := client.CoreV1().ResourceQuotas("default").Get(context.Background(), "q", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	hard := got.Status.Hard[v1.ResourceQuotas]
-	used := got.Status.Used[v1.ResourceQuotas]
-	if hard.Cmp(resource.MustParse("2")) != 0 {
-		t.Fatalf("status.hard resourcequotas = %s", hard.String())
-	}
-	if used.Cmp(resource.MustParse("1")) != 0 {
-		t.Fatalf("status.used resourcequotas = %s", used.String())
-	}
-}
-
-func TestSyncResourceQuotaCountsReplicaSets(t *testing.T) {
-	zero := int32(0)
-	rq := &v1.ResourceQuota{
-		ObjectMeta: metav1.ObjectMeta{Name: "q", Namespace: "default"},
-		Spec: v1.ResourceQuotaSpec{
-			Hard: v1.ResourceList{v1.ResourceName("count/replicasets.apps"): resource.MustParse("2")},
-		},
-	}
-	rs := &appsv1.ReplicaSet{
-		ObjectMeta: metav1.ObjectMeta{Name: "rs", Namespace: "default"},
-		Spec:       appsv1.ReplicaSetSpec{Replicas: &zero},
-	}
-	client := fake.NewSimpleClientset(rq, rs)
-	if _, err := workloads.Sync(context.Background(), client, []byte("ca"), nil, nil, []string{"resourcequotas", "replicasets"}); err != nil {
-		t.Fatal(err)
-	}
-	got, err := client.CoreV1().ResourceQuotas("default").Get(context.Background(), "q", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	used := got.Status.Used[v1.ResourceName("count/replicasets.apps")]
-	if used.Cmp(resource.MustParse("1")) != 0 {
-		t.Fatalf("status.used count/replicasets.apps = %s status=%v", used.String(), got.Status.Used)
 	}
 }
 
@@ -433,46 +378,6 @@ func expiredCertPEM(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-}
-
-func TestSyncBindsStaticPersistentVolume(t *testing.T) {
-	mode := v1.PersistentVolumeFilesystem
-	pv := &v1.PersistentVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: "static", UID: "pv1", ResourceVersion: "1"},
-		Spec: v1.PersistentVolumeSpec{
-			Capacity:                      v1.ResourceList{v1.ResourceStorage: resource.MustParse("1Gi")},
-			AccessModes:                   []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce},
-			PersistentVolumeSource:        v1.PersistentVolumeSource{HostPath: &v1.HostPathVolumeSource{Path: "/tmp/static"}},
-			PersistentVolumeReclaimPolicy: v1.PersistentVolumeReclaimRetain,
-			VolumeMode:                    &mode,
-		},
-	}
-	pvc := &v1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{Name: "claim", Namespace: "default", UID: "pvc1", ResourceVersion: "1"},
-		Spec: v1.PersistentVolumeClaimSpec{
-			AccessModes: []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce},
-			Resources:   v1.VolumeResourceRequirements{Requests: v1.ResourceList{v1.ResourceStorage: resource.MustParse("1Gi")}},
-			VolumeMode:  &mode,
-		},
-	}
-	client := fake.NewSimpleClientset(pv, pvc)
-	if _, err := workloads.Sync(context.Background(), client, []byte("ca"), nil, nil, []string{"persistentvolumeclaims"}); err != nil {
-		t.Fatal(err)
-	}
-	got, err := client.CoreV1().PersistentVolumeClaims("default").Get(context.Background(), "claim", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Spec.VolumeName != "static" || got.Status.Phase != v1.ClaimBound {
-		t.Fatalf("claim = %s %s", got.Spec.VolumeName, got.Status.Phase)
-	}
-	bound, err := client.CoreV1().PersistentVolumes().Get(context.Background(), "static", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bound.Status.Phase != v1.VolumeBound || bound.Spec.ClaimRef == nil || bound.Spec.ClaimRef.Name != "claim" {
-		t.Fatalf("volume = %s %+v", bound.Status.Phase, bound.Spec.ClaimRef)
-	}
 }
 
 func TestSyncApprovesKubeletClientCSR(t *testing.T) {

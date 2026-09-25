@@ -10,12 +10,8 @@ import (
 	"time"
 
 	supervisor "github.com/k8flare/k8flare/packages/apiserver-supervisor"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apiserver/pkg/quota/v1/generic"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
-	"k8s.io/client-go/informers"
 	"k8s.io/client-go/util/flowcontrol"
-	csitrans "k8s.io/csi-translation-lib"
 	"k8s.io/klog/v2"
 	pkgcontroller "k8s.io/kubernetes/pkg/controller"
 	"k8s.io/kubernetes/pkg/controller/bootstrap"
@@ -38,22 +34,13 @@ import (
 	"k8s.io/kubernetes/pkg/controller/replicaset"
 	"k8s.io/kubernetes/pkg/controller/replication"
 	"k8s.io/kubernetes/pkg/controller/resourceclaim"
-	"k8s.io/kubernetes/pkg/controller/resourcequota"
 	"k8s.io/kubernetes/pkg/controller/serviceaccount"
 	"k8s.io/kubernetes/pkg/controller/servicecidrs"
 	"k8s.io/kubernetes/pkg/controller/statefulset"
 	"k8s.io/kubernetes/pkg/controller/tainteviction"
 	"k8s.io/kubernetes/pkg/controller/ttl"
 	"k8s.io/kubernetes/pkg/controller/ttlafterfinished"
-	"k8s.io/kubernetes/pkg/controller/volume/ephemeral"
-	"k8s.io/kubernetes/pkg/controller/volume/expand"
-	"k8s.io/kubernetes/pkg/controller/volume/persistentvolume"
-	"k8s.io/kubernetes/pkg/controller/volume/pvcprotection"
-	"k8s.io/kubernetes/pkg/controller/volume/pvprotection"
 	"k8s.io/kubernetes/pkg/features"
-	quotainstall "k8s.io/kubernetes/pkg/quota/v1/install"
-	"k8s.io/kubernetes/pkg/volume/csi"
-	"k8s.io/kubernetes/pkg/volume/csimigration"
 	"k8s.io/utils/clock"
 )
 
@@ -163,30 +150,6 @@ func build(ctx context.Context, d workloads.Deps, controllers map[string]bool) (
 		}
 		runs = append(runs, func(ctx context.Context) { cleaner.Run(ctx) })
 	}
-	if controllers["resourcequota"] {
-		quotaConfiguration, err := quotainstall.NewQuotaConfigurationForControllers(generic.ListerFuncForResourceFunc(func(gvr schema.GroupVersionResource) (informers.GenericInformer, error) {
-			return d.QuotaInformer(gvr)
-		}), factory)
-		if err != nil {
-			return nil, err
-		}
-		started := make(chan struct{})
-		close(started)
-		registry := generic.NewRegistry(quotaConfiguration.Evaluators())
-		d.AddQuotaCountEvaluators(registry)
-		rq, err := resourcequota.NewController(ctx, &resourcequota.ControllerOptions{
-			QuotaClient:           client.CoreV1(),
-			ResourceQuotaInformer: core.ResourceQuotas(),
-			ResyncPeriod:          pkgcontroller.StaticResyncPeriodFunc(0),
-			Registry:              registry,
-			IgnoredResourcesFunc:  quotaConfiguration.IgnoredResources,
-			InformersStarted:      started,
-		})
-		if err != nil {
-			return nil, err
-		}
-		runs = append(runs, func(ctx context.Context) { rq.Run(ctx, workloads.Workers) })
-	}
 	if controllers["csrapproving"] || controllers["csrsigning"] || controllers["csrcleaner"] {
 		csrs := d.CSRs()
 		if controllers["csrapproving"] {
@@ -240,13 +203,6 @@ func build(ctx context.Context, d workloads.Deps, controllers map[string]bool) (
 		gcc := podgc.NewPodGCInternal(ctx, client, core.Pods(), core.Nodes(), 12500, 20*time.Second, 40*time.Second)
 		runs = append(runs, func(ctx context.Context) { gcc.Run(ctx) })
 	}
-	if controllers["ephemeralvolume"] {
-		eph, err := ephemeral.NewController(ctx, client, core.Pods(), core.PersistentVolumeClaims())
-		if err != nil {
-			return nil, err
-		}
-		runs = append(runs, func(ctx context.Context) { eph.Run(ctx, 1) })
-	}
 	if controllers["resourceclaim"] {
 		rc, err := resourceclaim.NewController(klog.FromContext(ctx), resourceclaim.Features{
 			AdminAccess:            utilfeature.DefaultFeatureGate.Enabled(features.DRAAdminAccess),
@@ -265,41 +221,6 @@ func build(ctx context.Context, d workloads.Deps, controllers map[string]bool) (
 				klog.FromContext(ctx).Error(err, "device taint eviction stopped")
 			}
 		})
-	}
-	if controllers["pvcprotection"] {
-		pvcProt, err := pvcprotection.NewPVCProtectionController(klog.FromContext(ctx), core.PersistentVolumeClaims(), core.Pods(), client)
-		if err != nil {
-			return nil, err
-		}
-		runs = append(runs, func(ctx context.Context) { pvcProt.Run(ctx, 1) })
-	}
-	if controllers["pvprotection"] {
-		pvProt := pvprotection.NewPVProtectionController(klog.FromContext(ctx), core.PersistentVolumes(), client)
-		runs = append(runs, func(ctx context.Context) { pvProt.Run(ctx, 1) })
-	}
-	if controllers["volumeexpand"] {
-		translator := csitrans.New()
-		exp, err := expand.NewExpandController(ctx, client, core.PersistentVolumeClaims(), csi.ProbeVolumePlugins(), translator, csimigration.NewPluginManager(translator))
-		if err != nil {
-			return nil, err
-		}
-		runs = append(runs, func(ctx context.Context) { exp.Run(ctx) })
-	}
-	if controllers["persistentvolume"] {
-		pvb, err := persistentvolume.NewController(ctx, persistentvolume.ControllerParameters{
-			KubeClient:                client,
-			SyncPeriod:                15 * time.Minute,
-			VolumeInformer:            core.PersistentVolumes(),
-			ClaimInformer:             core.PersistentVolumeClaims(),
-			ClassInformer:             factory.Storage().V1().StorageClasses(),
-			PodInformer:               core.Pods(),
-			NodeInformer:              core.Nodes(),
-			EnableDynamicProvisioning: false,
-		})
-		if err != nil {
-			return nil, err
-		}
-		runs = append(runs, func(ctx context.Context) { pvb.Run(ctx) })
 	}
 	if controllers["disruption"] {
 		dc := disruption.NewDisruptionController(
