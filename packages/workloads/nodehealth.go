@@ -36,7 +36,7 @@ func NodeHealth(ctx context.Context, client kubernetes.Interface, name string) (
 		return nil, err
 	}
 	node = node.DeepCopy()
-	held, known := nodeLeaseState(ctx, client, name)
+	held, known, expiry := nodeLeaseState(ctx, client, name)
 	if held {
 		if removeUnreachableTaints(node) {
 			if node, err = nodes.Update(ctx, node, metav1.UpdateOptions{}); err != nil {
@@ -48,7 +48,7 @@ func NodeHealth(ctx context.Context, client kubernetes.Interface, name string) (
 				return nil, err
 			}
 		}
-		return &NodeHealthResult{}, nil
+		return &NodeHealthResult{NextMs: untilExpiry(expiry)}, nil
 	}
 	if !known {
 		return &NodeHealthResult{}, nil
@@ -100,22 +100,33 @@ func NodeHealth(ctx context.Context, client kubernetes.Interface, name string) (
 	return result, nil
 }
 
-func nodeLeaseState(ctx context.Context, client kubernetes.Interface, name string) (held, known bool) {
+func nodeLeaseState(ctx context.Context, client kubernetes.Interface, name string) (held, known bool, expiry time.Time) {
 	lease, err := client.CoordinationV1().Leases(v1.NamespaceNodeLease).Get(ctx, name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return false, true
-	}
 	if err != nil {
-		return false, false
+		return false, false, time.Time{}
 	}
 	if lease.Spec.RenewTime == nil {
-		return false, true
+		return false, true, time.Time{}
 	}
 	dur := 40 * time.Second
 	if lease.Spec.LeaseDurationSeconds != nil && *lease.Spec.LeaseDurationSeconds > 0 {
 		dur = time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second
 	}
-	return time.Since(lease.Spec.RenewTime.Time) < dur+leaseExtra, true
+	expiry = lease.Spec.RenewTime.Add(dur + leaseExtra)
+	return time.Now().Before(expiry), true, expiry
+}
+
+// untilExpiry books the next lease check on the deadline the current lease
+// already implies, so a node that stops renewing is still visited once.
+func untilExpiry(expiry time.Time) int64 {
+	if expiry.IsZero() {
+		return 0
+	}
+	left := time.Until(expiry)
+	if left < time.Second {
+		left = time.Second
+	}
+	return left.Milliseconds()
 }
 
 func markUnknown(node *v1.Node, now metav1.Time) bool {

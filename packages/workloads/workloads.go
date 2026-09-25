@@ -986,7 +986,7 @@ func nodesOf(all []loadedSource) []*v1.Node {
 
 func clearRecoveredNodes(ctx context.Context, client kubernetes.Interface, nodes []*v1.Node) error {
 	for _, node := range nodes {
-		held, known := nodeLeaseState(ctx, client, node.Name)
+		held, known, _ := nodeLeaseState(ctx, client, node.Name)
 		if !nodeReady(node) && !(held && known) {
 			continue
 		}

@@ -106,6 +106,50 @@ func TestNodeHealthSkipsWhenLeaseUnreadable(t *testing.T) {
 	}
 }
 
+func TestNodeHealthBooksTheNextCheckAtLeaseExpiry(t *testing.T) {
+	renew := metav1.NewMicroTime(time.Now())
+	node := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "n1"},
+		Status:     v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}},
+	}
+	lease := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{Name: "n1", Namespace: v1.NamespaceNodeLease},
+		Spec: coordinationv1.LeaseSpec{
+			RenewTime:            &renew,
+			LeaseDurationSeconds: ptr.To[int32](40),
+		},
+	}
+	got, err := NodeHealth(context.Background(), fake.NewSimpleClientset(node, lease), "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := (40*time.Second + leaseExtra).Milliseconds()
+	if got.NextMs <= 0 || got.NextMs > want {
+		t.Fatalf("NextMs = %d, want 0 < NextMs <= %d", got.NextMs, want)
+	}
+}
+
+func TestNodeHealthLeavesANodeThatNeverHeldALeaseAlone(t *testing.T) {
+	node := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "n1"},
+		Status:     v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}},
+	}
+	client := fake.NewSimpleClientset(node)
+	if _, err := NodeHealth(context.Background(), client, "n1"); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := client.CoreV1().Nodes().Get(context.Background(), "n1", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Status.Conditions[0].Status != v1.ConditionTrue {
+		t.Fatalf("Ready = %s", fresh.Status.Conditions[0].Status)
+	}
+	if len(fresh.Spec.Taints) != 0 {
+		t.Fatalf("taints = %v", fresh.Spec.Taints)
+	}
+}
+
 func hasTaint(node *v1.Node, key string, effect v1.TaintEffect) bool {
 	for _, t := range node.Spec.Taints {
 		if t.Key == key && t.Effect == effect {
