@@ -31,9 +31,10 @@ $(BUILD)/apiserver.raw.wasm: $(GO_SRC) | mirrors
 define OPTIMIZE
 	@raw=$$(shasum -a 256 $< | cut -c1-64); \
 	if [ -f $@ ] && [ "$$(cat $@.sha256 2>/dev/null)" = "$$raw" ]; then touch $@; echo "$(notdir $@): unchanged"; exit 0; fi; \
-	$(WASM_OPT) $< -o $@ && echo "$$raw" > $@.sha256 && \
+	$(WASM_OPT) $< -o $@ && \
 	size=$$(wc -c < $@ | tr -d ' '); echo "$(notdir $@): $$size bytes (cap $(CAP))"; \
-		[ "$$size" -lt $(CAP) ] || { echo "exceeds the Worker Loader cap" >&2; exit 1; }
+		[ "$$size" -lt $(CAP) ] || { echo "exceeds the Worker Loader cap" >&2; exit 1; }; \
+	echo "$$raw" > $@.sha256
 endef
 
 $(BUILD)/apiserver.opt.wasm: $(BUILD)/apiserver.raw.wasm
