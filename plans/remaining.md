@@ -109,11 +109,15 @@ known deadline.
   payload, where it used to hang for 30 s. Routing is fixed -- only the shell
   can terminate an upgrade, since no Go package has `WebSocketPair`, and
   `isStreamPath` had listed exec, attach and portforward but not log. What is
-  left is the relay: exec and attach prepend a channel byte, while a log stream
-  is one-way raw `binary.k8s.io`, so the sink-to-client path has to pass frames
-  through unchanged. Start at `streamUpgrade` in
-  `packages/control-plane-worker/src/index.ts` and the three `WebSocketPair`
-  sites in `packages/node-tunnel/src/index.ts`.
+  left is the transport, not framing: the relay passes bytes straight through
+  (`podstream.ts:28-30`) and the channel prefix exec and attach carry comes from
+  the kubelet. `index.ts:143-160` sets `Upgrade: websocket` and requires a socket
+  back, and `node-tunnel/src/index.ts:106` only serves `/node/...` on an upgrade
+  -- but `containerLogs` is a plain HTTP GET returning text/plain
+  (`apiserver-core/podlog.go:65-71`), so nothing upgrades, no socket comes back
+  and the shell closes 1011. The handshake and 101 are sent before the waitUntil
+  work runs, which is why the client sees an opened-then-closed socket with an
+  empty payload rather than an error. See `plans/podlogs-websocket.md`.
 
 - A full suite run produces around 200 `bridge: fetch timed out` and the specs
   that fail are not the same twice. They are load-dependent rather than defects:
