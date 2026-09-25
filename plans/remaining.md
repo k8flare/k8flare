@@ -110,6 +110,11 @@ known deadline.
   clientset. They need splitting or trimming, or the cap constant needs to
   be checked against the real Loader limit. `make wasm CAP=<bytes>` builds
   them meanwhile.
+- `make wasm` while `wrangler dev` is watching the assets directory kills the
+  dev server: its reload stats a chunk that the build is still rewriting and
+  it exits with ENOENT. Nothing restarts it, and the node agents then fail
+  every lease write, so the cluster dies silently. Stop the dev server before
+  a rebuild, or build to a staging directory and move the chunks into place.
 - The node lease write fails constantly against `wrangler dev` with
   `an error on the server ("Error: Network connection lost.")` -- 1879 times
   in 45 minutes, while the lease still lands every 6-10s. On 2026-09-25 the
