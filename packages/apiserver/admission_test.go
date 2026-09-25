@@ -100,8 +100,8 @@ func TestAdmissionExtensions(t *testing.T) {
 	}
 	if _, err := cs.CoreV1().LimitRanges("default").Create(c, &corev1.LimitRange{
 		ObjectMeta: metav1.ObjectMeta{Name: "blocked", Labels: map[string]string{"k8flare.io/deny": "true"}},
-	}, metav1.CreateOptions{}); !apierrors.IsForbidden(err) {
-		t.Fatalf("expected VAP forbid, got %v", err)
+	}, metav1.CreateOptions{}); !apierrors.IsInvalid(err) {
+		t.Fatalf("expected VAP deny, got %v", err)
 	}
 
 	cfg := &rest.Config{Host: url, BearerToken: devToken}

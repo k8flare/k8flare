@@ -11,7 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-const notRootCA = "metadata.name!=kube-root-ca.crt,metadata.name!=cluster-info"
+const notRootCA = "metadata.name!=kube-root-ca.crt,metadata.name!=cluster-info,metadata.name!=extension-apiserver-authentication"
 
 func TestConfigMapVerbs(t *testing.T) {
 	cs := startDev(t)
@@ -90,7 +90,11 @@ func TestConfigMapVerbs(t *testing.T) {
 	}
 	all, err := cs.CoreV1().ConfigMaps("").List(c, metav1.ListOptions{FieldSelector: notRootCA})
 	if err != nil || len(all.Items) != 5 {
-		t.Fatalf("list all namespaces: %v items=%d", err, len(all.Items))
+		var got []string
+		for i := range all.Items {
+			got = append(got, all.Items[i].Namespace+"/"+all.Items[i].Name)
+		}
+		t.Fatalf("list all namespaces: %v items=%d %v", err, len(all.Items), got)
 	}
 
 	if err := cms.Delete(c, "a", metav1.DeleteOptions{}); err != nil {
