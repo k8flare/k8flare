@@ -1,7 +1,7 @@
 import type { QueueMessage } from "@k8flare/cluster-store";
 import { apiserverFetch } from "./loader.ts";
 
-type Target = "scheduler" | "leases" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "metrics" | "containers" | "attachdetach";
+type Target = "scheduler" | "leases" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "metrics" | "containers";
 
 type FollowSend = {
   queue: string;
@@ -23,7 +23,6 @@ function targetOf(queueName: string): Target | null {
   if (queueName.endsWith("-extensions")) return "extensions";
   if (queueName.endsWith("-metrics")) return "metrics";
   if (queueName.endsWith("-containers")) return "containers";
-  if (queueName.endsWith("-attachdetach")) return "attachdetach";
   return null;
 }
 
@@ -128,26 +127,6 @@ async function consumeWorkloads(batch: MessageBatch<QueueMessage>, env: Env): Pr
   batch.ackAll();
 }
 
-async function consumeAttachDetach(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
-  const plan = await queuePlan(env, batch.messages.map((m) => m.body));
-  const changed = plan?.resources ?? [];
-  console.log(`attachdetach: consume changed=${changed.join(",") || "(none)"} msgs=${batch.messages.length}`);
-  if (changed.length === 0) {
-    batch.ackAll();
-    return;
-  }
-  try {
-    const attached = await env.ATTACHDETACH.sync();
-    if (attached) {
-      console.log(`attachdetach: ${Object.entries(attached.objects).map(([k, v]) => `${k}=${v}`).join(" ")} drained=${attached.drained}`);
-    } else {
-      console.log("attachdetach: sync returned null");
-    }
-  } catch (err) {
-    console.log(`attachdetach: sync threw ${err}`);
-  }
-  batch.ackAll();
-}
 
 async function consumeCRDs(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
   const resp = await env.CUSTOMRESOURCES.fetch("https://customresources.internal/apis");
@@ -234,8 +213,6 @@ export async function consume(batch: MessageBatch<QueueMessage>, env: Env): Prom
       return consumeMetrics(batch, env);
     case "containers":
       return consumeContainers(batch, env);
-    case "attachdetach":
-      return consumeAttachDetach(batch, env);
   }
   batch.ackAll();
 }

@@ -14,15 +14,14 @@ const LEASE_CHECK_EVERY_MS = 50_000;
 const OUTBOX_BATCH = 100;
 const MAX_DELAY_S = 86_400;
 
-type Target = "scheduler" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "metrics" | "containers" | "attachdetach";
-const targets: Target[] = ["scheduler", "workloads", "crds", "gc", "accounts", "extensions", "metrics", "containers", "attachdetach"];
+type Target = "scheduler" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "metrics" | "containers";
+const targets: Target[] = ["scheduler", "workloads", "crds", "gc", "accounts", "extensions", "metrics", "containers"];
 const SCHEMA_VERSION = 1;
 const controllerAnnot = "k8flare.io/controller";
 const NAMESPACE_PREFIX = "/registry/namespaces/";
 const ACCOUNT_PREFIXES = [NAMESPACE_PREFIX, "/registry/serviceaccounts/", "/registry/configmaps/"];
 const CRD_PREFIX = "/registry/apiextensions.k8s.io/customresourcedefinitions/";
 const WORKLOAD_PREFIXES = ["/registry/replicasets/", "/registry/deployments/", "/registry/replicationcontrollers/", "/registry/services/", "/registry/endpoints/", "/registry/endpointslices/", "/registry/jobs/", "/registry/statefulsets/", "/registry/daemonsets/", "/registry/controllerrevisions/", "/registry/persistentvolumeclaims/", "/registry/persistentvolumes/", "/registry/storage.k8s.io/", "/registry/storageclasses/", "/registry/certificatesigningrequests/", "/registry/certificates.k8s.io/", "/registry/clusterroles/", "/registry/rbac.authorization.k8s.io/", "/registry/cronjobs/", "/registry/horizontalpodautoscalers/", "/registry/gateway.networking.k8s.io/", "/registry/resourcequotas/", "/registry/secrets/", "/registry/configmaps/", "/registry/poddisruptionbudgets/"];
-const ATTACH_PREFIXES = ["/registry/pods/", "/registry/minions/", "/registry/nodes/", "/registry/persistentvolumeclaims/", "/registry/persistentvolumes/", "/registry/storage.k8s.io/", "/registry/storageclasses/"];
 
 export type QueueMessage =
   | { kind: "change"; key: string; type: string; rev: number }
@@ -407,7 +406,6 @@ export class Cluster extends DurableObject<Env> {
     if (target === "extensions") return this.env.EXT_Q;
     if (target === "metrics") return this.env.METRICS_Q;
     if (target === "containers") return this.env.CONTAINERS_Q;
-    if (target === "attachdetach") return this.env.AD_Q;
     return this.env.CTRL_Q;
   }
 
@@ -426,11 +424,6 @@ export class Cluster extends DurableObject<Env> {
     if (name.startsWith("/registry/endpointslices/") || name.startsWith("/registry/endpoints/")) {
       if (type !== "modified" || !prev || endpointPublishChanged(prev.value, value)) routes.push("workloads");
     } else if (WORKLOAD_PREFIXES.some((p) => name.startsWith(p))) routes.push("workloads");
-    if (name.startsWith("/registry/pods/")) {
-      if (type !== "modified" || !prev || podWorkChanged(prev.value, value)) routes.push("attachdetach");
-    } else if (name.startsWith("/registry/nodes/") || name.startsWith("/registry/minions/")) {
-      if (type !== "modified" || !prev || nodeChanged(prev.value, value)) routes.push("attachdetach");
-    } else if (ATTACH_PREFIXES.some((p) => name.startsWith(p))) routes.push("attachdetach");
     if (ACCOUNT_PREFIXES.some((p) => name.startsWith(p))) routes.push("accounts");
     if (name.startsWith(CRD_PREFIX)) routes.push("crds");
     if (isExtensionKey(name, value, type)) routes.push("extensions");

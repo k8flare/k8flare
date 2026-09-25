@@ -53,7 +53,6 @@
     { "binding": "APIGROUPS", "service": "k8flare", "entrypoint": "APIGroups" },
     { "binding": "SCHEDULER", "service": "k8flare", "entrypoint": "Scheduler" },
     { "binding": "WORKLOADS", "service": "k8flare", "entrypoint": "Workloads" },
-    { "binding": "ATTACHDETACH", "service": "k8flare", "entrypoint": "AttachDetach" },
     { "binding": "GC", "service": "k8flare", "entrypoint": "GarbageCollector" },
     { "binding": "STORAGE_SVC", "service": "k8flare", "entrypoint": "Storage" },
     { "binding": "TUNNEL", "service": "k8flare", "entrypoint": "NodeTunnels" },
@@ -74,7 +73,7 @@
       { "binding": "EXT_Q", "queue": "k8flare-extensions" },
       { "binding": "METRICS_Q", "queue": "k8flare-metrics" },
       { "binding": "CONTAINERS_Q", "queue": "k8flare-containers" },
-      { "binding": "AD_Q", "queue": "k8flare-attachdetach" },
+
       { "binding": "HPA_Q", "queue": "k8flare-hpa" },
     ],
     "consumers": [
@@ -87,7 +86,6 @@
       { "queue": "k8flare-extensions", "max_batch_size": 100, "max_batch_timeout": 1, "max_retries": 10, "max_concurrency": 1, "dead_letter_queue": "k8flare-dlq" },
       { "queue": "k8flare-metrics", "max_batch_size": 100, "max_batch_timeout": 1, "max_retries": 10, "max_concurrency": 1, "dead_letter_queue": "k8flare-dlq" },
       { "queue": "k8flare-containers", "max_batch_size": 100, "max_batch_timeout": 1, "max_retries": 10, "max_concurrency": 1, "dead_letter_queue": "k8flare-dlq" },
-      { "queue": "k8flare-attachdetach", "max_batch_size": 100, "max_batch_timeout": 1, "max_retries": 10, "max_concurrency": 1, "dead_letter_queue": "k8flare-dlq" },
     ],
   },
   "observability": { "enabled": true },

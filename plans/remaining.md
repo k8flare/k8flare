@@ -103,6 +103,16 @@ known deadline.
 
 ## Known gaps in the dev stack
 
+- The attach/detach controller is no longer deployed. `packages/attachdetach`
+  still holds it, but its worker was 69.9 MB against a 64 MiB cap with no
+  removable outlier: `k8s.io/api` is 12.6 MB of it, and the CSI gRPC stack it
+  pulls through the controller itself accounts for most of the rest -- passing
+  `nil` for `csi.ProbeVolumePlugins()` buys only 754 KB, and unlike the expand
+  controller csiPlugin genuinely implements AttachableVolumePlugin. It had never
+  loaded, and both `[sig-storage] VolumeAttachment Conformance` specs pass
+  without it, so nothing regressed. Re-enabling it needs the shared client base
+  trimmed, not a change to the controller.
+
 - Three `[Conformance]` CRD specs cannot pass while the API serves JSON only:
   `CustomResourceDefinition resources`, `CustomResourceDefinition Watch` and
   `FieldValidation`. They call `framework.LoadConfig()` directly and build their
