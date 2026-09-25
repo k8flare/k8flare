@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/rest"
 )
 
 func TestAdmissionExtensions(t *testing.T) {
@@ -103,7 +104,7 @@ func TestAdmissionExtensions(t *testing.T) {
 		t.Fatalf("expected VAP deny, got %v", err)
 	}
 
-	cfg := devConfig(url, devToken)
+	cfg := &rest.Config{Host: url, BearerToken: devToken}
 	ext := apiextensionsclient.NewForConfigOrDie(cfg)
 	dyn := dynamic.NewForConfigOrDie(cfg)
 	crd := widgetCRD()

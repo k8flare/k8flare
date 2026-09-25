@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/rest"
 )
 
 var widgetGVR = schema.GroupVersionResource{Group: "test.k8flare.dev", Version: "v1", Resource: "widgets"}
@@ -59,7 +60,7 @@ func widget(name string, size int64) *unstructured.Unstructured {
 func TestCustomResources(t *testing.T) {
 	url, cs := startDevURL(t)
 	c := ctx(t)
-	cfg := devConfig(url, devToken)
+	cfg := &rest.Config{Host: url, BearerToken: devToken}
 	ext := apiextensionsclient.NewForConfigOrDie(cfg)
 	dyn := dynamic.NewForConfigOrDie(cfg)
 

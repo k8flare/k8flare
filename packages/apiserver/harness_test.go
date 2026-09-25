@@ -41,7 +41,7 @@ func startDevURL(t *testing.T) (string, *kubernetes.Clientset) {
 	t.Helper()
 	_, file, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(file), "../..")
-	workers := []string{"apiserver", "openapi", "customresources", "scheduler", "workloads", "workloads-vap", "gc", "admission"}
+	workers := []string{"apiserver", "openapi", "customresources", "scheduler", "workloads", "gc", "admission"}
 	for _, g := range []string{"core", "coordination", "discovery", "events", "node", "storage", "authentication", "authorization", "apps", "policy", "resource", "rbac", "batch", "admissionregistration", "autoscaling", "scheduling", "networking", "certificates", "flowcontrol", "apiregistration"} {
 		workers = append(workers, "apiserver-"+g)
 	}
@@ -110,15 +110,7 @@ func startDevURL(t *testing.T) (string, *kubernetes.Clientset) {
 }
 
 func devConfig(base, token string) *rest.Config {
-	// The control plane serves JSON only. client-go's default puts protobuf
-	// first, and ContentType is not negotiated, so a client that does not say
-	// JSON sends protobuf bodies the server cannot decode.
-	return &rest.Config{
-		Host:          base,
-		BearerToken:   token,
-		Transport:     &http.Transport{IdleConnTimeout: 2 * time.Second},
-		ContentConfig: rest.ContentConfig{ContentType: "application/json", AcceptContentTypes: "application/json"},
-	}
+	return &rest.Config{Host: base, BearerToken: token, Transport: &http.Transport{IdleConnTimeout: 2 * time.Second}}
 }
 
 func freePort(t *testing.T) int {

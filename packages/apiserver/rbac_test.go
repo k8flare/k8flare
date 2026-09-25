@@ -11,13 +11,14 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 )
 
 func TestRBAC(t *testing.T) {
 	base, admin := startDevURL(t)
 	c := ctx(t)
 
-	readonly, err := kubernetes.NewForConfig(devConfig(base, readonlyDevToken))
+	readonly, err := kubernetes.NewForConfig(&rest.Config{Host: base, BearerToken: readonlyDevToken})
 	if err != nil {
 		t.Fatal(err)
 	}
