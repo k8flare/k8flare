@@ -9,7 +9,6 @@ import (
 
 	csitrans "k8s.io/csi-translation-lib"
 	"k8s.io/kubernetes/pkg/controller/volume/expand"
-	"k8s.io/kubernetes/pkg/volume/csi"
 	"k8s.io/kubernetes/pkg/volume/csimigration"
 )
 
@@ -24,7 +23,12 @@ func build(ctx context.Context, d workloads.Deps, controllers map[string]bool) (
 	runs := []func(context.Context){}
 	if controllers["volumeexpand"] {
 		translator := csitrans.New()
-		exp, err := expand.NewExpandController(ctx, client, core.PersistentVolumeClaims(), csi.ProbeVolumePlugins(), translator, csimigration.NewPluginManager(translator))
+		// No in-tree plugin here: csi.ProbeVolumePlugins returns only csiPlugin,
+		// which has no ExpandVolumeDevice, so FindExpandablePluginBySpec can never
+		// return it and the controller always falls through to the
+		// ExternalExpanding event. Passing it would link 30 MB of pkg/volume/csi
+		// that the controller cannot reach. The migration path below is unaffected.
+		exp, err := expand.NewExpandController(ctx, client, core.PersistentVolumeClaims(), nil, translator, csimigration.NewPluginManager(translator))
 		if err != nil {
 			return nil, err
 		}
