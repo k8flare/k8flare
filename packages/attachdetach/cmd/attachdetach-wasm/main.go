@@ -14,11 +14,12 @@ import (
 
 func main() {
 	cfg := &rest.Config{
-		Host:        "https://k8flare.internal",
-		BearerToken: bridge.Getenv("ADMIN_TOKEN"),
-		QPS:         20,
-		Burst:       30,
-		Transport:   bridge.BindingTransport{Name: "APISERVER"},
+		Host:          "https://k8flare.internal",
+		BearerToken:   bridge.Getenv("ADMIN_TOKEN"),
+		QPS:           20,
+		Burst:         30,
+		Transport:     bridge.BindingTransport{Name: "APISERVER"},
+		ContentConfig: rest.ContentConfig{AcceptContentTypes: "application/json", ContentType: "application/json"},
 	}
 	client, err := kubernetes.NewForConfig(rest.AddUserAgent(cfg, "attachdetach-controller"))
 	if err != nil {

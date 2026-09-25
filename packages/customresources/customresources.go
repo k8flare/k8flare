@@ -101,7 +101,10 @@ func NewHandler(cfg Config) (http.Handler, error) {
 
 	mux := http.NewServeMux()
 	handler := auth.WithRemoteUser(mux)
-	crdClient, err := clientset.NewForConfig(&rest.Config{Host: "https://customresources.internal", Transport: loopback{handler}})
+	crdClient, err := clientset.NewForConfig(&rest.Config{Host: "https://customresources.internal", Transport: loopback{handler},
+		// The control plane serves JSON only; client-go would otherwise default
+		// to protobuf and the condition controllers could not write status.
+		ContentConfig: rest.ContentConfig{AcceptContentTypes: "application/json", ContentType: "application/json"}})
 	if err != nil {
 		return nil, err
 	}
