@@ -431,7 +431,7 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 	if needed == nil || needed["configmaps"] {
 		ensureClusterInfo(ctx, client, rootCA)
 	}
-	runs, err := buildControllers(ctx, client, factory, rootCA, signingCA, servingCA, controllers)
+	runs, err := Deps{Client: client, Factory: factory, RootCA: rootCA, SigningCA: signingCA, ServingCA: servingCA}.buildShards(ctx, controllers)
 	if err != nil {
 		return nil, err
 	}

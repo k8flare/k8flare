@@ -10,7 +10,7 @@ import (
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	bridge "github.com/k8flare/k8flare/packages/worker-bridge"
 	"github.com/k8flare/k8flare/packages/workloads"
-	_ "github.com/k8flare/k8flare/packages/workloads/shards/all"
+	_ "github.com/k8flare/k8flare/packages/workloads/shards/vap"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/metadata"
 	"k8s.io/client-go/rest"

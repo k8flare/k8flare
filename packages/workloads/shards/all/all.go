@@ -1,23 +1,19 @@
-package workloads
+// Package all carries every kube-controller-manager controller this control
+// plane runs. It is the shard the single workloads worker uses; splitting it
+// further is what keeps each worker under the Loader cap.
+package all
 
 import (
 	"context"
+	"github.com/k8flare/k8flare/packages/workloads"
 	"net"
 	"time"
 
 	supervisor "github.com/k8flare/k8flare/packages/apiserver-supervisor"
-	certificatesv1 "k8s.io/api/certificates/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apiserver/pkg/admission/plugin/policy/validating"
-	"k8s.io/apiserver/pkg/cel/openapi/resolver"
 	"k8s.io/apiserver/pkg/quota/v1/generic"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
-	cachediscovery "k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/informers"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/restmapper"
-	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/flowcontrol"
 	csitrans "k8s.io/csi-translation-lib"
 	"k8s.io/klog/v2"
@@ -49,7 +45,6 @@ import (
 	"k8s.io/kubernetes/pkg/controller/tainteviction"
 	"k8s.io/kubernetes/pkg/controller/ttl"
 	"k8s.io/kubernetes/pkg/controller/ttlafterfinished"
-	"k8s.io/kubernetes/pkg/controller/validatingadmissionpolicystatus"
 	"k8s.io/kubernetes/pkg/controller/volume/ephemeral"
 	"k8s.io/kubernetes/pkg/controller/volume/expand"
 	"k8s.io/kubernetes/pkg/controller/volume/persistentvolume"
@@ -62,72 +57,61 @@ import (
 	"k8s.io/utils/clock"
 )
 
-// buildControllers constructs the kube-controller-manager controllers this
-// worker carries. A worker links only the controller packages its own copy of
-// this function names, which is what keeps each binary under the Loader cap.
-func buildControllers(ctx context.Context, client kubernetes.Interface, factory informers.SharedInformerFactory, rootCA, signingCA, servingCA []byte, controllers map[string]bool) ([]func(context.Context), error) {
-	apps, core := factory.Apps().V1(), factory.Core().V1()
+func init() { workloads.Register(build) }
+
+func build(ctx context.Context, d workloads.Deps, controllers map[string]bool) ([]func(context.Context), error) {
+	client, factory := d.Client, d.Factory
+	rootCA := d.RootCA
+	apps, core := d.Apps(), d.Core()
 	runs := []func(context.Context){}
 	if controllers["replicaset"] {
 		rs := replicaset.NewReplicaSetController(ctx, apps.ReplicaSets(), core.Pods(), client, replicaset.BurstReplicas)
-		runs = append(runs, func(ctx context.Context) { rs.Run(ctx, workers) })
+		runs = append(runs, func(ctx context.Context) { rs.Run(ctx, workloads.Workers) })
 	}
 	if controllers["replication"] {
 		rc := replication.NewReplicationManager(ctx, core.Pods(), core.ReplicationControllers(), client, replication.BurstReplicas)
-		runs = append(runs, func(ctx context.Context) { rc.Run(ctx, workers) })
+		runs = append(runs, func(ctx context.Context) { rc.Run(ctx, workloads.Workers) })
 	}
 	if controllers["deployment"] {
 		dc, err := deployment.NewDeploymentController(ctx, apps.Deployments(), apps.ReplicaSets(), core.Pods(), client)
 		if err != nil {
 			return nil, err
 		}
-		runs = append(runs, func(ctx context.Context) { dc.Run(ctx, workers) })
+		runs = append(runs, func(ctx context.Context) { dc.Run(ctx, workloads.Workers) })
 	}
 	if controllers["endpoints"] {
 		ep := endpoint.NewEndpointController(ctx, core.Pods(), core.Services(), core.Endpoints(), client, 0)
-		runs = append(runs, func(ctx context.Context) { ep.Run(ctx, workers) })
+		runs = append(runs, func(ctx context.Context) { ep.Run(ctx, workloads.Workers) })
 	}
 	if controllers["endpointslice"] {
-		eps := endpointslice.NewController(ctx, core.Pods(), core.Services(), core.Nodes(), factory.Discovery().V1().EndpointSlices(), maxEndpointsPerSlice, client, 0)
-		runs = append(runs, func(ctx context.Context) { eps.Run(ctx, workers) })
+		eps := endpointslice.NewController(ctx, core.Pods(), core.Services(), core.Nodes(), factory.Discovery().V1().EndpointSlices(), workloads.MaxEndpointsPerSlice, client, 0)
+		runs = append(runs, func(ctx context.Context) { eps.Run(ctx, workloads.Workers) })
 	}
 	if controllers["endpointslicemirroring"] {
-		mirror := endpointslicemirroring.NewController(ctx, core.Endpoints(), factory.Discovery().V1().EndpointSlices(), core.Services(), maxEndpointsPerSlice, client, 0)
-		runs = append(runs, func(ctx context.Context) { mirror.Run(ctx, workers) })
+		mirror := endpointslicemirroring.NewController(ctx, core.Endpoints(), factory.Discovery().V1().EndpointSlices(), core.Services(), workloads.MaxEndpointsPerSlice, client, 0)
+		runs = append(runs, func(ctx context.Context) { mirror.Run(ctx, workloads.Workers) })
 	}
 	if controllers["servicecidr"] {
-		scc := servicecidrs.NewController(ctx, serviceCIDRSnapshot(factory), ipAddressSnapshot(factory), client)
+		scc := servicecidrs.NewController(ctx, d.ServiceCIDRs(), d.IPAddresses(), client)
 		runs = append(runs, func(ctx context.Context) { scc.Run(ctx, 5) })
 	}
-	if controllers["validatingadmissionpolicy"] {
-		checker := &validating.TypeChecker{
-			SchemaResolver: &resolver.ClientDiscoveryResolver{Discovery: client.Discovery()},
-			RestMapper:     restmapper.NewDeferredDiscoveryRESTMapper(cachediscovery.NewMemCacheClient(client.Discovery())),
-		}
-		vap, err := validatingadmissionpolicystatus.NewController(validatingAdmissionPolicySnapshot(factory), client.AdmissionregistrationV1().ValidatingAdmissionPolicies(), checker)
-		if err != nil {
-			return nil, err
-		}
-		runs = append(runs, func(ctx context.Context) { vap.Run(ctx, 1) })
-	}
-
 	if controllers["daemonset"] {
 		ds, err := daemon.NewDaemonSetsController(ctx, apps.DaemonSets(), apps.ControllerRevisions(), core.Pods(), core.Nodes(), client, flowcontrol.NewBackOff(time.Second, 15*time.Minute))
 		if err != nil {
 			return nil, err
 		}
-		runs = append(runs, func(ctx context.Context) { ds.Run(ctx, daemonSetWorkers) })
+		runs = append(runs, func(ctx context.Context) { ds.Run(ctx, workloads.DaemonSetWorkers) })
 	}
 	if controllers["statefulset"] {
 		ss := statefulset.NewStatefulSetController(ctx, core.Pods(), apps.StatefulSets(), core.PersistentVolumeClaims(), apps.ControllerRevisions(), client)
-		runs = append(runs, func(ctx context.Context) { ss.Run(ctx, workers) })
+		runs = append(runs, func(ctx context.Context) { ss.Run(ctx, workloads.Workers) })
 	}
 	if controllers["job"] {
 		jobs, err := job.NewController(ctx, client, core.Pods(), factory.Batch().V1().Jobs(), nil, nil)
 		if err != nil {
 			return nil, err
 		}
-		runs = append(runs, func(ctx context.Context) { jobs.Run(ctx, workers) })
+		runs = append(runs, func(ctx context.Context) { jobs.Run(ctx, workloads.Workers) })
 	}
 	if controllers["ttlafterfinished"] {
 		ttl := ttlafterfinished.New(ctx, factory.Batch().V1().Jobs(), client)
@@ -138,7 +122,7 @@ func buildControllers(ctx context.Context, client kubernetes.Interface, factory 
 		if err != nil {
 			return nil, err
 		}
-		runs = append(runs, func(ctx context.Context) { cron.Run(ctx, workers) })
+		runs = append(runs, func(ctx context.Context) { cron.Run(ctx, workloads.Workers) })
 	}
 
 	if controllers["serviceaccounts"] {
@@ -181,7 +165,7 @@ func buildControllers(ctx context.Context, client kubernetes.Interface, factory 
 	}
 	if controllers["resourcequota"] {
 		quotaConfiguration, err := quotainstall.NewQuotaConfigurationForControllers(generic.ListerFuncForResourceFunc(func(gvr schema.GroupVersionResource) (informers.GenericInformer, error) {
-			return quotaInformer(factory, gvr)
+			return d.QuotaInformer(gvr)
 		}), factory)
 		if err != nil {
 			return nil, err
@@ -189,7 +173,7 @@ func buildControllers(ctx context.Context, client kubernetes.Interface, factory 
 		started := make(chan struct{})
 		close(started)
 		registry := generic.NewRegistry(quotaConfiguration.Evaluators())
-		addQuotaCountEvaluators(registry, factory)
+		d.AddQuotaCountEvaluators(registry)
 		rq, err := resourcequota.NewController(ctx, &resourcequota.ControllerOptions{
 			QuotaClient:           client.CoreV1(),
 			ResourceQuotaInformer: core.ResourceQuotas(),
@@ -201,30 +185,25 @@ func buildControllers(ctx context.Context, client kubernetes.Interface, factory 
 		if err != nil {
 			return nil, err
 		}
-		runs = append(runs, func(ctx context.Context) { rq.Run(ctx, workers) })
+		runs = append(runs, func(ctx context.Context) { rq.Run(ctx, workloads.Workers) })
 	}
 	if controllers["csrapproving"] || controllers["csrsigning"] || controllers["csrcleaner"] {
-		inf := factory.InformerFor(&certificatesv1.CertificateSigningRequest{}, func(kubernetes.Interface, time.Duration) cache.SharedIndexInformer {
-			return newSnapshotInformer(&certificatesv1.CertificateSigningRequest{})
-		})
+		csrs := d.CSRs()
 		if controllers["csrapproving"] {
-			cc := approver.NewCSRApprovingController(ctx, client, csrInformer{inf})
-			runs = append(runs, func(ctx context.Context) { cc.Run(ctx, workers) })
+			cc := approver.NewCSRApprovingController(ctx, client, csrs)
+			runs = append(runs, func(ctx context.Context) { cc.Run(ctx, workloads.Workers) })
 		}
 		if controllers["csrsigning"] {
-			runs = append(runs, startCSRSigners(ctx, client, csrInformer{inf}, signingCA, servingCA)...)
+			runs = append(runs, d.StartCSRSigners(ctx, csrs)...)
 		}
 		if controllers["csrcleaner"] {
-			cln := cleaner.NewCSRCleanerController(client.CertificatesV1().CertificateSigningRequests(), csrInformer{inf})
+			cln := cleaner.NewCSRCleanerController(client.CertificatesV1().CertificateSigningRequests(), csrs)
 			runs = append(runs, func(ctx context.Context) { cln.Run(ctx, 1) })
 		}
 	}
 	if controllers["clusterroleaggregation"] {
-		inf := factory.InformerFor(&rbacv1.ClusterRole{}, func(kubernetes.Interface, time.Duration) cache.SharedIndexInformer {
-			return newSnapshotInformer(&rbacv1.ClusterRole{})
-		})
-		agg := clusterroleaggregation.NewClusterRoleAggregation(clusterRoleInformer{inf}, client.RbacV1())
-		runs = append(runs, func(ctx context.Context) { agg.Run(ctx, workers) })
+		agg := clusterroleaggregation.NewClusterRoleAggregation(d.ClusterRoles(), client.RbacV1())
+		runs = append(runs, func(ctx context.Context) { agg.Run(ctx, workloads.Workers) })
 	}
 	if controllers["nodeipam"] {
 		ipamc, err := nodeipam.NewNodeIpamController(
@@ -332,8 +311,8 @@ func buildControllers(ctx context.Context, client kubernetes.Interface, factory 
 			apps.Deployments(),
 			apps.StatefulSets(),
 			client,
-			scaleMapper(),
-			clientScales{client},
+			d.ScaleMapper(),
+			d.Scales(),
 			client.Discovery(),
 		)
 		runs = append(runs, func(ctx context.Context) { dc.Run(ctx) })
