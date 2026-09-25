@@ -107,6 +107,10 @@ func main() {
 	// application/vnd.kubernetes.protobuf would be refused rather than
 	// negotiated down.
 	_ = cfg.ExtraKubeletArgs.Set("kube-api-content-type=application/json")
+	// kube-proxy sets protobuf explicitly rather than inheriting client-go's
+	// default, so its reads negotiate down to JSON but its writes do not: every
+	// event it publishes was rejected as "unknown format".
+	_ = cfg.ExtraKubeProxyArgs.Set("kube-api-content-type=application/json")
 	if *nodeLabels != "" {
 		_ = cfg.Labels.Set(*nodeLabels)
 	}
