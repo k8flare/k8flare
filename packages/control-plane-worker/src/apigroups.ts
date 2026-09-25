@@ -12,6 +12,7 @@ export class APIGroups extends WorkerEntrypoint<Env> {
       STORAGE: this.env.STORAGE_SVC,
       PRINTERS: this.env.PRINTERS,
       TUNNEL: this.env.TUNNEL,
+      ADMISSION: this.env.ADMISSION,
       ADMIN_TOKEN: this.env.ADMIN_TOKEN,
       READONLY_TOKEN: this.env.READONLY_TOKEN,
     }, this.env.APISERVER);

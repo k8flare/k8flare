@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -20,6 +21,7 @@ import (
 const (
 	orphanFinalizer     = metav1.FinalizerOrphanDependents
 	foregroundFinalizer = metav1.FinalizerDeleteDependents
+	eventTTL            = time.Hour
 )
 
 type Result struct {
@@ -54,7 +56,87 @@ func Collect(ctx context.Context, client kubernetes.Interface, dyn dynamic.Inter
 			println("gc:", it.key, "failed:", err.Error())
 		}
 	}
+	for _, it := range absentNamespace(g.items) {
+		if err := c.deleteItem(ctx, it, metav1.DeletePropagationBackground); err != nil {
+			println("gc:", it.key, "namespace gone:", err.Error())
+			c.result.Pending++
+		}
+	}
+	if err := c.deleteOrphanKeys(ctx, store, append(append(orphanEventKeys(g), orphanLeaseKeys(g)...), expiredEventKeys(g, time.Now())...)); err != nil {
+		return nil, err
+	}
 	return c.result, nil
+}
+
+const orphanEventBatch = 200
+
+func (c *collector) deleteOrphanKeys(ctx context.Context, store *kine.Client, keys []string) error {
+	if len(keys) > orphanEventBatch {
+		c.result.Pending += len(keys) - orphanEventBatch
+		keys = keys[:orphanEventBatch]
+	}
+	for _, key := range keys {
+		if _, err := store.Delete(ctx, key, 0); err != nil && err != kine.ErrNotFound {
+			return err
+		}
+		c.result.Deleted++
+	}
+	return nil
+}
+
+func orphanEventKeys(g *graph) []string {
+	return orphanNamespacedKeys(g, g.eventKeys, eventNamespace)
+}
+
+func expiredEventKeys(g *graph, now time.Time) []string {
+	var out []string
+	for _, key := range g.eventKeys {
+		at := g.eventAt[key]
+		if at.IsZero() || now.Sub(at) < eventTTL {
+			continue
+		}
+		out = append(out, key)
+	}
+	return out
+}
+
+func orphanLeaseKeys(g *graph) []string {
+	return orphanNamespacedKeys(g, g.leaseKeys, leaseNamespace)
+}
+
+func orphanNamespacedKeys(g *graph, keys []string, namespace func(string) (string, bool)) []string {
+	present := map[string]bool{}
+	for _, it := range g.items {
+		if it.Kind == "Namespace" {
+			present[it.Name] = true
+		}
+	}
+	var gone []string
+	for _, key := range keys {
+		ns, ok := namespace(key)
+		if !ok || present[ns] {
+			continue
+		}
+		gone = append(gone, key)
+	}
+	return gone
+}
+
+func absentNamespace(items []*item) []*item {
+	present := map[string]bool{}
+	for _, it := range items {
+		if it.Kind == "Namespace" {
+			present[it.Name] = true
+		}
+	}
+	var gone []*item
+	for _, it := range items {
+		if it.Namespace == "" || present[it.Namespace] {
+			continue
+		}
+		gone = append(gone, it)
+	}
+	return gone
 }
 
 func (c *collector) sync(ctx context.Context, it *item) error {

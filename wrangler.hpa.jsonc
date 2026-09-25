@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "k8flare-hpa",
+  "main": "packages/hpa-worker/src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "workers_dev": false,
+  "assets": {
+    "directory": "./packages/hpa-worker/assets",
+    "binding": "ASSETS",
+    "run_worker_first": ["/wasm/*"],
+  },
+  "worker_loaders": [{ "binding": "LOADER" }],
+  "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"] }],
+  "services": [
+    { "binding": "APISERVER", "service": "k8flare", "entrypoint": "APIServer" },
+  ],
+  "queues": {
+    "consumers": [
+      { "queue": "k8flare-hpa", "max_batch_size": 100, "max_batch_timeout": 1, "max_retries": 10, "max_concurrency": 1 },
+    ],
+  },
+  "observability": { "enabled": true },
+}

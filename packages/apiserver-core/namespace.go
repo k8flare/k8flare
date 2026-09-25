@@ -119,12 +119,28 @@ func (s namespaceCreateStrategy) PrepareForCreate(ctx context.Context, obj runti
 	namespace.Spec.Finalizers = append(namespace.Spec.Finalizers, corev1.FinalizerKubernetes)
 }
 
+func (namespaceCreateStrategy) Canonicalize(obj runtime.Object) {
+	labelNamespaceName(obj)
+}
+
 type namespaceUpdateStrategy struct{ rest.RESTUpdateStrategy }
 
 func (s namespaceUpdateStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime.Object) {
 	s.RESTUpdateStrategy.PrepareForUpdate(ctx, obj, old)
 	obj.(*corev1.Namespace).Spec.Finalizers = old.(*corev1.Namespace).Spec.Finalizers
 	obj.(*corev1.Namespace).Status = old.(*corev1.Namespace).Status
+}
+
+func (namespaceUpdateStrategy) Canonicalize(obj runtime.Object) {
+	labelNamespaceName(obj)
+}
+
+func labelNamespaceName(obj runtime.Object) {
+	namespace := obj.(*corev1.Namespace)
+	if namespace.Labels == nil {
+		namespace.Labels = map[string]string{}
+	}
+	namespace.Labels[corev1.LabelMetadataName] = namespace.Name
 }
 
 type namespaceFinalizeStrategy struct{ rest.RESTUpdateStrategy }

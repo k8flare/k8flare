@@ -17,14 +17,25 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 )
 
-var requestInfoResolver = &genericapirequest.RequestInfoFactory{APIPrefixes: sets.NewString("api", "apis"), GrouplessAPIPrefixes: sets.NewString("api")}
+var (
+	requestInfoResolver = &genericapirequest.RequestInfoFactory{APIPrefixes: sets.NewString("api", "apis"), GrouplessAPIPrefixes: sets.NewString("api")}
+	immortalNamespaces  = sets.NewString(metav1.NamespaceDefault, metav1.NamespaceSystem, metav1.NamespacePublic)
+)
 
 func NamespaceLifecycle(client *kine.Client) func(http.Handler) http.Handler {
 	namespaces := kine.NewStorage(client, scheme.Codecs.LegacyCodec(corev1.SchemeGroupVersion), func() runtime.Object { return &corev1.Namespace{} })
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			info, err := requestInfoResolver.NewRequestInfo(r)
-			if err != nil || !info.IsResourceRequest || info.Verb != "create" || info.Namespace == "" || info.Resource == "namespaces" {
+			if err != nil || !info.IsResourceRequest {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if info.Verb == "delete" && info.Resource == "namespaces" && info.Subresource == "" && immortalNamespaces.Has(info.Name) {
+				writeStatus(w, apierrors.NewForbidden(schema.GroupResource{Resource: "namespaces"}, info.Name, fmt.Errorf("this namespace may not be deleted")))
+				return
+			}
+			if info.Verb != "create" || info.Namespace == "" || info.Resource == "namespaces" || isLocalSubjectAccessReview(info) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -49,6 +60,10 @@ func NamespaceLifecycle(client *kine.Client) func(http.Handler) http.Handler {
 			writeStatus(w, forbidden)
 		})
 	}
+}
+
+func isLocalSubjectAccessReview(info *genericapirequest.RequestInfo) bool {
+	return info.APIGroup == "authorization.k8s.io" && info.Resource == "localsubjectaccessreviews"
 }
 
 func writeStatus(w http.ResponseWriter, err error) {

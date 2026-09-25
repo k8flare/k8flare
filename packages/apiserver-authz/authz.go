@@ -4,6 +4,7 @@ import (
 	"context"
 
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
+	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -14,7 +15,6 @@ import (
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
 	"k8s.io/apiserver/pkg/authorization/authorizerfactory"
-	"k8s.io/apiserver/pkg/authorization/union"
 	"k8s.io/apiserver/pkg/storage"
 	"k8s.io/client-go/kubernetes/scheme"
 	rbacauthorizer "k8s.io/kubernetes/plugin/pkg/auth/authorizer/rbac"
@@ -23,9 +23,10 @@ import (
 
 func init() {
 	utilruntime.Must(rbacv1.AddToScheme(scheme.Scheme))
+	utilruntime.Must(corev1.AddToScheme(scheme.Scheme))
 }
 
-var nodeClusterRoles = []string{"system:node", "system:node-proxier"}
+var nodeClusterRoles = []string{"system:node-proxier"}
 
 var (
 	bootstrapClusterRoles        = bootstrappolicy.ClusterRoles()
@@ -35,9 +36,31 @@ var (
 )
 
 func New(client *kine.Client) authorizer.Authorizer {
+	return chain{authorizerfactory.NewPrivilegedGroups(user.SystemPrivilegedGroup), newNodeAuthorizer(client), rbacFor(client)}
+}
+
+func Resolver(client *kine.Client) authorizer.RuleResolver {
+	return rbacFor(client)
+}
+
+func rbacFor(client *kine.Client) *rbacauthorizer.RBACAuthorizer {
 	p := &policy{client: client, codec: scheme.Codecs.LegacyCodec(rbacv1.SchemeGroupVersion)}
-	rbac := rbacauthorizer.New(p, p, p, p)
-	return union.New(authorizerfactory.NewPrivilegedGroups(user.SystemPrivilegedGroup), rbac)
+	return rbacauthorizer.New(p, p, p, p)
+}
+
+type chain []authorizer.Authorizer
+
+func (c chain) Authorize(ctx context.Context, attrs authorizer.Attributes) (authorizer.Decision, string, error) {
+	for _, a := range c {
+		d, reason, err := a.Authorize(ctx, attrs)
+		if err != nil {
+			return d, reason, err
+		}
+		if d != authorizer.DecisionNoOpinion {
+			return d, reason, nil
+		}
+	}
+	return authorizer.DecisionNoOpinion, "", nil
 }
 
 type policy struct {

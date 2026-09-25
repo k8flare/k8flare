@@ -37,13 +37,8 @@ func (r *reconciler) run(ctx context.Context, crds []*apiextensionsv1.CustomReso
 	}
 	r.mu.Lock()
 	if r.running != nil {
-		wait := r.running
 		r.mu.Unlock()
-		select {
-		case <-wait:
-		case <-ctx.Done():
-		}
-		return true
+		return false
 	}
 	done := make(chan struct{})
 	r.running = done

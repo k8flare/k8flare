@@ -72,6 +72,7 @@ func (statusOnlyStrategy) PrepareForUpdate(_ context.Context, obj, old runtime.O
 	if newErr != nil || oldErr != nil {
 		return
 	}
+	newMeta.SetGeneration(oldMeta.GetGeneration())
 	newMeta.SetOwnerReferences(oldMeta.GetOwnerReferences())
 	newMeta.SetDeletionTimestamp(oldMeta.GetDeletionTimestamp())
 	newMeta.SetDeletionGracePeriodSeconds(oldMeta.GetDeletionGracePeriodSeconds())

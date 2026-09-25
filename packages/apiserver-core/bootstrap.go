@@ -14,7 +14,7 @@ import (
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
 	"k8s.io/apiserver/pkg/registry/rest"
-	"k8s.io/utils/net"
+	utilnet "k8s.io/utils/net"
 )
 
 var systemNamespaces = []string{"default", "kube-system", "kube-public", "kube-node-lease"}
@@ -29,6 +29,8 @@ func bootstrapCluster(namespaces, services *genericregistry.Store, next http.Han
 				create(ctx, namespaces, ns)
 			}
 			create(genericapirequest.WithNamespace(r.Context(), metav1.NamespaceDefault), services, kubernetesService())
+			reconcileKubernetesEndpoints(r.Context())
+			ensureExtensionAuth(r.Context())
 		})
 		next.ServeHTTP(w, r)
 	})
@@ -41,7 +43,7 @@ func create(ctx context.Context, store *genericregistry.Store, obj metav1.Object
 }
 
 func kubernetesService() *corev1.Service {
-	clusterIP, _ := net.GetIndexedIP(supervisor.ServiceCIDR, 1)
+	clusterIP, _ := utilnet.GetIndexedIP(supervisor.ServiceCIDR, 1)
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: "kubernetes", Namespace: metav1.NamespaceDefault, Labels: map[string]string{"component": "apiserver", "provider": "kubernetes"}},
 		Spec: corev1.ServiceSpec{

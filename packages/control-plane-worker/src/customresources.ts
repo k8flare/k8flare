@@ -5,6 +5,10 @@ export class CustomResources extends WorkerEntrypoint<Env> {
   async fetch(request: Request): Promise<Response> {
     const worker = await loadWasmWorker(this.env.LOADER, this.env.ASSETS, "customresources", {
       STORAGE: this.env.STORAGE_SVC,
+      ADMISSION: this.env.ADMISSION,
+      TUNNEL: this.env.TUNNEL,
+      OUTBOUND: this.env.OUTBOUND,
+      HOOKS: this.env.HOOKS,
     }, this.env.APISERVER);
     const method = request.method;
     const path = new URL(request.url).pathname;

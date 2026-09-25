@@ -1,13 +1,17 @@
 package apiserver
 
 import (
+	"context"
 	"crypto/sha512"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	auth "github.com/k8flare/k8flare/packages/apiserver-auth"
 	authz "github.com/k8flare/k8flare/packages/apiserver-authz"
@@ -15,10 +19,14 @@ import (
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
 	supervisor "github.com/k8flare/k8flare/packages/apiserver-supervisor"
+	"github.com/k8flare/k8flare/packages/edgehost"
+	"github.com/k8flare/k8flare/packages/metricsapi"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/version"
+	"k8s.io/apiserver/pkg/authentication/request/bearertoken"
+	requnion "k8s.io/apiserver/pkg/authentication/request/union"
 	"k8s.io/apiserver/pkg/authentication/token/union"
 	"k8s.io/apiserver/pkg/endpoints/discovery"
 	"k8s.io/apiserver/pkg/endpoints/handlers/negotiation"
@@ -34,6 +42,13 @@ type Config struct {
 	Groups          *http.Client
 	OpenAPI         *http.Client
 	CustomResources *http.Client
+	Outbound        *http.Client
+	Tunnel          *http.Client
+	Admission       *http.Client
+	Hooks           *http.Client
+	AccessTeam      string
+	AccessAUD       string
+	ClusterUID      string
 }
 
 const (
@@ -45,10 +60,28 @@ const (
 
 var versionInfo = version.Info{Major: "1", Minor: "36", GitVersion: "v1.36.4+k8flare", Platform: "js/wasm", GoVersion: "go1.26", Compiler: "gc"}
 
+func seedVaultTokens(ctx context.Context, v *supervisor.Vault, cfg Config) {
+	if cfg.ClusterUID != "" && cfg.ClusterUID != "default" {
+		return
+	}
+	if cfg.AdminToken != "" {
+		_, _ = v.EnsureToken(ctx, "admin", cfg.AdminToken)
+	}
+	if cfg.ReadonlyToken != "" {
+		_, _ = v.EnsureToken(ctx, "readonly", cfg.ReadonlyToken)
+	}
+	if cfg.JoinToken != "" {
+		_, _ = v.EnsureToken(ctx, "join", cfg.JoinToken)
+	}
+}
+
 func NewHandler(cfg Config) (http.Handler, error) {
 	client := &kine.Client{HTTP: cfg.Kine}
 	v := supervisor.NewVault(client)
-	tokens := union.New(auth.AdminToken(cfg.AdminToken), auth.ReadonlyToken(cfg.ReadonlyToken), auth.NodeToken{Vault: v})
+	access := auth.Access{Team: cfg.AccessTeam, Audience: cfg.AccessAUD, HTTP: cfg.Outbound}
+	sa := auth.ServiceAccountToken{HMAC: []byte(cfg.AdminToken)}
+	tokens := union.New(auth.AdminToken(cfg.AdminToken), auth.ReadonlyToken(cfg.ReadonlyToken), auth.VaultToken{Vault: v}, auth.NodeToken{Vault: v}, sa, access)
+	authn := requnion.New(bearertoken.New(tokens), access)
 	authorizer := authz.New(client)
 	mux := http.NewServeMux()
 	for _, p := range []string{"/healthz", "/readyz", "/livez"} {
@@ -57,24 +90,97 @@ func NewHandler(cfg Config) (http.Handler, error) {
 			_, _ = w.Write([]byte("ok"))
 		})
 	}
+	mux.HandleFunc("/.well-known/openid-configuration", sa.ServeOpenID)
+	mux.HandleFunc("/openid/v1/jwks", sa.ServeJWKS)
 	mux.HandleFunc("/version", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(versionInfo)
 	})
 	addresses := discovery.DefaultAddresses{DefaultAddress: "k8flare"}
-	mux.Handle("/api", discovery.NewLegacyRootAPIHandler(addresses, scheme.Codecs, "/api"))
-	mux.Handle("/api/", forwardTo(cfg.Groups, groupsBase, "apiserver-core"))
-	mux.Handle("/apis", rootAPIs(addresses, cfg.CustomResources))
-	mux.Handle("/apis/", groupRouter(cfg))
+	legacyAPI := wrapAggregated(discovery.NewLegacyRootAPIHandler(addresses, scheme.Codecs, "/api"), true, nil)
+	mux.Handle("/api", legacyAPI)
+	mux.Handle("/api/", serveAPIRoot(legacyAPI, forwardTo(cfg.Groups, groupsBase, "apiserver-core")))
+	apisRoot := wrapAggregated(rootAPIs(addresses, cfg), false, addDynamicAggregated(cfg))
+	mux.Handle("/apis", apisRoot)
+	metrics := metricsapi.Handler{Store: client, Tunnel: cfg.Tunnel}
+	mux.Handle("/apis/metrics.k8s.io", metrics)
+	mux.Handle("/apis/metrics.k8s.io/", metrics)
+	mux.HandleFunc("/internal/metrics/scrape", metrics.Scrape)
+	mux.HandleFunc("/internal/loadbalancer/provision", func(w http.ResponseWriter, r *http.Request) {
+		edgehost.ProvisionServices(w, r, client)
+	})
+	mux.HandleFunc("/internal/gateway/provision", func(w http.ResponseWriter, r *http.Request) {
+		edgehost.ProvisionGateways(w, r, client)
+	})
+	mux.HandleFunc("/internal/extensions/dispatch", func(w http.ResponseWriter, r *http.Request) {
+		edgehost.DispatchExtensions(w, r, client, cfg.Hooks)
+	})
+	mux.HandleFunc("/internal/queue/plan", edgehost.PlanQueue)
+	mux.HandleFunc("/internal/queue/followup", edgehost.FollowUp)
+	mux.HandleFunc("/internal/r2/mint", edgehost.MintR2)
+	mux.HandleFunc("/internal/pods/merge-env", edgehost.MergePodEnvHandler)
+	mux.HandleFunc("/internal/nodes/vm-plan", edgehost.PlanVMsHandler)
+	mux.Handle("/apis/", serveAPIs(apisRoot, groupRouter(cfg)))
 	serveDiscovery(mux)
-	mux.Handle("/openapi/v2", forwardTo(cfg.OpenAPI, openAPIBase, ""))
-	mux.Handle("/openapi/v2/", forwardTo(cfg.OpenAPI, openAPIBase, ""))
+	mux.Handle("/openapi/v2", openAPIV2(cfg))
+	mux.Handle("/openapi/v2/", openAPIV2(cfg))
 	mux.Handle("/openapi/v3", openAPIV3Root(cfg))
 	mux.Handle("/openapi/v3/", openAPIV3Router(cfg))
 	root := http.NewServeMux()
 	supervisor.New(v, cfg.JoinToken).Register(root)
-	root.Handle("/", auth.WithAuth(auth.WithRequestInfo(auth.WithAuthorization(mux, authorizer)), tokens))
-	return recoverPanics(root), nil
+	root.Handle("/", auth.WithAuth(auth.WithRequestInfo(auth.WithAuthorization(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-K8flare-Stream-Locate") == "1" {
+			edgehost.LocateStream(w, r, client, cfg.Admission)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	}), authorizer)), authn))
+	var once sync.Once
+	return recoverPanics(redirectBareProxy(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() {
+			_ = auth.InstallServiceAccountKey(r.Context(), client, []byte(cfg.AdminToken))
+			seedVaultTokens(r.Context(), v, cfg)
+		})
+		if edgehost.Proxy(w, r, client, cfg.Tunnel) {
+			return
+		}
+		root.ServeHTTP(w, r)
+	}))), nil
+}
+
+func serveAPIRoot(legacy, rest http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/" {
+			legacy.ServeHTTP(w, r)
+			return
+		}
+		rest.ServeHTTP(w, r)
+	})
+}
+
+func serveAPIs(root, rest http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/apis" || r.URL.Path == "/apis/" {
+			root.ServeHTTP(w, r)
+			return
+		}
+		rest.ServeHTTP(w, r)
+	})
+}
+
+func redirectBareProxy(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if (r.Method == http.MethodGet || r.Method == http.MethodHead) && strings.HasSuffix(r.URL.Path, "/proxy") && !strings.HasSuffix(r.URL.Path, "/proxy/") {
+			loc := r.URL.Path + "/"
+			if r.URL.RawQuery != "" {
+				loc += "?" + r.URL.RawQuery
+			}
+			w.Header().Set("Location", loc)
+			w.WriteHeader(http.StatusMovedPermanently)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // serveDiscovery answers the per-group discovery documents from the
@@ -107,14 +213,28 @@ func serveDiscovery(mux *http.ServeMux) {
 func groupRouter(cfg Config) http.Handler {
 	workers := map[string]string{}
 	for _, sgv := range registry.Served {
+		if sgv.GV.Group == "" {
+			continue
+		}
 		group, _, _ := strings.Cut(sgv.GV.Group, ".")
 		workers[sgv.GV.Group] = "apiserver-" + group
 	}
 	custom := forwardTo(cfg.CustomResources, customResourcesBase, "")
+	aggregate := forwardTo(cfg.Groups, groupsBase, "apiserver-apiregistration")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		group, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/apis/"), "/")
+		group, version := apiGroupAndVersion(r.URL.Path)
 		if worker, ok := workers[group]; ok {
 			forwardTo(cfg.Groups, groupsBase, worker).ServeHTTP(w, r)
+			return
+		}
+		store := kineStore(cfg.Kine)
+		if version != "" {
+			if _, ok := remoteAPIService(r.Context(), store, group, version); ok {
+				aggregate.ServeHTTP(w, r)
+				return
+			}
+		} else if hasRemoteAPIServiceGroup(r.Context(), store, group) {
+			aggregate.ServeHTTP(w, r)
 			return
 		}
 		custom.ServeHTTP(w, r)
@@ -170,23 +290,20 @@ func openAPIV3Root(cfg Config) http.Handler {
 		for _, src := range sources {
 			req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, src.base+"/openapi/v3", nil)
 			if err != nil {
-				responsewriters.InternalError(w, r, err)
-				return
+				continue
 			}
 			req.Header.Set("Accept", "application/json")
 			resp, err := src.client.Do(req)
 			if err != nil {
-				responsewriters.InternalError(w, r, err)
-				return
+				continue
 			}
 			var discovery struct {
 				Paths map[string]json.RawMessage `json:"paths"`
 			}
 			decodeErr := json.NewDecoder(resp.Body).Decode(&discovery)
 			resp.Body.Close()
-			if decodeErr != nil {
-				responsewriters.InternalError(w, r, fmt.Errorf("%s /openapi/v3: %w", src.base, decodeErr))
-				return
+			if decodeErr != nil || resp.StatusCode != http.StatusOK {
+				continue
 			}
 			for k, v := range discovery.Paths {
 				paths[k] = v
@@ -206,11 +323,12 @@ func openAPIV3Root(cfg Config) http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
 		_, _ = w.Write(body)
 	})
 }
 
-func rootAPIs(addresses discovery.Addresses, customResources *http.Client) http.Handler {
+func rootAPIs(addresses discovery.Addresses, cfg Config) http.Handler {
 	root := discovery.NewRootAPIsHandler(addresses, scheme.Codecs)
 	for _, sgv := range registry.Served {
 		if sgv.GV.Group != "" {
@@ -223,22 +341,23 @@ func rootAPIs(addresses discovery.Addresses, customResources *http.Client) http.
 			responsewriters.InternalError(w, r, err)
 			return
 		}
-		if customResources != nil {
-			req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, customResourcesBase+"/apis", nil)
-			req.Header.Set("Accept", "application/json")
-			resp, err := customResources.Do(req)
-			if err != nil {
-				responsewriters.InternalError(w, r, err)
-				return
+		if cfg.CustomResources != nil {
+			req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, customResourcesBase+"/apis", nil)
+			if err == nil {
+				req.Header.Set("Accept", "application/json")
+				resp, err := cfg.CustomResources.Do(req)
+				if err == nil {
+					var list metav1.APIGroupList
+					decodeErr := json.NewDecoder(resp.Body).Decode(&list)
+					resp.Body.Close()
+					if decodeErr == nil && resp.StatusCode == http.StatusOK {
+						groups = append(groups, list.Groups...)
+					}
+				}
 			}
-			defer resp.Body.Close()
-			var list metav1.APIGroupList
-			if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
-				responsewriters.InternalError(w, r, fmt.Errorf("customresources /apis: %w", err))
-				return
-			}
-			groups = append(groups, list.Groups...)
 		}
+		groups = append(groups, remoteAPIServiceGroups(r.Context(), kineStore(cfg.Kine))...)
+		groups = append(groups, metricsapi.APIGroup())
 		responsewriters.WriteObjectNegotiated(scheme.Codecs, negotiation.DefaultEndpointRestrictions, schema.GroupVersion{}, w, r, http.StatusOK, &metav1.APIGroupList{Groups: groups}, false)
 	})
 }
@@ -293,6 +412,148 @@ func forwardTo(client *http.Client, base, worker string) http.Handler {
 			}
 		}
 	})
+}
+
+func openAPIV2(cfg Config) http.Handler {
+	return cacheOpenAPIJSON(openAPIV2Uncached(cfg))
+}
+
+func cacheOpenAPIJSON(next http.Handler) http.Handler {
+	var mu sync.Mutex
+	var cached []byte
+	var at time.Time
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if wantsProtobufOpenAPI(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		mu.Lock()
+		if cached != nil && time.Since(at) < 30*time.Second {
+			body := cached
+			mu.Unlock()
+			writeOpenAPIJSON(w, body)
+			return
+		}
+		mu.Unlock()
+		rec := &openAPICapture{header: http.Header{}}
+		next.ServeHTTP(rec, r)
+		if rec.code == 0 {
+			rec.code = http.StatusOK
+		}
+		if rec.code == http.StatusOK {
+			mu.Lock()
+			cached = append([]byte(nil), rec.body...)
+			at = time.Now()
+			mu.Unlock()
+		}
+		for k, vs := range rec.header {
+			for _, v := range vs {
+				w.Header().Add(k, v)
+			}
+		}
+		w.Header().Set("Cache-Control", "public, max-age=30")
+		w.WriteHeader(rec.code)
+		_, _ = w.Write(rec.body)
+	})
+}
+
+func writeOpenAPIJSON(w http.ResponseWriter, body []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "public, max-age=30")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+type openAPICapture struct {
+	header http.Header
+	code   int
+	body   []byte
+}
+
+func (c *openAPICapture) Header() http.Header { return c.header }
+func (c *openAPICapture) Write(b []byte) (int, error) {
+	if c.code == 0 {
+		c.code = http.StatusOK
+	}
+	c.body = append(c.body, b...)
+	return len(b), nil
+}
+func (c *openAPICapture) WriteHeader(status int) { c.code = status }
+
+func openAPIV2Uncached(cfg Config) http.Handler {
+	builtin := forwardTo(cfg.OpenAPI, openAPIBase, "")
+	if cfg.CustomResources == nil {
+		return builtin
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if wantsProtobufOpenAPI(r) {
+			builtin.ServeHTTP(w, r)
+			return
+		}
+		base, err := fetchOpenAPI(r.Context(), cfg.OpenAPI, openAPIBase+"/openapi/v2")
+		if err != nil {
+			builtin.ServeHTTP(w, r)
+			return
+		}
+		extra, err := fetchOpenAPI(r.Context(), cfg.CustomResources, customResourcesBase+"/openapi/v2")
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(base)
+			return
+		}
+		merged, err := mergeOpenAPIV2Definitions(base, extra)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(base)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(merged)
+	})
+}
+
+func wantsProtobufOpenAPI(r *http.Request) bool {
+	accept := r.Header.Get("Accept")
+	return strings.Contains(accept, "protobuf") || strings.Contains(accept, "application/com.github.proto-openapi")
+}
+
+func fetchOpenAPI(ctx context.Context, client *http.Client, url string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("openapi %s: %d", url, resp.StatusCode)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+func mergeOpenAPIV2Definitions(base, extra []byte) ([]byte, error) {
+	var dst, src map[string]any
+	if err := json.Unmarshal(base, &dst); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(extra, &src); err != nil {
+		return nil, err
+	}
+	dstDefs, _ := dst["definitions"].(map[string]any)
+	srcDefs, _ := src["definitions"].(map[string]any)
+	if dstDefs == nil {
+		dstDefs = map[string]any{}
+		dst["definitions"] = dstDefs
+	}
+	for name, def := range srcDefs {
+		if _, ok := dstDefs[name]; !ok {
+			dstDefs[name] = def
+		}
+	}
+	return json.Marshal(dst)
 }
 
 func recoverPanics(next http.Handler) http.Handler {

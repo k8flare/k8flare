@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/emicklei/go-restful/v3"
+	admit "github.com/k8flare/k8flare/packages/apiserver-admit"
 	auth "github.com/k8flare/k8flare/packages/apiserver-auth"
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	"github.com/k8flare/k8flare/packages/crdreconcile"
@@ -19,7 +20,6 @@ import (
 	informers "k8s.io/apiextensions-apiserver/pkg/client/informers/externalversions"
 	listers "k8s.io/apiextensions-apiserver/pkg/client/listers/apiextensions/v1"
 	"k8s.io/apiextensions-apiserver/pkg/controller/establish"
-	"k8s.io/apiextensions-apiserver/pkg/controller/openapiv3"
 	"k8s.io/apiextensions-apiserver/pkg/registry/customresourcedefinition"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -40,13 +40,18 @@ import (
 	"k8s.io/apiserver/pkg/storage"
 	"k8s.io/apiserver/pkg/storage/storagebackend"
 	"k8s.io/apiserver/pkg/storage/storagebackend/factory"
+	"k8s.io/apiserver/pkg/util/webhook"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/kube-openapi/pkg/handler3"
 )
 
 type Config struct {
-	Kine *http.Client
+	Kine      *http.Client
+	Admission *http.Client
+	Tunnel    *http.Client
+	Outbound  *http.Client
+	Hooks     *http.Client
 }
 
 var apiGroup = metav1.APIGroup{
@@ -62,9 +67,9 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	mux := http.NewServeMux()
+	crdMux := http.NewServeMux()
 	container := restful.NewContainer()
-	container.ServeMux = mux
+	container.ServeMux = crdMux
 	container.Router(restful.CurlyRouter{})
 	group := &endpoints.APIGroupVersion{
 		Storage: map[string]registryrest.Storage{
@@ -85,7 +90,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 		ParameterCodec:             metav1.ParameterCodec,
 		EquivalentResourceRegistry: runtime.NewEquivalentResourceRegistry(),
 		TypeConverter:              managedfields.NewDeducedTypeConverter(),
-		Admit:                      admission.NewChainHandler(),
+		Admit:                      crdAdmit(cfg.Admission),
 		MinRequestTimeout:          30 * time.Minute,
 	}
 	if _, _, err := group.InstallREST(container); err != nil {
@@ -93,6 +98,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	}
 	container.Add(discovery.NewAPIGroupHandler(codecs, apiGroup).WebService())
 
+	mux := http.NewServeMux()
 	handler := auth.WithRemoteUser(mux)
 	crdClient, err := clientset.NewForConfig(&rest.Config{Host: "https://customresources.internal", Transport: loopback{handler}})
 	if err != nil {
@@ -105,8 +111,8 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	establishing := establish.NewEstablishingController(crdInformer, crdClient.ApiextensionsV1())
 	crdHandler, err := apiextensionsapiserver.NewCustomResourceDefinitionHandler(
 		versionDiscovery, groupDiscovery, crdInformer, http.NotFoundHandler(), restOptions{client: client, codec: unstructured.UnstructuredJSONScheme},
-		admission.NewChainHandler(), establishing, nil, nil, 1,
-		authorizerfactory.NewAlwaysAllowAuthorizer(), 60*time.Second, 30*time.Minute, nil, 3*1024*1024)
+		crdAdmit(cfg.Admission), establishing, webhook.NewDefaultServiceResolver(), newConversionResolver(client, cfg.Tunnel, cfg.Outbound, cfg.Hooks).install(), 1,
+		authorizerfactory.NewAlwaysAllowAuthorizer(), 60*time.Second, 30*time.Minute, staticOpenAPISpec(), 3*1024*1024)
 	if err != nil {
 		return nil, err
 	}
@@ -120,19 +126,33 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	if err := openAPIV3Service.RegisterOpenAPIV3VersionedService("/openapi/v3", openAPIV3Mux); err != nil {
 		return nil, err
 	}
-	openAPIV3Controller := openapiv3.NewController(crdInformer)
-	go openAPIV3Controller.Run(openAPIV3Service, ctx.Done())
-
 	fresh := freshCRDs{client: client, informer: refillable, reconciler: &reconciler{deps: crdreconcile.Deps{
 		Client:  crdClient,
 		Kine:    client,
 		Drained: func() bool { return queueWork.drained(crdreconcile.QueueNames...) },
 	}}}
-	mux.Handle("/apis", fresh.gate(rootAPIs(crdInformer.Lister(), codecs)))
+	pub := &crdOpenAPI{svc: openAPIV3Service, informer: refillable}
+	crdWrites := admitCRDWrites(crdAdmit(cfg.Admission), crdMux)
+	mux.Handle("/apis/apiextensions.k8s.io/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if bypassCRDGate(r) {
+			crdWrites.ServeHTTP(w, r)
+			return
+		}
+		fresh.gate(crdWrites).ServeHTTP(w, r)
+	}))
+	mux.Handle("/apis", fresh.gate(wrapCRDAggregated(crdInformer.Lister(), rootAPIs(crdInformer.Lister(), codecs))))
 	mux.Handle("/apis/", fresh.gate(afterSync(discoverySynced, crdHandler)))
-	mux.Handle("/openapi/v3", openAPIV3Mux)
-	mux.Handle("/openapi/v3/", openAPIV3Mux)
+	mux.Handle("/openapi/v2", pub.serveV2(fresh))
+	mux.Handle("/openapi/v3", pub.handler(fresh, openAPIV3Mux))
+	mux.Handle("/openapi/v3/", pub.handler(fresh, openAPIV3Mux))
 	return handler, nil
+}
+
+func crdAdmit(client *http.Client) admission.Interface {
+	if client == nil {
+		return admission.NewChainHandler()
+	}
+	return admit.New(client)
 }
 
 type restOptions struct {
@@ -262,6 +282,18 @@ func (f freshCRDs) gate(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func bypassCRDGate(r *http.Request) bool {
+	if strings.Contains(r.URL.Path, "/status") {
+		return true
+	}
+	switch r.Method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
 }
 
 func crdNameForPath(path string) string {

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	bridge "github.com/k8flare/k8flare/packages/worker-bridge"
 	"github.com/k8flare/k8flare/packages/workloads"
 	"k8s.io/client-go/kubernetes"
@@ -16,11 +17,12 @@ import (
 
 func main() {
 	cfg := &rest.Config{
-		Host:        "https://k8flare.internal",
-		BearerToken: bridge.Getenv("ADMIN_TOKEN"),
-		QPS:         20,
-		Burst:       30,
-		Transport:   bridge.BindingTransport{Name: "APISERVER"},
+		Host:          "https://k8flare.internal",
+		BearerToken:   bridge.Getenv("ADMIN_TOKEN"),
+		QPS:           1000,
+		Burst:         2000,
+		Transport:     bridge.BindingTransport{Name: "APISERVER"},
+		ContentConfig: rest.ContentConfig{AcceptContentTypes: "application/json", ContentType: "application/json"},
 	}
 	client, err := kubernetes.NewForConfig(rest.AddUserAgent(cfg, "kube-controller-manager"))
 	if err != nil {
@@ -30,28 +32,32 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	var rootCA []byte
+	var rootCA, signingCA, servingCA []byte
 	var deleter *workloads.Deleter
+	store := &kine.Client{HTTP: &http.Client{Transport: bridge.BindingTransport{Name: "STORAGE"}}}
 	bridge.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if rootCA == nil {
-			ca, err := client.CoreV1().RESTClient().Get().AbsPath("/cacerts").DoRaw(r.Context())
-			if err != nil {
-				println("workloads: cacerts failed:", err.Error())
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			rootCA = ca
-		}
 		if r.URL.Path == "/namespaces" {
 			if deleter == nil {
 				deleter = workloads.NewDeleter(r.Context(), client, metadataClient)
 			}
-			names := strings.Split(r.URL.Query().Get("names"), ",")
+			var req struct {
+				Messages []workloads.NamespaceMessage `json:"messages"`
+			}
+			if r.Body != nil {
+				_ = json.NewDecoder(r.Body).Decode(&req)
+			}
+			names := workloads.NamespaceNames(req.Messages)
+			if len(names) == 0 && r.URL.Query().Get("names") != "" {
+				names = strings.Split(r.URL.Query().Get("names"), ",")
+			}
 			result, err := deleter.DeleteTerminating(r.Context(), client, names)
 			if err != nil {
 				println("workloads: namespace delete failed:", err.Error())
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
+			}
+			if len(result.Names) == 0 {
+				result.Names = names
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(result)
@@ -68,11 +74,29 @@ func main() {
 			json.NewEncoder(w).Encode(health)
 			return
 		}
+		if v := bridge.Getenv("CLUSTER_SERVER"); v != "" {
+			workloads.ClusterServer = v
+		}
+		if signingCA == nil {
+			signingCA, _ = workloads.VaultPEM(r.Context(), store, "client-ca")
+		}
+		if servingCA == nil {
+			servingCA, _ = workloads.VaultPEM(r.Context(), store, "server-ca")
+		}
+		if rootCA == nil {
+			ca, err := client.CoreV1().RESTClient().Get().AbsPath("/cacerts").DoRaw(r.Context())
+			if err != nil {
+				println("workloads: cacerts failed:", err.Error())
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			rootCA = ca
+		}
 		changed := []string{}
 		if raw := r.URL.Query().Get("changed"); raw != "" {
 			changed = strings.Split(raw, ",")
 		}
-		result, err := workloads.Sync(r.Context(), client, rootCA, changed)
+		result, err := workloads.Sync(r.Context(), client, rootCA, signingCA, servingCA, changed)
 		if err != nil {
 			println("workloads: sync failed:", err.Error())
 			http.Error(w, err.Error(), http.StatusInternalServerError)

@@ -1,0 +1,6 @@
+{
+  "name": "@k8flare/admission-echo",
+  "private": true,
+  "type": "module",
+  "description": "Built-in Dynamic Worker that answers AdmissionReview allow/deny/mutate."
+}

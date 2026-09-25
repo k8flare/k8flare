@@ -20,7 +20,11 @@ func main() {
 		return ws.Messages, ws.Close, nil
 	}
 	handler, err := customresources.NewHandler(customresources.Config{
-		Kine: &http.Client{Transport: bridge.BindingTransport{Name: "STORAGE"}},
+		Kine:      &http.Client{Transport: bridge.BindingTransport{Name: "STORAGE"}},
+		Admission: &http.Client{Transport: bridge.BindingTransport{Name: "ADMISSION"}},
+		Tunnel:    &http.Client{Transport: bridge.BindingTransport{Name: "TUNNEL"}},
+		Outbound:  &http.Client{Transport: bridge.BindingTransport{Name: "OUTBOUND"}},
+		Hooks:     &http.Client{Transport: bridge.BindingTransport{Name: "HOOKS"}},
 	})
 	if err != nil {
 		panic(err)

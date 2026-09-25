@@ -1,0 +1,6 @@
+{
+  "name": "@k8flare/admission",
+  "private": true,
+  "type": "module",
+  "description": "Admission chain (built-in, ValidatingAdmissionPolicy, webhooks) as a Loader dynamic worker."
+}

@@ -18,6 +18,13 @@ func main() {
 		Groups:          &http.Client{Transport: bridge.BindingTransport{Name: "APIGROUPS"}},
 		OpenAPI:         &http.Client{Transport: bridge.BindingTransport{Name: "OPENAPI"}},
 		CustomResources: &http.Client{Transport: bridge.BindingTransport{Name: "CUSTOMRESOURCES"}},
+		Outbound:        &http.Client{Transport: bridge.BindingTransport{Name: "OUTBOUND"}},
+		Tunnel:          &http.Client{Transport: bridge.BindingTransport{Name: "TUNNEL"}},
+		Admission:       &http.Client{Transport: bridge.BindingTransport{Name: "ADMISSION"}},
+		Hooks:           &http.Client{Transport: bridge.BindingTransport{Name: "HOOKS"}},
+		AccessTeam:      bridge.Getenv("ACCESS_TEAM_DOMAIN"),
+		AccessAUD:       bridge.Getenv("ACCESS_AUD"),
+		ClusterUID:      bridge.Getenv("CLUSTER_UID"),
 	})
 	if err != nil {
 		panic(err)

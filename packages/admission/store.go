@@ -1,0 +1,138 @@
+package admission
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+
+	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
+	admissionregv1 "k8s.io/api/admissionregistration/v1"
+	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	nodev1 "k8s.io/api/node/v1"
+	schedulingv1 "k8s.io/api/scheduling/v1"
+	storagev1 "k8s.io/api/storage/v1"
+)
+
+type store struct {
+	client *kine.Client
+}
+
+func decodeJSON[T any](data []byte) (T, error) {
+	var v T
+	return v, json.Unmarshal(data, &v)
+}
+
+func listPrefix[T any](ctx context.Context, client *kine.Client, prefix string) ([]T, error) {
+	kvs, _, _, err := client.List(ctx, prefix, "", 0)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]T, 0, len(kvs))
+	for _, kv := range kvs {
+		data, err := base64.StdEncoding.DecodeString(kv.Value)
+		if err != nil {
+			return nil, err
+		}
+		v, err := decodeJSON[T](data)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+func getJSON[T any](ctx context.Context, client *kine.Client, key string) (T, bool, error) {
+	var zero T
+	kv, _, err := client.Get(ctx, key)
+	if err == kine.ErrNotFound {
+		return zero, false, nil
+	}
+	if err != nil {
+		return zero, false, err
+	}
+	data, err := base64.StdEncoding.DecodeString(kv.Value)
+	if err != nil {
+		return zero, false, err
+	}
+	v, err := decodeJSON[T](data)
+	return v, err == nil, err
+}
+
+func (s *store) validatingConfigs(ctx context.Context) ([]admissionregv1.ValidatingWebhookConfiguration, error) {
+	return listPrefix[admissionregv1.ValidatingWebhookConfiguration](ctx, s.client, "/registry/validatingwebhookconfigurations/")
+}
+
+func (s *store) mutatingConfigs(ctx context.Context) ([]admissionregv1.MutatingWebhookConfiguration, error) {
+	return listPrefix[admissionregv1.MutatingWebhookConfiguration](ctx, s.client, "/registry/mutatingwebhookconfigurations/")
+}
+
+func (s *store) policies(ctx context.Context) ([]admissionregv1.ValidatingAdmissionPolicy, error) {
+	return listPrefix[admissionregv1.ValidatingAdmissionPolicy](ctx, s.client, "/registry/validatingadmissionpolicies/")
+}
+
+func (s *store) bindings(ctx context.Context) ([]admissionregv1.ValidatingAdmissionPolicyBinding, error) {
+	return listPrefix[admissionregv1.ValidatingAdmissionPolicyBinding](ctx, s.client, "/registry/validatingadmissionpolicybindings/")
+}
+
+func (s *store) mutatingPolicies(ctx context.Context) ([]admissionregv1.MutatingAdmissionPolicy, error) {
+	return listPrefix[admissionregv1.MutatingAdmissionPolicy](ctx, s.client, "/registry/mutatingadmissionpolicies/")
+}
+
+func (s *store) mutatingBindings(ctx context.Context) ([]admissionregv1.MutatingAdmissionPolicyBinding, error) {
+	return listPrefix[admissionregv1.MutatingAdmissionPolicyBinding](ctx, s.client, "/registry/mutatingadmissionpolicybindings/")
+}
+
+func (s *store) limitRanges(ctx context.Context, ns string) ([]corev1.LimitRange, error) {
+	return listPrefix[corev1.LimitRange](ctx, s.client, "/registry/limitranges/"+ns+"/")
+}
+
+func (s *store) service(ctx context.Context, ns, name string) (corev1.Service, bool, error) {
+	return getJSON[corev1.Service](ctx, s.client, "/registry/services/"+ns+"/"+name)
+}
+
+func (s *store) endpoints(ctx context.Context, ns, name string) (corev1.Endpoints, bool, error) {
+	return getJSON[corev1.Endpoints](ctx, s.client, "/registry/endpoints/"+ns+"/"+name)
+}
+
+func (s *store) endpointSlices(ctx context.Context, ns string) ([]discoveryv1.EndpointSlice, error) {
+	return listPrefix[discoveryv1.EndpointSlice](ctx, s.client, "/registry/endpointslices/"+ns+"/")
+}
+
+func (s *store) pod(ctx context.Context, ns, name string) (corev1.Pod, bool, error) {
+	return getJSON[corev1.Pod](ctx, s.client, "/registry/pods/"+ns+"/"+name)
+}
+
+func (s *store) node(ctx context.Context, name string) (corev1.Node, bool, error) {
+	return getJSON[corev1.Node](ctx, s.client, "/registry/nodes/"+name)
+}
+
+func (s *store) namespace(ctx context.Context, name string) (corev1.Namespace, bool, error) {
+	return getJSON[corev1.Namespace](ctx, s.client, "/registry/namespaces/"+name)
+}
+
+func (s *store) serviceAccount(ctx context.Context, ns, name string) (corev1.ServiceAccount, bool, error) {
+	return getJSON[corev1.ServiceAccount](ctx, s.client, "/registry/serviceaccounts/"+ns+"/"+name)
+}
+
+func (s *store) runtimeClass(ctx context.Context, name string) (nodev1.RuntimeClass, bool, error) {
+	return getJSON[nodev1.RuntimeClass](ctx, s.client, "/registry/runtimeclasses/"+name)
+}
+
+func (s *store) priorityClass(ctx context.Context, name string) (schedulingv1.PriorityClass, bool, error) {
+	return getJSON[schedulingv1.PriorityClass](ctx, s.client, "/registry/priorityclasses/"+name)
+}
+
+func (s *store) priorityClasses(ctx context.Context) ([]schedulingv1.PriorityClass, error) {
+	return listPrefix[schedulingv1.PriorityClass](ctx, s.client, "/registry/priorityclasses/")
+}
+
+func (s *store) storageClasses(ctx context.Context) ([]storagev1.StorageClass, error) {
+	return listPrefix[storagev1.StorageClass](ctx, s.client, "/registry/storageclasses/")
+}
+
+func (s *store) ingressClasses(ctx context.Context) ([]networkingv1.IngressClass, error) {
+	return listPrefix[networkingv1.IngressClass](ctx, s.client, "/registry/ingressclasses/")
+}

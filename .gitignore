@@ -5,6 +5,7 @@ dist/
 *.tsbuildinfo
 *.wasm
 .dev.vars
+.env
 .secrets/
 kubeconfig.yaml
 *.kubeconfig
@@ -13,3 +14,5 @@ kubeconfig.yaml
 /bin/
 /worker-configuration.d.ts
 packages/control-plane-worker/assets/wasm/
+packages/hpa-worker/assets/wasm/
+packages/control-plane-worker/images/node/k8flare-agent

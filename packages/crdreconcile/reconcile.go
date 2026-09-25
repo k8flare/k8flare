@@ -47,7 +47,26 @@ func NeedsFinalize(crd *apiextensionsv1.CustomResourceDefinition) bool {
 	return crd.DeletionTimestamp != nil && apihelpers.CRDHasFinalizer(crd, apiextensionsv1.CustomResourceCleanupFinalizer)
 }
 
+func markEstablished(ctx context.Context, d Deps, crds []*apiextensionsv1.CustomResourceDefinition) {
+	for _, crd := range crds {
+		if !NeedsConditions(crd) || !apihelpers.IsCRDConditionTrue(crd, apiextensionsv1.NamesAccepted) {
+			continue
+		}
+		next := crd.DeepCopy()
+		apihelpers.SetCRDCondition(next, apiextensionsv1.CustomResourceDefinitionCondition{
+			Type:    apiextensionsv1.Established,
+			Status:  apiextensionsv1.ConditionTrue,
+			Reason:  "InitialNamesAccepted",
+			Message: "the initial names have been accepted",
+		})
+		if _, err := d.Client.ApiextensionsV1().CustomResourceDefinitions().UpdateStatus(ctx, next, metav1.UpdateOptions{}); err != nil && !apierrors.IsConflict(err) {
+			println("crdreconcile: establish", next.Name, "failed:", err.Error())
+		}
+	}
+}
+
 func Conditions(ctx context.Context, d Deps, crds []*apiextensionsv1.CustomResourceDefinition, budget time.Duration) {
+	markEstablished(ctx, d, crds)
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	snap := &snapshotInformer{SharedIndexInformer: cache.NewSharedIndexInformer(nil, &apiextensionsv1.CustomResourceDefinition{}, 0, cache.Indexers{})}
@@ -62,11 +81,6 @@ func Conditions(ctx context.Context, d Deps, crds []*apiextensionsv1.CustomResou
 		snap.GetIndexer().Add(crd)
 	}
 	snap.replay(crds)
-	for _, crd := range crds {
-		if NeedsConditions(crd) && apihelpers.IsCRDConditionTrue(crd, apiextensionsv1.NamesAccepted) {
-			establishing.QueueCRD(crd.Name, 0)
-		}
-	}
 	runs := []func(context.Context){
 		naming.RunWithContext,
 		establishing.RunWithContext,
@@ -78,22 +92,50 @@ func Conditions(ctx context.Context, d Deps, crds []*apiextensionsv1.CustomResou
 		wg.Add(1)
 		go func() { defer wg.Done(); run(ctx) }()
 	}
-	quiet := 0
-	for quiet < 2 {
+	for {
 		select {
 		case <-ctx.Done():
-			quiet = 2
-			continue
+			cancel()
+			wg.Wait()
+			return
 		case <-time.After(drainPoll):
 		}
-		if d.Drained() {
-			quiet++
-		} else {
-			quiet = 0
+		if establishFromClient(ctx, d, snap, establishing, crds) && d.Drained() {
+			break
 		}
 	}
 	cancel()
 	wg.Wait()
+}
+
+func establishFromClient(ctx context.Context, d Deps, snap *snapshotInformer, establishing *establish.EstablishingController, crds []*apiextensionsv1.CustomResourceDefinition) bool {
+	done := true
+	for _, crd := range crds {
+		latest, err := d.Client.ApiextensionsV1().CustomResourceDefinitions().Get(ctx, crd.Name, metav1.GetOptions{})
+		if err != nil {
+			done = false
+			continue
+		}
+		_ = snap.GetIndexer().Update(latest)
+		if !NeedsConditions(latest) {
+			continue
+		}
+		done = false
+		if !apihelpers.IsCRDConditionTrue(latest, apiextensionsv1.NamesAccepted) {
+			continue
+		}
+		establishing.QueueCRD(latest.Name, 0)
+		apihelpers.SetCRDCondition(latest, apiextensionsv1.CustomResourceDefinitionCondition{
+			Type:    apiextensionsv1.Established,
+			Status:  apiextensionsv1.ConditionTrue,
+			Reason:  "InitialNamesAccepted",
+			Message: "the initial names have been accepted",
+		})
+		if _, err := d.Client.ApiextensionsV1().CustomResourceDefinitions().UpdateStatus(ctx, latest, metav1.UpdateOptions{}); err != nil {
+			continue
+		}
+	}
+	return done
 }
 
 func Finalize(ctx context.Context, d Deps, crd *apiextensionsv1.CustomResourceDefinition) error {

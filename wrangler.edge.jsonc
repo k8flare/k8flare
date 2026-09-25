@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "k8flare-edge",
+  "main": "packages/edge-proxy/src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "workers_dev": true,
+  "account_id": "8bc057591d6f5d562d24025c02c721a4",
+  "routes": [
+    { "pattern": "api.k8flare.com", "custom_domain": true },
+    { "pattern": "demo.k8flare.com", "custom_domain": true },
+    { "pattern": "lb-web.default.svc.k8flare.com", "custom_domain": true },
+    { "pattern": "lb-web--default.svc.k8flare.com", "custom_domain": true },
+    { "pattern": "lb-web--default.k8flare.com", "custom_domain": true },
+    { "pattern": "*.k8flare.com/*", "zone_name": "k8flare.com" },
+    { "pattern": "*.svc.k8flare.com/*", "zone_name": "k8flare.com" },
+  ],
+}

@@ -99,7 +99,7 @@ func TestSupervisorJoin(t *testing.T) {
 	}
 	u, _ := url.Parse(base)
 	port, _ := strconv.Atoi(u.Port())
-	if cfg.HTTPSPort != port || cfg.SupervisorPort != port || cfg.FlannelBackend != "vxlan" || !cfg.DisableKubeProxy || cfg.ClusterDomain != "cluster.local" {
+	if cfg.HTTPSPort != port || cfg.SupervisorPort != port || cfg.FlannelBackend != "vxlan" || cfg.DisableKubeProxy || cfg.ClusterDomain != "cluster.local" {
 		t.Fatalf("config: %+v", cfg)
 	}
 	resp, data = supervisorRequest(t, base, http.MethodGet, "/v1-k3s/apiservers", nil, nil)
@@ -175,6 +175,10 @@ func TestSupervisorJoin(t *testing.T) {
 	tr, err := cs.AuthenticationV1().TokenReviews().Create(c, &authenticationv1.TokenReview{Spec: authenticationv1.TokenReviewSpec{Token: "node:n1:secret-1"}}, metav1.CreateOptions{})
 	if err != nil || !tr.Status.Authenticated || tr.Status.User.Username != "system:node:n1" {
 		t.Fatalf("tokenreview: %v %+v", err, tr)
+	}
+	ssr, err := cs.AuthenticationV1().SelfSubjectReviews().Create(c, &authenticationv1.SelfSubjectReview{}, metav1.CreateOptions{})
+	if err != nil || ssr.Status.UserInfo.Username == "" {
+		t.Fatalf("selfsubjectreview: %v %+v", err, ssr)
 	}
 	ns, err := cs.CoreV1().Namespaces().Get(c, "kube-system", metav1.GetOptions{})
 	if err != nil || ns.Status.Phase != "Active" {

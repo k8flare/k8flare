@@ -15,6 +15,7 @@ const (
 	unknownReason  = "NodeStatusUnknown"
 	unknownMessage = "Kubelet stopped posting node status."
 	evictionRetry  = 30 * time.Second
+	leaseExtra     = 20 * time.Second
 )
 
 var unreachableConditions = []v1.NodeConditionType{v1.NodeReady, v1.NodeMemoryPressure, v1.NodeDiskPressure, v1.NodePIDPressure}
@@ -34,8 +35,25 @@ func NodeHealth(ctx context.Context, client kubernetes.Interface, name string) (
 	if err != nil {
 		return nil, err
 	}
-	now := metav1.Now()
 	node = node.DeepCopy()
+	held, known := nodeLeaseState(ctx, client, name)
+	if held {
+		if removeUnreachableTaints(node) {
+			if node, err = nodes.Update(ctx, node, metav1.UpdateOptions{}); err != nil {
+				return nil, err
+			}
+		}
+		if restoreReady(node) {
+			if _, err := nodes.UpdateStatus(ctx, node, metav1.UpdateOptions{}); err != nil {
+				return nil, err
+			}
+		}
+		return &NodeHealthResult{}, nil
+	}
+	if !known {
+		return &NodeHealthResult{}, nil
+	}
+	now := metav1.Now()
 	if markUnknown(node, now) {
 		if node, err = nodes.UpdateStatus(ctx, node, metav1.UpdateOptions{}); err != nil {
 			return nil, err
@@ -82,6 +100,24 @@ func NodeHealth(ctx context.Context, client kubernetes.Interface, name string) (
 	return result, nil
 }
 
+func nodeLeaseState(ctx context.Context, client kubernetes.Interface, name string) (held, known bool) {
+	lease, err := client.CoordinationV1().Leases(v1.NamespaceNodeLease).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return false, true
+	}
+	if err != nil {
+		return false, false
+	}
+	if lease.Spec.RenewTime == nil {
+		return false, true
+	}
+	dur := 40 * time.Second
+	if lease.Spec.LeaseDurationSeconds != nil && *lease.Spec.LeaseDurationSeconds > 0 {
+		dur = time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second
+	}
+	return time.Since(lease.Spec.RenewTime.Time) < dur+leaseExtra, true
+}
+
 func markUnknown(node *v1.Node, now metav1.Time) bool {
 	changed := false
 	for _, want := range unreachableConditions {
@@ -125,6 +161,24 @@ func addTaints(node *v1.Node, now metav1.Time) bool {
 			node.Spec.Taints = append(node.Spec.Taints, v1.Taint{Key: v1.TaintNodeUnreachable, Effect: effect, TimeAdded: &now})
 			changed = true
 		}
+	}
+	return changed
+}
+
+func restoreReady(node *v1.Node) bool {
+	changed := false
+	now := metav1.Now()
+	for i := range node.Status.Conditions {
+		c := &node.Status.Conditions[i]
+		if c.Type != v1.NodeReady || c.Status != v1.ConditionUnknown || c.Reason != unknownReason {
+			continue
+		}
+		c.Status = v1.ConditionTrue
+		c.Reason = "KubeletReady"
+		c.Message = "kubelet is posting ready status"
+		c.LastTransitionTime = now
+		c.LastHeartbeatTime = now
+		changed = true
 	}
 	return changed
 }

@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"k8s.io/apiserver/pkg/authentication/user"
+	utilnet "k8s.io/utils/net"
 )
 
 // supervisor serves the k3s supervisor protocol a k3s agent joins through
@@ -56,9 +57,16 @@ func mustCIDR(s string) *net.IPNet {
 	return n
 }
 
+func publicHost(r *http.Request) string {
+	if h := r.Header.Get("X-Forwarded-Host"); h != "" {
+		return h
+	}
+	return r.Host
+}
+
 func (s *Supervisor) config(r *http.Request) k3sControlConfig {
 	port := 443
-	if _, p, err := net.SplitHostPort(r.Host); err == nil {
+	if _, p, err := net.SplitHostPort(publicHost(r)); err == nil {
 		if n, err := strconv.Atoi(p); err == nil {
 			port = n
 		}
@@ -68,8 +76,8 @@ func (s *Supervisor) config(r *http.Request) k3sControlConfig {
 		ClusterIPRange: ClusterCIDR, ServiceIPRange: ServiceCIDR,
 		ClusterIPRanges: []*net.IPNet{ClusterCIDR}, ServiceIPRanges: []*net.IPNet{ServiceCIDR},
 		ClusterDNS: ClusterDNS, ClusterDNSs: []net.IP{ClusterDNS}, ClusterDomain: "cluster.local",
-		FlannelBackend: "vxlan", DisableKubeProxy: true, DisableNPC: true, DisableCCM: true,
-		EgressSelectorMode: "agent",
+		FlannelBackend: "vxlan", DisableNPC: true, DisableCCM: true,
+		EgressSelectorMode: "cluster",
 	}
 }
 
@@ -78,7 +86,17 @@ func (s *Supervisor) authorized(r *http.Request) bool {
 	if !ok {
 		_, token, ok = r.BasicAuth()
 	}
-	return ok && token != "" && s.joinToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.joinToken)) == 1
+	if !ok || token == "" {
+		return false
+	}
+	if s.vault.CheckToken(r.Context(), "join", token) == nil {
+		return true
+	}
+	if s.joinToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.joinToken)) == 1 {
+		_, _ = s.vault.EnsureToken(r.Context(), "join", s.joinToken)
+		return true
+	}
+	return false
 }
 
 type nodeIdentity struct {
@@ -88,6 +106,22 @@ type nodeIdentity struct {
 
 // nodeAuth checks the k3s-Node-* headers the agent sends when it asks for
 // its certificates.
+func (s *Supervisor) tunnelNode(w http.ResponseWriter, r *http.Request) {
+	token := r.Header.Get("X-K8flare-Node-Token")
+	ok := token != ""
+	if !ok {
+		token, ok = strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	}
+	rest, okName := strings.CutPrefix(token, "node:")
+	name, password, okPass := strings.Cut(rest, ":")
+	if !ok || !okName || !okPass || name == "" || password == "" || s.vault.CheckNodePassword(r.Context(), name, password) != nil {
+		http.Error(w, "not authorized", http.StatusUnauthorized)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"node": name})
+}
+
 func (s *Supervisor) nodeAuth(w http.ResponseWriter, r *http.Request) (*nodeIdentity, bool) {
 	name := r.Header.Get("k3s-Node-Name")
 	password := r.Header.Get("k3s-Node-Password")
@@ -158,16 +192,34 @@ func (s *Supervisor) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ping", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("pong")) })
 	v1 := http.NewServeMux()
 	v1.HandleFunc("GET /v1-k3s/readyz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
+	v1.HandleFunc("/v1-k3s/node-tunnel", s.tunnelNode)
 	v1.HandleFunc("GET /v1-k3s/config", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(s.config(r))
 	})
 	v1.HandleFunc("GET /v1-k3s/apiservers", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode([]string{r.Host})
+		_ = json.NewEncoder(w).Encode([]string{publicHost(r)})
 	})
 	v1.HandleFunc("GET /v1-k3s/client-ca.crt", func(w http.ResponseWriter, r *http.Request) { s.caPEM(w, r, "client-ca") })
 	v1.HandleFunc("GET /v1-k3s/server-ca.crt", func(w http.ResponseWriter, r *http.Request) { s.caPEM(w, r, "server-ca") })
+	v1.HandleFunc("POST /v1-k3s/serving-kubernetes.crt", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := s.nodeAuth(w, r)
+		if !ok {
+			return
+		}
+		clusterIP, _ := utilnet.GetIndexedIP(ServiceCIDR, 1)
+		s.signCSR(w, r, "server-ca", &x509.Certificate{
+			Subject: pkix.Name{CommonName: "kube-apiserver"},
+			DNSNames: []string{
+				id.name, "localhost",
+				"kubernetes", "kubernetes.default", "kubernetes.default.svc", "kubernetes.default.svc.cluster.local",
+			},
+			IPAddresses: append([]net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1"), clusterIP}, id.ips...),
+			KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+			ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		})
+	})
 	v1.HandleFunc("POST /v1-k3s/serving-kubelet.crt", func(w http.ResponseWriter, r *http.Request) {
 		id, ok := s.nodeAuth(w, r)
 		if !ok {
@@ -195,7 +247,7 @@ func (s *Supervisor) Register(mux *http.ServeMux) {
 		s.signCSR(w, r, "client-ca", clientCertTemplate("system:k3s-controller"))
 	})
 	mux.Handle("/v1-k3s/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.authorized(r) {
+		if r.URL.Path != "/v1-k3s/node-tunnel" && !s.authorized(r) {
 			http.Error(w, "not authorized", http.StatusUnauthorized)
 			return
 		}

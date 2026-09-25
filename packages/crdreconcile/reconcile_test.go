@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	"k8s.io/apiextensions-apiserver/pkg/apihelpers"
@@ -43,6 +44,68 @@ func (m memKine) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	data, _ := json.Marshal(out)
 	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(data)), Header: http.Header{}}, nil
+}
+
+func TestMarkEstablishedWritesWhenNamesAccepted(t *testing.T) {
+	crd := &apiextensionsv1.CustomResourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "foos.example.com", ResourceVersion: "1"},
+		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+			Group: "example.com",
+			Names: apiextensionsv1.CustomResourceDefinitionNames{Plural: "foos", Singular: "foo", Kind: "Foo", ListKind: "FooList"},
+			Scope: apiextensionsv1.NamespaceScoped,
+			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{{
+				Name: "v1", Served: true, Storage: true,
+			}},
+		},
+		Status: apiextensionsv1.CustomResourceDefinitionStatus{
+			StoredVersions: []string{"v1"},
+			Conditions: []apiextensionsv1.CustomResourceDefinitionCondition{{
+				Type: apiextensionsv1.NamesAccepted, Status: apiextensionsv1.ConditionTrue, Reason: "NoConflicts",
+			}},
+		},
+	}
+	client := fake.NewSimpleClientset(crd)
+	d := Deps{Client: client}
+	markEstablished(context.Background(), d, []*apiextensionsv1.CustomResourceDefinition{crd.DeepCopy()})
+	got, err := client.ApiextensionsV1().CustomResourceDefinitions().Get(context.Background(), crd.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !apihelpers.IsCRDConditionTrue(got, apiextensionsv1.Established) {
+		t.Fatalf("established: %v", got.Status.Conditions)
+	}
+}
+
+func TestConditionsSetsEstablished(t *testing.T) {
+	crd := &apiextensionsv1.CustomResourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "foos.example.com", ResourceVersion: "1"},
+		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+			Group: "example.com",
+			Names: apiextensionsv1.CustomResourceDefinitionNames{Plural: "foos", Singular: "foo", Kind: "Foo", ListKind: "FooList"},
+			Scope: apiextensionsv1.NamespaceScoped,
+			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{{
+				Name: "v1", Served: true, Storage: true,
+			}},
+		},
+		Status: apiextensionsv1.CustomResourceDefinitionStatus{StoredVersions: []string{"v1"}},
+	}
+	client := fake.NewSimpleClientset(crd)
+	d := Deps{
+		Client:  client,
+		Kine:    &kine.Client{HTTP: &http.Client{Transport: memKine{}}},
+		Drained: func() bool { return true },
+	}
+	Conditions(context.Background(), d, []*apiextensionsv1.CustomResourceDefinition{crd.DeepCopy()}, 3*time.Second)
+	got, err := client.ApiextensionsV1().CustomResourceDefinitions().Get(context.Background(), crd.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !apihelpers.IsCRDConditionTrue(got, apiextensionsv1.NamesAccepted) {
+		t.Fatalf("names: %v", got.Status.Conditions)
+	}
+	if !apihelpers.IsCRDConditionTrue(got, apiextensionsv1.Established) {
+		t.Fatalf("established: %v", got.Status.Conditions)
+	}
 }
 
 func TestFinalizeDeletesInstancesAndRemovesFinalizer(t *testing.T) {

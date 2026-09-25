@@ -3,10 +3,12 @@
 package nodetunnel
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"io"
 	"net"
 	"net/http"
@@ -41,7 +43,7 @@ type session struct {
 }
 
 func newSession(nodeName string, send js.Value) *session {
-	return &session{nodeName: nodeName, send: send, frames: make(chan []byte, 64)}
+	return &session{nodeName: nodeName, send: send, frames: make(chan []byte, 4096)}
 }
 
 func (s *session) Close() error {
@@ -79,14 +81,21 @@ func (s *session) WriteMessage(_ int, _ time.Time, data []byte) error {
 }
 
 func (s *session) push(data []byte) {
+	cp := append([]byte(nil), data...)
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return
 	}
+	ch := s.frames
+	s.mu.Unlock()
 	select {
-	case s.frames <- data:
+	case ch <- cp:
 	default:
+		go func() {
+			defer func() { _ = recover() }()
+			ch <- cp
+		}()
 	}
 }
 func Serve() {
@@ -130,9 +139,182 @@ func Serve() {
 		}
 		return nil
 	}))
+	binding.Set("upgrade", js.FuncOf(func(_ js.Value, args []js.Value) any {
+		rawURL := args[0].String()
+		headers := args[1]
+		send := args[2]
+		onErr := js.Undefined()
+		if len(args) > 3 {
+			onErr = args[3]
+		}
+		n := headers.Length()
+		h := http.Header{}
+		for i := 0; i < n; i++ {
+			pair := headers.Index(i)
+			h.Add(pair.Index(0).String(), pair.Index(1).String())
+		}
+		query := ""
+		if len(args) > 4 {
+			query = args[4].String()
+		}
+		go startKubeletStream(rawURL, h, send, onErr, query)
+		return nil
+	}))
+	binding.Set("upgradeMessage", js.FuncOf(func(_ js.Value, args []js.Value) any {
+		data := make([]byte, args[0].Get("byteLength").Int())
+		js.CopyBytesToGo(data, args[0])
+		mu.Lock()
+		s := stream
+		if s == nil {
+			pending = append(pending, data)
+			mu.Unlock()
+			return nil
+		}
+		mu.Unlock()
+		_ = s.WriteMessage(websocket.BinaryMessage, data)
+		return nil
+	}))
+	binding.Set("upgradeClosed", js.FuncOf(func(js.Value, []js.Value) any {
+		mu.Lock()
+		s := stream
+		stream = nil
+		mu.Unlock()
+		if s != nil {
+			_ = s.Close()
+		}
+		return nil
+	}))
 	bridge.Serve(handler())
 }
+
+var (
+	stream  *websocket.Conn
+	pending [][]byte
+)
+
+type firstLineConn struct {
+	net.Conn
+	logged bool
+}
+
+func (c *firstLineConn) Write(p []byte) (int, error) {
+	if !c.logged {
+		c.logged = true
+		line, _ := bufio.NewReader(bytes.NewReader(p)).ReadString('\n')
+		println("kubelet write", strings.TrimSpace(line))
+	}
+	return c.Conn.Write(p)
+}
+
+func failUpgrade(onErr js.Value, msg string) {
+	if onErr.Truthy() {
+		onErr.Invoke(msg)
+	}
+}
+
+func startKubeletStream(rawURL string, header http.Header, send js.Value, onErr js.Value, query string) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		failUpgrade(onErr, err.Error())
+		return
+	}
+	nodeName, kubeletPath, ok := parseNodePath(u.Path)
+	if !ok {
+		failUpgrade(onErr, "bad stream path")
+		return
+	}
+	kubeletPath, embeddedQuery := splitEmbeddedQuery(kubeletPath)
+	tlsConfig, bearer := kubeletCredentials()
+	dial := server.Dialer(nodeName)
+	d := websocket.Dialer{}
+	if proto := header.Get("Sec-WebSocket-Protocol"); proto != "" {
+		d.Subprotocols = []string{proto}
+	}
+	rawQuery := query
+	if rawQuery == "" {
+		rawQuery = u.RawQuery
+	}
+	if rawQuery == "" {
+		rawQuery = header.Get("X-Stream-Query")
+	}
+	if rawQuery == "" {
+		rawQuery = embeddedQuery
+	}
+	rawQuery = kubeletStreamQuery(rawQuery)
+	println("kubelet stream", kubeletPath, "q=", rawQuery)
+	kubeURL := &url.URL{Scheme: "wss", Host: "127.0.0.1:10250", Path: kubeletPath, RawQuery: rawQuery}
+	reqHeader := http.Header{}
+	if bearer != "" {
+		reqHeader.Set("Authorization", "Bearer "+bearer)
+	}
+	d.NetDialTLSContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		raw, err := dial(ctx, network, "127.0.0.1:10250")
+		if err != nil {
+			return nil, err
+		}
+		tconn := tls.Client(raw, tlsConfig)
+		if err := tconn.HandshakeContext(ctx); err != nil {
+			raw.Close()
+			return nil, err
+		}
+		return &firstLineConn{Conn: tconn}, nil
+	}
+	conn, resp, err := d.Dial(kubeURL.String(), reqHeader)
+	if err != nil {
+		status := ""
+		if resp != nil {
+			status = resp.Status
+		}
+		println("kubelet dial fail", status, err.Error())
+		failUpgrade(onErr, status+" "+err.Error())
+		return
+	}
+	println("kubelet dial ok")
+	mu.Lock()
+	stream = conn
+	queued := pending
+	pending = nil
+	mu.Unlock()
+	for _, data := range queued {
+		_ = conn.WriteMessage(websocket.BinaryMessage, data)
+	}
+	defer func() {
+		mu.Lock()
+		if stream == conn {
+			stream = nil
+			pending = nil
+		}
+		mu.Unlock()
+		_ = conn.Close()
+	}()
+	for {
+		mt, data, err := conn.ReadMessage()
+		if err != nil {
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				println("kubelet read done")
+				if onErr.Truthy() {
+					onErr.Invoke("")
+				}
+				return
+			}
+			println("kubelet read fail", err.Error())
+			failUpgrade(onErr, err.Error())
+			return
+		}
+		println("kubelet read", mt, len(data))
+		arr := js.Global().Get("Uint8Array").New(len(data))
+		js.CopyBytesToJS(arr, data)
+		send.Invoke(arr)
+	}
+}
 func handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/node/", kubeletProxy())
+	mux.Handle("/dial/", dialProxy())
+	return mux
+}
+
+func kubeletProxy() http.Handler {
 	target := &url.URL{Scheme: "https", Host: "127.0.0.1:10250"}
 	tlsConfig, bearer := kubeletCredentials()
 	proxy := &httputil.ReverseProxy{
@@ -147,12 +329,20 @@ func handler() http.Handler {
 		FlushInterval: -1,
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		println("kubelet proxy", r.URL.Path, "q=", r.URL.RawQuery)
 		nodeName, kubeletPath, ok := parseNodePath(r.URL.Path)
 		if !ok {
 			http.NotFound(w, r)
 			return
 		}
-		r.URL.Path = kubeletPath
+		path, embeddedQuery := splitEmbeddedQuery(kubeletPath)
+		r.URL.Path = path
+		if q := r.Header.Get("X-Stream-Query"); q != "" {
+			r.URL.RawQuery = q
+		} else if embeddedQuery != "" {
+			r.URL.RawQuery = embeddedQuery
+		}
+		r.URL.RawQuery = kubeletStreamQuery(r.URL.RawQuery)
 		dial := server.Dialer(nodeName)
 		proxy.Transport = &http.Transport{
 			DialTLSContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
@@ -172,6 +362,89 @@ func handler() http.Handler {
 	})
 }
 
+func dialProxy() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		node, host, port, path, ok := parseDialPath(r.URL.Path)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		dial := server.Dialer(node)
+		conn, err := dial(r.Context(), "tcp", net.JoinHostPort(host, port))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer conn.Close()
+		if r.Header.Get("X-Dial-TLS") == "1" {
+			cfg := &tls.Config{ServerName: r.Header.Get("X-Dial-ServerName")}
+		if raw := r.Header.Get("X-Dial-CA"); raw != "" {
+			pool := x509.NewCertPool()
+			pem := []byte(raw)
+			if decoded, err := base64.StdEncoding.DecodeString(raw); err == nil && bytes.Contains(decoded, []byte("-----BEGIN")) {
+				pem = decoded
+			}
+			pool.AppendCertsFromPEM(pem)
+			cfg.RootCAs = pool
+		} else {
+				cfg.InsecureSkipVerify = true
+			}
+			tconn := tls.Client(conn, cfg)
+			if err := tconn.HandshakeContext(r.Context()); err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			conn = tconn
+		}
+		outReq := r.Clone(r.Context())
+		outReq.URL.Scheme = "http"
+		outReq.URL.Host = net.JoinHostPort(host, port)
+		outReq.URL.Path = path
+		outReq.RequestURI = ""
+		outReq.Header.Del("X-Dial-TLS")
+		outReq.Header.Del("X-Dial-ServerName")
+		outReq.Header.Del("X-Dial-CA")
+		if err := outReq.Write(conn); err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		resp, err := http.ReadResponse(bufio.NewReader(conn), outReq)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		for k, v := range resp.Header {
+			w.Header()[k] = v
+		}
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+	})
+}
+
+func parseDialPath(p string) (node, host, port, path string, ok bool) {
+	rest, ok := strings.CutPrefix(p, "/dial/")
+	if !ok {
+		return "", "", "", "", false
+	}
+	node, rest, ok = strings.Cut(rest, "/")
+	if !ok || node == "" {
+		return "", "", "", "", false
+	}
+	host, rest, ok = strings.Cut(rest, "/")
+	if !ok || host == "" {
+		return "", "", "", "", false
+	}
+	port, path, found := strings.Cut(rest, "/")
+	if !found {
+		return node, host, rest, "/", rest != ""
+	}
+	if port == "" {
+		return "", "", "", "", false
+	}
+	return node, host, port, "/" + path, true
+}
+
 func parseNodePath(p string) (nodeName, kubeletPath string, ok bool) {
 	rest, ok := strings.CutPrefix(p, "/node/")
 	if !ok {
@@ -184,19 +457,57 @@ func parseNodePath(p string) (nodeName, kubeletPath string, ok bool) {
 	return nodeName, "/" + kubeletPath, true
 }
 
+func kubeletStreamQuery(raw string) string {
+	if raw == "" {
+		return raw
+	}
+	v, err := url.ParseQuery(raw)
+	if err != nil {
+		return raw
+	}
+	for _, pair := range [][2]string{{"stdin", "input"}, {"stdout", "output"}, {"stderr", "error"}, {"tty", "tty"}} {
+		from, to := pair[0], pair[1]
+		switch v.Get(from) {
+		case "true", "True", "TRUE", "1":
+			v.Set(to, "1")
+		}
+		if from != to {
+			v.Del(from)
+		}
+	}
+	if ports := v["ports"]; len(ports) > 0 {
+		for _, p := range ports {
+			v.Add("port", p)
+		}
+		v.Del("ports")
+	}
+	return v.Encode()
+}
+
+func splitEmbeddedQuery(p string) (path, query string) {
+	path, q, found := strings.Cut(p, "/_q/")
+	if !found {
+		return p, ""
+	}
+	if dec, err := url.QueryUnescape(q); err == nil {
+		return path, dec
+	}
+	return path, q
+}
+
 func kubeletCredentials() (*tls.Config, string) {
 	certPEM := bridge.Getenv("KUBELET_CLIENT_CERT")
 	keyPEM := bridge.Getenv("KUBELET_CLIENT_KEY")
 	if certPEM == "" || keyPEM == "" {
-		return &tls.Config{InsecureSkipVerify: true}, bridge.Getenv("ADMIN_TOKEN")
+		return &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"http/1.1"}}, bridge.Getenv("ADMIN_TOKEN")
 	}
 	cert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
 	if err != nil {
-		return &tls.Config{InsecureSkipVerify: true}, bridge.Getenv("ADMIN_TOKEN")
+		return &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"http/1.1"}}, bridge.Getenv("ADMIN_TOKEN")
 	}
 	pool := x509.NewCertPool()
 	if caPEM := bridge.Getenv("KUBELET_CA"); caPEM != "" {
 		pool.AppendCertsFromPEM([]byte(caPEM))
 	}
-	return &tls.Config{Certificates: []tls.Certificate{cert}, RootCAs: pool}, ""
+	return &tls.Config{Certificates: []tls.Certificate{cert}, RootCAs: pool, NextProtos: []string{"http/1.1"}}, ""
 }

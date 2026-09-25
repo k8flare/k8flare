@@ -1,5 +1,9 @@
 package main
 
+var skips = map[string]string{
+	"conformance": `\[Flaky\]`,
+}
+
 var sets = map[string][]string{
 	"required": {
 		`[sig-scheduling] SchedulerPredicates [Serial] validates that NodeSelector is respected if matching`,
@@ -28,5 +32,27 @@ var sets = map[string][]string{
 		`[sig-apps] Job`,
 		`[sig-network] Services should serve a basic endpoint from pods`,
 		`[sig-auth] ServiceAccounts`,
+	},
+	"admission": {
+		`[sig-api-machinery] AdmissionWebhook`,
+		`[sig-api-machinery] ValidatingAdmissionPolicy`,
+		`[sig-scheduling] LimitRange should create a LimitRange with defaults and ensure pod has those defaults applied.`,
+	},
+	"conformance": {
+		`[Conformance]`,
+	},
+	"surface": {
+		`ResourceQuota should create a ResourceQuota and ensure its status is promptly calculated.`,
+		`ResourceQuota should apply changes to a resourcequota status`,
+		`Replicaset should have a working scale subresource`,
+	},
+	"quota-life": {
+		`ResourceQuota should create a ResourceQuota and capture the life of a service.`,
+		`ResourceQuota should create a ResourceQuota and capture the life of a secret.`,
+	},
+	"proxy": {
+		`should proxy through a service and a pod`,
+		`A set of valid responses are returned for both pod and service ProxyWithPath`,
+		`A set of valid responses are returned for both pod and service Proxy`,
 	},
 }

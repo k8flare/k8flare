@@ -19,18 +19,27 @@ type ServedGroupVersion struct {
 }
 
 var Served = []ServedGroupVersion{
-	{"v1", []string{"configmaps", "endpoints", "events", "limitranges", "namespaces", "namespaces/finalize", "namespaces/status", "nodes", "persistentvolumeclaims", "pods", "pods/binding", "pods/log", "replicationcontrollers", "secrets", "serviceaccounts", "services"}},
-	{"apps/v1", []string{"controllerrevisions", "daemonsets", "deployments", "replicasets", "statefulsets"}},
+	{"v1", []string{"bindings", "componentstatuses", "configmaps", "endpoints", "events", "limitranges", "namespaces", "namespaces/finalize", "namespaces/status", "nodes", "nodes/proxy", "persistentvolumeclaims", "persistentvolumes", "pods", "pods/attach", "pods/binding", "pods/ephemeralcontainers", "pods/eviction", "pods/exec", "pods/log", "pods/portforward", "pods/proxy", "pods/resize", "podtemplates", "replicationcontrollers", "replicationcontrollers/scale", "resourcequotas", "secrets", "serviceaccounts", "serviceaccounts/token", "services", "services/proxy"}},
+	{"events.k8s.io/v1", []string{"events"}},
+	{"apps/v1", []string{"controllerrevisions", "daemonsets", "deployments", "deployments/scale", "replicasets", "replicasets/scale", "statefulsets", "statefulsets/scale"}},
 	{"batch/v1", []string{"cronjobs", "jobs"}},
+	{"autoscaling/v2", []string{"horizontalpodautoscalers"}},
+	{"autoscaling/v1", []string{"horizontalpodautoscalers"}},
 	{"policy/v1", []string{"poddisruptionbudgets"}},
 	{"resource.k8s.io/v1", []string{"deviceclasses", "resourceclaims", "resourceclaimtemplates", "resourceslices"}},
 	{"coordination.k8s.io/v1", []string{"leases"}},
 	{"discovery.k8s.io/v1", []string{"endpointslices"}},
 	{"node.k8s.io/v1", []string{"runtimeclasses"}},
-	{"storage.k8s.io/v1", []string{"csidrivers", "csinodes"}},
-	{"authentication.k8s.io/v1", []string{"tokenreviews"}},
-	{"authorization.k8s.io/v1", []string{"selfsubjectaccessreviews", "subjectaccessreviews"}},
+	{"storage.k8s.io/v1", []string{"csidrivers", "csinodes", "csistoragecapacities", "storageclasses", "volumeattachments", "volumeattributesclasses"}},
+	{"authentication.k8s.io/v1", []string{"tokenreviews", "selfsubjectreviews"}},
+	{"authorization.k8s.io/v1", []string{"localsubjectaccessreviews", "selfsubjectaccessreviews", "selfsubjectrulesreviews", "subjectaccessreviews"}},
 	{"rbac.authorization.k8s.io/v1", []string{"clusterrolebindings", "clusterroles", "rolebindings", "roles"}},
+	{"admissionregistration.k8s.io/v1", []string{"mutatingadmissionpolicies", "mutatingadmissionpolicybindings", "mutatingwebhookconfigurations", "validatingwebhookconfigurations", "validatingadmissionpolicies", "validatingadmissionpolicybindings"}},
+	{"scheduling.k8s.io/v1", []string{"priorityclasses"}},
+	{"networking.k8s.io/v1", []string{"ingressclasses", "ingresses", "ipaddresses", "networkpolicies", "servicecidrs"}},
+	{"certificates.k8s.io/v1", []string{"certificatesigningrequests", "certificatesigningrequests/approval"}},
+	{"flowcontrol.apiserver.k8s.io/v1", []string{"flowschemas", "prioritylevelconfigurations"}},
+	{"apiregistration.k8s.io/v1", []string{"apiservices"}},
 }
 
 type APIResource struct {
@@ -88,6 +97,49 @@ func APIPackage(gv string) (alias, path string) {
 	if !ok {
 		group, version = "core", gv
 	}
+	if group == "apiregistration.k8s.io" {
+		return "apiregistration" + version, "k8s.io/kube-aggregator/pkg/apis/apiregistration/" + version
+	}
 	group = strings.TrimSuffix(group, ".k8s.io")
 	return group + version, "k8s.io/api/" + group + "/" + version
+}
+
+func SchemeExternal(gv string) string {
+	if strings.HasPrefix(gv, "apiregistration.k8s.io/") {
+		_, version, _ := strings.Cut(gv, "/")
+		return "k8s.io/kube-aggregator/pkg/apis/apiregistration/" + version
+	}
+	name := GroupName(gv)
+	if name == "core" {
+		return "k8s.io/api/core/v1"
+	}
+	_, version, ok := strings.Cut(gv, "/")
+	if !ok {
+		version = "v1"
+	}
+	return "k8s.io/api/" + name + "/" + version
+}
+
+func SchemeInternal(gv string) string {
+	if strings.HasPrefix(gv, "apiregistration.k8s.io/") {
+		return "k8s.io/kube-aggregator/pkg/apis/apiregistration"
+	}
+	name := GroupName(gv)
+	if name == "core" {
+		return "k8s.io/kubernetes/pkg/apis/core/v1"
+	}
+	_, version, ok := strings.Cut(gv, "/")
+	if !ok {
+		version = "v1"
+	}
+	return "k8s.io/kubernetes/pkg/apis/" + name + "/" + version
+}
+
+func GroupName(gv string) string {
+	group, _, ok := strings.Cut(gv, "/")
+	if !ok {
+		return "core"
+	}
+	name, _, _ := strings.Cut(group, ".")
+	return name
 }

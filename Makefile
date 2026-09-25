@@ -7,11 +7,11 @@ export GOTOOLCHAIN := auto
 ASSETS := packages/control-plane-worker/assets/wasm
 BUILD := .build/wasm
 CAP := 67108864
-GROUPS := core coordination discovery node storage apps policy resource rbac batch
-API_GROUPS := core coordination discovery node storage authentication authorization apps policy resource rbac batch
+GROUPS := core coordination discovery node storage apps policy resource rbac batch autoscaling scheduling networking certificates flowcontrol
+API_GROUPS := core coordination discovery events node storage authentication authorization apps policy resource rbac batch admissionregistration autoscaling scheduling networking certificates flowcontrol apiregistration
 WASM_OPT := wasm-opt -Oz --strip-debug --strip-producers --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals
 
-.PHONY: mirrors wasm gen agent dev devtls kubeconfig check vet test clean e2e deploycheck
+.PHONY: mirrors wasm gen agent dev devtls kubeconfig check vet test test-packages clean e2e deploycheck
 
 mirrors:
 	cd scripts && go run ./mirror
@@ -89,6 +89,26 @@ $(BUILD)/gc.opt.wasm: $(BUILD)/gc.raw.wasm
 $(ASSETS)/gc.manifest.json: $(BUILD)/gc.opt.wasm
 	cd scripts && go run ./wasmpack chunk ../$< ../$(ASSETS) gc
 
+$(BUILD)/attachdetach.raw.wasm: $(GO_SRC) | mirrors
+	mkdir -p $(BUILD)
+	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/attachdetach/cmd/attachdetach-wasm
+
+$(BUILD)/attachdetach.opt.wasm: $(BUILD)/attachdetach.raw.wasm
+	$(OPTIMIZE)
+
+$(ASSETS)/attachdetach.manifest.json: $(BUILD)/attachdetach.opt.wasm
+	cd scripts && go run ./wasmpack chunk ../$< ../$(ASSETS) attachdetach
+
+$(BUILD)/hpa.raw.wasm: $(GO_SRC) | mirrors
+	mkdir -p $(BUILD)
+	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/hpa/cmd/hpa-wasm
+
+$(BUILD)/hpa.opt.wasm: $(BUILD)/hpa.raw.wasm
+	$(OPTIMIZE)
+
+$(ASSETS)/hpa.manifest.json: $(BUILD)/hpa.opt.wasm
+	cd scripts && go run ./wasmpack chunk ../$< ../$(ASSETS) hpa
+
 $(BUILD)/workloads.raw.wasm: $(GO_SRC) | mirrors
 	mkdir -p $(BUILD)
 	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/workloads/cmd/workloads-wasm
@@ -98,6 +118,26 @@ $(BUILD)/workloads.opt.wasm: $(BUILD)/workloads.raw.wasm
 
 $(ASSETS)/workloads.manifest.json: $(BUILD)/workloads.opt.wasm
 	cd scripts && go run ./wasmpack chunk ../$< ../$(ASSETS) workloads
+
+$(BUILD)/admission.raw.wasm: $(GO_SRC) | mirrors
+	mkdir -p $(BUILD)
+	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/admission/cmd/admission-wasm
+
+$(BUILD)/admission.opt.wasm: $(BUILD)/admission.raw.wasm
+	$(OPTIMIZE)
+
+$(ASSETS)/admission.manifest.json: $(BUILD)/admission.opt.wasm
+	cd scripts && go run ./wasmpack chunk ../$< ../$(ASSETS) admission
+
+$(BUILD)/hookecho.raw.wasm: $(GO_SRC) | mirrors
+	mkdir -p $(BUILD)
+	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/hookecho/cmd/hookecho-wasm
+
+$(BUILD)/hookecho.opt.wasm: $(BUILD)/hookecho.raw.wasm
+	$(OPTIMIZE)
+
+$(ASSETS)/hookecho.manifest.json: $(BUILD)/hookecho.opt.wasm
+	cd scripts && go run ./wasmpack chunk ../$< ../$(ASSETS) hookecho
 
 $(BUILD)/printers-%.opt.wasm: $(BUILD)/printers-%.raw.wasm
 	$(OPTIMIZE)
@@ -128,13 +168,16 @@ $(NODE_TUNNEL_WASM): $(BUILD)/node-tunnel.opt.wasm
 	mkdir -p $(dir $@)
 	cp $< $@
 
-wasm: $(ASSETS)/wasm_exec.js $(ASSETS)/apiserver.manifest.json $(foreach g,$(API_GROUPS),$(ASSETS)/apiserver-$(g).manifest.json) $(ASSETS)/openapi.manifest.json $(ASSETS)/customresources.manifest.json $(ASSETS)/scheduler.manifest.json $(ASSETS)/workloads.manifest.json $(ASSETS)/gc.manifest.json $(foreach g,$(GROUPS),$(ASSETS)/printers-$(g).manifest.json) $(NODE_TUNNEL_WASM)
+wasm: $(ASSETS)/wasm_exec.js $(ASSETS)/apiserver.manifest.json $(foreach g,$(API_GROUPS),$(ASSETS)/apiserver-$(g).manifest.json) $(ASSETS)/openapi.manifest.json $(ASSETS)/customresources.manifest.json $(ASSETS)/scheduler.manifest.json $(ASSETS)/workloads.manifest.json $(ASSETS)/attachdetach.manifest.json $(ASSETS)/hpa.manifest.json $(ASSETS)/gc.manifest.json $(ASSETS)/admission.manifest.json $(ASSETS)/hookecho.manifest.json $(foreach g,$(GROUPS),$(ASSETS)/printers-$(g).manifest.json) $(NODE_TUNNEL_WASM)
 
 gen:
 	cd scripts && go run ./genresources && go run ./genprinters && go run ./genopenapi
 
 agent: mirrors
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o .build/bin/k8flare-agent-linux-arm64 ./packages/agent
+
+node-image: mirrors
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o packages/control-plane-worker/images/node/k8flare-agent ./packages/agent
 
 # CLAUDECODE is unset on purpose: with it set, wrangler dev enters its
 # AI-agent mode, whose observability capture buffers application/json
@@ -168,8 +211,11 @@ e2e:
 	cd scripts && go run ./e2e -set $(or $(SET),required) -procs $(or $(PROCS),4)
 	cd scripts && go vet ./...
 
-test: wasm
-	go test -count=1 ./packages/...
+test:
+	cd scripts && go run ./e2e -set conformance -procs $(or $(PROCS),4)
+
+test-packages: wasm
+	go test -count=1 -timeout 20m ./packages/...
 
 clean:
 	rm -rf $(BUILD) $(ASSETS)

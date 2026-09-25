@@ -10,6 +10,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -17,6 +18,7 @@ import (
 	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/tools/reference"
 	"k8s.io/klog/v2"
+	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/scheduler"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config/latest"
 )
@@ -31,15 +33,74 @@ const (
 
 var volumePlugins = map[string]bool{"VolumeBinding": true, "VolumeRestrictions": true, "NodeVolumeLimits": true, "VolumeZone": true, "DynamicResources": true}
 
+func init() {
+	_ = utilfeature.DefaultMutableFeatureGate.SetFromMap(map[string]bool{
+		string(features.SchedulerAsyncPreemption): false,
+	})
+}
+
 type PodRef struct {
 	Namespace string `json:"ns"`
 	Name      string `json:"name"`
 	UID       string `json:"uid"`
 }
 
+type QueueMessage struct {
+	Kind    string `json:"kind"`
+	Attempt *int   `json:"attempt,omitempty"`
+}
+
 type Result struct {
 	Bound         int      `json:"bound"`
 	Unschedulable []PodRef `json:"unschedulable"`
+	RetryAfterS   int      `json:"retryAfterS,omitempty"`
+	Attempt       int      `json:"attempt"`
+}
+
+func QueueAttempt(msgs []QueueMessage) (int, bool) {
+	attempt := -1
+	hasChange := false
+	for _, msg := range msgs {
+		switch msg.Kind {
+		case "change":
+			hasChange = true
+			if attempt < 0 {
+				attempt = 0
+			}
+		case "retry":
+			n := 0
+			if msg.Attempt != nil {
+				n = *msg.Attempt
+			}
+			if n+1 > attempt {
+				attempt = n + 1
+			}
+		}
+	}
+	if attempt < 0 {
+		return 0, false
+	}
+	if hasChange {
+		return 0, true
+	}
+	return attempt, true
+}
+
+func RetryDelaySeconds(attempt, unschedulable int) int {
+	if unschedulable == 0 {
+		return 0
+	}
+	if attempt < 0 {
+		attempt = 0
+	}
+	if attempt >= 6 {
+		return 60
+	}
+	delay := 1 << attempt
+	if delay > 60 {
+		return 60
+	}
+	return delay
 }
 
 func Schedule(ctx context.Context, client kubernetes.Interface) (*Result, error) {
@@ -137,7 +198,19 @@ func Schedule(ctx context.Context, client kubernetes.Interface) (*Result, error)
 		}
 	}
 	result.Bound = int(scheduled.Load())
+	result.Unschedulable = keepUnbound(queued, result.Bound, result.Unschedulable)
 	return result, nil
+}
+
+func keepUnbound(queued []*v1.Pod, bound int, found []PodRef) []PodRef {
+	if bound >= len(queued) || len(found) > 0 {
+		return found
+	}
+	out := make([]PodRef, 0, len(queued))
+	for _, p := range queued {
+		out = append(out, PodRef{Namespace: p.Namespace, Name: p.Name, UID: string(p.UID)})
+	}
+	return out
 }
 
 func listNodes(ctx context.Context, client kubernetes.Interface) ([]v1.Node, error) {
@@ -197,8 +270,21 @@ func fillSupporting(ctx context.Context, client kubernetes.Interface, factory in
 	}); err != nil {
 		return err
 	}
-	return fill(factory.Core().V1().Services().Informer(), func() ([]runtime.Object, error) {
+	if err := fill(factory.Core().V1().Services().Informer(), func() ([]runtime.Object, error) {
 		l, err := client.CoreV1().Services("").List(ctx, all)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]runtime.Object, 0, len(l.Items))
+		for i := range l.Items {
+			out = append(out, &l.Items[i])
+		}
+		return out, nil
+	}); err != nil {
+		return err
+	}
+	return fill(factory.Policy().V1().PodDisruptionBudgets().Informer(), func() ([]runtime.Object, error) {
+		l, err := client.PolicyV1().PodDisruptionBudgets("").List(ctx, all)
 		if err != nil {
 			return nil, err
 		}

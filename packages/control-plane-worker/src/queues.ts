@@ -1,11 +1,17 @@
 import type { QueueMessage } from "@k8flare/cluster-store";
+import { apiserverFetch } from "./loader.ts";
 
-const leaseGraceMs = 60_000;
-const refusedRetryMs = 5_000;
-const unschedulableMaxDelayS = 60;
-const leasePrefix = "/registry/leases/kube-node-lease/";
+type Target = "scheduler" | "leases" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "metrics" | "containers" | "attachdetach";
 
-type Target = "scheduler" | "leases" | "workloads" | "crds" | "gc" | "accounts";
+type FollowSend = {
+  queue: string;
+  delaySeconds?: number;
+  kind: string;
+  attempt?: number;
+  changed?: string[];
+  names?: string[];
+  node?: string;
+};
 
 function targetOf(queueName: string): Target | null {
   if (queueName.endsWith("-scheduler")) return "scheduler";
@@ -14,61 +20,131 @@ function targetOf(queueName: string): Target | null {
   if (queueName.endsWith("-crds")) return "crds";
   if (queueName.endsWith("-gc")) return "gc";
   if (queueName.endsWith("-accounts")) return "accounts";
+  if (queueName.endsWith("-extensions")) return "extensions";
+  if (queueName.endsWith("-metrics")) return "metrics";
+  if (queueName.endsWith("-containers")) return "containers";
+  if (queueName.endsWith("-attachdetach")) return "attachdetach";
   return null;
 }
 
-async function leaseExpired(env: Env, node: string): Promise<boolean> {
-  const store = env.CLUSTER.get(env.CLUSTER.idFromName("default"));
-  const resp = await store.fetch(`https://cluster.internal/kv?key=${encodeURIComponent(leasePrefix + node)}`);
-  if (!resp.ok) return false;
-  const data = (await resp.json()) as { kv: { value: string } | null };
-  if (!data.kv) return false;
-  const lease = JSON.parse(atob(data.kv.value)) as { spec?: { renewTime?: string } };
-  const renewed = Date.parse(lease.spec?.renewTime ?? "");
-  return !Number.isFinite(renewed) || Date.now() - renewed >= leaseGraceMs;
+async function followUp(env: Env, body: Record<string, unknown>): Promise<{ sends: FollowSend[]; stop: boolean }> {
+  const resp = await apiserverFetch(env, new Request("https://apiserver.internal/internal/queue/followup", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${env.ADMIN_TOKEN}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }));
+  if (!resp.ok) return { sends: [], stop: false };
+  return resp.json() as Promise<{ sends: FollowSend[]; stop: boolean }>;
+}
+
+function queueOf(env: Env, name: string): Queue | null {
+  switch (name) {
+    case "sched": return env.SCHED_Q;
+    case "wl": return env.WL_Q;
+    case "crd": return env.CRD_Q;
+    case "gc": return env.GC_Q;
+    case "acct": return env.ACCT_Q;
+    case "ext": return env.EXT_Q;
+    case "metrics": return env.METRICS_Q;
+    case "hpa": return env.HPA_Q;
+    case "containers": return env.CONTAINERS_Q;
+    case "ctrl": return env.CTRL_Q;
+    default: return null;
+  }
+}
+
+async function applySends(env: Env, sends: FollowSend[]): Promise<void> {
+  for (const send of sends) {
+    const queue = queueOf(env, send.queue);
+    if (!queue) continue;
+    const body: QueueMessage = send.kind === "lease-check"
+      ? { kind: "lease-check", node: send.node ?? "" }
+      : { kind: "retry", attempt: send.attempt, changed: send.changed, names: send.names };
+    await queue.send(body, send.delaySeconds ? { delaySeconds: send.delaySeconds } : undefined);
+  }
 }
 
 async function consumeScheduler(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
-  let attempt = -1;
-  for (const msg of batch.messages) {
-    const body = msg.body;
-    if (body.kind === "change") attempt = Math.max(attempt, 0);
-    else if (body.kind === "retry") attempt = Math.max(attempt, (body.attempt ?? 0) + 1);
-  }
-  if (attempt < 0) {
-    batch.ackAll();
-    return;
-  }
-  if (batch.messages.some((m) => m.body.kind === "change")) attempt = 0;
-  const result = await env.SCHEDULER.schedule();
-  if (!result) {
-    await env.SCHED_Q.send({ kind: "retry", attempt: 0 } satisfies QueueMessage, { delaySeconds: refusedRetryMs / 1000 });
-  } else {
-    console.log(`scheduler: bound=${result.bound} unschedulable=${result.unschedulable.length} attempt=${attempt}`);
-    if (result.unschedulable.length > 0) {
-      const delaySeconds = Math.min(unschedulableMaxDelayS, 2 ** attempt);
-      await env.SCHED_Q.send({ kind: "retry", attempt } satisfies QueueMessage, { delaySeconds });
-    }
-  }
+  const result = await env.SCHEDULER.schedule(batch.messages.map((m) => m.body));
+  const follow = await followUp(env, {
+    target: "scheduler",
+    ok: Boolean(result),
+    skip: Boolean(result?.skip),
+    attempt: result?.attempt ?? 0,
+    retryAfterS: result?.retryAfterS ?? 0,
+  });
+  if (result && !result.skip) console.log(`scheduler: bound=${result.bound} unschedulable=${result.unschedulable.length} attempt=${result.attempt}`);
+  await applySends(env, follow.sends);
   batch.ackAll();
 }
 
-const namespacePrefix = "/registry/namespaces/";
+async function queuePlan(env: Env, messages: readonly QueueMessage[]): Promise<{ resources: string[]; serviceKeys: string[]; gatewayKeys: string[] } | null> {
+  const resp = await apiserverFetch(env, new Request("https://apiserver.internal/internal/queue/plan", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${env.ADMIN_TOKEN}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ messages }),
+  }));
+  if (!resp.ok) return null;
+  return resp.json() as Promise<{ resources: string[]; serviceKeys: string[]; gatewayKeys: string[] }>;
+}
 
 async function consumeWorkloads(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
-  const changed = new Set<string>();
-  for (const msg of batch.messages) {
-    if (msg.body.kind !== "change") continue;
-    const parts = msg.body.key.split("/");
-    if (parts.length > 2) changed.add(parts[2]);
+  const plan = await queuePlan(env, batch.messages.map((m) => m.body));
+  if (!plan) {
+    await applySends(env, (await followUp(env, { target: "workloads" })).sends);
+    batch.ackAll();
+    return;
   }
-  const result = await env.WORKLOADS.sync([...changed]);
-  if (!result) {
-    await env.WL_Q.send({ kind: "retry" } satisfies QueueMessage, { delaySeconds: refusedRetryMs / 1000 });
-  } else {
-    console.log(`workloads: ${Object.entries(result.objects).map(([k, v]) => `${k}=${v}`).join(" ")} drained=${result.drained}`);
-    const delayMs = result.drained ? result.nextMs : refusedRetryMs;
-    if (delayMs > 0) await env.WL_Q.send({ kind: "retry" } satisfies QueueMessage, { delaySeconds: Math.ceil(delayMs / 1000) });
+  const changed = plan.resources;
+  console.log(`workloads: consume changed=${changed.join(",") || "(none)"} msgs=${batch.messages.length}`);
+  let provisionFailed = false;
+  if (plan.serviceKeys.length > 0) {
+    const resp = await apiserverFetch(env, new Request("https://apiserver.internal/internal/loadbalancer/provision", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env.ADMIN_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ keys: plan.serviceKeys }),
+    }));
+    if (!resp.ok) provisionFailed = true;
+  }
+  if (plan.gatewayKeys.length > 0) {
+    const resp = await apiserverFetch(env, new Request("https://apiserver.internal/internal/gateway/provision", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env.ADMIN_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ keys: plan.gatewayKeys }),
+    }));
+    if (!resp.ok) provisionFailed = true;
+  }
+  let hasResult = false;
+  let drained = false;
+  let nextMs = 0;
+  if (changed.length > 0) {
+    const result = await env.WORKLOADS.sync(changed);
+    hasResult = Boolean(result);
+    drained = Boolean(result?.drained);
+    nextMs = result?.nextMs ?? 0;
+    if (result) console.log(`workloads: ${Object.entries(result.objects).map(([k, v]) => `${k}=${v}`).join(" ")} drained=${result.drained}`);
+  }
+  await applySends(env, (await followUp(env, { target: "workloads", planOK: true, provisionFailed, changed, hasResult, drained, nextMs })).sends);
+  batch.ackAll();
+}
+
+async function consumeAttachDetach(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
+  const plan = await queuePlan(env, batch.messages.map((m) => m.body));
+  const changed = plan?.resources ?? [];
+  console.log(`attachdetach: consume changed=${changed.join(",") || "(none)"} msgs=${batch.messages.length}`);
+  if (changed.length === 0) {
+    batch.ackAll();
+    return;
+  }
+  try {
+    const attached = await env.ATTACHDETACH.sync();
+    if (attached) {
+      console.log(`attachdetach: ${Object.entries(attached.objects).map(([k, v]) => `${k}=${v}`).join(" ")} drained=${attached.drained}`);
+    } else {
+      console.log("attachdetach: sync returned null");
+    }
+  } catch (err) {
+    console.log(`attachdetach: sync threw ${err}`);
   }
   batch.ackAll();
 }
@@ -78,58 +154,62 @@ async function consumeCRDs(batch: MessageBatch<QueueMessage>, env: Env): Promise
   await resp.text();
   const pending = Number(resp.headers.get("X-CRD-Pending") ?? "1") || 0;
   console.log(`crds: status=${resp.status} pending=${pending}`);
-  if (resp.status !== 200 || pending > 0) await env.CRD_Q.send({ kind: "retry" } satisfies QueueMessage, { delaySeconds: refusedRetryMs / 1000 });
+  await applySends(env, (await followUp(env, { target: "crds", status: resp.status, pending })).sends);
   batch.ackAll();
 }
-
-const gcSettleMs = 2_000;
 
 async function consumeGC(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
   const result = await env.GC.collect();
   if (result) console.log(`gc: items=${result.items} deleted=${result.deleted} patched=${result.patched} pending=${result.pending}`);
-  const changed = !result || result.deleted > 0 || result.patched > 0 || result.pending > 0;
-  if (changed) {
-    await env.GC_Q.send({ kind: "retry" } satisfies QueueMessage, { delaySeconds: Math.ceil((result ? gcSettleMs : refusedRetryMs) / 1000) });
-  }
+  await applySends(env, (await followUp(env, {
+    target: "gc",
+    hasResult: Boolean(result),
+    deleted: result?.deleted ?? 0,
+    patched: result?.patched ?? 0,
+    pending: result?.pending ?? 0,
+  })).sends);
   batch.ackAll();
 }
 
 async function consumeAccounts(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
-  const terminating = new Set<string>();
-  for (const msg of batch.messages) {
-    if (msg.body.kind === "change" && msg.body.key.startsWith(namespacePrefix)) terminating.add(msg.body.key.slice(namespacePrefix.length));
-  }
-  if (terminating.size > 0) {
-    const names = [...terminating];
-    const namespaces = await env.WORKLOADS.namespaces(names);
-    if (namespaces) console.log(`namespaces: asked=${names.length} terminating=${namespaces.terminating} deleted=${namespaces.deleted} remaining=${namespaces.remaining}`);
-    const delayMs = namespaces ? namespaces.nextMs : refusedRetryMs;
-    if (delayMs > 0) {
-      await env.ACCT_Q.sendBatch(
-        names.map((name) => ({ body: { kind: "change", key: namespacePrefix + name, type: "modified", rev: 0 } satisfies QueueMessage, delaySeconds: Math.ceil(delayMs / 1000) })),
-      );
-    }
+  const namespaces = await env.WORKLOADS.namespaces(batch.messages.map((m) => m.body));
+  if (namespaces) console.log(`namespaces: asked=${namespaces.names?.length ?? 0} terminating=${namespaces.terminating} deleted=${namespaces.deleted} remaining=${namespaces.remaining}`);
+  const first = await followUp(env, {
+    target: "accounts",
+    hasResult: Boolean(namespaces),
+    nextMs: namespaces?.nextMs ?? 0,
+    names: namespaces?.names ?? [],
+    remaining: namespaces?.remaining ?? 0,
+    terminating: namespaces?.terminating ?? 0,
+  });
+  await applySends(env, first.sends);
+  if (first.stop) {
+    batch.ackAll();
+    return;
   }
   const result = await env.WORKLOADS.sync(["namespaces", "serviceaccounts", "configmaps"]);
-  if (!result) {
-    await env.ACCT_Q.send({ kind: "retry" } satisfies QueueMessage, { delaySeconds: refusedRetryMs / 1000 });
-  } else {
-    console.log(`accounts: ${Object.entries(result.objects).map(([k, v]) => `${k}=${v}`).join(" ")} drained=${result.drained}`);
-    if (!result.drained) await env.ACCT_Q.send({ kind: "retry" } satisfies QueueMessage, { delaySeconds: refusedRetryMs / 1000 });
-  }
+  if (result) console.log(`accounts: ${Object.entries(result.objects).map(([k, v]) => `${k}=${v}`).join(" ")} drained=${result.drained}`);
+  await applySends(env, (await followUp(env, { target: "accounts", phase: "sync", hasResult: Boolean(result), drained: Boolean(result?.drained) })).sends);
+  batch.ackAll();
+}
+
+async function consumeExtensions(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
+  const resp = await apiserverFetch(env, new Request("https://apiserver.internal/internal/extensions/dispatch", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${env.ADMIN_TOKEN}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ messages: batch.messages.map((m) => m.body) }),
+  }));
+  await applySends(env, (await followUp(env, { target: "extensions", ok: resp.ok })).sends);
   batch.ackAll();
 }
 
 async function consumeLeases(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
   for (const msg of batch.messages) {
     const body = msg.body;
-    if (body.kind !== "lease-check" || !(await leaseExpired(env, body.node))) continue;
+    if (body.kind !== "lease-check") continue;
     const health = await env.WORKLOADS.nodeHealth(body.node);
-    console.log(`lease expired: ${body.node} evicted=${health?.evicted} waiting=${health?.waiting}`);
-    const delayMs = health ? health.nextMs : refusedRetryMs;
-    if (delayMs > 0) {
-      await env.CTRL_Q.send({ kind: "lease-check", node: body.node } satisfies QueueMessage, { delaySeconds: Math.ceil(delayMs / 1000) });
-    }
+    console.log(`lease check: ${body.node} evicted=${health?.evicted} waiting=${health?.waiting}`);
+    await applySends(env, (await followUp(env, { target: "leases", node: body.node, hasResult: Boolean(health), nextMs: health?.nextMs ?? 0 })).sends);
   }
   batch.ackAll();
 }
@@ -148,6 +228,45 @@ export async function consume(batch: MessageBatch<QueueMessage>, env: Env): Prom
       return consumeAccounts(batch, env);
     case "leases":
       return consumeLeases(batch, env);
+    case "extensions":
+      return consumeExtensions(batch, env);
+    case "metrics":
+      return consumeMetrics(batch, env);
+    case "containers":
+      return consumeContainers(batch, env);
+    case "attachdetach":
+      return consumeAttachDetach(batch, env);
   }
   batch.ackAll();
+}
+
+async function consumeContainers(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
+  const keys = new Set<string>();
+  for (const msg of batch.messages) {
+    if (msg.body.kind === "change") keys.add(msg.body.key);
+  }
+  const { clusterName } = await import("./clusterid.ts");
+  const stub = env.NODE_SCHED.get(env.NODE_SCHED.idFromName(clusterName(env)));
+  const resp = await stub.fetch("https://nodesched.internal/reconcile");
+  const body = resp.ok ? ((await resp.json()) as { hasWork?: boolean }) : {};
+  console.log(`containers: keys=${keys.size} status=${resp.status} hasWork=${Boolean(body.hasWork)}`);
+  await applySends(env, (await followUp(env, { target: "containers", hasWork: Boolean(body.hasWork) })).sends);
+  batch.ackAll();
+}
+
+async function consumeMetrics(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
+  const resp = await apiserverFetch(env, new Request("https://apiserver.internal/internal/metrics/scrape", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${env.ADMIN_TOKEN}` },
+  }));
+  console.log(`metrics: status=${resp.status}`);
+  const follow = await followUp(env, { target: "metrics" });
+  const delayed = follow.sends.filter((send) => send.queue === "metrics" && send.delaySeconds);
+  await applySends(env, follow.sends.filter((send) => !delayed.includes(send)));
+  batch.ackAll();
+  for (const send of delayed) {
+    await scheduler.wait((send.delaySeconds ?? 0) * 1000);
+    send.delaySeconds = 0;
+  }
+  await applySends(env, delayed);
 }

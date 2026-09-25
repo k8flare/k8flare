@@ -13,13 +13,16 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/k3s-io/k3s/pkg/agent"
 	"github.com/k3s-io/k3s/pkg/agent/tunnel"
@@ -54,6 +57,12 @@ func main() {
 	token := flag.String("token", os.Getenv("K3S_TOKEN"), "cluster join token")
 	nodeName := flag.String("node-name", "", "node name (default: hostname)")
 	dataDir := flag.String("data-dir", "/var/lib/rancher/k3s", "k3s data directory")
+	nodeLabels := flag.String("node-labels", "", "")
+	nodeTaints := flag.String("node-taints", "", "")
+	withNodeID := flag.Bool("with-node-id", false, "")
+	_ = flag.Int("kubelet-plain-proxy-port", 0, "")
+	_ = flag.String("virtual-kube-proxy-cidr", "", "")
+	meshAsNodeIP := flag.Bool("mesh-ip-as-node-ip", false, "")
 	flag.Parse()
 	if *server == "" || *token == "" {
 		log.Fatal("--server and --token are required")
@@ -73,6 +82,7 @@ func main() {
 		log.Printf("writing token kubeconfig %s", dest)
 		return true, os.WriteFile(dest, []byte(fmt.Sprintf(kubeconfigTemplate, *server, nodeToken)), 0o600)
 	}
+	tunnel.TunnelIgnoreEndpointSlices = true
 	tunnel.TunnelHeaderOverride = func() http.Header {
 		password, err := os.ReadFile("/etc/rancher/node/password")
 		if err != nil {
@@ -90,6 +100,24 @@ func main() {
 		NodeName:            *nodeName,
 		DataDir:             *dataDir,
 		DisableLoadBalancer: true,
+		WithNodeID:          *withNodeID,
+	}
+	if *nodeLabels != "" {
+		_ = cfg.Labels.Set(*nodeLabels)
+	}
+	if *nodeTaints != "" {
+		_ = cfg.Taints.Set(*nodeTaints)
+	}
+	if *meshAsNodeIP {
+		ip := meshIPv4()
+		for i := 0; i < 30 && ip == ""; i++ {
+			time.Sleep(time.Second)
+			ip = meshIPv4()
+		}
+		if ip != "" {
+			_ = cfg.NodeIP.Set(ip)
+			cfg.FlannelIface = "CloudflareWARP"
+		}
 	}
 	embedded, err := embed.New(ctx, &cfg)
 	if err != nil {
@@ -97,6 +125,7 @@ func main() {
 	}
 	executor.Set(embedded)
 	var wg sync.WaitGroup
+	go serveKubernetesAPI(ctx, *server, *nodeName, *token)
 	log.Printf("starting k8flare agent: server=%s node=%s", *server, *nodeName)
 	if err := agent.Run(ctx, &wg, cfg); err != nil {
 		log.Fatalf("agent: %v", err)
@@ -105,11 +134,52 @@ func main() {
 	wg.Wait()
 }
 
+func meshIPv4() string {
+	_, mesh, err := net.ParseCIDR("100.96.0.0/12")
+	if err != nil {
+		return ""
+	}
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	var fallback string
+	for _, iface := range ifaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			n, ok := a.(*net.IPNet)
+			if !ok || n.IP.To4() == nil || !mesh.Contains(n.IP) {
+				continue
+			}
+			if iface.Name == "CloudflareWARP" {
+				return n.IP.String()
+			}
+			if fallback == "" {
+				fallback = n.IP.String()
+			}
+		}
+	}
+	return fallback
+}
+
 // useBundledBinaries puts the containerd, runc and CNI binaries the k3s
 // distribution unpacks into its data directory on PATH. The stock k3s
 // binary must have run once on this machine.
 func useBundledBinaries(dataDir string) error {
 	bin := filepath.Join(dataDir, "data/current/bin")
+	if _, err := os.Stat(bin); err != nil {
+		k3s := "k3s"
+		if _, lookErr := exec.LookPath(k3s); lookErr != nil {
+			k3s = "/usr/local/bin/k3s"
+		}
+		cmd := exec.Command(k3s, "kubectl", "version", "--client")
+		if out, runErr := cmd.CombinedOutput(); runErr != nil {
+			return fmt.Errorf("%s not found: unpack k3s: %v: %s", bin, runErr, strings.TrimSpace(string(out)))
+		}
+	}
 	if _, err := os.Stat(bin); err != nil {
 		return fmt.Errorf("%s not found: run the k3s binary once to unpack it", bin)
 	}

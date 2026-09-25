@@ -48,6 +48,14 @@ func NewVault(kine *kine.Client) *Vault {
 	return &Vault{kine: kine, cas: map[string]*ca{}, verified: map[string]string{}}
 }
 
+func (v *Vault) CAPEM(ctx context.Context, name string) ([]byte, error) {
+	c, err := v.ca(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), c.certPEM...), nil
+}
+
 func (v *Vault) ca(ctx context.Context, name string) (*ca, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -177,6 +185,57 @@ func (v *Vault) RegisterNodePassword(ctx context.Context, node, password string)
 // never registers one. A password is immutable once registered, so a hash
 // that verified once is kept for the isolate's lifetime and the kubelet's
 // heartbeats do not each cost a store read.
+const tokenPrefix = "/vault/tokens/"
+
+func (v *Vault) EnsureToken(ctx context.Context, kind, seed string) (string, error) {
+	key := tokenPrefix + kind
+	for {
+		kv, _, err := v.kine.Get(ctx, key)
+		if err == nil {
+			raw, err := base64.StdEncoding.DecodeString(kv.Value)
+			if err != nil {
+				return "", err
+			}
+			return string(raw), nil
+		}
+		if err != kine.ErrNotFound {
+			return "", err
+		}
+		value := seed
+		if value == "" {
+			b := make([]byte, 32)
+			if _, err := rand.Read(b); err != nil {
+				return "", err
+			}
+			value = hex.EncodeToString(b)
+		}
+		if _, err := v.kine.Put(ctx, key, []byte(value), 0); err != nil && err != kine.ErrConflict {
+			return "", err
+		}
+	}
+}
+
+func (v *Vault) CheckToken(ctx context.Context, kind, token string) error {
+	if token == "" {
+		return errNodeUnknown
+	}
+	kv, _, err := v.kine.Get(ctx, tokenPrefix+kind)
+	if err == kine.ErrNotFound {
+		return errNodeUnknown
+	}
+	if err != nil {
+		return err
+	}
+	stored, err := base64.StdEncoding.DecodeString(kv.Value)
+	if err != nil {
+		return err
+	}
+	if subtle.ConstantTimeCompare(stored, []byte(token)) != 1 {
+		return errNodePasswordMismatch
+	}
+	return nil
+}
+
 func (v *Vault) CheckNodePassword(ctx context.Context, node, password string) error {
 	want := hashPassword(password)
 	v.mu.Lock()

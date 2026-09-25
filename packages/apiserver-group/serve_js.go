@@ -40,6 +40,7 @@ func Serve(groupVersion string) {
 		AdminToken:    bridge.Getenv("ADMIN_TOKEN"),
 		ReadonlyToken: bridge.Getenv("READONLY_TOKEN"),
 		Kubelet:       kubelet,
+		Admission:     &http.Client{Transport: bridge.BindingTransport{Name: "ADMISSION"}},
 	})
 	if err != nil {
 		panic(err)

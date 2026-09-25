@@ -1,0 +1,7 @@
+{
+  "name": "@k8flare/apiserver-admissionregistration",
+  "private": true,
+  "type": "module",
+  "description": "The admissionregistration.k8s.io API group as its own Loader dynamic worker.",
+  "scripts": { "build": "cd ../.. && make wasm" }
+}

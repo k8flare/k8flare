@@ -17,6 +17,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -130,14 +131,12 @@ func rootModels(d *definitions, dir string) ([]string, error) {
 		}
 	}
 	for _, s := range upstream.Served {
-		group, version, _ := strings.Cut(s.GV, "/")
-		if version == "" {
-			group, version = "core", group
+		if strings.HasPrefix(s.GV, "apiregistration.k8s.io/") || strings.HasPrefix(s.GV, "resource.k8s.io/") {
+			continue
 		}
-		apiGroup, _, _ := strings.Cut(group, ".")
-		alias, ok := d.aliases["k8s.io/api/"+apiGroup+"/"+version]
+		alias, ok := d.aliases[upstream.SchemeExternal(s.GV)]
 		if !ok {
-			return nil, fmt.Errorf("%s: no import for its API package", s.GV)
+			return nil, fmt.Errorf("%s: no import for %s", s.GV, upstream.SchemeExternal(s.GV))
 		}
 		list, err := upstream.LoadDiscovery(dir, s.GV)
 		if err != nil {
@@ -153,6 +152,13 @@ func rootModels(d *definitions, dir string) ([]string, error) {
 			}
 			for _, suffix := range suffixes {
 				name := alias + "." + res.Kind + suffix
+				if _, ok := d.entries[name]; !ok {
+					if pkg, mapped := kindPackages[res.Kind]; mapped {
+						if mappedAlias, ok := d.aliases[pkg]; ok {
+							name = mappedAlias + "." + res.Kind + suffix
+						}
+					}
+				}
 				if _, ok := d.entries[name]; ok {
 					roots = append(roots, name)
 				}
@@ -161,6 +167,12 @@ func rootModels(d *definitions, dir string) ([]string, error) {
 	}
 	sort.Strings(roots)
 	return roots, nil
+}
+
+var kindPackages = map[string]string{
+	"Eviction":     "k8s.io/api/policy/v1",
+	"Scale":        "k8s.io/api/autoscaling/v1",
+	"TokenRequest": "k8s.io/api/authentication/v1",
 }
 
 func contains(list []string, s string) bool {
@@ -244,8 +256,10 @@ func generate(d *definitions, roots []string) ([]byte, error) {
 	}
 	out.WriteString(")\n\n")
 	out.Write(body.Bytes())
-	return format.Source(out.Bytes())
+	return format.Source(descriptionRE.ReplaceAll(out.Bytes(), []byte(`Description: ""`)))
 }
+
+var descriptionRE = regexp.MustCompile(`Description:\s+"(?:\\.|[^"\\])*"`)
 
 func schemaFunc(kv *ast.KeyValueExpr) string {
 	return kv.Value.(*ast.CallExpr).Fun.(*ast.Ident).Name

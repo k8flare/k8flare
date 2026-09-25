@@ -2,6 +2,7 @@ package gc
 
 import (
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -67,6 +68,58 @@ func TestCircleBlockersAreAlreadyDeleting(t *testing.T) {
 		if len(live) != 0 || len(deleting) != 1 {
 			t.Fatalf("%s: live=%d deleting=%d", p.Name, len(live), len(deleting))
 		}
+	}
+}
+
+func TestOrphanEventKeys(t *testing.T) {
+	ns := &item{TypeMeta: metav1.TypeMeta{Kind: "Namespace"}, ObjectMeta: metav1.ObjectMeta{Name: "default"}}
+	nodeLease := &item{TypeMeta: metav1.TypeMeta{Kind: "Namespace"}, ObjectMeta: metav1.ObjectMeta{Name: "kube-node-lease"}}
+	g := graphOf(ns, nodeLease)
+	g.eventKeys = []string{
+		"/registry/events/default/keep",
+		"/registry/events/gone/drop",
+		"/registry/events.k8s.io/events/gone/other",
+	}
+	g.leaseKeys = []string{
+		"/registry/leases/kube-node-lease/k8flare-agent",
+		"/registry/leases/gone/agent",
+	}
+	got := orphanEventKeys(g)
+	if len(got) != 2 || got[0] != "/registry/events/gone/drop" || got[1] != "/registry/events.k8s.io/events/gone/other" {
+		t.Fatalf("orphan events: %#v", got)
+	}
+	leases := orphanLeaseKeys(g)
+	if len(leases) != 1 || leases[0] != "/registry/leases/gone/agent" {
+		t.Fatalf("orphan leases: %#v", leases)
+	}
+}
+
+func TestExpiredEventKeys(t *testing.T) {
+	now := time.Now()
+	g := &graph{
+		eventKeys: []string{"/registry/events/default/old", "/registry/events/default/new"},
+		eventAt: map[string]time.Time{
+			"/registry/events/default/old": now.Add(-2 * time.Hour),
+			"/registry/events/default/new": now.Add(-time.Minute),
+		},
+	}
+	got := expiredEventKeys(g, now)
+	if len(got) != 1 || got[0] != "/registry/events/default/old" {
+		t.Fatalf("expired: %#v", got)
+	}
+}
+
+func TestAbsentNamespace(t *testing.T) {
+	ns := &item{TypeMeta: metav1.TypeMeta{Kind: "Namespace", APIVersion: "v1"}, ObjectMeta: metav1.ObjectMeta{Name: "default", UID: "ns"}}
+	kept := owned("kept")
+	orphan := owned("orphan")
+	orphan.Namespace = "gone"
+	cluster := owned("node")
+	cluster.Namespace = ""
+	cluster.Kind = "Node"
+	got := absentNamespace([]*item{ns, kept, orphan, cluster})
+	if len(got) != 1 || got[0].Name != "orphan" {
+		t.Fatalf("absent namespace: %#v", got)
 	}
 }
 

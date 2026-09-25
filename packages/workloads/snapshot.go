@@ -5,17 +5,22 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/cache"
 )
 
 type snapshotInformer struct {
 	cache.SharedIndexInformer
+	example  runtime.Object
 	mu       sync.Mutex
 	handlers []cache.ResourceEventHandler
 }
 
 func newSnapshotInformer(example runtime.Object) *snapshotInformer {
-	return &snapshotInformer{SharedIndexInformer: cache.NewSharedIndexInformer(nil, example, 0, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})}
+	return &snapshotInformer{
+		example:             example,
+		SharedIndexInformer: cache.NewSharedIndexInformer(nil, example, 0, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc}),
+	}
 }
 
 func (s *snapshotInformer) HasSynced() bool { return true }
@@ -39,7 +44,9 @@ func (s *snapshotInformer) AddEventHandlerWithOptions(h cache.ResourceEventHandl
 
 func (s *snapshotInformer) fill(objs []runtime.Object) {
 	for _, o := range objs {
-		s.GetIndexer().Add(o)
+		copied := o.DeepCopyObject()
+		scheme.Scheme.Default(copied)
+		s.GetIndexer().Add(copied)
 	}
 }
 

@@ -31,18 +31,50 @@ func attributesFrom(u authorizer.AttributesRecord, resource *authorizationv1.Res
 	return u
 }
 
+func extraFrom(extra map[string]authorizationv1.ExtraValue) map[string][]string {
+	if extra == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(extra))
+	for k, v := range extra {
+		out[k] = []string(v)
+	}
+	return out
+}
+
+func reviewStatus(decision authorizer.Decision, reason string, err error) authorizationv1.SubjectAccessReviewStatus {
+	status := authorizationv1.SubjectAccessReviewStatus{Allowed: decision == authorizer.DecisionAllow, Denied: decision == authorizer.DecisionDeny, Reason: reason}
+	if err != nil {
+		status.EvaluationError = err.Error()
+	}
+	return status
+}
+
+func resourceRules(infos []authorizer.ResourceRuleInfo) []authorizationv1.ResourceRule {
+	rules := make([]authorizationv1.ResourceRule, len(infos))
+	for i, info := range infos {
+		rules[i] = authorizationv1.ResourceRule{Verbs: info.GetVerbs(), APIGroups: info.GetAPIGroups(), Resources: info.GetResources(), ResourceNames: info.GetResourceNames()}
+	}
+	return rules
+}
+
+func nonResourceRules(infos []authorizer.NonResourceRuleInfo) []authorizationv1.NonResourceRule {
+	rules := make([]authorizationv1.NonResourceRule, len(infos))
+	for i, info := range infos {
+		rules[i] = authorizationv1.NonResourceRule{Verbs: info.GetVerbs(), NonResourceURLs: info.GetNonResourceURLs()}
+	}
+	return rules
+}
+
 func init() {
 	registry.Resources["subjectaccessreviews"] = registry.Review(func(deps registry.Deps) func(context.Context, runtime.Object) runtime.Object {
 		return func(ctx context.Context, obj runtime.Object) runtime.Object {
 			review := obj.(*authorizationv1.SubjectAccessReview)
 			attrs := attributesFrom(authorizer.AttributesRecord{
-				User: &user.DefaultInfo{Name: review.Spec.User, Groups: review.Spec.Groups},
+				User: &user.DefaultInfo{Name: review.Spec.User, UID: review.Spec.UID, Groups: review.Spec.Groups, Extra: extraFrom(review.Spec.Extra)},
 			}, review.Spec.ResourceAttributes, review.Spec.NonResourceAttributes)
 			decision, reason, err := authz.New(deps.Kine).Authorize(ctx, attrs)
-			review.Status = authorizationv1.SubjectAccessReviewStatus{Allowed: decision == authorizer.DecisionAllow, Denied: decision == authorizer.DecisionDeny, Reason: reason}
-			if err != nil {
-				review.Status.EvaluationError = err.Error()
-			}
+			review.Status = reviewStatus(decision, reason, err)
 			return review
 		}
 	})
@@ -52,7 +84,35 @@ func init() {
 			u, _ := genericapirequest.UserFrom(ctx)
 			attrs := attributesFrom(authorizer.AttributesRecord{User: u}, review.Spec.ResourceAttributes, review.Spec.NonResourceAttributes)
 			decision, reason, err := authz.New(deps.Kine).Authorize(ctx, attrs)
-			review.Status = authorizationv1.SubjectAccessReviewStatus{Allowed: decision == authorizer.DecisionAllow, Denied: decision == authorizer.DecisionDeny, Reason: reason}
+			review.Status = reviewStatus(decision, reason, err)
+			return review
+		}
+	})
+	registry.Resources["localsubjectaccessreviews"] = registry.Review(func(deps registry.Deps) func(context.Context, runtime.Object) runtime.Object {
+		return func(ctx context.Context, obj runtime.Object) runtime.Object {
+			review := obj.(*authorizationv1.LocalSubjectAccessReview)
+			ns, _ := genericapirequest.NamespaceFrom(ctx)
+			if review.Spec.ResourceAttributes != nil && review.Spec.ResourceAttributes.Namespace == "" {
+				review.Spec.ResourceAttributes.Namespace = ns
+			}
+			attrs := attributesFrom(authorizer.AttributesRecord{
+				User: &user.DefaultInfo{Name: review.Spec.User, UID: review.Spec.UID, Groups: review.Spec.Groups, Extra: extraFrom(review.Spec.Extra)},
+			}, review.Spec.ResourceAttributes, review.Spec.NonResourceAttributes)
+			decision, reason, err := authz.New(deps.Kine).Authorize(ctx, attrs)
+			review.Status = reviewStatus(decision, reason, err)
+			return review
+		}
+	})
+	registry.Resources["selfsubjectrulesreviews"] = registry.Review(func(deps registry.Deps) func(context.Context, runtime.Object) runtime.Object {
+		return func(ctx context.Context, obj runtime.Object) runtime.Object {
+			review := obj.(*authorizationv1.SelfSubjectRulesReview)
+			u, _ := genericapirequest.UserFrom(ctx)
+			resourceInfo, nonResourceInfo, incomplete, err := authz.Resolver(deps.Kine).RulesFor(ctx, u, review.Spec.Namespace)
+			review.Status = authorizationv1.SubjectRulesReviewStatus{
+				ResourceRules:    resourceRules(resourceInfo),
+				NonResourceRules: nonResourceRules(nonResourceInfo),
+				Incomplete:       incomplete,
+			}
 			if err != nil {
 				review.Status.EvaluationError = err.Error()
 			}

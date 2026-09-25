@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"reflect"
 
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 
+	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
@@ -35,13 +38,64 @@ type strategy struct {
 	namespaced bool
 }
 
-func (s strategy) NamespaceScoped() bool                                          { return s.namespaced }
-func (strategy) PrepareForCreate(context.Context, runtime.Object)                 {}
-func (strategy) Validate(context.Context, runtime.Object) field.ErrorList         { return nil }
-func (strategy) WarningsOnCreate(context.Context, runtime.Object) []string        { return nil }
-func (strategy) Canonicalize(runtime.Object)                                      {}
-func (strategy) AllowCreateOnUpdate() bool                                        { return false }
-func (strategy) PrepareForUpdate(context.Context, runtime.Object, runtime.Object) {}
+func (s strategy) NamespaceScoped() bool { return s.namespaced }
+func (strategy) PrepareForCreate(_ context.Context, obj runtime.Object) {
+	if a, err := meta.Accessor(obj); err == nil {
+		a.SetGeneration(1)
+	}
+	if _, ok := obj.(*corev1.Node); ok {
+		return
+	}
+	clearStatus(obj)
+}
+
+func clearStatus(obj runtime.Object) {
+	val := reflect.ValueOf(obj)
+	if val.Kind() != reflect.Ptr || val.IsNil() {
+		return
+	}
+	val = val.Elem()
+	if val.Kind() != reflect.Struct {
+		return
+	}
+	status := val.FieldByName("Status")
+	if status.IsValid() && status.CanSet() {
+		status.Set(reflect.Zero(status.Type()))
+	}
+}
+func (strategy) Validate(context.Context, runtime.Object) field.ErrorList  { return nil }
+func (strategy) WarningsOnCreate(context.Context, runtime.Object) []string { return nil }
+func (strategy) Canonicalize(runtime.Object)                               {}
+func (strategy) AllowCreateOnUpdate() bool                                 { return false }
+func (strategy) PrepareForUpdate(_ context.Context, obj, old runtime.Object) {
+	newA, err1 := meta.Accessor(obj)
+	oldA, err2 := meta.Accessor(old)
+	if err1 != nil || err2 != nil {
+		return
+	}
+	newA.SetGeneration(oldA.GetGeneration())
+	if specChanged(obj, old) {
+		newA.SetGeneration(oldA.GetGeneration() + 1)
+	}
+	keepStatus(obj, old)
+}
+
+func keepStatus(obj, old runtime.Object) {
+	newVal := reflect.ValueOf(obj)
+	oldVal := reflect.ValueOf(old)
+	if newVal.Kind() != reflect.Ptr || oldVal.Kind() != reflect.Ptr || newVal.IsNil() || oldVal.IsNil() {
+		return
+	}
+	newVal, oldVal = newVal.Elem(), oldVal.Elem()
+	if newVal.Kind() != reflect.Struct || newVal.Type() != oldVal.Type() {
+		return
+	}
+	status := newVal.FieldByName("Status")
+	previous := oldVal.FieldByName("Status")
+	if status.IsValid() && status.CanSet() && previous.IsValid() {
+		status.Set(previous)
+	}
+}
 func (strategy) ValidateUpdate(context.Context, runtime.Object, runtime.Object) field.ErrorList {
 	return nil
 }
@@ -84,9 +138,11 @@ func (s storeWithNames) Delete(ctx context.Context, name string, deleteValidatio
 }
 
 type Deps struct {
-	Kine    *kine.Client
-	Tokens  authenticator.Token
-	Kubelet KubeletProxy
+	Kine      *kine.Client
+	Tokens    authenticator.Token
+	Kubelet   KubeletProxy
+	Admission *http.Client
+	TokenHMAC []byte
 }
 
 type Store = genericregistry.Store
@@ -116,7 +172,8 @@ func NewStore(client *kine.Client, gv schema.GroupVersion, res metav1.APIResourc
 	prefix := "/" + res.Name
 	gr := gv.WithResource(res.Name).GroupResource()
 	codec := scheme.Codecs.LegacyCodec(gv)
-	kineStorage := kine.NewStorage(client, codec, newFunc)
+	persist := storageCodec(gv)
+	kineStorage := kine.NewStorage(client, persist, newFunc)
 	store := &genericregistry.Store{
 		NewFunc:                   newFunc,
 		NewListFunc:               newListFunc,
@@ -152,7 +209,7 @@ func NewStore(client *kine.Client, gv schema.GroupVersion, res metav1.APIResourc
 		PredicateFunc: func(label labels.Selector, field fields.Selector) storage.SelectionPredicate {
 			return storage.SelectionPredicate{Label: label, Field: field, GetAttrs: attrsFor(field)}
 		},
-		Storage: genericregistry.DryRunnableStorage{Storage: kineStorage, Codec: codec},
+		Storage: genericregistry.DryRunnableStorage{Storage: kineStorage, Codec: persist},
 	}
 	return store, nil
 }
@@ -163,4 +220,40 @@ type OrphanByDefault struct {
 
 func (OrphanByDefault) DefaultGarbageCollectionPolicy(context.Context) rest.GarbageCollectionPolicy {
 	return rest.OrphanDependents
+}
+
+func specChanged(obj, old runtime.Object) bool {
+	if newSpec, oldSpec, ok := specFields(obj, old); ok {
+		return !apiequality.Semantic.DeepEqual(newSpec, oldSpec)
+	}
+	newU, err1 := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+	oldU, err2 := runtime.DefaultUnstructuredConverter.ToUnstructured(old)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return !apiequality.Semantic.DeepEqual(newU["spec"], oldU["spec"])
+}
+
+func specFields(obj, old runtime.Object) (any, any, bool) {
+	newSpec, ok1 := specField(obj)
+	oldSpec, ok2 := specField(old)
+	return newSpec, oldSpec, ok1 && ok2
+}
+
+func specField(obj runtime.Object) (any, bool) {
+	v := reflect.ValueOf(obj)
+	if v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return nil, false
+		}
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return nil, false
+	}
+	f := v.FieldByName("Spec")
+	if !f.IsValid() || !f.CanInterface() {
+		return nil, false
+	}
+	return f.Interface(), true
 }

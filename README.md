@@ -20,7 +20,7 @@ known deadline (watch lease expiry, node-lease check).
   supervisor endpoints, root discovery, and routing. `/api/*` and
   `/apis/<group>/*` go to that group's worker, unknown groups to
   `customresources`, `/openapi/*` to `openapi`.
-- `packages/apiserver-{core,coordination,discovery,node,storage,authentication,authorization,apps,policy,resource,rbac,batch}`
+- `packages/apiserver-{core,coordination,discovery,node,storage,authentication,authorization,apps,policy,resource,rbac,batch,admissionregistration}`
   — one worker per served API group. `packages/apiserver-group` is what
   they share. `packages/apiserver-core` holds the pod, node, and
   namespace specifics.
@@ -31,6 +31,12 @@ known deadline (watch lease expiry, node-lease check).
   Durable Object's revisioned key-value log.
 - `packages/apiserver-supervisor` — the k3s supervisor protocol, the CA
   vault, and node passwords.
+- `packages/admission` — built-in LimitRanger / ServiceAccount,
+  ValidatingAdmissionPolicy (CEL), and admission webhooks, behind
+  `Admission`. Webhook backends are a NodeTunnel dial (`clientConfig.service`)
+  or a Dynamic Worker (`https://k8flare.com/worker/<name>` or
+  `k8flare.com/worker`). A CRD annotation `k8flare.io/controller`
+  enqueues the named worker on `k8flare-extensions`.
 - `packages/customresources` — apiextensions.k8s.io and CRD-defined
   groups, behind the `CustomResources` entrypoint.
 - `packages/openapi` — `/openapi/v2` and `/openapi/v3`, behind `OpenAPI`.
@@ -41,7 +47,10 @@ known deadline (watch lease expiry, node-lease check).
   ServiceAccount, root-CA publisher, and namespace deletion, behind
   `Workloads`. ServiceAccount provisioning and terminating namespaces
   use the `k8flare-accounts` queue so a long workloads batch cannot
-  hold them.
+  hold them. A `type: LoadBalancer` Service gets
+  `{name}--{namespace}.k8flare.com` on
+  `.status.loadBalancer.ingress`; the front Worker proxies that host
+  (or `/svc/{namespace}/{name}`) to a ready endpoint through NodeTunnel.
 - `packages/gc` — garbage collection, behind `GarbageCollector`.
 - `packages/printers` and `packages/printers-{core,coordination,discovery,node,storage,apps,policy,resource,rbac,batch}`
   — kubectl table printers.
@@ -63,17 +72,25 @@ pnpm install
 make mirrors
 make wasm
 make gen             # after a Kubernetes bump
-make test
+make test            # upstream Conformance e2e, same set k3s runs (needs a Ready node)
+make test-packages   # package tests against wrangler dev
 make dev             # wrangler dev on :18787
 make devtls          # https://localhost:6443 -> :18787
 make e2e SET=required
+make e2e SET=admission
 ```
 
 Copy `.dev.vars.example` to `.dev.vars` and put strong tokens there.
 Production secrets go in `wrangler secret put`, never in git.
 
-`make e2e` needs a joined Ready node. Cluster DNS and kube-proxy are not
+`make e2e` needs a joined Ready node. `SET=admission` covers official
+AdmissionWebhook and ValidatingAdmissionPolicy specs plus LimitRange
+defaults. Worker-hosted webhooks use `https://k8flare.com/worker/<name>`
+(or the `k8flare.com/worker` annotation); `clientConfig.service` dials
+the pod through NodeTunnel. Cluster DNS and kube-proxy are not
 served; use `dnsPolicy: Default` for pods that must resolve off-cluster.
+`type: LoadBalancer` is published as `{name}--{namespace}.k8flare.com`
+and also at `/svc/{namespace}/{name}` on the Worker hostname.
 
 ### Joining a node
 

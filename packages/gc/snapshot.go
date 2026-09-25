@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+	"time"
 
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -27,6 +28,9 @@ type graph struct {
 	byUID      map[types.UID]*item
 	dependents map[types.UID][]*item
 	items      []*item
+	eventKeys  []string
+	eventAt    map[string]time.Time
+	leaseKeys  []string
 }
 
 func loadGraph(ctx context.Context, client *kine.Client) (*graph, error) {
@@ -42,6 +46,20 @@ func loadGraph(ctx context.Context, client *kine.Client) (*graph, error) {
 		}
 		for _, kv := range kvs {
 			from = kv.Key
+			if _, ok := eventNamespace(kv.Key); ok {
+				g.eventKeys = append(g.eventKeys, kv.Key)
+				if at := eventTime(kv.Value); !at.IsZero() {
+					if g.eventAt == nil {
+						g.eventAt = map[string]time.Time{}
+					}
+					g.eventAt[kv.Key] = at
+				}
+				continue
+			}
+			if _, ok := leaseNamespace(kv.Key); ok {
+				g.leaseKeys = append(g.leaseKeys, kv.Key)
+				continue
+			}
 			if it := decodeItem(kv); it != nil {
 				g.add(it)
 			}
@@ -51,6 +69,60 @@ func loadGraph(ctx context.Context, client *kine.Client) (*graph, error) {
 		}
 	}
 	return g, nil
+}
+
+func eventNamespace(key string) (string, bool) {
+	if ns, ok := namespacedKey(registryPrefix+"events/", key); ok {
+		return ns, true
+	}
+	return namespacedKey(registryPrefix+"events.k8s.io/events/", key)
+}
+
+func leaseNamespace(key string) (string, bool) {
+	return namespacedKey(registryPrefix+"leases/", key)
+}
+
+func namespacedKey(prefix, key string) (string, bool) {
+	rest, ok := strings.CutPrefix(key, prefix)
+	if !ok {
+		return "", false
+	}
+	ns, name, ok := strings.Cut(rest, "/")
+	if !ok || ns == "" || name == "" || strings.Contains(name, "/") {
+		return "", false
+	}
+	return ns, true
+}
+
+func eventTime(value string) time.Time {
+	data, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		return time.Time{}
+	}
+	var ev struct {
+		Metadata struct {
+			CreationTimestamp time.Time `json:"creationTimestamp"`
+		} `json:"metadata"`
+		EventTime     metav1.MicroTime `json:"eventTime"`
+		LastTimestamp metav1.Time      `json:"lastTimestamp"`
+		Series        *struct {
+			LastObservedTime metav1.MicroTime `json:"lastObservedTime"`
+		} `json:"series"`
+	}
+	if json.Unmarshal(data, &ev) != nil {
+		return time.Time{}
+	}
+	at := ev.Metadata.CreationTimestamp
+	if t := ev.LastTimestamp.Time; t.After(at) {
+		at = t
+	}
+	if t := ev.EventTime.Time; t.After(at) {
+		at = t
+	}
+	if ev.Series != nil && ev.Series.LastObservedTime.After(at) {
+		at = ev.Series.LastObservedTime.Time
+	}
+	return at
 }
 
 func decodeItem(kv kine.KV) *item {

@@ -41,11 +41,11 @@ func startDevURL(t *testing.T) (string, *kubernetes.Clientset) {
 	t.Helper()
 	_, file, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(file), "../..")
-	workers := []string{"apiserver", "openapi", "customresources", "scheduler", "workloads", "gc"}
-	for _, g := range []string{"core", "coordination", "discovery", "node", "storage", "authentication", "authorization", "apps", "policy", "resource", "rbac", "batch"} {
+	workers := []string{"apiserver", "openapi", "customresources", "scheduler", "workloads", "gc", "admission"}
+	for _, g := range []string{"core", "coordination", "discovery", "events", "node", "storage", "authentication", "authorization", "apps", "policy", "resource", "rbac", "batch", "admissionregistration", "autoscaling", "scheduling", "networking", "certificates", "flowcontrol", "apiregistration"} {
 		workers = append(workers, "apiserver-"+g)
 	}
-	for _, g := range []string{"core", "coordination", "discovery", "node", "storage", "apps", "policy", "resource", "rbac", "batch"} {
+	for _, g := range []string{"core", "coordination", "discovery", "node", "storage", "apps", "policy", "resource", "rbac", "batch", "autoscaling", "scheduling", "networking", "certificates", "flowcontrol"} {
 		workers = append(workers, "printers-"+g)
 	}
 	for _, w := range workers {
@@ -60,6 +60,7 @@ func startDevURL(t *testing.T) (string, *kubernetes.Clientset) {
 	cmd := exec.Command("pnpm", "exec", "wrangler", "dev", "--local",
 		"-c", "wrangler.jsonc",
 		"--persist-to", state, "--port", fmt.Sprint(port), "--inspector-port", "0",
+		"--local-upstream", fmt.Sprintf("127.0.0.1:%d", port),
 		"--var", "ADMIN_TOKEN:"+devToken, "--var", "READONLY_TOKEN:"+readonlyDevToken, "--var", "JOIN_TOKEN:"+joinToken)
 	cmd.Dir = root
 	cmd.Env = devEnv()

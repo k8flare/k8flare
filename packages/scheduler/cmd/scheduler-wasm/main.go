@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 
 	"github.com/k8flare/k8flare/packages/scheduler"
@@ -25,12 +26,24 @@ func main() {
 		panic(err)
 	}
 	bridge.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Messages []scheduler.QueueMessage `json:"messages"`
+		}
+		_ = json.Unmarshal(body, &req)
+		attempt, ok := scheduler.QueueAttempt(req.Messages)
+		if !ok {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		result, err := scheduler.Schedule(r.Context(), client)
 		if err != nil {
 			println("scheduler: schedule failed:", err.Error())
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		result.Attempt = attempt
+		result.RetryAfterS = scheduler.RetryDelaySeconds(attempt, len(result.Unschedulable))
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(result)
 	}))

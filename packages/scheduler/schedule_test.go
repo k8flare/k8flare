@@ -49,3 +49,62 @@ func TestScheduleBindsAndReportsUnschedulable(t *testing.T) {
 		t.Fatalf("bindings = %d", bindings)
 	}
 }
+
+func TestSchedulePreemptsLowerPriority(t *testing.T) {
+	lowPrio, highPrio := int32(1), int32(1000)
+	low := pod("low", "l", "1")
+	low.Spec.Priority = &lowPrio
+	low.Spec.NodeName = "n1"
+	low.Status.Phase = v1.PodRunning
+	high := pod("high", "h", "1")
+	high.Spec.Priority = &highPrio
+	client := fake.NewSimpleClientset(node("n1", "1"), low, high)
+	result, err := Schedule(context.Background(), client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deleted bool
+	for _, a := range client.Actions() {
+		if a.GetVerb() == "delete" && a.GetResource().Resource == "pods" {
+			deleted = true
+		}
+	}
+	if !deleted {
+		t.Fatalf("expected victim delete, result=%+v actions=%d", result, len(client.Actions()))
+	}
+}
+
+func TestQueueAttempt(t *testing.T) {
+	if _, ok := QueueAttempt(nil); ok {
+		t.Fatal("empty")
+	}
+	n := 2
+	attempt, ok := QueueAttempt([]QueueMessage{{Kind: "retry", Attempt: &n}, {Kind: "change"}})
+	if !ok || attempt != 0 {
+		t.Fatal(attempt, ok)
+	}
+	attempt, ok = QueueAttempt([]QueueMessage{{Kind: "retry", Attempt: &n}})
+	if !ok || attempt != 3 {
+		t.Fatal(attempt, ok)
+	}
+}
+
+func TestKeepUnboundRetriesWhenBindDoesNotReport(t *testing.T) {
+	queued := []*v1.Pod{pod("fits", "a", "1"), pod("other", "b", "1")}
+	if got := keepUnbound(queued, 1, nil); len(got) != 2 {
+		t.Fatalf("unreported = %+v", got)
+	}
+	if got := keepUnbound(queued, 2, nil); len(got) != 0 {
+		t.Fatalf("bound = %+v", got)
+	}
+	found := []PodRef{{Name: "other"}}
+	if got := keepUnbound(queued, 0, found); len(got) != 1 || got[0].Name != "other" {
+		t.Fatalf("existing = %+v", got)
+	}
+}
+
+func TestRetryDelaySeconds(t *testing.T) {
+	if RetryDelaySeconds(0, 0) != 0 || RetryDelaySeconds(0, 1) != 1 || RetryDelaySeconds(3, 1) != 8 || RetryDelaySeconds(10, 2) != 60 {
+		t.Fatal(RetryDelaySeconds(0, 0), RetryDelaySeconds(0, 1), RetryDelaySeconds(3, 1), RetryDelaySeconds(10, 2))
+	}
+}

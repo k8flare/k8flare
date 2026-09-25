@@ -32,10 +32,13 @@ func TestDocuments(t *testing.T) {
 	if err := json.Unmarshal(get(t, h, "/openapi/v2", "application/json").Body.Bytes(), &v2); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"io.k8s.api.core.v1.Pod", "io.k8s.api.coordination.v1.Lease", "io.k8s.apimachinery.pkg.apis.meta.v1.Status"} {
+	for _, name := range []string{"io.k8s.api.core.v1.Pod", "io.k8s.api.coordination.v1.Lease", "io.k8s.apimachinery.pkg.apis.meta.v1.Status", "io.k8s.api.events.v1.Event", "io.k8s.api.autoscaling.v2.HorizontalPodAutoscaler", "io.k8s.api.admissionregistration.v1.MutatingAdmissionPolicy", "io.k8s.api.authorization.v1.LocalSubjectAccessReview", "io.k8s.api.authorization.v1.SelfSubjectRulesReview", "io.k8s.api.policy.v1.Eviction", "io.k8s.api.autoscaling.v1.Scale", "io.k8s.api.authentication.v1.TokenRequest"} {
 		if _, ok := v2.Definitions[name]; !ok {
 			t.Errorf("v2 lacks definition %s", name)
 		}
+	}
+	if _, ok := v2.Paths["/apis/events.k8s.io/v1/namespaces/{namespace}/events"]; !ok {
+		t.Error("v2 lacks the events.k8s.io events path")
 	}
 	if _, ok := v2.Paths["/api/v1/namespaces/{namespace}/pods/{name}/log"]; !ok {
 		t.Error("v2 lacks the pods/log path")
@@ -48,7 +51,7 @@ func TestDocuments(t *testing.T) {
 	if err := json.Unmarshal(get(t, h, "/openapi/v3", "application/json").Body.Bytes(), &root); err != nil {
 		t.Fatal(err)
 	}
-	for _, gv := range []string{"api/v1", "apis/coordination.k8s.io/v1", "apis/storage.k8s.io/v1"} {
+	for _, gv := range []string{"api/v1", "apis/coordination.k8s.io/v1", "apis/storage.k8s.io/v1", "apis/events.k8s.io/v1", "apis/autoscaling/v2"} {
 		if _, ok := root.Paths[gv]; !ok {
 			t.Errorf("v3 root lacks %s", gv)
 		}

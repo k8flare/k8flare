@@ -312,9 +312,10 @@ func currentWindowEnv() (js.Value, bool) {
 var ErrFetchTimeout = errors.New("bridge: no response headers in time")
 
 const (
-	unaryHeaderTimeout = 30 * time.Second
-	watchHeaderTimeout = 20 * time.Second
-	wsDialTimeout      = 10 * time.Second
+	unaryHeaderTimeout   = 30 * time.Second
+	openAPIHeaderTimeout = 90 * time.Second
+	watchHeaderTimeout   = 20 * time.Second
+	wsDialTimeout        = 10 * time.Second
 )
 
 var liveSockets atomic.Int64

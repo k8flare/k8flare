@@ -1,0 +1,6 @@
+{
+  "name": "@k8flare/apiserver-admit",
+  "private": true,
+  "type": "module",
+  "description": "RemoteAdmit plugin that posts admission attributes to the Admission worker."
+}

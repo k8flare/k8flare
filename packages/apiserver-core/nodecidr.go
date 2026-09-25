@@ -38,11 +38,11 @@ func init() {
 		}
 		store.BeginCreate = func(ctx context.Context, obj runtime.Object, _ *metav1.CreateOptions) (genericregistry.FinishFunc, error) {
 			assign(ctx, obj)
-			return func(context.Context, bool) {}, nil
+			return afterNodeWrite(ctx, obj), nil
 		}
 		store.BeginUpdate = func(ctx context.Context, obj, _ runtime.Object, _ *metav1.UpdateOptions) (genericregistry.FinishFunc, error) {
 			assign(ctx, obj)
-			return func(context.Context, bool) {}, nil
+			return afterNodeWrite(ctx, obj), nil
 		}
 	}
 }

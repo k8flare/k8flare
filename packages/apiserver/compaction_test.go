@@ -54,16 +54,32 @@ func TestCompaction(t *testing.T) {
 		t.Fatal("no watch event for a compacted revision")
 	}
 	files, _ := filepath.Glob(filepath.Join(devState, "v3", "do", "*", "*.sqlite"))
-	if len(files) == 0 {
-		t.Fatalf("no Durable Object database under %s", devState)
+	var db string
+	for _, f := range files {
+		if filepath.Base(f) == "metadata.sqlite" {
+			continue
+		}
+		if exec.Command("sqlite3", f, "SELECT 1 FROM kine LIMIT 1").Run() == nil {
+			db = f
+			break
+		}
 	}
-	out, err := exec.Command("sqlite3", files[0], "SELECT COUNT(*) FROM kine").Output()
+	if db == "" {
+		t.Fatalf("no kine database under %s", devState)
+	}
+	out, err := exec.Command("sqlite3", db, "SELECT COUNT(*), (SELECT value FROM meta WHERE key = 'compact_revision'), (SELECT MAX(id) FROM kine) FROM kine").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows, _ := strconv.Atoi(strings.TrimSpace(string(out)))
-	if rows == 0 || rows > 1100 {
-		t.Fatalf("kine rows after 1101 writes: %d (compaction should keep about %d)", rows, 1000)
+	fields := strings.Split(strings.TrimSpace(string(out)), "|")
+	if len(fields) != 3 {
+		t.Fatalf("kine stats: %q", out)
 	}
-	t.Logf("kine rows after compaction: %d", rows)
+	rows, _ := strconv.Atoi(fields[0])
+	compact, _ := strconv.Atoi(fields[1])
+	maxID, _ := strconv.Atoi(fields[2])
+	if rows == 0 || compact < 1 || rows >= maxID || rows > maxID-compact+500 {
+		t.Fatalf("kine rows=%d compact=%d max=%d (want history dropped to about %d retained revisions)", rows, compact, maxID, 1000)
+	}
+	t.Logf("kine rows=%d compact=%d max=%d", rows, compact, maxID)
 }

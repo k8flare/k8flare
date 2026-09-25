@@ -1,0 +1,6 @@
+{
+  "name": "@k8flare/attachdetach",
+  "private": true,
+  "type": "module",
+  "description": "Upstream attachdetach controller as a Loader dynamic worker: one reconcile pass over a fresh snapshot per queue batch."
+}

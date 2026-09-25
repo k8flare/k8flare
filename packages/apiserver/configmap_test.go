@@ -11,7 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-const notRootCA = "metadata.name!=kube-root-ca.crt"
+const notRootCA = "metadata.name!=kube-root-ca.crt,metadata.name!=cluster-info"
 
 func TestConfigMapVerbs(t *testing.T) {
 	cs := startDev(t)

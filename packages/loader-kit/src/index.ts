@@ -22,7 +22,8 @@ export default {
   async fetch(request, env, ctx) {
     if (!bindingPromise) bindingPromise = instantiate(env, ctx);
     const binding = await bindingPromise;
-    const raw = await request.arrayBuffer();
+    const upgrade = (request.headers.get("Upgrade") || "").toLowerCase();
+    const raw = upgrade === "websocket" ? new ArrayBuffer(0) : await request.arrayBuffer();
     const path = new URL(request.url).pathname;
     const requestId = ++requestSeq;
     const canPump = typeof binding.pump === "function";
@@ -144,14 +145,14 @@ async function loadOnce(
   env: Record<string, unknown>,
   tail?: Fetcher,
 ): Promise<Fetcher> {
-  let m = manifests.get(name);
-  if (!m) {
-    m = (await (await asset(assets, `${name}.manifest.json`)).json()) as Manifest;
-    manifests.set(name, m);
+  const latest = (await (await asset(assets, `${name}.manifest.json`)).json()) as Manifest;
+  const cached = manifests.get(name);
+  if (!cached || cached.sha256 !== latest.sha256) {
+    manifests.set(name, latest);
   }
-  const manifest = m;
+  const manifest = manifests.get(name)!;
   let loadedNow = false;
-  const worker = loader.get(`${name}@${manifest.sha256}@${tail ? 1 : 0}`, async () => {
+  const worker = loader.get(`${name}@${manifest.sha256}@${isolateId()}@${tail ? 1 : 0}`, async () => {
       loadedNow = true;
       const started = Date.now();
       const code = {

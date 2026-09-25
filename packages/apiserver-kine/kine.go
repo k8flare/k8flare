@@ -44,8 +44,9 @@ type kineResponse struct {
 }
 
 var (
-	ErrNotFound = fmt.Errorf("kine: not found")
-	ErrConflict = fmt.Errorf("kine: conflict")
+	ErrNotFound  = fmt.Errorf("kine: not found")
+	ErrConflict  = fmt.Errorf("kine: conflict")
+	ErrCompacted = fmt.Errorf("kine: compacted")
 )
 
 func (c *Client) call(ctx context.Context, method, path string, query url.Values, body any) (*kineResponse, error) {
@@ -84,6 +85,8 @@ func (c *Client) call(ctx context.Context, method, path string, query url.Values
 		return &out, ErrNotFound
 	case http.StatusConflict:
 		return &out, ErrConflict
+	case http.StatusGone:
+		return &out, ErrCompacted
 	}
 	return nil, fmt.Errorf("kine %s %s: status %d: %s", method, path, resp.StatusCode, out.Error)
 }
@@ -118,6 +121,10 @@ func (c *Client) Delete(ctx context.Context, key string, revision int64) (int64,
 }
 
 func (c *Client) List(ctx context.Context, prefix, from string, limit int) ([]KV, int64, bool, error) {
+	return c.ListAt(ctx, prefix, from, limit, 0)
+}
+
+func (c *Client) ListAt(ctx context.Context, prefix, from string, limit int, revision int64) ([]KV, int64, bool, error) {
 	q := url.Values{"prefix": {prefix}}
 	if from != "" {
 		q.Set("from", from)
@@ -125,11 +132,36 @@ func (c *Client) List(ctx context.Context, prefix, from string, limit int) ([]KV
 	if limit > 0 {
 		q.Set("limit", strconv.Itoa(limit))
 	}
+	if revision > 0 {
+		q.Set("revision", strconv.FormatInt(revision, 10))
+	}
 	out, err := c.call(ctx, http.MethodGet, "/list", q, nil)
 	if err != nil {
 		return nil, 0, false, err
 	}
 	return out.KVs, out.Revision, out.More, nil
+}
+
+func (c *Client) CompactRevision(ctx context.Context) (int64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, kineBase+"/stats", nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	var out struct {
+		CompactRevision int64 `json:"compactRevision"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return 0, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("kine GET /stats: status %d", resp.StatusCode)
+	}
+	return out.CompactRevision, nil
 }
 
 func (c *Client) Revision(ctx context.Context) (int64, error) {
@@ -215,19 +247,26 @@ func (s *Storage) Get(ctx context.Context, key string, opts storage.GetOptions, 
 	return err
 }
 
+func compactedContinue(continueKey, keyPrefix string) error {
+	newToken, err := storage.EncodeContinue(continueKey, keyPrefix, -1)
+	if err != nil {
+		return apierrors.NewResourceExpired("The provided continue parameter is too old to display a consistent list result. You can start a new list without the continue parameter.")
+	}
+	status := apierrors.NewResourceExpired("The provided continue parameter is too old to display a consistent list result. You can start a new list without the continue parameter, or use the continue token in this response to retrieve the remainder of the results. Continuing with the provided token results in an inconsistent list - objects that were created, modified, or deleted between the time the first chunk was returned and now may show up in the list.")
+	status.ErrStatus.ListMeta.Continue = newToken
+	return status
+}
+
 func (s *Storage) GetList(ctx context.Context, key string, opts storage.ListOptions, listObj runtime.Object) error {
 	prefix := registryPrefix + key
 	if opts.Recursive && !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
 	}
-	from := ""
-	if opts.Predicate.Continue != "" {
-		fromKey, _, err := storage.DecodeContinue(opts.Predicate.Continue, prefix)
-		if err != nil {
-			return err
-		}
-		from = fromKey
+	at, from, err := storage.ValidateListOptions(prefix, versioner, opts)
+	if err != nil {
+		return err
 	}
+	startFrom := from
 	limit := opts.Predicate.Limit
 	var items []runtime.Object
 	var rev int64
@@ -252,11 +291,20 @@ func (s *Storage) GetList(ctx context.Context, key string, opts storage.ListOpti
 	}
 	if opts.Recursive {
 		for next == "" {
-			page, r, more, err := s.client.List(ctx, prefix, from, 500)
+			page, r, more, err := s.client.ListAt(ctx, prefix, from, 500, at)
+			if err == ErrCompacted {
+				if from != "" {
+					return compactedContinue(from, prefix)
+				}
+				return apierrors.NewResourceExpired("The resourceVersion for the provided list is too old.")
+			}
 			if err != nil {
 				return err
 			}
 			rev = r
+			if at == 0 {
+				at = r
+			}
 			if err := collect(page); err != nil {
 				return err
 			}
@@ -279,14 +327,30 @@ func (s *Storage) GetList(ctx context.Context, key string, opts storage.ListOpti
 	if err := meta.SetList(listObj, items); err != nil {
 		return err
 	}
+	listRV := rev
+	if at > 0 {
+		listRV = at
+	}
 	continueToken := ""
+	var remaining *int64
 	if next != "" {
 		var err error
-		if continueToken, err = storage.EncodeContinue(next, prefix, rev); err != nil {
+		if continueToken, err = storage.EncodeContinue(next, prefix, listRV); err != nil {
 			return err
 		}
+		if opts.Predicate.Empty() {
+			rest, _, _, err := s.client.ListAt(ctx, prefix, startFrom, 0, listRV)
+			if err != nil {
+				return err
+			}
+			n := int64(len(rest) - len(items))
+			if n < 0 {
+				n = 0
+			}
+			remaining = &n
+		}
 	}
-	return versioner.UpdateList(listObj, uint64(rev), continueToken, nil)
+	return versioner.UpdateList(listObj, uint64(listRV), continueToken, remaining)
 }
 
 func (s *Storage) GuaranteedUpdate(ctx context.Context, key string, destination runtime.Object, ignoreNotFound bool, preconditions *storage.Preconditions, tryUpdate storage.UpdateFunc, _ runtime.Object) error {

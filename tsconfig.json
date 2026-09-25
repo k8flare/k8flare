@@ -14,5 +14,8 @@
   "include": [
     "packages/*/src",
     "worker-configuration.d.ts"
+  ],
+  "exclude": [
+    "**/*_test.ts"
   ]
 }

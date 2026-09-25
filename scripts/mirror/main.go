@@ -34,6 +34,8 @@ func hostOnly(path string) op { return op{kind: "hostOnly", path: path} }
 // (which carries its own //go:build js constraint) beside it.
 func replaceJS(path, overlay string) op { return op{kind: "replaceJS", path: path, overlay: overlay} }
 
+func addJS(path, overlay string) op { return op{kind: "addJS", path: path, overlay: overlay} }
+
 // patchJS keeps the upstream file for host builds and adds a js-only copy
 // with the given replacements applied and text appended.
 func patchJS(path string, edits []op) op { return op{kind: "patchJS", path: path, edits: edits} }
@@ -71,12 +73,16 @@ var KubeConfigOverride func(dest, url, caCert, clientCert, clientKey string) (ha
 			patch("pkg/agent/tunnel/tunnel.go",
 				"err := remotedialer.ConnectToProxyWithDialer(ctx, wsURL, nil, auth, ws, a.dialContext, onConnect)",
 				"err := remotedialer.ConnectToProxyWithDialer(ctx, wsURL, tunnelHeaders(), auth, ws, a.dialContext, onConnect)"),
+			patch("pkg/agent/tunnel/tunnel.go",
+				"\t\t\tsyncProxyAddresses(addresses)\n",
+				"\t\t\tif !TunnelIgnoreEndpointSlices {\n\t\t\t\tsyncProxyAddresses(addresses)\n\t\t\t}\n"),
 			appendText("pkg/agent/tunnel/tunnel.go", `
 // TunnelHeaderOverride lets an embedding program authenticate the
 // remotedialer connect request. k8flare's control plane never sees the
 // agent's TLS client certificate, so packages/agent sends the node's
 // bearer token here instead. Added by scripts/mirror.
 var TunnelHeaderOverride func() http.Header
+var TunnelIgnoreEndpointSlices bool
 
 func tunnelHeaders() http.Header {
 	if TunnelHeaderOverride != nil {
@@ -144,10 +150,15 @@ func (s *Server) ServeConn(clientKey string, conn wsConn) error {
 			"pkg/controller/nodeipam/node_ipam_controller.go",
 			"pkg/controller/nodeipam/nolegacyprovider.go",
 			"pkg/controller/nodeipam/ipam/cidr_allocator.go",
+			"pkg/controller/podgc/gc_controller.go",
+			"pkg/controller/certificates/cleaner/pcrcleaner.go",
 		},
 		ops: []op{
+			addJS("pkg/securitycontext/util_js.go", "kubernetes/securitycontext_cpus.go"),
+			addJS("pkg/util/filesystem/util_js.go", "kubernetes/filesystem_js.go"),
 			replaceJS("pkg/scheduler/backend/cache/debugger/signal.go", "kubernetes/signal.go"),
 			hostOnly("pkg/scheduler/backend/queue/testing.go"),
+			hostOnly("pkg/controller/certificates/cleaner/pcrcleaner.go"),
 			patchJS("pkg/controller/nodeipam/node_ipam_controller.go", []op{
 				patch("", "\tcloudprovider \"k8s.io/cloud-provider\"\n", ""),
 				patch("", "cloud                cloudprovider.Interface", "cloud                interface{}"),
@@ -170,6 +181,11 @@ func (s *Server) ServeConn(clientKey string, conn wsConn) error {
 				patch("", "logs.RFC3339NanoLenient", "\"2006-01-02T15:04:05.999999999Z07:00\""),
 				patch("", "logs.RFC3339NanoFixed", "\"2006-01-02T15:04:05.000000000Z07:00\""),
 			}),
+			patchJS("pkg/controller/podgc/gc_controller.go", []op{
+				patch("", "\t\"k8s.io/kubernetes/pkg/kubelet/eviction\"\n", ""),
+				patch("", "iEvicted, jEvicted := eviction.PodIsEvicted(o[i].Status), eviction.PodIsEvicted(o[j].Status)",
+					`iEvicted, jEvicted := o[i].Status.Phase == v1.PodFailed && o[i].Status.Reason == "Evicted", o[j].Status.Phase == v1.PodFailed && o[j].Status.Reason == "Evicted"`),
+			}),
 		},
 	},
 	{
@@ -189,6 +205,7 @@ func (s *Server) ServeConn(clientKey string, conn wsConn) error {
 			"informers/resource/interface.go",
 			"informers/scheduling/interface.go",
 			"informers/storage/interface.go",
+			"util/certificate/csr/csr.go",
 		},
 		ops: []op{
 			replaceJS("kubernetes/scheme/register.go", "client-go/register.go"),
@@ -203,6 +220,7 @@ func (s *Server) ServeConn(clientKey string, conn wsConn) error {
 			replaceJS("informers/resource/interface.go", "client-go/informers/resource/interface.go"),
 			replaceJS("informers/scheduling/interface.go", "client-go/informers/scheduling/interface.go"),
 			replaceJS("informers/storage/interface.go", "client-go/informers/storage/interface.go"),
+			replaceJS("util/certificate/csr/csr.go", "client-go/csr.go"),
 		},
 	},
 	{
@@ -229,6 +247,7 @@ func NewDiscoveryHandlers(delegate http.Handler) (*versionDiscoveryHandler, *gro
 		version: "v1.36.4-k3s1",
 		pins: []string{
 			"pkg/util/webhook/authentication.go",
+			"pkg/util/webhook/client.go",
 			"pkg/storage/cacher/cache_watcher.go",
 			"pkg/server/filters/priority-and-fairness.go",
 			"pkg/storageversion/manager.go",
@@ -253,6 +272,17 @@ func NewDiscoveryHandlers(delegate http.Handler) (*versionDiscoveryHandler, *gro
 				patch("", "clientset, err := kubernetes.NewForConfig(kubeAPIServerClientConfig)", "clientset, err := apiserverinternalv1alpha1.NewForConfig(kubeAPIServerClientConfig)"),
 				patch("", "sc := clientset.InternalV1alpha1().StorageVersions()", "sc := clientset.StorageVersions()"),
 			}),
+			patch("pkg/util/webhook/client.go",
+				"		if len(cfg.TLSClientConfig.ServerName) == 0 {\n			cfg.TLSClientConfig.ServerName = serverName\n		}\n\n		delegateDialer := cfg.Dial\n",
+				"		if len(cfg.TLSClientConfig.ServerName) == 0 {\n			cfg.TLSClientConfig.ServerName = serverName\n		}\n\n		if cfg.Transport != nil {\n			if WebhookTransportSetup != nil {\n				WebhookTransportSetup(cfg, serverName, cc.CABundle)\n			}\n			cfg.QPS = -1\n			cfg.ContentConfig.NegotiatedSerializer = cm.negotiatedSerializer\n			cfg.ContentConfig.ContentType = runtime.ContentTypeJSON\n			cfg.TLSClientConfig = rest.TLSClientConfig{}\n			return cfg, nil\n		}\n\n		delegateDialer := cfg.Dial\n"),
+			patch("pkg/util/webhook/client.go",
+				"	if !isLocalHost(u) {\n		cfg.NextProtos = []string{\"http/1.1\"}\n	}\n\n	return complete(cfg)\n}\n",
+				"	if !isLocalHost(u) {\n		cfg.NextProtos = []string{\"http/1.1\"}\n	}\n\n	if cfg.Transport != nil {\n		cfg.QPS = -1\n		cfg.ContentConfig.NegotiatedSerializer = cm.negotiatedSerializer\n		cfg.ContentConfig.ContentType = runtime.ContentTypeJSON\n		cfg.TLSClientConfig = rest.TLSClientConfig{}\n		return cfg, nil\n	}\n\n	return complete(cfg)\n}\n"),
+			appendText("pkg/util/webhook/client.go", `
+// WebhookTransportSetup, when set, lets an embedding program replace
+// net.Dial for webhook Service backends (GOOS=js cannot dial ClusterIPs).
+var WebhookTransportSetup func(cfg *rest.Config, serverName string, ca []byte)
+`),
 			patchJS("pkg/util/webhook/authentication.go", []op{
 				patch("", "\tegressselector \"k8s.io/apiserver/pkg/server/egressselector\"\n", ""),
 				patch("", "\tutilnet \"k8s.io/apimachinery/pkg/util/net\"\n", ""),
@@ -321,6 +351,15 @@ func hubGroupVersionFor(typer runtime.ObjectTyper, served schema.GroupVersion, k
 	return served
 }
 `),
+		},
+	},
+	{
+		name:    "mount-utils",
+		module:  "github.com/k3s-io/kubernetes/staging/src/k8s.io/mount-utils",
+		version: "v1.36.4-k3s1",
+		pins:    []string{"mount_helper_unix.go"},
+		ops: []op{
+			replaceJS("mount_helper_unix.go", "mount-utils/mount_helper_unix.go"),
 		},
 	},
 }
@@ -440,6 +479,18 @@ func apply(dst, overlays string, o op) error {
 	case "hostOnly":
 		_, err := keepHostOnly(dst, o.path)
 		return err
+	case "addJS":
+		data, err := os.ReadFile(filepath.Join(overlays, o.overlay))
+		if err != nil {
+			return err
+		}
+		if !bytes.HasPrefix(data, []byte("//go:build js")) {
+			return fmt.Errorf("%s: overlay must start with a //go:build js constraint", o.overlay)
+		}
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dst, o.path)), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dst, o.path), data, 0o644)
 	case "replaceJS":
 		if _, err := keepHostOnly(dst, o.path); err != nil {
 			return err

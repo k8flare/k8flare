@@ -65,7 +65,7 @@ replace (
 	k8s.io/kubelet => github.com/k3s-io/kubernetes/staging/src/k8s.io/kubelet v1.36.4-k3s1
 	k8s.io/kubernetes => ./.build/kubernetes-mirror
 	k8s.io/metrics => github.com/k3s-io/kubernetes/staging/src/k8s.io/metrics v1.36.4-k3s1
-	k8s.io/mount-utils => github.com/k3s-io/kubernetes/staging/src/k8s.io/mount-utils v1.36.4-k3s1
+	k8s.io/mount-utils => ./.build/mount-utils-mirror
 	k8s.io/node-api => github.com/k3s-io/kubernetes/staging/src/k8s.io/node-api v1.36.2-k3s1
 	k8s.io/pod-security-admission => github.com/k3s-io/kubernetes/staging/src/k8s.io/pod-security-admission v1.36.4-k3s1
 	k8s.io/sample-apiserver => github.com/k3s-io/kubernetes/staging/src/k8s.io/sample-apiserver v1.36.4-k3s1
@@ -78,6 +78,9 @@ replace (
 
 require (
 	github.com/emicklei/go-restful/v3 v3.13.0
+	github.com/evanphx/json-patch v5.9.11+incompatible
+	github.com/golang-jwt/jwt/v5 v5.3.1
+	github.com/google/cel-go v0.26.1
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/k3s-io/k3s v0.0.0-00010101000000-000000000000
 	github.com/rancher/remotedialer v0.6.0-rc.1.0.20250916111157-f160aa32568d
@@ -87,7 +90,6 @@ require (
 	k8s.io/apimachinery v0.36.4
 	k8s.io/apiserver v0.36.4
 	k8s.io/client-go v0.36.4
-	k8s.io/controller-manager v0.35.1
 	k8s.io/klog/v2 v2.140.0
 	k8s.io/kube-openapi v0.0.0-20260319004828-5883c5ee87b9
 	k8s.io/kubernetes v1.36.4
@@ -169,7 +171,6 @@ require (
 	github.com/emicklei/go-restful v2.16.0+incompatible // indirect
 	github.com/erikdubbelboer/gspt v0.0.0-20210805194459-ce36a5128377 // indirect
 	github.com/euank/go-kmsg-parser v2.0.0+incompatible // indirect
-	github.com/evanphx/json-patch v5.9.11+incompatible // indirect
 	github.com/expr-lang/expr v1.17.8 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/filecoin-project/go-clock v0.1.0 // indirect
@@ -200,13 +201,11 @@ require (
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/gofrs/flock v0.8.1 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
-	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/golang/snappy v0.0.5-0.20231225225746-43d5d4cd4e0e // indirect
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/cadvisor v0.56.2 // indirect
-	github.com/google/cel-go v0.26.1 // indirect
 	github.com/google/gnostic-models v0.7.1 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/go-containerregistry v0.20.2 // indirect
@@ -452,6 +451,7 @@ require (
 	k8s.io/cluster-bootstrap v0.35.2 // indirect
 	k8s.io/component-base v0.36.4 // indirect
 	k8s.io/component-helpers v0.36.4 // indirect
+	k8s.io/controller-manager v0.35.1 // indirect
 	k8s.io/cri-api v0.36.4 // indirect
 	k8s.io/cri-client v0.36.4 // indirect
 	k8s.io/cri-streaming v0.36.4 // indirect

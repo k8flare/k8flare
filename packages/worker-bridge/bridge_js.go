@@ -369,13 +369,42 @@ func headerFromPairs(pairs js.Value) http.Header {
 func headerToPairs(h http.Header) js.Value {
 	arr := js.Global().Get("Array").New()
 	for k, vs := range h {
+		if !validHeaderName(k) {
+			continue
+		}
 		for _, v := range vs {
+			if !validHeaderValue(v) {
+				continue
+			}
 			p := js.Global().Get("Array").New()
 			p.Call("push", k, v)
 			arr.Call("push", p)
 		}
 	}
 	return arr
+}
+
+func validHeaderName(k string) bool {
+	if k == "" {
+		return false
+	}
+	for i := 0; i < len(k); i++ {
+		c := k[i]
+		if c <= 32 || c >= 127 || c == ':' {
+			return false
+		}
+	}
+	return true
+}
+
+func validHeaderValue(v string) bool {
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		if c == '\r' || c == '\n' || (c < 0x20 && c != '\t') || c == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // BindingTransport is an http.RoundTripper that sends each request through
@@ -408,34 +437,42 @@ func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if binding.IsUndefined() || binding.IsNull() {
 		return nil, fmt.Errorf("bridge: binding %q is not in env", t.Name)
 	}
-	opts := js.Global().Get("Object").New()
-	opts.Set("method", req.Method)
-	opts.Set("headers", headerToPairs(req.Header))
+	var body []byte
 	if req.Body != nil {
-		body, err := io.ReadAll(req.Body)
+		body, err = io.ReadAll(req.Body)
 		req.Body.Close()
 		if err != nil {
 			return nil, err
 		}
+	}
+	endFetch := beginFetch(window)
+	headerTimeout := unaryHeaderTimeout
+	if req.URL.Host == "openapi.internal" {
+		headerTimeout = openAPIHeaderTimeout
+	} else if req.URL.Query().Get("watch") == "true" || req.URL.Query().Get("watch") == "1" || strings.HasSuffix(req.URL.Path, "/watch") {
+		headerTimeout = watchHeaderTimeout
+	}
+	var pending, controller js.Value
+	if err := window.Run(func() {
+		opts := js.Global().Get("Object").New()
+		opts.Set("method", req.Method)
+		opts.Set("headers", headerToPairs(req.Header))
 		if len(body) > 0 {
 			opts.Set("body", toUint8Array(body))
 		}
-	}
-	controller := js.Global().Get("AbortController").New()
-	opts.Set("signal", controller.Get("signal"))
-	abort := func() { controller.Call("abort") }
-	stop := context.AfterFunc(req.Context(), abort)
-	jsReq := js.Global().Get("Request").New(req.URL.String(), opts)
-	endFetch := beginFetch(window)
-	headerTimeout := unaryHeaderTimeout
-	if req.URL.Query().Get("watch") == "true" || req.URL.Query().Get("watch") == "1" || strings.HasSuffix(req.URL.Path, "/watch") {
-		headerTimeout = watchHeaderTimeout
-	}
-	var pending js.Value
-	if err := window.Run(func() { pending = binding.Call("fetch", jsReq) }); err != nil {
-		stop()
+		controller = js.Global().Get("AbortController").New()
+		opts.Set("signal", controller.Get("signal"))
+		pending = binding.Call("fetch", js.Global().Get("Request").New(req.URL.String(), opts))
+	}); err != nil {
+		endFetch()
 		return nil, fmt.Errorf("bridge: fetch %s: %w", req.URL, err)
 	}
+	abort := func() {
+		if !controller.IsUndefined() && !controller.IsNull() {
+			_ = window.Run(func() { controller.Call("abort") })
+		}
+	}
+	stop := context.AfterFunc(req.Context(), abort)
 	jsResp, err := awaitInCtx(req.Context(), window, pending, headerTimeout)
 	endFetch()
 	if err != nil {
@@ -451,7 +488,7 @@ func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	header := headerFromPairs(js.Global().Get("Array").Call("from", jsResp.Get("headers").Call("entries")))
 	status := jsResp.Get("status").Int()
-	body, end := streamBody(jsResp.Get("body"), abort)
+	respBody, end := streamBody(jsResp.Get("body"), abort)
 	untrack := func() {}
 	if t.AbortOnWake {
 		_, untrack = trackStream(window, end)
@@ -463,7 +500,7 @@ func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		ProtoMajor:    1,
 		ProtoMinor:    1,
 		Header:        header,
-		Body:          abortingBody{body, func() { untrack(); stop(); abort() }},
+		Body:          abortingBody{respBody, func() { untrack(); stop(); abort() }},
 		ContentLength: -1,
 		Request:       req,
 	}, nil
@@ -617,15 +654,23 @@ func DialWebSocket(ctx context.Context, bindingName, rawURL string) (*WebSocket,
 		return nil, fmt.Errorf("bridge: waiting for a window: %w", err)
 	}
 	binding := window.Env().Get(bindingName)
-	opts := js.Global().Get("Object").New()
-	headers := js.Global().Get("Object").New()
-	headers.Set("Upgrade", "websocket")
-	opts.Set("headers", headers)
 	endFetch := beginFetch(window)
 	started := time.Now()
 	live := liveSockets.Add(1)
 	println("bridge: ws dial start live="+strconv.FormatInt(live, 10)+" kind="+window.kind()+" turn="+turnName()+":", rawURL)
-	resp, err := awaitInCtx(ctx, window, binding.Call("fetch", js.Global().Get("Request").New(rawURL, opts)), wsDialTimeout)
+	var pending js.Value
+	if err := window.Run(func() {
+		opts := js.Global().Get("Object").New()
+		headers := js.Global().Get("Object").New()
+		headers.Set("Upgrade", "websocket")
+		opts.Set("headers", headers)
+		pending = binding.Call("fetch", js.Global().Get("Request").New(rawURL, opts))
+	}); err != nil {
+		endFetch()
+		liveSockets.Add(-1)
+		return nil, fmt.Errorf("bridge: websocket %s: %w", rawURL, err)
+	}
+	resp, err := awaitInCtx(ctx, window, pending, wsDialTimeout)
 	endFetch()
 	if err != nil {
 		liveSockets.Add(-1)

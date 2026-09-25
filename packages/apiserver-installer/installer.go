@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/emicklei/go-restful/v3"
+	admit "github.com/k8flare/k8flare/packages/apiserver-admit"
+	authz "github.com/k8flare/k8flare/packages/apiserver-authz"
 	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,8 +30,26 @@ func Root(gv schema.GroupVersion) string {
 }
 
 func APIGroup(gv schema.GroupVersion) metav1.APIGroup {
+	if g := APIGroupFor(gv.Group); g.Name != "" && len(g.Versions) > 0 {
+		return g
+	}
 	v := metav1.GroupVersionForDiscovery{GroupVersion: gv.String(), Version: gv.Version}
 	return metav1.APIGroup{Name: gv.Group, Versions: []metav1.GroupVersionForDiscovery{v}, PreferredVersion: v}
+}
+
+func APIGroupFor(group string) metav1.APIGroup {
+	g := metav1.APIGroup{Name: group}
+	for _, sgv := range registry.Served {
+		if sgv.GV.Group != group {
+			continue
+		}
+		v := metav1.GroupVersionForDiscovery{GroupVersion: sgv.GV.String(), Version: sgv.GV.Version}
+		g.Versions = append(g.Versions, v)
+		if g.PreferredVersion.Version == "" {
+			g.PreferredVersion = v
+		}
+	}
+	return g
 }
 
 type Installed struct {
@@ -42,13 +62,20 @@ func Install(mux *http.ServeMux, deps registry.Deps, only ...schema.GroupVersion
 	container := restful.NewContainer()
 	container.ServeMux = mux
 	container.Router(restful.CurlyRouter{})
+	installedGroups := map[string]bool{}
 	for _, sgv := range registry.Served {
 		if len(only) > 0 && !contains(only, sgv.GV) {
+			continue
+		}
+		if deps.Kine == nil && sgv.GV.Group == "resource.k8s.io" {
 			continue
 		}
 		storage := map[string]rest.Storage{}
 		for _, res := range sgv.Resources {
 			if strings.Contains(res.Name, "/") {
+				continue
+			}
+			if !scheme.Scheme.Recognizes(sgv.GV.WithKind(res.Kind)) {
 				continue
 			}
 			if custom, ok := registry.Resources[res.Name]; ok {
@@ -70,6 +97,9 @@ func Install(mux *http.ServeMux, deps registry.Deps, only ...schema.GroupVersion
 			if !ok {
 				continue
 			}
+			if _, ok := storage[parent]; !ok {
+				continue
+			}
 			switch build, custom := registry.Subresources[res.Name]; {
 			case custom:
 				storage[res.Name] = build(stores, deps)
@@ -78,6 +108,9 @@ func Install(mux *http.ServeMux, deps registry.Deps, only ...schema.GroupVersion
 			default:
 				return nil, fmt.Errorf("no implementation for subresource %s", res.Name)
 			}
+		}
+		if len(storage) == 0 {
+			continue
 		}
 		group := &endpoints.APIGroupVersion{
 			Storage:                     storage,
@@ -96,17 +129,28 @@ func Install(mux *http.ServeMux, deps registry.Deps, only ...schema.GroupVersion
 			ParameterCodec:              scheme.ParameterCodec,
 			EquivalentResourceRegistry:  runtime.NewEquivalentResourceRegistry(),
 			TypeConverter:               managedfields.NewDeducedTypeConverter(),
-			Admit:                       admission.NewChainHandler(),
+			Admit:                       admitHandler(deps.Admission),
+			Authorizer:                  authz.New(deps.Kine),
 			MinRequestTimeout:           30 * time.Minute,
 		}
 		if _, _, err := group.InstallREST(container); err != nil {
 			return nil, fmt.Errorf("install %s: %w", sgv.GV, err)
 		}
 		if sgv.GV.Group != "" {
-			container.Add(discovery.NewAPIGroupHandler(scheme.Codecs, APIGroup(sgv.GV)).WebService())
+			installedGroups[sgv.GV.Group] = true
 		}
 	}
+	for group := range installedGroups {
+		container.Add(discovery.NewAPIGroupHandler(scheme.Codecs, APIGroupFor(group)).WebService())
+	}
 	return &Installed{Stores: stores, Container: container}, nil
+}
+
+func admitHandler(client *http.Client) admission.Interface {
+	if client == nil {
+		return admission.NewChainHandler()
+	}
+	return admit.New(client)
 }
 
 func contains(list []schema.GroupVersion, gv schema.GroupVersion) bool {

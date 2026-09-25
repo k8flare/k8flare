@@ -40,16 +40,21 @@ var served = []struct {
 	alias string
 	kinds []string
 }{
-	{"core", "api", []string{"Pod", "Node", "Namespace", "Service", "ConfigMap", "Secret", "ServiceAccount", "Event", "ReplicationController", "Endpoints", "PersistentVolumeClaim", "LimitRange"}},
+	{"core", "api", []string{"Pod", "Node", "Namespace", "Service", "ConfigMap", "Secret", "ServiceAccount", "Event", "ReplicationController", "Endpoints", "PersistentVolumeClaim", "PersistentVolume", "LimitRange", "ResourceQuota", "PodTemplate", "ComponentStatus"}},
 	{"apps", "apps", []string{"ReplicaSet", "StatefulSet", "Deployment", "DaemonSet", "ControllerRevision"}},
 	{"batch", "batch", []string{"Job", "CronJob"}},
+	{"autoscaling", "autoscaling", []string{"HorizontalPodAutoscaler"}},
 	{"policy", "policy", []string{"PodDisruptionBudget"}},
 	{"resource", "resource", []string{"DeviceClass", "ResourceClaim", "ResourceClaimTemplate", "ResourceSlice"}},
 	{"coordination", "coordination", []string{"Lease"}},
 	{"discovery", "discovery", []string{"EndpointSlice"}},
 	{"node", "nodeapi", []string{"RuntimeClass"}},
-	{"storage", "storage", []string{"CSIDriver", "CSINode"}},
+	{"storage", "storage", []string{"CSIDriver", "CSINode", "CSIStorageCapacity", "StorageClass", "VolumeAttachment", "VolumeAttributesClass"}},
 	{"rbac", "rbac", []string{"Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding"}},
+	{"scheduling", "scheduling", []string{"PriorityClass"}},
+	{"networking", "networking", []string{"Ingress", "IngressClass", "NetworkPolicy", "IPAddress", "ServiceCIDR"}},
+	{"certificates", "certificates", []string{"CertificateSigningRequest"}},
+	{"flowcontrol", "flowcontrol", []string{"FlowSchema", "PriorityLevelConfiguration"}},
 }
 
 type upstream struct {

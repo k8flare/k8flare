@@ -1,8 +1,9 @@
 // Command e2e downloads upstream's e2e.test binary for the pinned
-// Kubernetes version and runs it against the local cluster with a focus
-// regex narrowed to what a single-node k3s-on-Workers deployment can pass.
+// Kubernetes version and runs it against the cluster. The conformance
+// set is the same [Conformance] focus k3s runs with Hydrophone, skipping
+// Flaky. Other sets stay narrowed.
 //
-//	go run ./e2e [-set required|advisory|all] [-focus <regex override>]
+//	go run ./e2e [-set required|advisory|admission|conformance|surface|quota-life|all] [-focus <regex override>]
 package main
 
 import (
@@ -24,7 +25,7 @@ import (
 )
 
 func main() {
-	set := flag.String("set", "required", "test set to run: required, advisory, or all")
+	set := flag.String("set", "required", "test set to run: required, advisory, admission, conformance, or all")
 	focus := flag.String("focus", "", "override the built-in focus regex")
 	procs := flag.Int("procs", 4, "parallel ginkgo processes; [Serial] specs still run alone")
 	kubeconfigPath := flag.String("kubeconfig", "", "kubeconfig to test against; defaults to .build/kubeconfig.yaml")
@@ -40,7 +41,11 @@ func main() {
 	if _, err := os.Stat(kubeconfig); err != nil {
 		log.Fatalf("no kubeconfig at %s; run make kubeconfig", kubeconfig)
 	}
-	check(preflight(kubeconfig))
+	nodes, err := readyNodes(kubeconfig)
+	check(err)
+	if nodes == 0 {
+		log.Fatal("no Ready node; join the VM first (README: Joining a node)")
+	}
 
 	e2eTest, err := ensureE2ETest(root)
 	check(err)
@@ -52,13 +57,13 @@ func main() {
 		}
 		reportDir := filepath.Join(root, ".build/e2e/report", s)
 		check(os.MkdirAll(reportDir, 0o755))
-		fmt.Printf("=== e2e set %q ===\n", s)
-		err := runE2E(e2eTest, kubeconfig, regex, reportDir, *procs)
+		fmt.Printf("=== e2e set %q nodes=%d ===\n", s, nodes)
+		err := runE2E(e2eTest, kubeconfig, regex, skips[s], reportDir, *procs, nodes)
 		if err != nil && s == "required" {
 			log.Fatalf("required e2e set failed: %v", err)
 		}
 		if err != nil {
-			fmt.Printf("advisory e2e set %q failed: %v\n", s, err)
+			fmt.Printf("e2e set %q failed: %v\n", s, err)
 		}
 	}
 }
@@ -68,7 +73,7 @@ func setsToRun(set string) []string {
 		return []string{"required", "advisory"}
 	}
 	if _, ok := sets[set]; !ok {
-		log.Fatalf("unknown -set %q; want required, advisory, or all", set)
+		log.Fatalf("unknown -set %q; want required, advisory, admission, conformance, surface, quota-life, proxy, or all", set)
 	}
 	return []string{set}
 }
@@ -81,19 +86,20 @@ func focusRegex(names []string) string {
 	return strings.Join(escaped, "|")
 }
 
-func preflight(kubeconfig string) error {
+func readyNodes(kubeconfig string) (int, error) {
 	out, err := exec.Command("kubectl", "--kubeconfig", kubeconfig, "get", "nodes",
 		"-o", `jsonpath={range .items[*]}{.metadata.name}{" "}{range .status.conditions[?(@.type=="Ready")]}{.status}{end}{"\n"}{end}`,
 	).Output()
 	if err != nil {
-		return fmt.Errorf("kubectl get nodes: %w", err)
+		return 0, fmt.Errorf("kubectl get nodes: %w", err)
 	}
+	n := 0
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		if strings.HasSuffix(strings.TrimSpace(line), "True") {
-			return nil
+			n++
 		}
 	}
-	return fmt.Errorf("no Ready node; join the VM first (README: Joining a node)")
+	return n, nil
 }
 
 func ensureE2ETest(root string) (string, error) {
@@ -184,24 +190,33 @@ func extractE2ETest(tarGzPath, dir string) error {
 	return nil
 }
 
-func runE2E(e2eTest, kubeconfig, focus, reportDir string, procs int) error {
+func runE2E(e2eTest, kubeconfig, focus, skip, reportDir string, procs, nodes int) error {
 	absKubeconfig, err := filepath.Abs(kubeconfig)
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(filepath.Join(filepath.Dir(e2eTest), "ginkgo"),
+	absReport, err := filepath.Abs(reportDir)
+	if err != nil {
+		return err
+	}
+	args := []string{
 		"--no-color",
+		"--timeout=6h",
 		fmt.Sprintf("--procs=%d", procs),
-		"--focus="+focus,
-		"--junit-report="+filepath.Join(reportDir, "junit.xml"),
-		e2eTest,
-		"--",
+		"--focus=" + focus,
+		"--junit-report=" + filepath.Join(absReport, "junit.xml"),
+	}
+	if skip != "" {
+		args = append(args, "--skip="+skip)
+	}
+	args = append(args, e2eTest, "--",
 		"--kubeconfig", absKubeconfig,
 		"--provider=skeleton",
-		"--num-nodes=1",
+		fmt.Sprintf("--num-nodes=%d", nodes),
 		"--disable-log-dump",
 		"--report-dir", reportDir,
 	)
+	cmd := exec.Command(filepath.Join(filepath.Dir(e2eTest), "ginkgo"), args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
