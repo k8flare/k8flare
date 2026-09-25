@@ -103,6 +103,14 @@ known deadline.
 
 ## Known gaps in the dev stack
 
+- Three `[Conformance]` CRD specs cannot pass while the API serves JSON only:
+  `CustomResourceDefinition resources`, `CustomResourceDefinition Watch` and
+  `FieldValidation`. They call `framework.LoadConfig()` directly and build their
+  own apiextensions client from it, and the framework applies
+  `--kube-api-content-type` only in `Framework.BeforeEach`, so those clients
+  still send protobuf bodies. `e2e.test` ships prebuilt, so the mirror cannot
+  patch `LoadConfig`. Fixing them needs e2e.test built from the mirror.
+
 - Three workers are over the 64 MiB Loader cap: `workloads` at 108 MB,
   `attachdetach` at 70 MB and `openapi` at 69 MB. `workloads` has been over
   since before the cap check was repaired; the other two sat at 99.9% and
