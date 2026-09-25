@@ -41,7 +41,7 @@ known deadline.
 3. **Official AdmissionWebhook e2e via `clientConfig.service`.** Worker
    echo path is proven. The service path needs a Ready node and ClusterIP
    (A1). Run `make e2e SET=admission` against prod.
-4. **`pods/exec`, `attach`, `portforward`.** Same NodeTunnel as logs;
+4. **`pods/exec`, `attach`, `portforward`, `log`.** Same NodeTunnel as logs;
    SPDY/WebSocket upgrade through the remotedialer. Needed for a large
    slice of official e2e.
 5. **Node authorizer.** `system:node` is a static group bind. Upstream
@@ -102,6 +102,27 @@ known deadline.
     events). Not throughput. Trigger: `/stats` approaching 10 GB.
 
 ## Known gaps in the dev stack
+
+- Pod logs over websocket upgrade and open, but no bytes reach the client:
+  `[sig-node] Pods should support retrieting logs from the container over
+  websockets` now fails in 6 s with `Unexpected websocket logs:` and an empty
+  payload, where it used to hang for 30 s. Routing is fixed -- only the shell
+  can terminate an upgrade, since no Go package has `WebSocketPair`, and
+  `isStreamPath` had listed exec, attach and portforward but not log. What is
+  left is the relay: exec and attach prepend a channel byte, while a log stream
+  is one-way raw `binary.k8s.io`, so the sink-to-client path has to pass frames
+  through unchanged. Start at `streamUpgrade` in
+  `packages/control-plane-worker/src/index.ts` and the three `WebSocketPair`
+  sites in `packages/node-tunnel/src/index.ts`.
+
+- A full suite run produces around 200 `bridge: fetch timed out` and the specs
+  that fail are not the same twice. They are load-dependent rather than defects:
+  the six that failed one run pass five-of-six when run alone at the same
+  `procs=4`, and both `EndpointSliceMirroring` and `EndpointsController` were
+  verified by hand to work in 18 s and 15 s. The failing fetch that was measured
+  properly had `inflight=1`, so it is not contention, and `turn=true`, so it is
+  not the turn machinery. Judging the remaining specs needs a run against real
+  Cloudflare rather than `wrangler dev --local`.
 
 - The attach/detach controller is no longer deployed. `packages/attachdetach`
   still holds it, but its worker was 69.9 MB against a 64 MiB cap with no
