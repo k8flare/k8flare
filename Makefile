@@ -11,7 +11,7 @@ GROUPS := core coordination discovery node storage apps policy resource rbac bat
 API_GROUPS := core coordination discovery events node storage authentication authorization apps policy resource rbac batch admissionregistration autoscaling scheduling networking certificates flowcontrol apiregistration
 WASM_OPT := wasm-opt -Oz --strip-debug --strip-producers --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals
 
-.PHONY: mirrors wasm gen agent dev devtls kubeconfig check vet test test-packages clean e2e deploycheck
+.PHONY: mirrors wasm gen agent dev devtls kubeconfig check vet test test-packages clean e2e deploycheck sizes
 
 mirrors:
 	cd scripts && go run ./mirror
@@ -217,6 +217,17 @@ test:
 
 test-packages: wasm
 	go test -count=1 -timeout 20m ./packages/...
+
+## sizes: print the optimised size and linked function count of every worker,
+## against the Loader cap. Needs wasm-objdump (wabt).
+sizes:
+	@printf '%-34s %12s %8s %7s\n' worker bytes funcs 'of cap'; \
+	for f in $(BUILD)/*.opt.wasm; do \
+		name=$$(basename $$f .opt.wasm); \
+		size=$$(wc -c < $$f | tr -d ' '); \
+		funcs=$$(wasm-objdump -h $$f | sed -n 's/^ *Function .*count: //p'); \
+		printf '%-34s %12s %8s %6s%%\n' "$$name" "$$size" "$$funcs" "$$((size * 100 / $(CAP)))"; \
+	done | sort -k2 -rn
 
 clean:
 	rm -rf $(BUILD) $(ASSETS)
