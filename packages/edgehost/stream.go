@@ -41,8 +41,13 @@ func LocateStream(w http.ResponseWriter, r *http.Request, store *kine.Client, ad
 		container = pod.Spec.Containers[0].Name
 	}
 	kind := ref.kind
-	if kind == "portforward" {
+	switch kind {
+	case "portforward":
 		kind = "portForward"
+	case "log":
+		// The kubelet serves logs at containerLogs, the same path podlog.go
+		// builds for the non-websocket read.
+		kind = "containerLogs"
 	}
 	path := "/node/" + pod.Spec.NodeName + "/" + kind + "/" + ref.namespace + "/" + ref.name
 	if kind != "portForward" {
@@ -79,7 +84,10 @@ func StreamProtocol(header string) string {
 			parts = append(parts, part)
 		}
 	}
-	for _, want := range []string{"v5.channel.k8s.io", "v4.channel.k8s.io"} {
+	// Logs are one-way raw bytes rather than channel-multiplexed, so they
+	// negotiate their own subprotocols; a client that offers none still gets an
+	// upgrade with no Sec-WebSocket-Protocol.
+	for _, want := range []string{"v5.channel.k8s.io", "v4.channel.k8s.io", "binary.k8s.io", "base64.k8s.io"} {
 		for _, part := range parts {
 			if part == want {
 				return part
@@ -102,7 +110,7 @@ func parseStreamPath(path string) (streamRef, bool) {
 		return streamRef{}, false
 	}
 	kind := parts[6]
-	if kind != "exec" && kind != "attach" && kind != "portforward" {
+	if kind != "exec" && kind != "attach" && kind != "portforward" && kind != "log" {
 		return streamRef{}, false
 	}
 	if parts[3] == "" || parts[5] == "" {

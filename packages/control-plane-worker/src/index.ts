@@ -57,7 +57,7 @@ async function acceptTunnel(request: Request, env: Env): Promise<Response> {
 }
 
 function isStreamPath(path: string): boolean {
-  return /\/pods\/[^/]+\/(exec|attach|portforward)(?:\/|$)/.test(path);
+  return /\/pods\/[^/]+\/(exec|attach|portforward|log)(?:\/|$)/.test(path);
 }
 
 function streamUpgrade(client: WebSocket, protocol: string): Response {
