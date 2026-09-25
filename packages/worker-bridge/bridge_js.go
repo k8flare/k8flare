@@ -116,6 +116,8 @@ func Serve(handler http.Handler) {
 		}
 		leave := EnterTurn(w)
 		defer leave()
+		inPump.Store(true)
+		defer inPump.Store(false)
 		w.pump()
 		return nil
 	}))
@@ -446,6 +448,11 @@ func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 	}
 	endFetch := beginFetch(window)
+	// Captured so a timeout can say what it waited on rather than only how old
+	// the window was: window age has been read as fetch wait before now.
+	issued := time.Now()
+	inflight := window.inFlight()
+	onTurn := window.Owns()
 	headerTimeout := unaryHeaderTimeout
 	if req.URL.Host == "openapi.internal" {
 		headerTimeout = openAPIHeaderTimeout
@@ -479,7 +486,13 @@ func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		stop()
 		if errors.Is(err, ErrFetchTimeout) {
 			abort()
-			println("bridge: fetch timed out kind="+window.kind()+" age="+time.Since(window.opened).Round(time.Second).String()+":", req.Method, req.URL.Path)
+			println("bridge: fetch timed out kind="+window.kind()+
+				" age="+time.Since(window.opened).Round(time.Second).String()+
+				" waited="+time.Since(issued).Round(time.Second).String()+
+				" binding="+t.Name+
+				" inflight="+strconv.Itoa(inflight)+
+				" pending="+strconv.Itoa(window.inFlight())+
+				" turn="+strconv.FormatBool(onTurn)+":", req.Method, req.URL.Path)
 		}
 		if errors.Is(err, ErrWindowClosed) {
 			println("bridge: fetch lost to window close kind="+window.kind()+" age="+time.Since(window.opened).Round(time.Second).String()+":", req.Method, req.URL.Path)
