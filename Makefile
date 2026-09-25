@@ -185,6 +185,7 @@ wasm: $(ASSETS)/wasm_exec.js $(ASSETS)/apiserver.manifest.json $(foreach g,$(API
 
 gen:
 	cd scripts && go run ./genresources && go run ./genprinters && go run ./genopenapi
+	go run ./packages/openapi/cmd/bakeopenapi
 
 agent: mirrors
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o .build/bin/k8flare-agent-linux-arm64 ./packages/agent

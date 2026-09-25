@@ -1,47 +1,59 @@
 package openapi
 
 import (
+	"embed"
 	"net/http"
-
-	installer "github.com/k8flare/k8flare/packages/apiserver-installer"
-	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
-	"github.com/k8flare/k8flare/packages/openapi/definitions"
-	openapinamer "k8s.io/apiserver/pkg/endpoints/openapi"
-	"k8s.io/apiserver/pkg/server/mux"
-	"k8s.io/apiserver/pkg/server/routes"
-	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/kube-openapi/pkg/common"
-	"k8s.io/kube-openapi/pkg/spec3"
-	"k8s.io/kube-openapi/pkg/validation/spec"
+	"strings"
 )
 
+// baked holds the documents bakeopenapi rendered from SpecHandler. Serving them
+// instead of building the spec at boot keeps this worker near the 10 MB floor:
+// building it links the REST installer, cel-go, antlr and every group's types.
+//
+//go:embed baked
+var baked embed.FS
+
+// A v3 group document is also baked in the gnostic protobuf encoding kubectl
+// prefers; v2 was never served that way, so it stays a 406.
+const protoSuffix = "+protobuf"
+const protoContentType = "application/com.github.proto-openapi.spec.v3.v1.0+protobuf"
+
 func Handler() (http.Handler, error) {
-	installed, err := installer.Install(http.NewServeMux(), registry.Deps{})
-	if err != nil {
-		return nil, err
-	}
-	container := installed.Container
-	namer := openapinamer.NewDefinitionNamer(scheme.Scheme)
-	info := &spec.Info{InfoProps: spec.InfoProps{Title: "Kubernetes", Version: "v1.36.4+k8flare"}}
-	oa := routes.OpenAPI{
-		Config: &common.Config{
-			ProtocolList:          []string{"https"},
-			Info:                  info,
-			DefaultResponse:       &spec.Response{ResponseProps: spec.ResponseProps{Description: "Default Response."}},
-			GetOperationIDAndTags: openapinamer.GetOperationIDAndTags,
-			GetDefinitionName:     namer.GetDefinitionName,
-			GetDefinitions:        definitions.GetOpenAPIDefinitions,
-		},
-		V3Config: &common.OpenAPIV3Config{
-			Info:                  info,
-			DefaultResponse:       &spec3.Response{ResponseProps: spec3.ResponseProps{Description: "Default Response."}},
-			GetOperationIDAndTags: openapinamer.GetOperationIDAndTags,
-			GetDefinitionName:     namer.GetDefinitionName,
-			GetDefinitions:        definitions.GetOpenAPIDefinitions,
-		},
-	}
-	m := mux.NewPathRecorderMux("openapi")
-	oa.InstallV2(container, m)
-	oa.InstallV3(container, m)
+	m := http.NewServeMux()
+	m.HandleFunc("/openapi/v2", serveJSON("baked/v2.json"))
+	m.HandleFunc("/openapi/v3", serveJSON("baked/v3.json"))
+	m.HandleFunc("/openapi/v3/", func(w http.ResponseWriter, r *http.Request) {
+		group := strings.TrimPrefix(r.URL.Path, "/openapi/v3/")
+		if group == "" || strings.Contains(group, "..") {
+			http.NotFound(w, r)
+			return
+		}
+		if strings.Contains(r.Header.Get("Accept"), protoSuffix) {
+			write(w, "baked/v3/"+group+".pb", protoContentType)
+			return
+		}
+		write(w, "baked/v3/"+group+".json", "application/json")
+	})
 	return m, nil
+}
+
+func serveJSON(name string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.Header.Get("Accept"), protoSuffix) {
+			w.WriteHeader(http.StatusNotAcceptable)
+			return
+		}
+		write(w, name, "application/json")
+	}
+}
+
+func write(w http.ResponseWriter, name, contentType string) {
+	body, err := baked.ReadFile(name)
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Vary", "Accept")
+	_, _ = w.Write(body)
 }
