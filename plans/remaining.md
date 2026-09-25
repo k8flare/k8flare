@@ -101,6 +101,21 @@ known deadline.
 19. **DO Facets.** Isolation inside one Cluster DO (`ca-vault`,
     events). Not throughput. Trigger: `/stats` approaching 10 GB.
 
+## Known gaps in the dev stack
+
+- Three workers are over the 64 MiB Loader cap: `workloads` at 108 MB,
+  `attachdetach` at 70 MB and `openapi` at 69 MB. `workloads` has been over
+  since before the cap check was repaired; the other two sat at 99.9% and
+  crossed when the admissionregistration group entered the shared js
+  clientset. They need splitting or trimming, or the cap constant needs to
+  be checked against the real Loader limit. `make wasm CAP=<bytes>` builds
+  them meanwhile.
+- The node lease write fails constantly against `wrangler dev` with
+  `an error on the server ("Error: Network connection lost.")` -- 1879 times
+  in 45 minutes, while the lease still lands every 6-10s. On 2026-09-25 the
+  same path wedged on repeated 409s instead and the cluster ran for twelve
+  hours with two dead kubelets, both nodes still reporting Ready.
+
 ## Not doing
 
 - Cron or always-on alarms.
