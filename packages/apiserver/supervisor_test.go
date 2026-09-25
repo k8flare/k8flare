@@ -22,7 +22,6 @@ import (
 	authorizationv1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 )
 
 func csrBytes(t *testing.T) []byte {
@@ -143,18 +142,18 @@ func TestSupervisorJoin(t *testing.T) {
 		t.Fatalf("controller cert: %d %s", resp.StatusCode, data)
 	}
 
-	nodeClient, err := kubernetes.NewForConfig(&rest.Config{Host: base, BearerToken: "node:n1:secret-1"})
+	nodeClient, err := kubernetes.NewForConfig(devConfig(base, "node:n1:secret-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := nodeClient.CoreV1().Nodes().List(c, metav1.ListOptions{}); err != nil {
 		t.Fatalf("node token list nodes: %v", err)
 	}
-	badClient, _ := kubernetes.NewForConfig(&rest.Config{Host: base, BearerToken: "node:n1:other"})
+	badClient, _ := kubernetes.NewForConfig(devConfig(base, "node:n1:other"))
 	if _, err := badClient.CoreV1().Nodes().List(c, metav1.ListOptions{}); err == nil {
 		t.Fatal("wrong node token was accepted")
 	}
-	unknownClient, _ := kubernetes.NewForConfig(&rest.Config{Host: base, BearerToken: "node:never-joined:whatever"})
+	unknownClient, _ := kubernetes.NewForConfig(devConfig(base, "node:never-joined:whatever"))
 	if _, err := unknownClient.CoreV1().Nodes().List(c, metav1.ListOptions{}); err == nil {
 		t.Fatal("a node token for a node that never joined was accepted")
 	}

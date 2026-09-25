@@ -1,4 +1,4 @@
-package installer
+package jsonly
 
 import (
 	"k8s.io/apimachinery/pkg/runtime"

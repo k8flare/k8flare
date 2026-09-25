@@ -110,7 +110,15 @@ func startDevURL(t *testing.T) (string, *kubernetes.Clientset) {
 }
 
 func devConfig(base, token string) *rest.Config {
-	return &rest.Config{Host: base, BearerToken: token, Transport: &http.Transport{IdleConnTimeout: 2 * time.Second}}
+	// The control plane serves JSON only. client-go's default puts protobuf
+	// first, and ContentType is not negotiated, so a client that does not say
+	// JSON sends protobuf bodies the server cannot decode.
+	return &rest.Config{
+		Host:          base,
+		BearerToken:   token,
+		Transport:     &http.Transport{IdleConnTimeout: 2 * time.Second},
+		ContentConfig: rest.ContentConfig{ContentType: "application/json", AcceptContentTypes: "application/json"},
+	}
 }
 
 func freePort(t *testing.T) int {

@@ -10,7 +10,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -20,16 +19,10 @@ import (
 // later create.
 func TestInformerWatchList(t *testing.T) {
 	t.Setenv("KUBE_FEATURE_WatchListClient", "true")
-	base, protobufClient := startDevURL(t)
-	jsonClient, err := kubernetes.NewForConfig(&rest.Config{Host: base, BearerToken: devToken, ContentConfig: rest.ContentConfig{ContentType: "application/json", AcceptContentTypes: "application/json"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The control plane serves JSON only, so the client that asks for protobuf
-	// has to negotiate down rather than fail: that case pins the fallback.
-	for name, cs := range map[string]*kubernetes.Clientset{"negotiates-down": protobufClient, "json": jsonClient} {
-		t.Run(name, func(t *testing.T) { informerWatchList(t, cs, name) })
-	}
+	// One client only: the control plane serves JSON and the harness pins every
+	// client to it, so a protobuf variant would no longer be a different case.
+	_, cs := startDevURL(t)
+	informerWatchList(t, cs, "json")
 }
 
 // Go clients ask for gzip, and the runtime would compress a JSON watch

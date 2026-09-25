@@ -15,12 +15,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 )
 
 func TestCompaction(t *testing.T) {
 	url, _ := startDevURL(t)
-	cs := kubernetes.NewForConfigOrDie(&rest.Config{Host: url, BearerToken: devToken, QPS: 1000, Burst: 1000})
+	cfg := devConfig(url, devToken)
+	cfg.QPS, cfg.Burst = 1000, 1000
+	cs := kubernetes.NewForConfigOrDie(cfg)
 	c, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	cms := cs.CoreV1().ConfigMaps("default")

@@ -2,7 +2,7 @@ package customresources
 
 import (
 	"context"
-	installer "github.com/k8flare/k8flare/packages/apiserver-installer"
+	jsonly "github.com/k8flare/k8flare/packages/apiserver-jsonly"
 	"net/http"
 	"sort"
 	"strconv"
@@ -87,7 +87,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 		ConvertabilityChecker:      scheme,
 		UnsafeConvertor:            runtime.UnsafeObjectConvertor(scheme),
 		Namer:                      runtime.Namer(meta.NewAccessor()),
-		Serializer:                 installer.JSONOnly{NegotiatedSerializer: codecs},
+		Serializer:                 jsonly.JSONOnly{NegotiatedSerializer: codecs},
 		ParameterCodec:             metav1.ParameterCodec,
 		EquivalentResourceRegistry: runtime.NewEquivalentResourceRegistry(),
 		TypeConverter:              managedfields.NewDeducedTypeConverter(),

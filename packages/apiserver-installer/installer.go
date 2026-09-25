@@ -2,6 +2,7 @@ package installer
 
 import (
 	"fmt"
+	jsonly "github.com/k8flare/k8flare/packages/apiserver-jsonly"
 	"net/http"
 	"strings"
 	"time"
@@ -125,7 +126,7 @@ func Install(mux *http.ServeMux, deps registry.Deps, only ...schema.GroupVersion
 			ConvertabilityChecker:       scheme.Scheme,
 			UnsafeConvertor:             runtime.UnsafeObjectConvertor(scheme.Scheme),
 			Namer:                       runtime.Namer(meta.NewAccessor()),
-			Serializer:                  JSONOnly{scheme.Codecs},
+			Serializer:                  jsonly.JSONOnly{NegotiatedSerializer: scheme.Codecs},
 			ParameterCodec:              scheme.ParameterCodec,
 			EquivalentResourceRegistry:  runtime.NewEquivalentResourceRegistry(),
 			TypeConverter:               managedfields.NewDeducedTypeConverter(),
