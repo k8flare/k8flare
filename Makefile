@@ -120,6 +120,18 @@ $(BUILD)/workloads.opt.wasm: $(BUILD)/workloads.raw.wasm
 $(ASSETS)/workloads.manifest.json: $(BUILD)/workloads.opt.wasm
 	cd scripts && go run ./wasmpack chunk ../$< ../$(ASSETS) workloads
 
+## ValidatingAdmissionPolicy is its own worker: the CEL type checker it needs is
+## 13 MB and would put the pair of workers at 98% of the Loader cap.
+$(BUILD)/workloads-vap.raw.wasm: $(GO_SRC) | mirrors
+	mkdir -p $(BUILD)
+	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/workloads/cmd/workloads-vap-wasm
+
+$(BUILD)/workloads-vap.opt.wasm: $(BUILD)/workloads-vap.raw.wasm
+	$(OPTIMIZE)
+
+$(ASSETS)/workloads-vap.manifest.json: $(BUILD)/workloads-vap.opt.wasm
+	cd scripts && go run ./wasmpack chunk ../$< ../$(ASSETS) workloads-vap
+
 $(BUILD)/admission.raw.wasm: $(GO_SRC) | mirrors
 	mkdir -p $(BUILD)
 	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/admission/cmd/admission-wasm
@@ -169,7 +181,7 @@ $(NODE_TUNNEL_WASM): $(BUILD)/node-tunnel.opt.wasm
 	mkdir -p $(dir $@)
 	cp $< $@
 
-wasm: $(ASSETS)/wasm_exec.js $(ASSETS)/apiserver.manifest.json $(foreach g,$(API_GROUPS),$(ASSETS)/apiserver-$(g).manifest.json) $(ASSETS)/openapi.manifest.json $(ASSETS)/customresources.manifest.json $(ASSETS)/scheduler.manifest.json $(ASSETS)/workloads.manifest.json $(ASSETS)/attachdetach.manifest.json $(ASSETS)/hpa.manifest.json $(ASSETS)/gc.manifest.json $(ASSETS)/admission.manifest.json $(ASSETS)/hookecho.manifest.json $(foreach g,$(GROUPS),$(ASSETS)/printers-$(g).manifest.json) $(NODE_TUNNEL_WASM)
+wasm: $(ASSETS)/wasm_exec.js $(ASSETS)/apiserver.manifest.json $(foreach g,$(API_GROUPS),$(ASSETS)/apiserver-$(g).manifest.json) $(ASSETS)/openapi.manifest.json $(ASSETS)/customresources.manifest.json $(ASSETS)/scheduler.manifest.json $(ASSETS)/workloads.manifest.json $(ASSETS)/workloads-vap.manifest.json $(ASSETS)/attachdetach.manifest.json $(ASSETS)/hpa.manifest.json $(ASSETS)/gc.manifest.json $(ASSETS)/admission.manifest.json $(ASSETS)/hookecho.manifest.json $(foreach g,$(GROUPS),$(ASSETS)/printers-$(g).manifest.json) $(NODE_TUNNEL_WASM)
 
 gen:
 	cd scripts && go run ./genresources && go run ./genprinters && go run ./genopenapi
