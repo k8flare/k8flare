@@ -113,21 +113,6 @@ known deadline.
   without it, so nothing regressed. Re-enabling it needs the shared client base
   trimmed, not a change to the controller.
 
-- Three `[Conformance]` CRD specs cannot pass while the API serves JSON only:
-  `CustomResourceDefinition resources`, `CustomResourceDefinition Watch` and
-  `FieldValidation`. They call `framework.LoadConfig()` directly and build their
-  own apiextensions client from it, and the framework applies
-  `--kube-api-content-type` only in `Framework.BeforeEach`, so those clients
-  still send protobuf bodies. `e2e.test` ships prebuilt, so the mirror cannot
-  patch `LoadConfig`. Fixing them needs e2e.test built from the mirror.
-
-- Three workers are over the 64 MiB Loader cap: `workloads` at 108 MB,
-  `attachdetach` at 70 MB and `openapi` at 69 MB. `workloads` has been over
-  since before the cap check was repaired; the other two sat at 99.9% and
-  crossed when the admissionregistration group entered the shared js
-  clientset. They need splitting or trimming, or the cap constant needs to
-  be checked against the real Loader limit. `make wasm CAP=<bytes>` builds
-  them meanwhile.
 - `make wasm` while `wrangler dev` is watching the assets directory kills the
   dev server: its reload stats a chunk that the build is still rewriting and
   it exits with ENOENT. Nothing restarts it, and the node agents then fail
@@ -138,6 +123,49 @@ known deadline.
   in 45 minutes, while the lease still lands every 6-10s. On 2026-09-25 the
   same path wedged on repeated 409s instead and the cluster ran for twelve
   hours with two dead kubelets, both nodes still reporting Ready.
+
+## Worker size
+
+Every worker is under the 64 MiB Loader cap, which the runtime enforces
+exactly: `Dynamic Worker code size (N bytes) exceeds the maximum allowed size
+of 67108864 bytes`. `make sizes` prints bytes and linked function count per
+worker; the cap is really a budget of about 45,000 linked Go functions at
+1.25-1.65 KB each. `wasm-opt` cannot help past a point -- it rewrites Code and
+leaves Data, which is 45-53% of every binary, byte-identical.
+
+What the headroom came from:
+
+- **Controllers are a shard a worker opts into.** `packages/workloads` holds the
+  sync harness and exposes `Deps` plus `Register`; the controllers live in
+  `shards/*` with the tests for their own controllers, and a worker picks them
+  up by importing them. `workloads` went 161% -> 86% of cap this way.
+  ValidatingAdmissionPolicy is the one shard kept separate: its upstream
+  TypeChecker closure is 13 MB and nothing else wants it, so a pod write should
+  never pay for CEL. Split only as far as the cap forces -- each extra worker
+  pays ~46 MB of duplicated base and another cold start.
+- **Marginal cost is not standalone cost.** Taking resourcequota out of a shard
+  bought 2.25 MB though a quota-only worker is 49 MB, because its co-tenants
+  already pull those groups. Measure each removal; do not extrapolate.
+- **openapi serves a document baked at build time.** It used to call
+  `installer.Install` to stand up the whole REST surface purely to enumerate
+  routes, and `zz_generated_groups.go` blank-imported every API group for the
+  registration side effects. 102% -> 21%. `bakeopenapi` renders it under
+  `make gen`; the spec builder stays behind `//go:build !js` as `SpecHandler`.
+- **A controller can hold a plugin it cannot use.** `volumeexpand` linked 30 MB
+  of `pkg/volume/csi` through `csi.ProbeVolumePlugins()`, but
+  `ExpandableVolumePlugin` needs `ExpandVolumeDevice`, which `pkg/volume/csi`
+  does not define, so the controller always fell through to its
+  `ExternalExpanding` branch. Passing nil is behaviour-identical and 101% -> 56%.
+
+Rejected, with the reason, so it is not retried blindly:
+
+- **Stripping the generated protobuf codecs from the js build.** Worth 9.15 MB
+  on every worker, and it breaks kubectl: kubectl sends protobuf request
+  bodies, ContentType is not negotiated the way Accept is, and there is no flag
+  to change it, so every create, apply and patch returns UnsupportedMediaType.
+  Reads negotiate down and keep working, which makes the damage easy to miss.
+- **Folding attachdetach into workloads.** Merging adds code to one worker
+  rather than removing it; measured at 128% of cap.
 
 ## Not doing
 
