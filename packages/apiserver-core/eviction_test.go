@@ -336,11 +336,34 @@ func newEvictionHarness(t *testing.T, pod *corev1.Pod, pdb *policyv1.PodDisrupti
 	if err != nil {
 		t.Fatal(err)
 	}
+	wantStatus := *pod.Status.DeepCopy()
 	if _, err := pods.Create(h.ctx, pod, rest.ValidateAllObjectFunc, &metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
+	h.restorePodStatus(t, pod.Namespace, pod.Name, wantStatus)
 	h.evictionREST = newEvictionREST(pods, client).(*evictionREST)
 	return h
+}
+
+func (h *evictionHarness) restorePodStatus(t *testing.T, namespace, name string, want corev1.PodStatus) {
+	t.Helper()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	key := "/registry/pods/" + namespace + "/" + name
+	raw, ok := h.data[key]
+	if !ok {
+		t.Fatalf("pod not stored at %s", key)
+	}
+	var stored corev1.Pod
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		t.Fatal(err)
+	}
+	stored.Status = want
+	out, err := json.Marshal(&stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.data[key] = out
 }
 
 func runningPod(name string, phase corev1.PodPhase, ready bool) *corev1.Pod {
