@@ -211,6 +211,10 @@ func runE2E(e2eTest, kubeconfig, focus, skip, reportDir string, procs, nodes int
 	}
 	args = append(args, e2eTest, "--",
 		"--kubeconfig", absKubeconfig,
+		// The control plane serves JSON only; the framework would otherwise ask
+		// for application/vnd.kubernetes.protobuf and every spec would fail on
+		// its first write.
+		"--kube-api-content-type=application/json",
 		"--provider=skeleton",
 		fmt.Sprintf("--num-nodes=%d", nodes),
 		"--disable-log-dump",
