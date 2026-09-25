@@ -16,6 +16,7 @@ import (
 	apps "k8s.io/client-go/informers/apps"
 	autoscaling "k8s.io/client-go/informers/autoscaling"
 	batch "k8s.io/client-go/informers/batch"
+	admissionregistration "k8s.io/client-go/informers/admissionregistration"
 	coordination "k8s.io/client-go/informers/coordination"
 	core "k8s.io/client-go/informers/core"
 	discovery "k8s.io/client-go/informers/discovery"
@@ -225,6 +226,7 @@ type SharedInformerFactory interface {
 	Apps() apps.Interface
 	Autoscaling() autoscaling.Interface
 	Batch() batch.Interface
+	Admissionregistration() admissionregistration.Interface
 	Coordination() coordination.Interface
 	Discovery() discovery.Interface
 	Core() core.Interface
@@ -244,6 +246,10 @@ func (f *sharedInformerFactory) Autoscaling() autoscaling.Interface {
 
 func (f *sharedInformerFactory) Batch() batch.Interface {
 	return batch.New(f, f.namespace, f.tweakListOptions)
+}
+
+func (f *sharedInformerFactory) Admissionregistration() admissionregistration.Interface {
+	return admissionregistration.New(f, f.namespace, f.tweakListOptions)
 }
 
 func (f *sharedInformerFactory) Coordination() coordination.Interface {

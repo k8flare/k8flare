@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	discovery "k8s.io/client-go/discovery"
+	admissionregistrationv1 "k8s.io/client-go/kubernetes/typed/admissionregistration/v1"
 	appsv1 "k8s.io/client-go/kubernetes/typed/apps/v1"
 	autoscalingv1 "k8s.io/client-go/kubernetes/typed/autoscaling/v1"
 	autoscalingv2 "k8s.io/client-go/kubernetes/typed/autoscaling/v2"
@@ -31,6 +32,7 @@ import (
 type Interface interface {
 	Discovery() discovery.DiscoveryInterface
 	CoreV1() corev1.CoreV1Interface
+	AdmissionregistrationV1() admissionregistrationv1.AdmissionregistrationV1Interface
 	AppsV1() appsv1.AppsV1Interface
 	AutoscalingV1() autoscalingv1.AutoscalingV1Interface
 	AutoscalingV2() autoscalingv2.AutoscalingV2Interface
@@ -52,6 +54,7 @@ type Interface interface {
 type Clientset struct {
 	*discovery.DiscoveryClient
 	corev1             *corev1.CoreV1Client
+	admissionregv1     *admissionregistrationv1.AdmissionregistrationV1Client
 	appsv1             *appsv1.AppsV1Client
 	autoscalingv1      *autoscalingv1.AutoscalingV1Client
 	autoscalingv2      *autoscalingv2.AutoscalingV2Client
@@ -72,6 +75,10 @@ type Clientset struct {
 
 func (c *Clientset) CoreV1() corev1.CoreV1Interface {
 	return c.corev1
+}
+
+func (c *Clientset) AdmissionregistrationV1() admissionregistrationv1.AdmissionregistrationV1Interface {
+	return c.admissionregv1
 }
 
 func (c *Clientset) AppsV1() appsv1.AppsV1Interface {
@@ -253,6 +260,7 @@ func NewForConfigOrDie(c *rest.Config) *Clientset {
 func New(c rest.Interface) *Clientset {
 	var cs Clientset
 	cs.corev1 = corev1.New(c)
+	cs.admissionregv1 = admissionregistrationv1.New(c)
 	cs.appsv1 = appsv1.New(c)
 	cs.autoscalingv1 = autoscalingv1.New(c)
 	cs.autoscalingv2 = autoscalingv2.New(c)
