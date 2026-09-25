@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -29,6 +30,12 @@ func patch(path, from, to string) op { return op{kind: "patch", path: path, from
 
 // hostOnly keeps the upstream file for every target but js.
 func hostOnly(path string) op { return op{kind: "hostOnly", path: path} }
+
+// stripPB drops the per-type protobuf codecs from every generated.pb.go under
+// path for the js build only. The workers negotiate application/json and the
+// store persists JSON, so the codecs are dead weight there -- about 9 MB of a
+// 64 MiB worker. The host build keeps them, because the node agent embeds k3s.
+func stripPB(path string) op { return op{kind: "stripPB", path: path} }
 
 // replaceJS keeps the upstream file for host builds and adds the overlay
 // (which carries its own //go:build js constraint) beside it.
@@ -234,6 +241,7 @@ func (s *Server) ServeConn(clientKey string, conn wsConn) error {
 			"pkg/apiserver/customresource_discovery.go",
 		},
 		ops: []op{
+			stripPB("pkg/apis"),
 			replaceJS("pkg/apiserver/apiserver.go", "apiextensions/apiserver.go"),
 			appendText("pkg/apiserver/customresource_discovery.go", `
 func NewDiscoveryHandlers(delegate http.Handler) (*versionDiscoveryHandler, *groupDiscoveryHandler) {
@@ -261,6 +269,7 @@ func NewDiscoveryHandlers(delegate http.Handler) (*versionDiscoveryHandler, *gro
 		},
 		ops: []op{
 			hostOnly("pkg/storage/storagebackend/factory/etcd3.go"),
+			stripPB("pkg/apis"),
 			replaceJS("pkg/storage/storagebackend/factory/factory.go", "apiserver/factory.go"),
 			replaceJS("pkg/storage/feature/feature_support_checker.go", "apiserver/feature_support_checker.go"),
 			replaceJS("pkg/sharding/parser.go", "apiserver/sharding_parser.go"),
@@ -354,6 +363,24 @@ func hubGroupVersionFor(typer runtime.ObjectTyper, served schema.GroupVersion, k
 }
 `),
 		},
+	},
+	{
+		name:    "api",
+		module:  "github.com/k3s-io/kubernetes/staging/src/k8s.io/api",
+		version: "v1.36.4-k3s1",
+		ops:     []op{stripPB(".")},
+	},
+	{
+		name:    "metrics",
+		module:  "github.com/k3s-io/kubernetes/staging/src/k8s.io/metrics",
+		version: "v1.36.4-k3s1",
+		ops:     []op{stripPB("pkg/apis")},
+	},
+	{
+		name:    "kube-aggregator",
+		module:  "github.com/k3s-io/kubernetes/staging/src/k8s.io/kube-aggregator",
+		version: "v1.36.4-k3s1",
+		ops:     []op{stripPB("pkg/apis")},
 	},
 	{
 		name:    "mount-utils",
@@ -481,6 +508,8 @@ func apply(dst, overlays string, o op) error {
 	case "hostOnly":
 		_, err := keepHostOnly(dst, o.path)
 		return err
+	case "stripPB":
+		return stripGeneratedPB(dst, o.path)
 	case "addJS":
 		data, err := os.ReadFile(filepath.Join(overlays, o.overlay))
 		if err != nil {
@@ -541,4 +570,95 @@ func apply(dst, overlays string, o op) error {
 		return err
 	}
 	return fmt.Errorf("unknown op %q", o.kind)
+}
+
+var pbCodec = regexp.MustCompile(`^func \((?:this |m |x )?\*?\w[\w.]*\) (?:Marshal|MarshalTo|MarshalToSizedBuffer|Unmarshal|Size)\(`)
+
+// stripGeneratedPB walks root for generated.pb.go, constrains each one to the
+// host build and writes a js copy with the protobuf codecs removed. String() is
+// left in place: the service CIDR controller relies on the generated one.
+func stripGeneratedPB(dst, root string) error {
+	return filepath.Walk(filepath.Join(dst, root), func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || info.Name() != "generated.pb.go" {
+			return err
+		}
+		rel, err := filepath.Rel(dst, path)
+		if err != nil {
+			return err
+		}
+		data, err := keepHostOnly(dst, rel)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dst, jsName(rel)), append([]byte(jsTag), dropPBCodecs(data)...), 0o644)
+	})
+}
+
+// dropPBCodecs removes the codec methods by brace depth, then the imports only
+// they used.
+func dropPBCodecs(data []byte) []byte {
+	lines := strings.Split(string(data), "\n")
+	var out []string
+	for i := 0; i < len(lines); i++ {
+		if !pbCodec.MatchString(lines[i]) {
+			out = append(out, lines[i])
+			continue
+		}
+		depth, started := 0, false
+		for ; i < len(lines); i++ {
+			depth += strings.Count(lines[i], "{") - strings.Count(lines[i], "}")
+			if strings.Contains(lines[i], "{") {
+				started = true
+			}
+			if started && depth <= 0 {
+				break
+			}
+		}
+	}
+	return dropUnusedImports([]byte(strings.Join(out, "\n")))
+}
+
+var importBlock = regexp.MustCompile(`(?s)\nimport \(\n(.*?)\n\)\n`)
+var importLine = regexp.MustCompile(`^(?:(\w+|_|\.)\s+)?"([^"]+)"$`)
+
+func dropUnusedImports(data []byte) []byte {
+	m := importBlock.FindSubmatchIndex(data)
+	if m == nil {
+		return data
+	}
+	body := codeOnly(append(append([]byte{}, data[:m[0]]...), data[m[1]:]...))
+	var keep []string
+	for _, line := range strings.Split(string(data[m[2]:m[3]]), "\n") {
+		s := strings.TrimSpace(line)
+		if s == "" {
+			continue
+		}
+		am := importLine.FindStringSubmatch(s)
+		if am == nil {
+			keep = append(keep, line)
+			continue
+		}
+		alias, p := am[1], am[2]
+		if alias == "_" || alias == "." {
+			keep = append(keep, line)
+			continue
+		}
+		ident := alias
+		if ident == "" {
+			ident = p[strings.LastIndex(p, "/")+1:]
+		}
+		if regexp.MustCompile(`\b` + regexp.QuoteMeta(ident) + `\s*\.`).Match(body) {
+			keep = append(keep, line)
+		}
+	}
+	return append(append(append([]byte{}, data[:m[0]]...), []byte("\nimport (\n"+strings.Join(keep, "\n")+"\n)\n")...), data[m[1]:]...)
+}
+
+var goLiteral = regexp.MustCompile("`[^`]*`|\"(?:[^\"\\\\\\n]|\\\\.)*\"|//[^\n]*")
+
+// codeOnly blanks string literals and line comments so that a qualifier which
+// only appears inside one -- the generated String() writes "v1.ObjectMeta" as
+// text -- does not count as a use of that import.
+func codeOnly(data []byte) []byte {
+	return goLiteral.ReplaceAllLiteral(data, []byte(" "))
 }

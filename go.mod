@@ -34,7 +34,7 @@ replace (
 	golang.org/x/sys => golang.org/x/sys v0.40.0
 	google.golang.org/genproto => google.golang.org/genproto v0.0.0-20230525234035-dd9d682886f9
 	google.golang.org/grpc => google.golang.org/grpc v1.79.3
-	k8s.io/api => github.com/k3s-io/kubernetes/staging/src/k8s.io/api v1.36.4-k3s1
+	k8s.io/api => ./.build/api-mirror
 	k8s.io/apiextensions-apiserver => ./.build/apiextensions-mirror
 	k8s.io/apimachinery => github.com/k3s-io/kubernetes/staging/src/k8s.io/apimachinery v1.36.4-k3s1
 	k8s.io/apiserver => ./.build/apiserver-mirror
@@ -56,7 +56,7 @@ replace (
 	k8s.io/klog => github.com/k3s-io/klog v1.0.0-k3s2 // k3s-release-1.x
 	k8s.io/klog/v2 => github.com/k3s-io/klog/v2 v2.140.0-k3s1 // k3s-main
 	k8s.io/kms => github.com/k3s-io/kubernetes/staging/src/k8s.io/kms v1.36.4-k3s1
-	k8s.io/kube-aggregator => github.com/k3s-io/kubernetes/staging/src/k8s.io/kube-aggregator v1.36.4-k3s1
+	k8s.io/kube-aggregator => ./.build/kube-aggregator-mirror
 	k8s.io/kube-controller-manager => github.com/k3s-io/kubernetes/staging/src/k8s.io/kube-controller-manager v1.36.4-k3s1
 	k8s.io/kube-openapi => k8s.io/kube-openapi v0.0.0-20250910181357-589584f1c912
 	k8s.io/kube-proxy => github.com/k3s-io/kubernetes/staging/src/k8s.io/kube-proxy v1.36.4-k3s1
@@ -64,7 +64,7 @@ replace (
 	k8s.io/kubectl => github.com/k3s-io/kubernetes/staging/src/k8s.io/kubectl v1.36.4-k3s1
 	k8s.io/kubelet => github.com/k3s-io/kubernetes/staging/src/k8s.io/kubelet v1.36.4-k3s1
 	k8s.io/kubernetes => ./.build/kubernetes-mirror
-	k8s.io/metrics => github.com/k3s-io/kubernetes/staging/src/k8s.io/metrics v1.36.4-k3s1
+	k8s.io/metrics => ./.build/metrics-mirror
 	k8s.io/mount-utils => ./.build/mount-utils-mirror
 	k8s.io/node-api => github.com/k3s-io/kubernetes/staging/src/k8s.io/node-api v1.36.2-k3s1
 	k8s.io/pod-security-admission => github.com/k3s-io/kubernetes/staging/src/k8s.io/pod-security-admission v1.36.4-k3s1
