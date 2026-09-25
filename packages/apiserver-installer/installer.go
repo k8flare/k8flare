@@ -125,7 +125,7 @@ func Install(mux *http.ServeMux, deps registry.Deps, only ...schema.GroupVersion
 			ConvertabilityChecker:       scheme.Scheme,
 			UnsafeConvertor:             runtime.UnsafeObjectConvertor(scheme.Scheme),
 			Namer:                       runtime.Namer(meta.NewAccessor()),
-			Serializer:                  scheme.Codecs,
+			Serializer:                  JSONOnly{scheme.Codecs},
 			ParameterCodec:              scheme.ParameterCodec,
 			EquivalentResourceRegistry:  runtime.NewEquivalentResourceRegistry(),
 			TypeConverter:               managedfields.NewDeducedTypeConverter(),

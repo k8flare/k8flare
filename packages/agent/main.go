@@ -102,6 +102,11 @@ func main() {
 		DisableLoadBalancer: true,
 		WithNodeID:          *withNodeID,
 	}
+	// The control plane serves JSON only: the js build strips the generated
+	// protobuf codecs from every API type, so the kubelet's default
+	// application/vnd.kubernetes.protobuf would be refused rather than
+	// negotiated down.
+	_ = cfg.ExtraKubeletArgs.Set("kube-api-content-type=application/json")
 	if *nodeLabels != "" {
 		_ = cfg.Labels.Set(*nodeLabels)
 	}

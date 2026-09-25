@@ -2,6 +2,7 @@ package customresources
 
 import (
 	"context"
+	installer "github.com/k8flare/k8flare/packages/apiserver-installer"
 	"net/http"
 	"sort"
 	"strconv"
@@ -86,7 +87,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 		ConvertabilityChecker:      scheme,
 		UnsafeConvertor:            runtime.UnsafeObjectConvertor(scheme),
 		Namer:                      runtime.Namer(meta.NewAccessor()),
-		Serializer:                 codecs,
+		Serializer:                 installer.JSONOnly{NegotiatedSerializer: codecs},
 		ParameterCodec:             metav1.ParameterCodec,
 		EquivalentResourceRegistry: runtime.NewEquivalentResourceRegistry(),
 		TypeConverter:              managedfields.NewDeducedTypeConverter(),

@@ -25,7 +25,9 @@ func TestInformerWatchList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, cs := range map[string]*kubernetes.Clientset{"protobuf": protobufClient, "json": jsonClient} {
+	// The control plane serves JSON only, so the client that asks for protobuf
+	// has to negotiate down rather than fail: that case pins the fallback.
+	for name, cs := range map[string]*kubernetes.Clientset{"negotiates-down": protobufClient, "json": jsonClient} {
 		t.Run(name, func(t *testing.T) { informerWatchList(t, cs, name) })
 	}
 }
