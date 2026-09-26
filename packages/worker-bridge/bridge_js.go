@@ -116,8 +116,6 @@ func Serve(handler http.Handler) {
 		}
 		leave := EnterTurn(w)
 		defer leave()
-		inPump.Store(true)
-		defer inPump.Store(false)
 		w.pump()
 		return nil
 	}))

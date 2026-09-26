@@ -64,14 +64,6 @@ func (w *Window) Run(fn func()) error {
 			fn()
 			return nil
 		}
-		// MEASUREMENT: currentTurn is meant to name the window whose JS stack is
-		// running Go right now. If we are not inside a pump, running inline puts
-		// the fetch on a stack that does not belong to the request.
-		if !inPump.Load() {
-			if n := offTurn.Add(1); n%500 == 0 {
-				println("bridge: inline run off-turn count:", n)
-			}
-		}
 		fn()
 		return nil
 	}
@@ -342,10 +334,6 @@ var liveSockets atomic.Int64
 // currentTurn names the window whose JS stack is currently running Go, so a
 // fetch issued for another window can be reported instead of hanging.
 var currentTurn atomic.Pointer[Window]
-
-// MEASUREMENT ONLY
-var inPump atomic.Bool
-var offTurn atomic.Int64
 
 func EnterTurn(w *Window) func() {
 	previous := currentTurn.Swap(w)
