@@ -60,9 +60,9 @@ func LocateStream(w http.ResponseWriter, r *http.Request, store *kine.Client, ad
 	// The kubelet serves logs as a plain HTTP read rather than an upgrade, so
 	// the caller has to fetch rather than dial; the _q path segment exists for
 	// the upgrade path, which cannot carry a query.
-	transport := "websocket"
+	transport, protocols := "websocket", channelProtocols
 	if kind == "containerLogs" {
-		transport = "http"
+		transport, protocols = "http", readerProtocols
 	} else if incoming != "" {
 		path += "/_q/" + url.PathEscape(incoming)
 	}
@@ -79,11 +79,26 @@ func LocateStream(w http.ResponseWriter, r *http.Request, store *kine.Client, ad
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"node": pod.Spec.NodeName, "url": target, "transport": transport,
-		"protocol": StreamProtocol(r.Header.Get("Sec-WebSocket-Protocol")),
+		"protocol": streamProtocol(r.Header.Get("Sec-WebSocket-Protocol"), protocols),
 	})
 }
 
-func StreamProtocol(header string) string {
+// Channel and reader subprotocols, named as apimachinery's
+// httpstream/wsstream does. exec, attach and portforward multiplex several
+// streams over one socket and negotiate a channel protocol; a log is a single
+// one-way stream and negotiates a reader protocol, where the messages are the
+// exact bytes written, or base64 of them.
+var (
+	channelProtocols = []string{"v5.channel.k8s.io", "v4.channel.k8s.io"}
+	readerProtocols  = []string{"binary.k8s.io", "base64.binary.k8s.io"}
+)
+
+// StreamProtocol picks the first subprotocol the client offered that this kind
+// of stream can speak. An empty result means none matched, and the upgrade
+// carries no Sec-WebSocket-Protocol -- which wsstream reads as binary.
+func StreamProtocol(header string) string { return streamProtocol(header, channelProtocols) }
+
+func streamProtocol(header string, want []string) string {
 	var parts []string
 	for _, part := range strings.Split(header, ",") {
 		part = strings.TrimSpace(part)
@@ -91,10 +106,7 @@ func StreamProtocol(header string) string {
 			parts = append(parts, part)
 		}
 	}
-	// Logs are one-way raw bytes rather than channel-multiplexed, so they
-	// negotiate their own subprotocols; a client that offers none still gets an
-	// upgrade with no Sec-WebSocket-Protocol.
-	for _, want := range []string{"v5.channel.k8s.io", "v4.channel.k8s.io", "binary.k8s.io", "base64.k8s.io"} {
+	for _, want := range want {
 		for _, part := range parts {
 			if part == want {
 				return part

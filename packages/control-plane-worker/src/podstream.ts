@@ -29,11 +29,12 @@ export function sendBinary(ws: WebSocket, data: unknown): void {
   ws.send(asBytes(data));
 }
 
-// A log stream is one-way and carries no channel byte: binary.k8s.io wants raw
-// binary frames, base64.k8s.io wants the same bytes base64-encoded as text.
+// A log is a reader stream in apimachinery's terms: one-way, no channel byte.
+// binary.k8s.io and the empty subprotocol send the exact bytes written;
+// base64.binary.k8s.io sends base64 of them.
 export function sendLog(ws: WebSocket, protocol: string, bytes: Uint8Array): void {
   if (bytes.byteLength === 0) return;
-  if (protocol === "base64.k8s.io") {
+  if (protocol === "base64.binary.k8s.io") {
     let binary = "";
     for (const b of bytes) binary += String.fromCharCode(b);
     ws.send(btoa(binary));
