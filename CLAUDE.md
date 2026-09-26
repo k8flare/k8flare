@@ -35,6 +35,11 @@ Cloudflare Workers. Merge with the global guidelines.
   ビルドし忘れて1回分の計測を捨てたことがある。
 - `make sizes` でワーカーのサイズと**リンクされた関数数**を出す。上限は関数数の
   予算 (約45,000、1関数あたり1.25〜1.65KB) と考えるとよい。
+- **`pkill -f 'wrangler dev'` は `workerd` を殺さない。** 古い `workerd` が
+  18787 を掴んだままだと新しい dev サーバは `Address already in use` で起動
+  できず、`lsof` は "up" と答える。応答しているのは古い方。
+  `lsof -nP -iTCP:18787 -sTCP:LISTEN -t | xargs kill -9` で落とし、
+  **API が 200 を返すことを確認してから**テストを始める。
 - 計測は**再現手段そのものを先に検証する**。`kubectl` が書けない状態で
   「名前空間に ServiceAccount が作られない」と誤診したことがある。
   自分が作った負荷の残骸を測定対象に混ぜたこともある。
