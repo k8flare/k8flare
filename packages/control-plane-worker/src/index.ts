@@ -4,7 +4,7 @@ import type { QueueMessage } from "@k8flare/cluster-store";
 import { consume } from "./queues.ts";
 import { clusterStub, tunnelName } from "./clusterid.ts";
 import { Metrics } from "./metrics.ts";
-import { bytesOf, sendBinary } from "./podstream.ts";
+import { bytesOf, sendBinary, sendLog } from "./podstream.ts";
 import type { NodeTunnel } from "@k8flare/node-tunnel";
 
 export { Cluster } from "@k8flare/cluster-store";
@@ -110,7 +110,7 @@ export default {
       headers.set("X-K8flare-Stream-Locate", "1");
       const located = await apiserverFetch(env, new Request(request, { headers }));
       if (!located.ok) return located;
-      const loc = (await located.json()) as { node?: string; url?: string; protocol?: string };
+      const loc = (await located.json()) as { node?: string; url?: string; protocol?: string; transport?: string };
       console.log(`stream path=${path}`);
       const pair = new WebSocketPair();
       const server = pair[1];
@@ -141,12 +141,36 @@ export default {
           return;
         }
         const headers = new Headers();
+        const auth = request.headers.get("Authorization");
+        if (auth) headers.set("Authorization", auth);
+        if (loc.transport === "http") {
+          // The kubelet serves logs as an ordinary read, so fetch the body and
+          // relay it one way rather than dialling a socket that never opens.
+          try {
+            const stub = env.NODE_TUNNEL.get(env.NODE_TUNNEL.idFromName(tunnelName(env, node))) as DurableObjectStub<NodeTunnel>;
+            const resp = await stub.fetch(dest.toString(), { headers });
+            if (!resp.ok || !resp.body) {
+              server.close(resp.ok ? 1011 : 1008, `logs ${resp.status}`);
+              return;
+            }
+            const reader = resp.body.getReader();
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              if (value) sendLog(server, loc.protocol ?? "", value);
+            }
+            server.close(1000, "done");
+          } catch (err) {
+            try {
+              server.close(1011, String(err).slice(0, 120));
+            } catch {}
+          }
+          return;
+        }
         headers.set("Upgrade", "websocket");
         headers.set("Connection", "Upgrade");
         if (loc.protocol) headers.set("Sec-WebSocket-Protocol", loc.protocol);
         if (dest.search) headers.set("X-Stream-Query", dest.search.slice(1));
-        const auth = request.headers.get("Authorization");
-        if (auth) headers.set("Authorization", auth);
         console.log(`stream in ${new URL(request.url).pathname}${new URL(request.url).search} tunnel ${dest.pathname} q=${dest.search.length}`);
         try {
           const stub = env.NODE_TUNNEL.get(env.NODE_TUNNEL.idFromName(tunnelName(env, node))) as DurableObjectStub<NodeTunnel>;

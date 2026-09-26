@@ -57,7 +57,13 @@ func LocateStream(w http.ResponseWriter, r *http.Request, store *kine.Client, ad
 	if incoming == "" {
 		incoming = r.Header.Get("X-Stream-Query")
 	}
-	if incoming != "" {
+	// The kubelet serves logs as a plain HTTP read rather than an upgrade, so
+	// the caller has to fetch rather than dial; the _q path segment exists for
+	// the upgrade path, which cannot carry a query.
+	transport := "websocket"
+	if kind == "containerLogs" {
+		transport = "http"
+	} else if incoming != "" {
 		path += "/_q/" + url.PathEscape(incoming)
 	}
 	target := "https://nodetunnel.internal" + path
@@ -72,7 +78,8 @@ func LocateStream(w http.ResponseWriter, r *http.Request, store *kine.Client, ad
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{
-		"node": pod.Spec.NodeName, "url": target, "protocol": StreamProtocol(r.Header.Get("Sec-WebSocket-Protocol")),
+		"node": pod.Spec.NodeName, "url": target, "transport": transport,
+		"protocol": StreamProtocol(r.Header.Get("Sec-WebSocket-Protocol")),
 	})
 }
 
