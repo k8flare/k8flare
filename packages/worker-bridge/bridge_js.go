@@ -451,17 +451,7 @@ func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	issued := time.Now()
 	inflight := window.inFlight()
 	onTurn := window.Owns()
-	headerTimeout := unaryHeaderTimeout
-	bodyTimeout := unaryBodyTimeout
-	if req.URL.Host == "openapi.internal" {
-		headerTimeout = openAPIHeaderTimeout
-		bodyTimeout = 0
-	} else if req.URL.Query().Get("watch") == "true" || req.URL.Query().Get("watch") == "1" || strings.HasSuffix(req.URL.Path, "/watch") {
-		headerTimeout = watchHeaderTimeout
-		bodyTimeout = 0
-	} else if req.URL.Query().Get("follow") == "true" {
-		bodyTimeout = 0
-	}
+	headerTimeout, bodyTimeout := fetchTimeouts(req.URL)
 	var pending, controller js.Value
 	if err := window.Run(func() {
 		opts := js.Global().Get("Object").New()
@@ -520,6 +510,20 @@ func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		ContentLength: -1,
 		Request:       req,
 	}, nil
+}
+
+func fetchTimeouts(u *url.URL) (header, body time.Duration) {
+	switch {
+	case u.Host == "openapi.internal":
+		return openAPIHeaderTimeout, 0
+	case u.Query().Get("watch") == "true" || u.Query().Get("watch") == "1" || strings.HasSuffix(u.Path, "/watch"):
+		return watchHeaderTimeout, 0
+	case u.Query().Get("follow") == "true":
+		return unaryHeaderTimeout, 0
+	case u.Host == "k8flare.internal":
+		return unaryHeaderTimeout, apiServerBodyTimeout
+	}
+	return unaryHeaderTimeout, unaryBodyTimeout
 }
 
 type abortingBody struct {
