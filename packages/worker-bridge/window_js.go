@@ -322,8 +322,11 @@ func currentWindowEnv() (js.Value, bool) {
 
 var ErrFetchTimeout = errors.New("bridge: no response headers in time")
 
+var ErrBodyTimeout = errors.New("bridge: response body did not finish in time")
+
 const (
 	unaryHeaderTimeout   = 30 * time.Second
+	unaryBodyTimeout     = 60 * time.Second
 	openAPIHeaderTimeout = 90 * time.Second
 	watchHeaderTimeout   = 20 * time.Second
 	wsDialTimeout        = 10 * time.Second

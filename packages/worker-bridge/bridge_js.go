@@ -452,10 +452,15 @@ func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	inflight := window.inFlight()
 	onTurn := window.Owns()
 	headerTimeout := unaryHeaderTimeout
+	bodyTimeout := unaryBodyTimeout
 	if req.URL.Host == "openapi.internal" {
 		headerTimeout = openAPIHeaderTimeout
+		bodyTimeout = 0
 	} else if req.URL.Query().Get("watch") == "true" || req.URL.Query().Get("watch") == "1" || strings.HasSuffix(req.URL.Path, "/watch") {
 		headerTimeout = watchHeaderTimeout
+		bodyTimeout = 0
+	} else if req.URL.Query().Get("follow") == "true" {
+		bodyTimeout = 0
 	}
 	var pending, controller js.Value
 	if err := window.Run(func() {
@@ -499,7 +504,7 @@ func (t BindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	header := headerFromPairs(js.Global().Get("Array").Call("from", jsResp.Get("headers").Call("entries")))
 	status := jsResp.Get("status").Int()
-	respBody, end := streamBody(jsResp.Get("body"), abort)
+	respBody, end := streamBody(jsResp.Get("body"), abort, bodyTimeout)
 	untrack := func() {}
 	if t.AbortOnWake {
 		_, untrack = trackStream(window, end)
@@ -528,17 +533,27 @@ func (b abortingBody) Close() error {
 	return err
 }
 
-func streamBody(stream js.Value, abort func()) (io.ReadCloser, func()) {
+func streamBody(stream js.Value, abort func(), deadline time.Duration) (io.ReadCloser, func()) {
 	if stream.IsNull() || stream.IsUndefined() {
 		return io.NopCloser(bytes.NewReader(nil)), func() {}
 	}
 	reader := stream.Call("getReader")
 	pr, pw := io.Pipe()
+	stopDeadline := func() bool { return false }
+	if deadline > 0 {
+		timer := time.AfterFunc(deadline, func() {
+			pw.CloseWithError(ErrBodyTimeout)
+			abort()
+		})
+		stopDeadline = timer.Stop
+	}
 	end := func() {
+		stopDeadline()
 		pw.Close()
 		abort()
 	}
 	go func() {
+		defer stopDeadline()
 		for {
 			chunk, err := await(reader.Call("read"))
 			if err != nil {
