@@ -262,7 +262,6 @@ export class Cluster extends DurableObject<Env> {
     const type = deleted ? "deleted" : prev ? "modified" : "created";
     this.record(name, type, rev, value, prev);
     this.restoreWatchers();
-    this.expireWatchers();
     const notified = new Set<WebSocket>();
     const matched = [...this.watchers].filter(([, w]) => (w.exact ? name === w.prefix : name.startsWith(w.prefix)));
     if (matched.length > 0) {
@@ -287,6 +286,7 @@ export class Cluster extends DurableObject<Env> {
         if (!notified.has(ws)) this.sendProgress(ws, rev);
       }
     }
+    this.expireWatchers();
     return rev;
   }
 
