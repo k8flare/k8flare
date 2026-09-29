@@ -2,9 +2,6 @@ package workloads
 
 import (
 	"context"
-	"io"
-	"net/http"
-	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -144,29 +141,3 @@ func TestStalePodListReplacesTheSnapshot(t *testing.T) {
 		t.Fatalf("got=%v err=%v", got, err)
 	}
 }
-
-func TestSyncTransportUsesTheSyncContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	unbind := bindSync(ctx)
-	defer unbind()
-	cancel()
-	var seen context.Context
-	transport := SyncTransport{Base: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		seen = req.Context()
-		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
-	})}
-	req, err := http.NewRequest(http.MethodGet, "https://k8flare.internal/api/v1/pods", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := transport.RoundTrip(req); err != nil {
-		t.Fatal(err)
-	}
-	if seen == nil || seen.Err() == nil {
-		t.Fatal("request kept a live context")
-	}
-}
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }

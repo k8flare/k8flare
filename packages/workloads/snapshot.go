@@ -18,6 +18,7 @@ type snapshotInformer struct {
 	handlers []cache.ResourceEventHandler
 	stale    atomic.Bool
 	list     func(context.Context) ([]runtime.Object, error)
+	passCtx  context.Context
 }
 
 func newSnapshotInformer(example runtime.Object) *snapshotInformer {
@@ -127,9 +128,9 @@ func (s *snapshotInformer) catchUp() {
 	if s == nil || s.list == nil || !s.stale.CompareAndSwap(true, false) {
 		return
 	}
-	ctx := context.Background()
-	if held := currentSync.Load(); held != nil && held.ctx != nil {
-		ctx = held.ctx
+	ctx := s.passCtx
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	items, err := s.list(ctx)
 	if err != nil {

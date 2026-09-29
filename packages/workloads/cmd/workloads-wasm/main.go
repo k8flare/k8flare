@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -103,7 +104,7 @@ func main() {
 		if raw := r.URL.Query().Get("changed"); raw != "" {
 			changed = strings.Split(raw, ",")
 		}
-		result, err := workloads.SyncWithin(r.Context(), client, rootCA, signingCA, servingCA, changed, syncBudget(r))
+		result, err := workloads.SyncWithin(r.Context(), client, rootCA, signingCA, servingCA, changed, syncBudget(r), holdWindow)
 		if err != nil {
 			println("workloads: sync failed:", err.Error())
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -120,4 +121,9 @@ func syncBudget(r *http.Request) time.Duration {
 		return 0
 	}
 	return time.Duration(ms) * time.Millisecond
+}
+
+func holdWindow(ctx context.Context) func() {
+	bridge.OpenWindow(ctx)
+	return func() { bridge.CloseWindow(ctx) }
 }

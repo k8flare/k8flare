@@ -439,7 +439,7 @@ func TestSyncWithinAnswersBusyInsteadOfBlocking(t *testing.T) {
 	defer syncMu.Unlock()
 
 	started := time.Now()
-	result, err := SyncWithin(context.Background(), fake.NewSimpleClientset(), []byte("ca"), nil, nil, []string{"pods"}, 4*time.Second)
+	result, err := SyncWithin(context.Background(), fake.NewSimpleClientset(), []byte("ca"), nil, nil, []string{"pods"}, 4*time.Second, nil)
 	if err != nil {
 		t.Fatalf("a busy sync should answer, not fail: %v", err)
 	}
@@ -448,5 +448,30 @@ func TestSyncWithinAnswersBusyInsteadOfBlocking(t *testing.T) {
 	}
 	if waited := time.Since(started); waited > 3*time.Second {
 		t.Fatalf("waited %s for a lock another pass holds; the caller would have given up", waited)
+	}
+}
+
+func TestSyncWithinHoldsOnlyWhileAPassRuns(t *testing.T) {
+	held, released := 0, 0
+	hold := func(context.Context) func() {
+		held++
+		return func() { released++ }
+	}
+
+	syncMu.Lock()
+	_, err := SyncWithin(context.Background(), fake.NewSimpleClientset(), []byte("ca"), nil, nil, []string{"pods"}, 4*time.Second, hold)
+	syncMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held != 0 {
+		t.Fatal("a sync turned away as busy held the window")
+	}
+
+	if _, err := SyncWithin(context.Background(), fake.NewSimpleClientset(), []byte("ca"), nil, nil, []string{"pods"}, 30*time.Second, hold); err != nil {
+		t.Fatal(err)
+	}
+	if held != 1 || released != 1 {
+		t.Fatalf("held=%d released=%d, want one hold released once", held, released)
 	}
 }

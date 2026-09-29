@@ -3,7 +3,9 @@ package workloads
 import (
 	"context"
 	"encoding/json"
+	goruntime "runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,9 +43,10 @@ const (
 	workers              = 5
 	listPage             = 500
 	drainPoll            = 200 * time.Millisecond
-	maxDrain             = 30 * time.Second
+	maxDrain             = 10 * time.Second
 	inFlightGrace        = 150 * time.Second
 	followGrace          = 30 * time.Second
+	followDrain          = 5 * time.Second
 	replicaRetry         = 5 * time.Second
 	syncLockWait         = 10 * time.Second
 	listBudget           = 30 * time.Second
@@ -358,10 +361,10 @@ func lockSync(ctx context.Context, budget time.Duration) bool {
 }
 
 func Sync(ctx context.Context, client kubernetes.Interface, rootCA, signingCA, servingCA []byte, changed []string) (*Result, error) {
-	return SyncWithin(ctx, client, rootCA, signingCA, servingCA, changed, 0)
+	return SyncWithin(ctx, client, rootCA, signingCA, servingCA, changed, 0, nil)
 }
 
-func SyncWithin(ctx context.Context, client kubernetes.Interface, rootCA, signingCA, servingCA []byte, changed []string, budget time.Duration) (*Result, error) {
+func SyncWithin(ctx context.Context, client kubernetes.Interface, rootCA, signingCA, servingCA []byte, changed []string, budget time.Duration, holdWhileRunning func(context.Context) func()) (*Result, error) {
 	var deadline time.Time
 	if budget > 0 {
 		deadline = time.Now().Add(budget)
@@ -373,6 +376,9 @@ func SyncWithin(ctx context.Context, client kubernetes.Interface, rootCA, signin
 		return &Result{Objects: map[string]int{}, NextMs: int64(syncBusyRetry / time.Millisecond)}, nil
 	}
 	defer syncMu.Unlock()
+	if holdWhileRunning != nil {
+		defer holdWhileRunning(ctx)()
+	}
 	if err := ensureServiceIPAddresses(ctx, client, changed); err != nil {
 		return nil, err
 	}
@@ -388,7 +394,7 @@ func SyncWithin(ctx context.Context, client kubernetes.Interface, rootCA, signin
 		return result, err
 	}
 	if needsFollowUp(controllers) {
-		follow, err := syncPass(ctx, client, rootCA, signingCA, servingCA, followUpChanged(controllers), 15*time.Second, followGrace, deadline)
+		follow, err := syncPass(ctx, client, rootCA, signingCA, servingCA, followUpChanged(controllers), followDrain, followGrace, deadline)
 		if err != nil {
 			return result, err
 		}
@@ -490,8 +496,6 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 	controllers, needed := wanted(changed)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	unbind := bindSync(ctx)
-	defer unbind()
 
 	passStart := time.Now()
 	stage := passStart
@@ -554,7 +558,7 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 			}
 		}
 		result.Objects[s.name] = len(objs)
-		all = append(all, loadedSource{register(factory, s.example), objs})
+		all = append(all, loadedSource{register(ctx, factory, s.example), objs})
 	}
 	if err := recordCronChildren(ctx, client, loadedNamed(src, loaded, "cronjobs"), loadedNamed(src, loaded, "jobs")); err != nil {
 		println("workloads: cronjob active list:", err.Error())
@@ -605,8 +609,9 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 	return result, nil
 }
 
-func register(factory informers.SharedInformerFactory, example runtime.Object) *snapshotInformer {
+func register(ctx context.Context, factory informers.SharedInformerFactory, example runtime.Object) *snapshotInformer {
 	s := newSnapshotInformer(example)
+	s.passCtx = ctx
 	factory.InformerFor(example, func(kubernetes.Interface, time.Duration) cache.SharedIndexInformer { return s })
 	return s
 }
@@ -736,6 +741,9 @@ func drain(owned func(string) bool, limit, grace time.Duration, budgetBy time.Ti
 	defer func() {
 		if busy := work.busy(owned); busy != "" {
 			println("workloads: drain gave up after", time.Since(started).String(), "with", busy)
+			if work.inFlight(owned) {
+				println(inFlightStacks())
+			}
 		}
 	}()
 	quiet := 0
@@ -757,6 +765,18 @@ func drain(owned func(string) bool, limit, grace time.Duration, budgetBy time.Ti
 			return false
 		}
 	}
+}
+
+func inFlightStacks() string {
+	buf := make([]byte, 8<<20)
+	buf = buf[:goruntime.Stack(buf, true)]
+	var held []string
+	for _, g := range strings.Split(string(buf), "\n\n") {
+		if strings.Contains(g, "processNext") && !strings.Contains(g, "workqueue.(*Typed") {
+			held = append(held, g)
+		}
+	}
+	return "workloads: in-flight handler stacks (" + strconv.Itoa(len(held)) + "):\n" + strings.Join(held, "\n\n")
 }
 
 func nextCronRun(objs []runtime.Object) (time.Duration, bool) {
