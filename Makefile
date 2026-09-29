@@ -186,8 +186,13 @@ node-image: mirrors
 # CLAUDECODE is unset on purpose: with it set, wrangler dev enters its
 # AI-agent mode, whose observability capture buffers application/json
 # streaming responses until they close, which stalls every JSON watch.
-dev:
-	env -u CLAUDECODE -u AI_AGENT pnpm exec wrangler dev -c wrangler.jsonc --local --persist-to .wrangler/state --port 18787
+## dev: wrangler.dev.jsonc is wrangler.jsonc with local observability off; its
+## capture outgrew the dev server's heap during long e2e runs. Production keeps it on.
+wrangler.dev.jsonc: wrangler.jsonc
+	sed 's/"observability": { "enabled": true }/"observability": { "enabled": false }/' $< > $@
+
+dev: wrangler.dev.jsonc
+	env -u CLAUDECODE -u AI_AGENT pnpm exec wrangler dev -c wrangler.dev.jsonc --local --persist-to .wrangler/state --port 18787
 
 devtls:
 	cd scripts && go run ./devtls -listen :6443 -upstream http://127.0.0.1:18787 -dir ../.build/devtls
