@@ -5,7 +5,9 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	bridge "github.com/k8flare/k8flare/packages/worker-bridge"
@@ -101,7 +103,7 @@ func main() {
 		if raw := r.URL.Query().Get("changed"); raw != "" {
 			changed = strings.Split(raw, ",")
 		}
-		result, err := workloads.Sync(r.Context(), client, rootCA, signingCA, servingCA, changed)
+		result, err := workloads.SyncWithin(r.Context(), client, rootCA, signingCA, servingCA, changed, syncBudget(r))
 		if err != nil {
 			println("workloads: sync failed:", err.Error())
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -110,4 +112,12 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(result)
 	}))
+}
+
+func syncBudget(r *http.Request) time.Duration {
+	ms, err := strconv.Atoi(r.URL.Query().Get("budgetMs"))
+	if err != nil || ms <= 0 {
+		return 0
+	}
+	return time.Duration(ms) * time.Millisecond
 }

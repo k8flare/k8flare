@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/util/workqueue"
 )
 
 func TestWantedSelectsControllersForChangedResources(t *testing.T) {
@@ -283,6 +284,91 @@ func TestWantedSelectsCSRCleaner(t *testing.T) {
 	}
 }
 
+func TestQueueMetricsTrackInFlight(t *testing.T) {
+	work.reset(func(string) bool { return true })
+	q := workqueue.NewTypedRateLimitingQueueWithConfig(
+		workqueue.DefaultTypedControllerRateLimiter[string](),
+		workqueue.TypedRateLimitingQueueConfig[string]{Name: "replicationmanager"},
+	)
+	defer q.ShutDown()
+	q.Add("default/pause")
+	if work.idle(func(string) bool { return true }) {
+		t.Fatal("queued key was invisible to drain")
+	}
+	key, quit := q.Get()
+	if quit || key != "default/pause" {
+		t.Fatalf("get=%q quit=%v", key, quit)
+	}
+	if !work.inFlight(func(string) bool { return true }) {
+		t.Fatal("dequeued key was not in flight")
+	}
+	q.Done(key)
+	if work.inFlight(func(string) bool { return true }) {
+		t.Fatal("done key stayed in flight")
+	}
+}
+
+func TestDrainWaitsForInFlightPastDeadline(t *testing.T) {
+	work.reset(func(string) bool { return true })
+	c := work.of("replicationmanager")
+	c.inFlight.Store(1)
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		c.inFlight.Store(0)
+	}()
+	started := time.Now()
+	drained := drain(func(string) bool { return true }, 50*time.Millisecond, 2*time.Second, time.Time{})
+	elapsed := time.Since(started)
+	if elapsed < 400*time.Millisecond {
+		t.Fatalf("returned after %s while a create was in flight", elapsed)
+	}
+	if !drained {
+		t.Fatal("finished create reported not drained")
+	}
+}
+
+func TestDrainStopsQueuedWorkAtDeadline(t *testing.T) {
+	work.reset(func(string) bool { return true })
+	work.of("replicationmanager").depth.Store(1)
+	started := time.Now()
+	if drain(func(string) bool { return true }, 50*time.Millisecond, 2*time.Second, time.Time{}) {
+		t.Fatal("queued work reported drained")
+	}
+	if time.Since(started) > time.Second {
+		t.Fatalf("waited %s for work that had not started", time.Since(started))
+	}
+}
+
+func TestReplicaGapRetriesWhileStatusLags(t *testing.T) {
+	replicas := int32(40)
+	matched := int32(2)
+	client := fake.NewSimpleClientset(
+		&v1.ReplicationController{
+			ObjectMeta: metav1.ObjectMeta{Name: "burst", Namespace: "default"},
+			Spec:       v1.ReplicationControllerSpec{Replicas: &replicas},
+			Status:     v1.ReplicationControllerStatus{Replicas: 18},
+		},
+		&v1.ReplicationController{
+			ObjectMeta: metav1.ObjectMeta{Name: "done", Namespace: "default"},
+			Spec:       v1.ReplicationControllerSpec{Replicas: &matched},
+			Status:     v1.ReplicationControllerStatus{Replicas: matched},
+		},
+	)
+	controllers, _ := wanted([]string{"replicationcontrollers"})
+	gap, ok := replicaGap(context.Background(), client, controllers)
+	if !ok || gap != replicaRetry {
+		t.Fatalf("gap=%s ok=%v", gap, ok)
+	}
+	settled := fake.NewSimpleClientset(&v1.ReplicationController{
+		ObjectMeta: metav1.ObjectMeta{Name: "done", Namespace: "default"},
+		Spec:       v1.ReplicationControllerSpec{Replicas: &matched},
+		Status:     v1.ReplicationControllerStatus{Replicas: matched},
+	})
+	if _, ok := replicaGap(context.Background(), settled, controllers); ok {
+		t.Fatal("converged replication controller asked for another pass")
+	}
+}
+
 func TestClientScaleReadsDeploymentReplicas(t *testing.T) {
 	replicas := int32(3)
 	client := fake.NewSimpleClientset(&appsv1.Deployment{
@@ -321,5 +407,46 @@ func TestClientScaleReadsJobParallelism(t *testing.T) {
 	kinds, err := scaleMapper().KindsFor(schema.GroupVersionResource{Group: "batch", Version: "v1", Resource: "jobs"})
 	if err != nil || len(kinds) != 1 || kinds[0].Kind != "Job" {
 		t.Fatal(kinds, err)
+	}
+}
+
+func TestDrainStopsWithinTheCallerBudget(t *testing.T) {
+	work.reset(workloadQueue)
+	defer work.reset(workloadQueue)
+	work.of("endpoint_slice").inFlight.Add(1)
+
+	started := time.Now()
+	budget := 600 * time.Millisecond
+	if drain(workloadQueue, 100*time.Millisecond, time.Hour, started.Add(budget)) {
+		t.Fatal("drain reported a drained queue while an item was in flight")
+	}
+	if waited := time.Since(started); waited > budget+2*time.Second {
+		t.Fatalf("drain waited %s, past the %s budget the caller allowed", waited, budget)
+	}
+}
+
+func TestDrainWithoutBudgetKeepsItsOwnWindow(t *testing.T) {
+	work.reset(workloadQueue)
+	defer work.reset(workloadQueue)
+
+	if !drain(workloadQueue, time.Second, time.Second, time.Time{}) {
+		t.Fatal("drain on an idle queue should report drained")
+	}
+}
+
+func TestSyncWithinAnswersBusyInsteadOfBlocking(t *testing.T) {
+	syncMu.Lock()
+	defer syncMu.Unlock()
+
+	started := time.Now()
+	result, err := SyncWithin(context.Background(), fake.NewSimpleClientset(), []byte("ca"), nil, nil, []string{"pods"}, 4*time.Second)
+	if err != nil {
+		t.Fatalf("a busy sync should answer, not fail: %v", err)
+	}
+	if result == nil || result.NextMs == 0 {
+		t.Fatalf("a busy sync should ask to be retried, got %+v", result)
+	}
+	if waited := time.Since(started); waited > 3*time.Second {
+		t.Fatalf("waited %s for a lock another pass holds; the caller would have given up", waited)
 	}
 }

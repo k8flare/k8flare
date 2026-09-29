@@ -3,6 +3,7 @@ package workloads
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"sync"
 	"time"
 
@@ -41,6 +42,13 @@ const (
 	listPage             = 500
 	drainPoll            = 200 * time.Millisecond
 	maxDrain             = 30 * time.Second
+	inFlightGrace        = 150 * time.Second
+	followGrace          = 30 * time.Second
+	replicaRetry         = 5 * time.Second
+	syncLockWait         = 10 * time.Second
+	listBudget           = 30 * time.Second
+	syncBusyRetry        = 2 * time.Second
+	shutdownGrace        = 5 * time.Second
 	maxEndpointsPerSlice = 100
 	daemonSetWorkers     = 2
 	unfinishedJobRecheck = 10 * time.Second
@@ -330,7 +338,41 @@ func changedHas(changed []string, name string) bool {
 	return false
 }
 
+var syncMu sync.Mutex
+
+func lockSync(ctx context.Context, budget time.Duration) bool {
+	wait := syncLockWait
+	if budget > 0 && budget/4 < wait {
+		wait = budget / 4
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		if syncMu.TryLock() {
+			return true
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 func Sync(ctx context.Context, client kubernetes.Interface, rootCA, signingCA, servingCA []byte, changed []string) (*Result, error) {
+	return SyncWithin(ctx, client, rootCA, signingCA, servingCA, changed, 0)
+}
+
+func SyncWithin(ctx context.Context, client kubernetes.Interface, rootCA, signingCA, servingCA []byte, changed []string, budget time.Duration) (*Result, error) {
+	var deadline time.Time
+	if budget > 0 {
+		deadline = time.Now().Add(budget)
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, deadline)
+		defer cancel()
+	}
+	if !lockSync(ctx, budget) {
+		return &Result{Objects: map[string]int{}, NextMs: int64(syncBusyRetry / time.Millisecond)}, nil
+	}
+	defer syncMu.Unlock()
 	if err := ensureServiceIPAddresses(ctx, client, changed); err != nil {
 		return nil, err
 	}
@@ -340,13 +382,13 @@ func Sync(ctx context.Context, client kubernetes.Interface, rootCA, signingCA, s
 	if err := releaseStorageProtection(ctx, client, changed); err != nil {
 		return nil, err
 	}
-	result, err := syncPass(ctx, client, rootCA, signingCA, servingCA, changed, maxDrain)
 	controllers, _ := wanted(changed)
+	result, err := syncPass(ctx, client, rootCA, signingCA, servingCA, changed, maxDrain, inFlightGrace, deadline)
 	if err != nil {
 		return result, err
 	}
 	if needsFollowUp(controllers) {
-		follow, err := syncPass(ctx, client, rootCA, signingCA, servingCA, followUpChanged(controllers), 15*time.Second)
+		follow, err := syncPass(ctx, client, rootCA, signingCA, servingCA, followUpChanged(controllers), 15*time.Second, followGrace, deadline)
 		if err != nil {
 			return result, err
 		}
@@ -361,13 +403,102 @@ func Sync(ctx context.Context, client kubernetes.Interface, rootCA, signingCA, s
 	if controllers["statefulset"] && changedHas(changed, "pods") {
 		result.NextMs = soonest(result.NextMs, 2*time.Second)
 	}
+	if retry, ok := replicaGap(ctx, client, controllers); ok {
+		result.NextMs = soonest(result.NextMs, retry)
+	}
 	return result, nil
 }
 
-func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingCA, servingCA []byte, changed []string, drainFor time.Duration) (*Result, error) {
+func replicaControllers(controllers map[string]bool) bool {
+	return controllers["replication"] || controllers["replicaset"] || controllers["deployment"]
+}
+
+func replicaGap(ctx context.Context, client kubernetes.Interface, controllers map[string]bool) (time.Duration, bool) {
+	if controllers["replication"] {
+		gap, err := replicationGap(ctx, client)
+		if err != nil || gap {
+			return replicaRetry, true
+		}
+	}
+	if controllers["replicaset"] || controllers["deployment"] {
+		gap, err := replicaSetGap(ctx, client)
+		if err != nil || gap {
+			return replicaRetry, true
+		}
+	}
+	if controllers["deployment"] {
+		gap, err := deploymentGap(ctx, client)
+		if err != nil || gap {
+			return replicaRetry, true
+		}
+	}
+	return 0, false
+}
+
+func replicationGap(ctx context.Context, client kubernetes.Interface) (bool, error) {
+	list, err := client.CoreV1().ReplicationControllers(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return false, err
+	}
+	for i := range list.Items {
+		rc := &list.Items[i]
+		if rc.DeletionTimestamp != nil || rc.Spec.Replicas == nil {
+			continue
+		}
+		if rc.Status.Replicas != *rc.Spec.Replicas {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func replicaSetGap(ctx context.Context, client kubernetes.Interface) (bool, error) {
+	list, err := client.AppsV1().ReplicaSets(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return false, err
+	}
+	for i := range list.Items {
+		rs := &list.Items[i]
+		if rs.DeletionTimestamp != nil || rs.Spec.Replicas == nil {
+			continue
+		}
+		if rs.Status.Replicas != *rs.Spec.Replicas {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func deploymentGap(ctx context.Context, client kubernetes.Interface) (bool, error) {
+	list, err := client.AppsV1().Deployments(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return false, err
+	}
+	for i := range list.Items {
+		dep := &list.Items[i]
+		if dep.DeletionTimestamp != nil || dep.Spec.Replicas == nil {
+			continue
+		}
+		if dep.Status.Replicas != *dep.Spec.Replicas {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingCA, servingCA []byte, changed []string, drainFor, grace time.Duration, deadline time.Time) (*Result, error) {
 	controllers, needed := wanted(changed)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	unbind := bindSync(ctx)
+	defer unbind()
+
+	passStart := time.Now()
+	stage := passStart
+	took := func(name string) {
+		println("workloads: stage", name, time.Since(stage).Round(time.Millisecond).String())
+		stage = time.Now()
+	}
 
 	work.reset(workloadQueue)
 	factory := informers.NewSharedInformerFactory(client, 0)
@@ -386,11 +517,13 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 	var listErr error
 	var wg sync.WaitGroup
 	var mu sync.Mutex
+	listCtx, listCancel := context.WithTimeout(ctx, listBudget)
+	defer listCancel()
 	for i, s := range src {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			objs, err := list(ctx, s.page)
+			objs, err := list(listCtx, s.page)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -426,6 +559,7 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 	if err := recordCronChildren(ctx, client, loadedNamed(src, loaded, "cronjobs"), loadedNamed(src, loaded, "jobs")); err != nil {
 		println("workloads: cronjob active list:", err.Error())
 	}
+	took("lists")
 	client = observeWrites(client, all)
 
 	if needed == nil || needed["configmaps"] {
@@ -442,6 +576,7 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 	for _, l := range all {
 		l.informer.replay(l.objs)
 	}
+	took("build+fill")
 	done := make(chan struct{}, len(runs))
 	for _, run := range runs {
 		go func() { run(ctx); done <- struct{}{} }()
@@ -450,11 +585,23 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 	if err := clearRecoveredNodes(ctx, client, nodesOf(all)); err != nil {
 		println("workloads: clearing node taints failed:", err.Error())
 	}
-	result.Drained = drain(workloadQueue, drainFor)
+	result.Drained = drain(workloadQueue, drainFor, grace, deadline)
+	took("drain")
 	cancel()
-	for range runs {
-		<-done
+	stopping := time.NewTimer(shutdownGrace)
+	defer stopping.Stop()
+	for i := range runs {
+		select {
+		case <-done:
+		case <-stopping.C:
+			println("workloads: controllers did not stop within", shutdownGrace.String(),
+				"- leaving", strconv.Itoa(len(runs)-i), "of", strconv.Itoa(len(runs)), "behind")
+			took("shutdown")
+			return result, nil
+		}
 	}
+	took("shutdown")
+	println("workloads: pass total", time.Since(passStart).Round(time.Millisecond).String(), "controllers", strconv.Itoa(len(runs)))
 	return result, nil
 }
 
@@ -576,15 +723,23 @@ func anyUnfinished(objs []runtime.Object) bool {
 	return false
 }
 
-func drain(owned func(string) bool, limit time.Duration) bool {
-	deadline := time.Now().Add(limit)
+func drain(owned func(string) bool, limit, grace time.Duration, budgetBy time.Time) bool {
+	started := time.Now()
+	deadline := started.Add(limit)
+	finishBy := deadline.Add(grace)
+	if !budgetBy.IsZero() && budgetBy.Before(finishBy) {
+		finishBy = budgetBy
+		if deadline.After(finishBy) {
+			deadline = finishBy
+		}
+	}
 	defer func() {
 		if busy := work.busy(owned); busy != "" {
-			println("workloads: drain gave up with", busy)
+			println("workloads: drain gave up after", time.Since(started).String(), "with", busy)
 		}
 	}()
 	quiet := 0
-	for time.Now().Before(deadline) {
+	for {
 		time.Sleep(drainPoll)
 		if work.idle(owned) {
 			quiet++
@@ -594,8 +749,14 @@ func drain(owned func(string) bool, limit time.Duration) bool {
 		if quiet >= 2 {
 			return true
 		}
+		now := time.Now()
+		if now.After(finishBy) {
+			return false
+		}
+		if now.After(deadline) && !work.inFlight(owned) && !work.idle(owned) {
+			return false
+		}
 	}
-	return false
 }
 
 func nextCronRun(objs []runtime.Object) (time.Duration, bool) {
