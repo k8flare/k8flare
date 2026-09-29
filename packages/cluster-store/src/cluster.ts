@@ -29,6 +29,7 @@ export type QueueMessage =
   | { kind: "retry"; attempt?: number; changed?: string[]; names?: string[] };
 
 function closeQuietly(ws: WebSocket, reason: string): void {
+  console.log(`cluster: closing watch socket reason=${reason}`);
   try {
     ws.close(1000, reason);
   } catch {}
