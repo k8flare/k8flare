@@ -16,7 +16,7 @@ concurrency:
 jobs:
   required:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
       - name: Free disk space
         run: |
@@ -47,8 +47,27 @@ jobs:
           curl -sSfL https://github.com/WebAssembly/binaryen/releases/download/version_129/binaryen-version_129-x86_64-linux.tar.gz | sudo tar xz -C /opt
           echo /opt/binaryen-version_129/bin >> "$GITHUB_PATH"
 
+      - name: Restore optimized workers
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            .build/wasm/*.opt.wasm
+            .build/wasm/*.opt.wasm.sha256
+          key: wasm-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum', 'Makefile', 'packages/**/*.go', 'scripts/mirror/**') }}
+          restore-keys: wasm-${{ runner.os }}-
+
       - name: Build
+        id: build
         run: scripts/ci/e2e.sh build
+
+      - name: Save optimized workers
+        if: always() && steps.build.outcome == 'success'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            .build/wasm/*.opt.wasm
+            .build/wasm/*.opt.wasm.sha256
+          key: wasm-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum', 'Makefile', 'packages/**/*.go', 'scripts/mirror/**') }}
 
       - name: Start the control plane and a node
         run: scripts/ci/e2e.sh up
