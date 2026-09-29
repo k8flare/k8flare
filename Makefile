@@ -24,7 +24,7 @@ $(ASSETS)/wasm_exec.js: scripts/wasmpack/main.go
 ## One dynamic worker per Go binary; each must stay under the Loader cap.
 $(BUILD)/apiserver.raw.wasm: $(GO_SRC) | mirrors
 	mkdir -p $(BUILD)
-	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/apiserver/cmd/apiserver-wasm
+	GOOS=js GOARCH=wasm go build -buildvcs=false -ldflags="-s -w" -trimpath -o $@ ./packages/apiserver/cmd/apiserver-wasm
 
 ## wasm-opt -Oz is the slow step (40s for the largest binary); it is skipped
 ## when the raw binary's hash matches the one the existing output came from.
@@ -42,7 +42,7 @@ $(BUILD)/apiserver.opt.wasm: $(BUILD)/apiserver.raw.wasm
 
 $(BUILD)/openapi.raw.wasm: $(GO_SRC) | mirrors
 	mkdir -p $(BUILD)
-	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/openapi/cmd/openapi-wasm
+	GOOS=js GOARCH=wasm go build -buildvcs=false -ldflags="-s -w" -trimpath -o $@ ./packages/openapi/cmd/openapi-wasm
 
 $(BUILD)/openapi.opt.wasm: $(BUILD)/openapi.raw.wasm
 	$(OPTIMIZE)
@@ -52,7 +52,7 @@ $(ASSETS)/openapi.manifest.json: $(BUILD)/openapi.opt.wasm
 
 $(BUILD)/customresources.raw.wasm: $(GO_SRC) | mirrors
 	mkdir -p $(BUILD)
-	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/customresources/cmd/customresources-wasm
+	GOOS=js GOARCH=wasm go build -buildvcs=false -ldflags="-s -w" -trimpath -o $@ ./packages/customresources/cmd/customresources-wasm
 
 $(BUILD)/customresources.opt.wasm: $(BUILD)/customresources.raw.wasm
 	$(OPTIMIZE)
@@ -62,7 +62,7 @@ $(ASSETS)/customresources.manifest.json: $(BUILD)/customresources.opt.wasm
 
 $(BUILD)/apiserver-%.raw.wasm: $(GO_SRC) | mirrors
 	mkdir -p $(BUILD)
-	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/apiserver-$*/cmd/apiserver-wasm
+	GOOS=js GOARCH=wasm go build -buildvcs=false -ldflags="-s -w" -trimpath -o $@ ./packages/apiserver-$*/cmd/apiserver-wasm
 
 $(BUILD)/apiserver-%.opt.wasm: $(BUILD)/apiserver-%.raw.wasm
 	$(OPTIMIZE)
@@ -72,7 +72,7 @@ $(ASSETS)/apiserver-%.manifest.json: $(BUILD)/apiserver-%.opt.wasm
 
 $(BUILD)/scheduler.raw.wasm: $(GO_SRC) | mirrors
 	mkdir -p $(BUILD)
-	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/scheduler/cmd/scheduler-wasm
+	GOOS=js GOARCH=wasm go build -buildvcs=false -ldflags="-s -w" -trimpath -o $@ ./packages/scheduler/cmd/scheduler-wasm
 
 $(BUILD)/scheduler.opt.wasm: $(BUILD)/scheduler.raw.wasm
 	$(OPTIMIZE)
@@ -82,7 +82,7 @@ $(ASSETS)/scheduler.manifest.json: $(BUILD)/scheduler.opt.wasm
 
 $(BUILD)/gc.raw.wasm: $(GO_SRC) | mirrors
 	mkdir -p $(BUILD)
-	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/gc/cmd/gc-wasm
+	GOOS=js GOARCH=wasm go build -buildvcs=false -ldflags="-s -w" -trimpath -o $@ ./packages/gc/cmd/gc-wasm
 
 $(BUILD)/gc.opt.wasm: $(BUILD)/gc.raw.wasm
 	$(OPTIMIZE)
@@ -92,7 +92,7 @@ $(ASSETS)/gc.manifest.json: $(BUILD)/gc.opt.wasm
 
 $(BUILD)/hpa.raw.wasm: $(GO_SRC) | mirrors
 	mkdir -p $(BUILD)
-	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/hpa/cmd/hpa-wasm
+	GOOS=js GOARCH=wasm go build -buildvcs=false -ldflags="-s -w" -trimpath -o $@ ./packages/hpa/cmd/hpa-wasm
 
 $(BUILD)/hpa.opt.wasm: $(BUILD)/hpa.raw.wasm
 	$(OPTIMIZE)
@@ -102,7 +102,7 @@ $(ASSETS)/hpa.manifest.json: $(BUILD)/hpa.opt.wasm
 
 $(BUILD)/workloads.raw.wasm: $(GO_SRC) | mirrors
 	mkdir -p $(BUILD)
-	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/workloads/cmd/workloads-wasm
+	GOOS=js GOARCH=wasm go build -buildvcs=false -ldflags="-s -w" -trimpath -o $@ ./packages/workloads/cmd/workloads-wasm
 
 $(BUILD)/workloads.opt.wasm: $(BUILD)/workloads.raw.wasm
 	$(OPTIMIZE)
@@ -114,7 +114,7 @@ $(ASSETS)/workloads.manifest.json: $(BUILD)/workloads.opt.wasm
 ## 13 MB and would put the pair of workers at 98% of the Loader cap.
 $(BUILD)/workloads-vap.raw.wasm: $(GO_SRC) | mirrors
 	mkdir -p $(BUILD)
-	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/workloads/cmd/workloads-vap-wasm
+	GOOS=js GOARCH=wasm go build -buildvcs=false -ldflags="-s -w" -trimpath -o $@ ./packages/workloads/cmd/workloads-vap-wasm
 
 $(BUILD)/workloads-vap.opt.wasm: $(BUILD)/workloads-vap.raw.wasm
 	$(OPTIMIZE)
@@ -124,7 +124,7 @@ $(ASSETS)/workloads-vap.manifest.json: $(BUILD)/workloads-vap.opt.wasm
 
 $(BUILD)/admission.raw.wasm: $(GO_SRC) | mirrors
 	mkdir -p $(BUILD)
-	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/admission/cmd/admission-wasm
+	GOOS=js GOARCH=wasm go build -buildvcs=false -ldflags="-s -w" -trimpath -o $@ ./packages/admission/cmd/admission-wasm
 
 $(BUILD)/admission.opt.wasm: $(BUILD)/admission.raw.wasm
 	$(OPTIMIZE)
@@ -134,7 +134,7 @@ $(ASSETS)/admission.manifest.json: $(BUILD)/admission.opt.wasm
 
 $(BUILD)/hookecho.raw.wasm: $(GO_SRC) | mirrors
 	mkdir -p $(BUILD)
-	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/hookecho/cmd/hookecho-wasm
+	GOOS=js GOARCH=wasm go build -buildvcs=false -ldflags="-s -w" -trimpath -o $@ ./packages/hookecho/cmd/hookecho-wasm
 
 $(BUILD)/hookecho.opt.wasm: $(BUILD)/hookecho.raw.wasm
 	$(OPTIMIZE)
@@ -147,7 +147,7 @@ $(BUILD)/printers-%.opt.wasm: $(BUILD)/printers-%.raw.wasm
 
 $(BUILD)/printers-%.raw.wasm: $(GO_SRC) | mirrors
 	mkdir -p $(BUILD)
-	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/printers-$*/cmd/printers-wasm
+	GOOS=js GOARCH=wasm go build -buildvcs=false -ldflags="-s -w" -trimpath -o $@ ./packages/printers-$*/cmd/printers-wasm
 
 $(ASSETS)/apiserver.manifest.json: $(BUILD)/apiserver.opt.wasm
 	cd scripts && go run ./wasmpack chunk ../$< ../$(ASSETS) apiserver
@@ -162,7 +162,7 @@ NODE_TUNNEL_WASM := packages/node-tunnel/assets/node-tunnel.wasm
 
 $(BUILD)/node-tunnel.raw.wasm: $(GO_SRC) | mirrors
 	mkdir -p $(BUILD)
-	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o $@ ./packages/node-tunnel/cmd/node-tunnel-wasm
+	GOOS=js GOARCH=wasm go build -buildvcs=false -ldflags="-s -w" -trimpath -o $@ ./packages/node-tunnel/cmd/node-tunnel-wasm
 
 $(BUILD)/node-tunnel.opt.wasm: $(BUILD)/node-tunnel.raw.wasm
 	$(OPTIMIZE)
