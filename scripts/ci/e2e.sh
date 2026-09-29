@@ -144,7 +144,7 @@ up() {
 }
 
 run_e2e() {
-  (cd scripts && go run ./e2e -set "${SET:-required}" -procs "${PROCS:-4}" -kubeconfig "$KUBECONFIG_PATH")
+  (cd scripts && go run ./e2e -set "${SET:-required}" -procs "${PROCS:-4}" -shard "${SHARD:-0}" -shards "${SHARDS:-1}" -kubeconfig "$KUBECONFIG_PATH")
 }
 
 case "${1:-all}" in

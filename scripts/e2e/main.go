@@ -29,6 +29,8 @@ func main() {
 	focus := flag.String("focus", "", "override the built-in focus regex")
 	procs := flag.Int("procs", 4, "parallel ginkgo processes; [Serial] specs still run alone")
 	kubeconfigPath := flag.String("kubeconfig", "", "kubeconfig to test against; defaults to .build/kubeconfig.yaml")
+	shard := flag.Int("shard", 0, "which part of the set to run, from 0")
+	shards := flag.Int("shards", 1, "how many parts to split the set into")
 	flag.Parse()
 
 	root, err := upstream.RepoRoot()
@@ -53,7 +55,7 @@ func main() {
 	for _, s := range setsToRun(*set) {
 		regex := *focus
 		if regex == "" {
-			regex = focusRegex(sets[s])
+			regex = focusRegex(shardOf(sets[s], *shard, *shards))
 		}
 		reportDir := filepath.Join(root, ".build/e2e/report", s)
 		check(os.MkdirAll(reportDir, 0o755))
@@ -76,6 +78,16 @@ func setsToRun(set string) []string {
 		log.Fatalf("unknown -set %q; want required, advisory, admission, conformance, surface, quota-life, proxy, or all", set)
 	}
 	return []string{set}
+}
+
+func shardOf(names []string, shard, shards int) []string {
+	var part []string
+	for i, name := range names {
+		if i%shards == shard {
+			part = append(part, name)
+		}
+	}
+	return part
 }
 
 func focusRegex(names []string) string {
