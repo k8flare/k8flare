@@ -190,11 +190,13 @@ async function consumeAccounts(batch: MessageBatch<QueueMessage>, env: Env): Pro
     terminating: namespaces?.terminating ?? 0,
   });
   await applySends(env, first.sends);
-  if (first.stop) {
-    batch.ackAll();
-    return;
+  const provisionOnly = first.stop;
+  let result: Awaited<ReturnType<typeof env.WORKLOADS.sync>> = null;
+  try {
+    result = await env.WORKLOADS.sync(provisionOnly ? ["namespaces"] : ["namespaces", "serviceaccounts", "configmaps"]);
+  } catch (err) {
+    console.log(`accounts: sync failed, deferring to follow-up: ${String(err)}`);
   }
-  const result = await env.WORKLOADS.sync(["namespaces", "serviceaccounts", "configmaps"]);
   if (result) console.log(`accounts: ${Object.entries(result.objects).map(([k, v]) => `${k}=${v}`).join(" ")} drained=${result.drained}`);
   await applySends(env, (await followUp(env, { target: "accounts", phase: "sync", hasResult: Boolean(result), drained: Boolean(result?.drained) })).sends);
   batch.ackAll();
