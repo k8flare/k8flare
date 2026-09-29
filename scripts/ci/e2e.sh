@@ -63,18 +63,27 @@ user_worker_port() {
   return 1
 }
 
+thread_ms() {
+  local tick=$1
+  shift
+  cat "$@" 2>/dev/null | sed 's/.*) //' | awk -v t="$tick" '{ s += $12 + $13 } END { print int(s * 1000 / t) }'
+}
+
 sample_procs() {
-  local tick pid prev_ms cur_ms stat
+  local tick pid main other prev_main prev_other stat
   tick=$(getconf CLK_TCK)
-  declare -A last
+  declare -A last_main last_other
   while true; do
     for pid in "$@"; do
       [ -r "/proc/$pid/stat" ] || continue
       stat=$(sed 's/.*) //' "/proc/$pid/stat")
-      cur_ms=$(awk -v t="$tick" '{ print int(($12 + $13) * 1000 / t) }' <<<"$stat")
-      prev_ms=${last[$pid]:-$cur_ms}
-      last[$pid]=$cur_ms
-      echo "procs pid=$pid comm=$(cat "/proc/$pid/comm") cpu_ms=$((cur_ms - prev_ms)) rss_kb=$(awk '/VmRSS/ { print $2 }' "/proc/$pid/status") state=$(cut -d' ' -f1 <<<"$stat") wchan=$(cat "/proc/$pid/wchan" 2>/dev/null)"
+      main=$(thread_ms "$tick" "/proc/$pid/task/$pid/stat")
+      other=$(( $(thread_ms "$tick" /proc/"$pid"/task/*/stat) - main ))
+      prev_main=${last_main[$pid]:-$main}
+      prev_other=${last_other[$pid]:-$other}
+      last_main[$pid]=$main
+      last_other[$pid]=$other
+      echo "procs pid=$pid comm=$(cat "/proc/$pid/comm") main_ms=$((main - prev_main)) other_ms=$((other - prev_other)) threads=$(ls "/proc/$pid/task" | wc -l) rss_kb=$(awk '/VmRSS/ { print $2 }' "/proc/$pid/status") state=$(cut -d' ' -f1 <<<"$stat") wchan=$(cat "/proc/$pid/wchan" 2>/dev/null)"
     done
     sleep 1
   done
@@ -100,7 +109,7 @@ up() {
   echo "user worker listens on 127.0.0.1:$worker"
   local runtime
   runtime=$(ss -ltnpH "sport = :$worker" | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
-  nohup bash -c "$(declare -f sample_procs); sample_procs $runtime $(ps -o ppid= -p "$runtime")" \
+  nohup bash -c "$(declare -f thread_ms sample_procs); sample_procs $runtime $(ps -o ppid= -p "$runtime")" \
     < /dev/null 2>&1 | stamped "$LOGS/procs.log" &
   nohup "$WORK/devtls" -listen "$API" -upstream "http://127.0.0.1:$worker" -dir .build/devtls -hosts localhost \
     < /dev/null 2>&1 | stamped "$LOGS/devtls.log" &
