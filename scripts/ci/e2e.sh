@@ -7,6 +7,7 @@ LOGS=$WORK/logs
 API=127.0.0.1:16443
 K3S_VERSION=${K3S_VERSION:-v1.36.2+k3s1}
 KUBECONFIG_PATH=$PWD/$WORK/kubeconfig.yaml
+STATE=${STATE:-/dev/shm/k8flare-state}
 mkdir -p "$LOGS"
 
 stamped() {
@@ -116,7 +117,7 @@ up() {
   local admin join worker
   admin=$(sed -n 's/^ADMIN_TOKEN=//p' .dev.vars)
   join=$(sed -n 's/^JOIN_TOKEN=//p' .dev.vars)
-  nohup pnpm exec wrangler dev -c wrangler.dev.jsonc --local --enable-containers=false --persist-to .wrangler/state --port 18787 \
+  nohup pnpm exec wrangler dev -c wrangler.dev.jsonc --local --enable-containers=false --persist-to "$STATE" --port 18787 \
     < /dev/null 2>&1 | stamped "$LOGS/dev.log" &
   wait_for "the control plane" 360 5 curl -sf -o /dev/null -H "Authorization: Bearer $admin" http://127.0.0.1:18787/livez
   worker=$(user_worker_port "$admin")
