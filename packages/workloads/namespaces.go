@@ -400,27 +400,11 @@ func clearNamespaced(ctx context.Context, client kubernetes.Interface, ns string
 			}
 		}
 	}
-	v1events, err := client.EventsV1().Events(ns).List(ctx, metav1.ListOptions{})
-	if err != nil && !apierrors.IsNotFound(err) {
+	if err := client.EventsV1().Events(ns).DeleteCollection(ctx, opts, metav1.ListOptions{}); err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
-	if v1events != nil {
-		for i := range v1events.Items {
-			if err := client.EventsV1().Events(ns).Delete(ctx, v1events.Items[i].Name, opts); err != nil && !apierrors.IsNotFound(err) {
-				return err
-			}
-		}
-	}
-	events, err := client.CoreV1().Events(ns).List(ctx, metav1.ListOptions{})
-	if err != nil && !apierrors.IsNotFound(err) {
+	if err := client.CoreV1().Events(ns).DeleteCollection(ctx, opts, metav1.ListOptions{}); err != nil && !apierrors.IsNotFound(err) {
 		return err
-	}
-	if events != nil {
-		for i := range events.Items {
-			if err := client.CoreV1().Events(ns).Delete(ctx, events.Items[i].Name, opts); err != nil && !apierrors.IsNotFound(err) {
-				return err
-			}
-		}
 	}
 	hpas, err := client.AutoscalingV1().HorizontalPodAutoscalers(ns).List(ctx, metav1.ListOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {

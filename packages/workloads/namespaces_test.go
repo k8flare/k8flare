@@ -445,3 +445,32 @@ func TestClearCoreKeepsConfigMapWhilePodRemains(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestClearCoreRemovesEventsInOneRequestPerAPI(t *testing.T) {
+	var objects []runtime.Object
+	for _, name := range []string{"a", "b", "c"} {
+		objects = append(objects,
+			&v1.Event{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ns"}},
+			&eventsv1.Event{ObjectMeta: metav1.ObjectMeta{Name: "v1-" + name, Namespace: "ns"}},
+		)
+	}
+	client := fake.NewSimpleClientset(objects...)
+	if err := clearCore(context.Background(), client, "ns"); err != nil {
+		t.Fatal(err)
+	}
+	perItem, collections := 0, map[string]int{}
+	for _, action := range client.Actions() {
+		if action.GetResource().Resource != "events" {
+			continue
+		}
+		switch action.GetVerb() {
+		case "delete":
+			perItem++
+		case "delete-collection":
+			collections[action.GetResource().Group]++
+		}
+	}
+	if perItem != 0 || collections[""] != 1 || collections["events.k8s.io"] != 1 {
+		t.Fatalf("per-item deletes=%d collections=%v, want one delete-collection per events API", perItem, collections)
+	}
+}
