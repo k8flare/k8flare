@@ -67,6 +67,8 @@ importers:
 
   packages/apiserver-supervisor: {}
 
+  packages/attachdetach: {}
+
   packages/cluster-store: {}
 
   packages/control-plane-worker:
