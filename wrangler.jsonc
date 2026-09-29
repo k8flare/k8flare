@@ -3,6 +3,7 @@
   "name": "k8flare",
   "main": "packages/control-plane-worker/src/index.ts",
   "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["new_module_registry"],
   "workers_dev": true,
   "routes": [{ "pattern": "k8flare.kooffice.jp", "custom_domain": true }],
   "assets": {

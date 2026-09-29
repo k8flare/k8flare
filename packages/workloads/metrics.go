@@ -47,6 +47,17 @@ func (a *activity) idle(owned func(string) bool) bool {
 	return true
 }
 
+func (a *activity) inFlight(owned func(string) bool) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for name, c := range a.queues {
+		if owned(name) && c.inFlight.Load() != 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *activity) reset(owned func(string) bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

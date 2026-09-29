@@ -565,7 +565,7 @@ func (s *Storage) Watch(ctx context.Context, key string, opts storage.ListOption
 				}
 				if ev.Type == "snapshot-end" {
 					snapshotDone = true
-					if opts.SendInitialEvents == nil || !*opts.SendInitialEvents {
+					if opts.SendInitialEvents == nil || !*opts.SendInitialEvents || !opts.Predicate.AllowWatchBookmarks {
 						continue
 					}
 					bookmark := s.newFunc()

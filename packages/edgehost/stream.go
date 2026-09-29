@@ -178,8 +178,13 @@ func admitStream(r *http.Request, admission *http.Client, ref streamRef, q url.V
 	if ref.kind == "portforward" {
 		kind = "PodPortForwardOptions"
 	}
+	if ref.kind == "log" {
+		kind = "PodLogOptions"
+	}
 	var object any
-	if ref.kind == "portforward" {
+	if ref.kind == "log" {
+		object = logOptions(q)
+	} else if ref.kind == "portforward" {
 		var ports []int
 		for _, p := range append(q["ports"], q["port"]...) {
 			n, err := strconv.Atoi(p)
@@ -259,6 +264,36 @@ func writeForbidden(w http.ResponseWriter, message string) {
 		"reason":     "Forbidden",
 		"code":       http.StatusForbidden,
 	})
+}
+
+func logOptions(q url.Values) map[string]any {
+	obj := map[string]any{
+		"apiVersion": "v1", "kind": "PodLogOptions",
+		"container": q.Get("container"), "follow": queryFlag(q, "follow"),
+		"previous": queryFlag(q, "previous"), "timestamps": queryFlag(q, "timestamps"),
+	}
+	if n, ok := queryInt(q, "sinceSeconds"); ok {
+		obj["sinceSeconds"] = n
+	}
+	if n, ok := queryInt(q, "tailLines"); ok {
+		obj["tailLines"] = n
+	}
+	if n, ok := queryInt(q, "limitBytes"); ok {
+		obj["limitBytes"] = n
+	}
+	return obj
+}
+
+func queryInt(q url.Values, key string) (int, bool) {
+	v := q.Get(key)
+	if v == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 func queryFlag(q url.Values, keys ...string) bool {

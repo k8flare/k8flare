@@ -26,6 +26,7 @@ import (
 const (
 	listPage       = 500
 	inFlightWait   = 20 * time.Second
+	bindGrace      = 70 * time.Second
 	inFlightPoll   = 50 * time.Millisecond
 	schedulerName  = "default-scheduler"
 	reportingActor = "default-scheduler"
@@ -176,9 +177,15 @@ func Schedule(ctx context.Context, client kubernetes.Interface) (*Result, error)
 		sched.ScheduleOne(ctx)
 	}
 	deadline := time.Now().Add(inFlightWait)
-	for time.Now().Before(deadline) {
+	finishBy := deadline.Add(bindGrace)
+	for {
 		pending, _ := sched.SchedulingQueue.PendingPods()
-		if len(sched.SchedulingQueue.InFlightPods()) == 0 && int(scheduled.Load())+len(pending) >= len(queued) {
+		inFlight := len(sched.SchedulingQueue.InFlightPods())
+		if inFlight == 0 && int(scheduled.Load())+len(pending) >= len(queued) {
+			break
+		}
+		now := time.Now()
+		if now.After(finishBy) || (now.After(deadline) && inFlight == 0) {
 			break
 		}
 		time.Sleep(inFlightPoll)

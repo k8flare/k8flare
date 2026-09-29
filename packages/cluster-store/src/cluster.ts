@@ -387,14 +387,13 @@ export class Cluster extends DurableObject<Env> {
     }
   }
 
-  // The in-memory watcher map does not survive hibernation; the sockets'
-  // attachments do, so it is rebuilt from them whenever it is empty.
   private restoreWatchers(): void {
-    if (this.watchers.size > 0) return;
+    const live = new Map<WebSocket, Watcher>();
     for (const ws of this.ctx.getWebSockets()) {
-      const w = ws.deserializeAttachment() as Watcher | null;
-      if (w) this.watchers.set(ws, w);
+      const w = this.watchers.get(ws) ?? (ws.deserializeAttachment() as Watcher | null);
+      if (w) live.set(ws, w);
     }
+    this.watchers = live;
   }
 
   private queue(target: Target): Queue<QueueMessage> {
