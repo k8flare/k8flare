@@ -9,6 +9,10 @@ K3S_VERSION=${K3S_VERSION:-v1.36.2+k3s1}
 KUBECONFIG_PATH=$PWD/$WORK/kubeconfig.yaml
 mkdir -p "$LOGS"
 
+stamped() {
+  perl -MPOSIX=strftime -MTime::HiRes=time -ne 'BEGIN { $| = 1 } my $t = time; printf "%s.%03d %s", strftime("%H:%M:%S", gmtime($t)), ($t - int($t)) * 1000, $_' > "$1"
+}
+
 wait_for() {
   local what=$1 tries=$2 delay=$3
   shift 3
@@ -57,9 +61,9 @@ up() {
   dev_vars
   make wrangler.dev.jsonc
   nohup pnpm exec wrangler dev -c wrangler.dev.jsonc --local --enable-containers=false --persist-to .wrangler/state --port 18787 \
-    > "$LOGS/dev.log" 2>&1 < /dev/null &
+    < /dev/null 2>&1 | stamped "$LOGS/dev.log" &
   nohup "$WORK/devtls" -listen "$API" -upstream http://127.0.0.1:18787 -dir .build/devtls -hosts localhost \
-    > "$LOGS/devtls.log" 2>&1 < /dev/null &
+    < /dev/null 2>&1 | stamped "$LOGS/devtls.log" &
   local admin join
   admin=$(sed -n 's/^ADMIN_TOKEN=//p' .dev.vars)
   join=$(sed -n 's/^JOIN_TOKEN=//p' .dev.vars)

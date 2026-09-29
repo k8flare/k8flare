@@ -60,7 +60,7 @@ func run(listen, upstream, dir string, hosts []string) error {
 	proxy.FlushInterval = -1
 	srv := &http.Server{
 		Addr:      listen,
-		Handler:   proxy,
+		Handler:   accessLog(proxy, 5*time.Second),
 		TLSConfig: &tls.Config{Certificates: []tls.Certificate{serverCert}, MinVersion: tls.VersionTLS12},
 	}
 	log.Printf("devtls: https://%s -> %s (CA %s)", listen, upstream, filepath.Join(dir, "ca.crt"))
