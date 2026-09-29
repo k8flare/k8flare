@@ -34,6 +34,20 @@ build() {
   (cd scripts && CGO_ENABLED=0 go build -o "../$WORK/devtls" ./devtls)
 }
 
+build_shard() {
+  local shard=$1 shards=$2
+  local -a all mine=()
+  read -ra all <<<"$(make -s opt-wasm-list)"
+  for i in "${!all[@]}"; do
+    if [ $((i % shards)) -eq "$shard" ]; then
+      mine+=("${all[$i]}")
+    fi
+  done
+  echo "shard $shard/$shards builds ${mine[*]}"
+  make mirrors
+  make "${mine[@]}"
+}
+
 dev_vars() {
   [ -f .dev.vars ] && return 0
   printf 'ADMIN_TOKEN=%s\nREADONLY_TOKEN=%s\nJOIN_TOKEN=%s\nKUBELET_SCHEME=http\nKUBELET_PORT=10255\n' \
@@ -134,8 +148,9 @@ run_e2e() {
 
 case "${1:-all}" in
   build) build ;;
+  shard) build_shard "$2" "$3" ;;
   up) up ;;
   test) run_e2e ;;
   all) build; up; run_e2e ;;
-  *) echo "usage: $0 [build|up|test|all]" >&2; exit 2 ;;
+  *) echo "usage: $0 [build|shard N OF|up|test|all]" >&2; exit 2 ;;
 esac

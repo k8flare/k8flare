@@ -11,7 +11,7 @@ GROUPS := core coordination discovery node storage apps policy resource rbac bat
 API_GROUPS := core coordination discovery events node storage authentication authorization apps policy resource rbac batch admissionregistration autoscaling scheduling networking certificates flowcontrol apiregistration
 WASM_OPT := wasm-opt -Oz --strip-debug --strip-producers --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals
 
-.PHONY: mirrors wasm gen agent dev devtls kubeconfig check vet test test-packages clean e2e deploycheck sizes
+.PHONY: mirrors wasm opt-wasm-list gen agent dev devtls kubeconfig check vet test test-packages clean e2e deploycheck sizes
 
 mirrors:
 	cd scripts && go run ./mirror
@@ -170,6 +170,11 @@ $(BUILD)/node-tunnel.opt.wasm: $(BUILD)/node-tunnel.raw.wasm
 $(NODE_TUNNEL_WASM): $(BUILD)/node-tunnel.opt.wasm
 	mkdir -p $(dir $@)
 	cp $< $@
+
+OPT_WASM := $(BUILD)/apiserver.opt.wasm $(foreach g,$(API_GROUPS),$(BUILD)/apiserver-$(g).opt.wasm) $(foreach w,openapi customresources scheduler workloads workloads-vap hpa gc admission hookecho node-tunnel,$(BUILD)/$(w).opt.wasm) $(foreach g,$(GROUPS),$(BUILD)/printers-$(g).opt.wasm)
+
+opt-wasm-list:
+	@echo $(OPT_WASM)
 
 wasm: $(ASSETS)/wasm_exec.js $(ASSETS)/apiserver.manifest.json $(foreach g,$(API_GROUPS),$(ASSETS)/apiserver-$(g).manifest.json) $(ASSETS)/openapi.manifest.json $(ASSETS)/customresources.manifest.json $(ASSETS)/scheduler.manifest.json $(ASSETS)/workloads.manifest.json $(ASSETS)/workloads-vap.manifest.json $(ASSETS)/hpa.manifest.json $(ASSETS)/gc.manifest.json $(ASSETS)/admission.manifest.json $(ASSETS)/hookecho.manifest.json $(foreach g,$(GROUPS),$(ASSETS)/printers-$(g).manifest.json) $(NODE_TUNNEL_WASM)
 
