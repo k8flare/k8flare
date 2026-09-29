@@ -1,4 +1,5 @@
 import type { QueueMessage } from "@k8flare/cluster-store";
+import { Trace } from "./otel";
 import { apiserverFetch } from "./loader.ts";
 
 type Target = "scheduler" | "leases" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "metrics" | "containers";
@@ -88,7 +89,21 @@ async function queuePlan(env: Env, messages: readonly QueueMessage[]): Promise<{
 }
 
 async function consumeWorkloads(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
-  const plan = await queuePlan(env, batch.messages.map((m) => m.body));
+  const trace = Trace.start(env, "control-plane");
+  const root = trace.root("queue.consume", undefined, {
+    "k8flare.queue": "k8flare-workloads",
+    "k8flare.messages": batch.messages.length,
+  });
+  try {
+    await root.measure(() => consumeWorkloadsInner(batch, env, root));
+  } finally {
+    await trace.flush();
+  }
+}
+
+async function consumeWorkloadsInner(batch: MessageBatch<QueueMessage>, env: Env, root: import("./otel").Span): Promise<void> {
+  const planSpan = root.child("queue.plan", { "k8flare.messages": batch.messages.length });
+  const plan = await planSpan.measure(() => queuePlan(env, batch.messages.map((m) => m.body)));
   if (!plan) {
     await applySends(env, (await followUp(env, { target: "workloads" })).sends);
     batch.ackAll();
@@ -117,14 +132,27 @@ async function consumeWorkloads(batch: MessageBatch<QueueMessage>, env: Env): Pr
   let drained = false;
   let nextMs = 0;
   if (changed.length > 0) {
-    const result = await env.WORKLOADS.sync(changed);
+    const syncSpan = root.child("rpc.workloads.sync", { "k8flare.changed": changed.join(",") });
+    let result: Awaited<ReturnType<typeof env.WORKLOADS.sync>> = null;
+    try {
+      result = await syncSpan.measure(() => env.WORKLOADS.sync(changed, traceparent(syncSpan)));
+    } catch (err) {
+      console.log(`workloads: sync failed, deferring to follow-up: ${String(err)}`);
+    }
     hasResult = Boolean(result);
     drained = Boolean(result?.drained);
     nextMs = result?.nextMs ?? 0;
     if (result) console.log(`workloads: ${Object.entries(result.objects).map(([k, v]) => `${k}=${v}`).join(" ")} drained=${result.drained}`);
   }
-  await applySends(env, (await followUp(env, { target: "workloads", planOK: true, provisionFailed, changed, hasResult, drained, nextMs })).sends);
+  const followSpan = root.child("queue.followup", { "k8flare.changed": changed.join(",") });
+  await followSpan.measure(async () => {
+    await applySends(env, (await followUp(env, { target: "workloads", planOK: true, provisionFailed, changed, hasResult, drained, nextMs })).sends);
+  });
   batch.ackAll();
+}
+
+function traceparent(span: import("./otel").Span): string {
+  return `00-${span.context.traceId}-${span.context.spanId}-01`;
 }
 
 
