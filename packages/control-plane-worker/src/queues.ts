@@ -179,7 +179,12 @@ async function consumeGC(batch: MessageBatch<QueueMessage>, env: Env): Promise<v
 }
 
 async function consumeAccounts(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
-  const namespaces = await env.WORKLOADS.namespaces(batch.messages.map((m) => m.body));
+  let namespaces: Awaited<ReturnType<typeof env.WORKLOADS.namespaces>> = null;
+  try {
+    namespaces = await env.WORKLOADS.namespaces(batch.messages.map((m) => m.body));
+  } catch (err) {
+    console.log(`namespaces: delete failed, deferring to follow-up: ${String(err)}`);
+  }
   if (namespaces) console.log(`namespaces: asked=${namespaces.names?.length ?? 0} terminating=${namespaces.terminating} deleted=${namespaces.deleted} remaining=${namespaces.remaining}`);
   const first = await followUp(env, {
     target: "accounts",
