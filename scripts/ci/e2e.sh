@@ -50,6 +50,19 @@ write_accepted() {
     kubectl --kubeconfig "$KUBECONFIG_PATH" delete namespace ci-writecheck --wait=false
 }
 
+user_worker_port() {
+  local admin=$1 port
+  for port in $(ss -ltnpH | awk '/"workerd"/ { n = split($4, a, ":"); print a[n] }' | sort -u); do
+    [ "$port" = 18787 ] && continue
+    if curl -sf -m 5 -o /dev/null -H "Authorization: Bearer $admin" "http://127.0.0.1:$port/livez"; then
+      echo "$port"
+      return 0
+    fi
+  done
+  echo "no workerd port answers /livez" >&2
+  return 1
+}
+
 up() {
   if [ ! -x /usr/local/bin/k3s ]; then
     curl -sfL -o "$WORK/k3s" "https://github.com/k3s-io/k3s/releases/download/${K3S_VERSION/+/%2B}/k3s"
@@ -60,14 +73,17 @@ up() {
 
   dev_vars
   make wrangler.dev.jsonc
-  nohup pnpm exec wrangler dev -c wrangler.dev.jsonc --local --enable-containers=false --persist-to .wrangler/state --port 18787 \
-    < /dev/null 2>&1 | stamped "$LOGS/dev.log" &
-  nohup "$WORK/devtls" -listen "$API" -upstream http://127.0.0.1:18787 -dir .build/devtls -hosts localhost \
-    < /dev/null 2>&1 | stamped "$LOGS/devtls.log" &
-  local admin join
+  local admin join worker
   admin=$(sed -n 's/^ADMIN_TOKEN=//p' .dev.vars)
   join=$(sed -n 's/^JOIN_TOKEN=//p' .dev.vars)
-  wait_for "the control plane" 360 5 curl -skf -o /dev/null -H "Authorization: Bearer $admin" "https://$API/livez"
+  nohup pnpm exec wrangler dev -c wrangler.dev.jsonc --local --enable-containers=false --persist-to .wrangler/state --port 18787 \
+    < /dev/null 2>&1 | stamped "$LOGS/dev.log" &
+  wait_for "the control plane" 360 5 curl -sf -o /dev/null -H "Authorization: Bearer $admin" http://127.0.0.1:18787/livez
+  worker=$(user_worker_port "$admin")
+  echo "user worker listens on 127.0.0.1:$worker"
+  nohup "$WORK/devtls" -listen "$API" -upstream "http://127.0.0.1:$worker" -dir .build/devtls -hosts localhost \
+    < /dev/null 2>&1 | stamped "$LOGS/devtls.log" &
+  wait_for "devtls" 60 1 curl -skf -o /dev/null -H "Authorization: Bearer $admin" "https://$API/livez"
 
   sudo install -m 0644 .build/devtls/ca.crt /usr/local/share/ca-certificates/k8flare-dev-ca.crt
   sudo update-ca-certificates >/dev/null
