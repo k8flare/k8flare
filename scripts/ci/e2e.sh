@@ -63,6 +63,23 @@ user_worker_port() {
   return 1
 }
 
+sample_procs() {
+  local tick pid prev_ms cur_ms stat
+  tick=$(getconf CLK_TCK)
+  declare -A last
+  while true; do
+    for pid in "$@"; do
+      [ -r "/proc/$pid/stat" ] || continue
+      stat=$(sed 's/.*) //' "/proc/$pid/stat")
+      cur_ms=$(awk -v t="$tick" '{ print int(($12 + $13) * 1000 / t) }' <<<"$stat")
+      prev_ms=${last[$pid]:-$cur_ms}
+      last[$pid]=$cur_ms
+      echo "procs pid=$pid comm=$(cat "/proc/$pid/comm") cpu_ms=$((cur_ms - prev_ms)) rss_kb=$(awk '/VmRSS/ { print $2 }' "/proc/$pid/status") state=$(cut -d' ' -f1 <<<"$stat") wchan=$(cat "/proc/$pid/wchan" 2>/dev/null)"
+    done
+    sleep 1
+  done
+}
+
 up() {
   if [ ! -x /usr/local/bin/k3s ]; then
     curl -sfL -o "$WORK/k3s" "https://github.com/k3s-io/k3s/releases/download/${K3S_VERSION/+/%2B}/k3s"
@@ -81,6 +98,10 @@ up() {
   wait_for "the control plane" 360 5 curl -sf -o /dev/null -H "Authorization: Bearer $admin" http://127.0.0.1:18787/livez
   worker=$(user_worker_port "$admin")
   echo "user worker listens on 127.0.0.1:$worker"
+  local runtime
+  runtime=$(ss -ltnpH "sport = :$worker" | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
+  nohup bash -c "$(declare -f sample_procs); sample_procs $runtime $(ps -o ppid= -p "$runtime")" \
+    < /dev/null 2>&1 | stamped "$LOGS/procs.log" &
   nohup "$WORK/devtls" -listen "$API" -upstream "http://127.0.0.1:$worker" -dir .build/devtls -hosts localhost \
     < /dev/null 2>&1 | stamped "$LOGS/devtls.log" &
   wait_for "devtls" 60 1 curl -skf -o /dev/null -H "Authorization: Bearer $admin" "https://$API/livez"
