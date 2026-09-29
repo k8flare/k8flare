@@ -56,6 +56,7 @@ func run(listen, upstream, dir string, hosts []string) error {
 		return err
 	}
 	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.Transport = retryDropped{base: http.DefaultTransport}
 	proxy.FlushInterval = -1
 	srv := &http.Server{
 		Addr:      listen,

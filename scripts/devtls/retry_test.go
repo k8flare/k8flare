@@ -1,0 +1,82 @@
+package main
+
+import (
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+)
+
+const droppedBody = "Error: Network connection lost.\n    at async Object.fetch (file:///miniflare/dist/src/workers/core/entry.worker.js:1:1)"
+
+func TestRetriesAWriteDroppedByTheProxyWorker(t *testing.T) {
+	var calls atomic.Int32
+	var bodies []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(b))
+		if calls.Add(1) == 1 {
+			http.Error(w, droppedBody, http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		io.WriteString(w, "created")
+	}))
+	defer upstream.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, upstream.URL+"/api/v1/namespaces/ns/events", strings.NewReader(`{"kind":"Event"}`))
+	resp, err := retryDropped{base: http.DefaultTransport}.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusCreated || string(got) != "created" {
+		t.Fatalf("got %d %q, want the retried 201", resp.StatusCode, got)
+	}
+	if calls.Load() != 2 || bodies[1] != `{"kind":"Event"}` {
+		t.Fatalf("calls=%d bodies=%q, want the same body sent twice", calls.Load(), bodies)
+	}
+}
+
+func TestPassesThroughOtherServerErrors(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		http.Error(w, "etcdserver: request timed out", http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	req, _ := http.NewRequest(http.MethodPut, upstream.URL+"/api/v1/namespaces/ns/configmaps/c", strings.NewReader("{}"))
+	resp, err := retryDropped{base: http.DefaultTransport}.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusInternalServerError || !strings.Contains(string(got), "etcdserver") || calls.Load() != 1 {
+		t.Fatalf("got %d %q after %d calls, want the original 500 untouched", resp.StatusCode, got, calls.Load())
+	}
+}
+
+func TestGivesUpAfterRepeatedDrops(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		http.Error(w, droppedBody, http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	req, _ := http.NewRequest(http.MethodPatch, upstream.URL+"/api/v1/nodes/n/status", strings.NewReader("{}"))
+	resp, err := retryDropped{base: http.DefaultTransport}.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusInternalServerError || !strings.HasPrefix(string(got), "Error: Network connection lost.") {
+		t.Fatalf("got %d %q, want the last dropped response", resp.StatusCode, got)
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("calls=%d, want three attempts", calls.Load())
+	}
+}
