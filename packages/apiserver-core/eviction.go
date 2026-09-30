@@ -33,8 +33,9 @@ func init() {
 }
 
 type evictionREST struct {
-	pods *registry.Store
-	kine *kine.Client
+	pods   *registry.Store
+	status *registry.Store
+	kine   *kine.Client
 }
 
 var (
@@ -50,7 +51,9 @@ var evictionGVK = schema.GroupVersionKind{Group: "policy", Version: "v1", Kind: 
 var evictionsRetry = wait.Backoff{Steps: 20, Duration: 500 * time.Millisecond, Factor: 1.0, Jitter: 0.1}
 
 func newEvictionREST(pods *registry.Store, client *kine.Client) rest.Storage {
-	return &evictionREST{pods: pods, kine: client}
+	status := *pods
+	status.UpdateStrategy = podStatusStrategy{registry.StatusStrategyFor(pods)}
+	return &evictionREST{pods: pods, status: &status, kine: client}
 }
 
 func (evictionREST) New() runtime.Object     { return &policyv1.Eviction{} }
@@ -175,7 +178,7 @@ func evictionDeleteOptions(eviction *policyv1.Eviction, options *metav1.CreateOp
 
 func (r *evictionREST) deletePod(ctx context.Context, name string, options *metav1.DeleteOptions) error {
 	if !dryrun.IsDryRun(options.DryRun) {
-		_, _, err := r.pods.Update(ctx, name, rest.DefaultUpdatedObjectInfo(nil, func(_ context.Context, _, old runtime.Object) (runtime.Object, error) {
+		_, _, err := r.status.Update(ctx, name, rest.DefaultUpdatedObjectInfo(nil, func(_ context.Context, _, old runtime.Object) (runtime.Object, error) {
 			pod := old.DeepCopyObject().(*corev1.Pod)
 			if err := matchPodPreconditions(pod, options); err != nil {
 				return nil, err

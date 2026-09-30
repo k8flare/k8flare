@@ -40,6 +40,31 @@ func TestEvictionDeletesTerminalPod(t *testing.T) {
 	}
 }
 
+func TestEvictionMarksGracefullyDeletedPodAsDisruptionTarget(t *testing.T) {
+	pod := runningPod("p", corev1.PodRunning, true)
+	pod.Spec.NodeName = "n"
+	pod.Spec.TerminationGracePeriodSeconds = ptr.To(int64(30))
+	h := newEvictionHarness(t, pod, nil)
+	registry.Customizers["pods"](h.pods, registry.Deps{})
+	if _, err := h.Create(h.ctx, "p", &policyv1.Eviction{ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "ns"}}, rest.ValidateAllObjectFunc, &metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := h.pods.Get(h.ctx, "p", &metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	left := got.(*corev1.Pod)
+	if left.DeletionTimestamp == nil {
+		t.Fatal("expected a graceful delete to leave the pod")
+	}
+	for _, c := range left.Status.Conditions {
+		if c.Type == corev1.DisruptionTarget && c.Status == corev1.ConditionTrue && c.Reason == "EvictionByEvictionAPI" {
+			return
+		}
+	}
+	t.Fatalf("DisruptionTarget missing from %+v", left.Status.Conditions)
+}
+
 func TestEvictionDeniedWhenPDBHasNoDisruptions(t *testing.T) {
 	h := newEvictionHarness(t, runningPod("p", corev1.PodRunning, true), &policyv1.PodDisruptionBudget{
 		ObjectMeta: metav1.ObjectMeta{Name: "pdb", Namespace: "ns", Generation: 1},
