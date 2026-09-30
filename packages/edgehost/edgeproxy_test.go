@@ -178,6 +178,28 @@ func TestProxyWithoutTableFallsThrough(t *testing.T) {
 	}
 }
 
+func TestProxyHostlessFallbackNeverShadowsTheAPIOnItsOwnAddress(t *testing.T) {
+	useClock(t)
+	store := webFixture(Rule{
+		Source: "Ingress/ingress-5779/e2e-example-ing", Fallback: true,
+		Path:     &pathMatch{Type: "PathPrefix", Value: "/"},
+		Backends: []Backend{{Namespace: "ingress-5779", Name: "default-backend", Port: 8080, Weight: 1}},
+	})
+	tun := &tunnelLog{}
+	for _, target := range []string{
+		"https://127.0.0.1:16443/api/v1/namespaces/x/configmaps?watch=true",
+		"https://localhost:6443/api",
+		"https://[::1]:6443/apis",
+	} {
+		if w, handled := serve(t, store, tun, target); handled {
+			t.Fatalf("%s: %d %s", target, w.Code, w.Body.String())
+		}
+	}
+	if w, handled := serve(t, store, tun, "https://anything.example.com/"); !handled || w.Code != 500 {
+		t.Fatal(handled, w.Code)
+	}
+}
+
 func TestProxyRedirectAndInvalid(t *testing.T) {
 	useClock(t)
 	store := webFixture(

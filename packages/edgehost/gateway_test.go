@@ -6,7 +6,7 @@ func TestIsGatewayHost(t *testing.T) {
 	if !IsGatewayHost("app.example.com") {
 		t.Fatal("app")
 	}
-	for _, host := range []string{"", "k8flare.kooffice.workers.dev", "cluster.internal", "api.k8flare.com", "k8flare.com", "lb-web--default.k8flare.com"} {
+	for _, host := range []string{"", "k8flare.kooffice.workers.dev", "cluster.internal", "api.k8flare.com", "k8flare.com", "lb-web--default.k8flare.com", "127.0.0.1", "127.0.0.1:16443", "::1", "localhost"} {
 		if IsGatewayHost(host) {
 			t.Fatal(host)
 		}

@@ -2,6 +2,7 @@ package edgehost
 
 import (
 	"math/rand"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -23,8 +24,8 @@ type pathMatch struct {
 }
 
 func IsGatewayHost(host string) bool {
-	h := strings.ToLower(strings.Split(host, ":")[0])
-	if h == "" || strings.HasSuffix(h, ".workers.dev") || strings.HasSuffix(h, ".internal") || gatewayAPIHosts[h] {
+	h := hostname(host)
+	if h == "" || h == "localhost" || net.ParseIP(h) != nil || strings.HasSuffix(h, ".workers.dev") || strings.HasSuffix(h, ".internal") || gatewayAPIHosts[h] {
 		return false
 	}
 	_, ok := ParseServiceHost(h)

@@ -1,6 +1,7 @@
 package edgehost
 
 import (
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -66,7 +67,14 @@ func RequestHost(r *http.Request) string {
 	if host == "" && r.URL != nil {
 		host = r.URL.Hostname()
 	}
-	return strings.ToLower(strings.Split(host, ":")[0])
+	return hostname(host)
+}
+
+func hostname(host string) string {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return strings.ToLower(strings.Trim(host, "[]"))
 }
 
 func ParseServiceRoute(r *http.Request) (Ref, bool) {
