@@ -351,10 +351,25 @@ it. Remove an entry when the behaviour exists and CI covers it.
     later one conflicted, so `GET /scale` returned `status.replicas=0`
     while the pod was Ready. Status and spec writes by the StatefulSet
     controller now enter its snapshot (`observeStatefulSets`).
-  - Not verified in CI yet. The Job controller logs the same conflict
-    ("adding uncounted pods to status ... has been modified"), which fits
-    the backoffLimitPerIndex suspect above; Jobs, ReplicaSets and
-    Deployments have no write observer.
+  - Write observers now cover every controller-owned type with a snapshot
+    (`observe.go`, `observe_types.go`): Jobs, CronJobs, ReplicaSets,
+    Deployments, DaemonSets, ControllerRevisions, Endpoints,
+    EndpointSlices, ResourceQuotas (status), Namespaces (update, status,
+    finalize) and PodDisruptionBudgets (status), on top of pods, RCs,
+    StatefulSets, PVs and PVCs. Create, update, status update and patch go
+    through `observed` into the snapshot, delete through `removed`; pod and
+    StatefulSet patches were added too (the Job controller removes tracking
+    finalizers with `Pods().Patch`, which the pod snapshot never saw).
+    `TestControllerWritesEnterTheSnapshotWithinThePass` covers each verb.
+    A fake-client Sync of an indexed Job with `backoffLimitPerIndex`
+    (`TestSyncRunsEachFailingIndexOnce`) creates exactly 3 pods, but it
+    also passes with the observers off: a fake pass is too short to
+    requeue the same Job against a stale snapshot, so the 10-pods run
+    stays unconfirmed until a CI rerun of that spec.
+  - Not observed: Services, ConfigMaps, Secrets, ServiceAccounts, Nodes
+    and the other snapshot types whose controllers write them (root CA
+    publisher, nodelifecycle, service-account controllers); no conflict
+    loop was seen there.
   - The interruption at 76 minutes: GitHub reports the step as cancelled
     with only "The operation was canceled." (no runner shutdown, timeout
     or out-of-memory message), the job's later `always()` steps were
