@@ -9,13 +9,20 @@ export interface NodeObject {
 }
 
 export class APIError extends Error {
-  constructor(readonly status: number, message: string) {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
     super(message);
+    this.status = status;
   }
 }
 
 export class PodAPI {
-  constructor(private readonly env: Env) {}
+  private readonly env: Env;
+
+  constructor(env: Env) {
+    this.env = env;
+  }
 
   async fetch(path: string, init?: RequestInit): Promise<Response> {
     const headers = new Headers(init?.headers);

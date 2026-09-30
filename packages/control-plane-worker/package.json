@@ -11,6 +11,6 @@
   "scripts": {
     "dev": "cd ../.. && make dev",
     "check": "cd ../.. && pnpm exec tsc --noEmit",
-    "test": "node --test test/*.test.ts"
+    "test": "node --import ./test/register.mjs --test test/*.test.ts"
   }
 }

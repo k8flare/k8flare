@@ -344,7 +344,6 @@ export class PodKubelet extends DurableObject<Env> {
 
     if (message && !/exit/i.test(message) && platformFailure.test(message) && !this.state.killReason) {
       const transient = classifyStartFailure(message) === "transient";
-      this.state.generation++;
       if (pod) await this.failStart(pod, transient ? "ContainerCreating" : "CreateContainerError", message, transient);
       return;
     }
