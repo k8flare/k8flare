@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/rest"
+	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 )
 
@@ -375,6 +376,7 @@ func runningPod(name string, phase corev1.PodPhase, ready bool) *corev1.Pod {
 	if ready {
 		pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
 	}
+	scheme.Scheme.Default(pod)
 	return pod
 }
 

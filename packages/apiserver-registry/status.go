@@ -21,12 +21,18 @@ type statusREST struct {
 
 // NewStatusREST serves /status over parent.
 func NewStatusREST(parent *genericregistry.Store) *statusREST {
+	status := NewUpdateOnlyREST(parent, StatusStrategyFor(parent))
 	if up, ok := Upstreams[parent.DefaultQualifiedResource]; ok && up.Status != nil {
-		status := NewUpdateOnlyREST(parent, upstreamStatusStrategy{RESTUpdateStrategy: parent.UpdateStrategy, up: up.Status})
 		status.store.ResetFieldsStrategy, _ = up.Status.(rest.ResetFieldsStrategy)
-		return status
 	}
-	return NewUpdateOnlyREST(parent, statusOnlyStrategy{parent.UpdateStrategy})
+	return status
+}
+
+func StatusStrategyFor(parent *genericregistry.Store) rest.RESTUpdateStrategy {
+	if up, ok := Upstreams[parent.DefaultQualifiedResource]; ok && up.Status != nil {
+		return upstreamStatusStrategy{RESTUpdateStrategy: parent.UpdateStrategy, up: up.Status}
+	}
+	return statusOnlyStrategy{parent.UpdateStrategy}
 }
 
 func StatusOnly(parent rest.RESTUpdateStrategy) rest.RESTUpdateStrategy {

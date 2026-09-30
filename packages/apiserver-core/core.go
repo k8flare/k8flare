@@ -62,7 +62,7 @@ func init() {
 		return NewServiceProxyREST(stores["services"], stores["endpoints"], stores["pods"], deps.Kubelet)
 	}
 	registry.Subresources["pods/status"] = func(stores map[string]*registry.Store, _ registry.Deps) rest.Storage {
-		return registry.NewUpdateOnlyREST(stores["pods"], podStatusStrategy{registry.StatusOnly(stores["pods"].UpdateStrategy)})
+		return registry.NewUpdateOnlyREST(stores["pods"], podStatusStrategy{registry.StatusStrategyFor(stores["pods"])})
 	}
 	registry.Subresources["pods/binding"] = func(stores map[string]*registry.Store, _ registry.Deps) rest.Storage {
 		return bindingREST{stores["pods"]}
