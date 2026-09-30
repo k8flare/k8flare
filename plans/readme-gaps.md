@@ -44,7 +44,45 @@ it. Remove an entry when the behaviour exists and CI covers it.
 - HelmChart is not installed by anything. Helm's engine does not fit a
   Worker (about 70 MB); options are a text/template + sprig engine or
   k3s's klipper-helm Job.
-- Ingress and Gateway API are not routed at the edge.
+- Ingress and Gateway API are routed at the edge, covered by Go tests
+  only; no workerd or CI run has exercised them.
+  - The workloads pass compiles every owned Ingress (IngressClass
+    controller `k8flare.com/edge`; the `k8flare` class is packaged as the
+    default) and HTTPRoute (GatewayClass with the same controller) into one
+    precedence-sorted table at `/k8flare/edge/routes`, rewritten only when
+    it changes. The apiserver isolate caches it and the Service and
+    endpoint lookups for 2 s, so a routed request costs no store call
+    while the cache is fresh and a route change reaches the edge within
+    the queue delay plus 2 s.
+  - Ingress: host (exact, `*.` wildcard, none), Exact/Prefix/
+    ImplementationSpecific paths, `defaultBackend`, Service ports by name
+    or number. `resource` backends answer 500. `tls` entries are ignored:
+    Cloudflare terminates TLS with its own certificate for the zone, and a
+    `tls.secretName` is never read. `status.loadBalancer.ingress` lists the
+    rule hosts, or `k8flare.com` when there are none (unchecked against a
+    real zone).
+  - Gateway API: GatewayClass, Gateway (HTTP and HTTPS listeners,
+    `allowedRoutes` `Same`/`All`, `sectionName`, listener hostname
+    intersection), HTTPRoute matches (path, headers, query, method),
+    weighted `backendRefs`, ReferenceGrant for cross-namespace backends,
+    and the RequestHeaderModifier, ResponseHeaderModifier, RequestRedirect
+    and URLRewrite filters. Accepted, Programmed and ResolvedRefs are
+    reported per the spec. Not handled: `allowedRoutes.namespaces.from:
+    Selector` (treated as not allowed), RequestMirror, ExtensionRef,
+    per-backend filters, GRPCRoute, TLSRoute, listener `port` matching,
+    and TLS `certificateRefs` (never read).
+  - The Gateway API CRDs are not shipped. `sigs.k8s.io/gateway-api` is not
+    in go.mod or the module cache, so there is no local canon, and the
+    standard-install CRDs are large embedded data that wasm-opt cannot
+    shrink. Install them with `kubectl apply -f` of the release's
+    `standard-install.yaml`; whether `customresources` accepts their CEL
+    validations is unchecked.
+  - Requests that match no rule fall through to the API, so a
+    hostless catch-all Ingress does not shadow `k8flare.com`,
+    `api.k8flare.com`, `*.workers.dev` or `{name}--{namespace}` hosts.
+    A custom cluster domain is not excluded.
+  - Changes to any Service also run the edge pass (ResolvedRefs depends on
+    Services); backends are looked up per ref rather than listed.
 - local-path runs as a resident Deployment, not helper pods only.
 - CoreDNS NodeHosts is never written.
 - attach/detach runs from a separate Worker config that CI does not load.
