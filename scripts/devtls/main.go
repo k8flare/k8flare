@@ -34,7 +34,7 @@ func main() {
 	upstream := flag.String("upstream", "http://127.0.0.1:18787", "wrangler dev URL")
 	dir := flag.String("dir", ".build/devtls", "where ca.crt, ca.key, server.crt, server.key live")
 	hosts := flag.String("hosts", "localhost,host.orb.internal", "extra DNS SANs (127.0.0.1 is always included)")
-	adminToken := flag.String("admin-token", os.Getenv("ADMIN_TOKEN"), "when set, serve a certificate issued by the cluster's server CA, verify client certificates against its client CA and pass them the way Cloudflare mTLS does")
+	adminToken := flag.String("admin-token", "", "when set, serve a certificate issued by the cluster's server CA, verify client certificates against its client CA and pass them the way Cloudflare mTLS does")
 	flag.Parse()
 	if *adminToken != "" {
 		if err := runEdge(*listen, *upstream, *dir, *adminToken, strings.Split(*hosts, ",")); err != nil {
