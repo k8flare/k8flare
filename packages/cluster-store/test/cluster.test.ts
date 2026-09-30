@@ -137,6 +137,17 @@ test("snapshots are not taken before the interval and can be disabled", async (t
   assert.equal(off.bucket.objects.size, 0);
 });
 
+test("VolumeAttributesClass writes reach the workloads queue so its protection finalizer is released", async () => {
+  const sent: string[] = [];
+  const workloads = { send: async () => {}, sendBatch: async (batch: { body: { key: string } }[]) => void sent.push(...batch.map((m) => m.body.key)) };
+  const r = rig({ WL_Q: workloads } as any);
+  await r.settle();
+  await r.put("/registry/volumeattributesclasses/e2e-1", "v1");
+  await r.put("/registry/volumeattributesclasses/e2e-1", "v2", 2);
+  await r.settle();
+  assert.deepEqual(sent, ["/registry/volumeattributesclasses/e2e-1", "/registry/volumeattributesclasses/e2e-1"]);
+});
+
 test("HelmChart and HelmChartConfig writes of every kind reach the addons queue", async () => {
   const sent: string[] = [];
   const addons = { send: async () => {}, sendBatch: async (batch: { body: { key: string } }[]) => void sent.push(...batch.map((m) => m.body.key)) };

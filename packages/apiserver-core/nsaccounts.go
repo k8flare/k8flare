@@ -75,10 +75,10 @@ func ensureExtensionAuth(ctx context.Context) {
 		Data: map[string]string{
 			"client-ca-file":                     ca,
 			"requestheader-client-ca-file":       ca,
-			"requestheader-username-headers":     "X-Remote-User",
-			"requestheader-group-headers":        "X-Remote-Group",
-			"requestheader-extra-headers-prefix": "X-Remote-Extra-",
-			"requestheader-allowed-names":        "",
+			"requestheader-username-headers":     `["X-Remote-User"]`,
+			"requestheader-group-headers":        `["X-Remote-Group"]`,
+			"requestheader-extra-headers-prefix": `["X-Remote-Extra-"]`,
+			"requestheader-allowed-names":        "[]",
 		},
 	})
 }

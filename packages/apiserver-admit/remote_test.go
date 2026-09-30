@@ -10,9 +10,11 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/admission"
 	"k8s.io/apiserver/pkg/authentication/user"
+	k8scorev1 "k8s.io/kubernetes/pkg/apis/core/v1"
 )
 
 func TestRemoteAdmitMutateAndDeny(t *testing.T) {
@@ -51,6 +53,44 @@ func TestRemoteAdmitMutateAndDeny(t *testing.T) {
 	}
 	if err := v.Validate(context.Background(), attrs, nil); err == nil {
 		t.Fatal("expected deny")
+	}
+}
+
+func TestRemoteAdmitDefaultsMutatedObject(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req Request
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("decode: %v", err)
+		}
+		if req.Phase == "admit" {
+			spec := req.Object["spec"].(map[string]any)
+			spec["initContainers"] = []any{map[string]any{"name": "added", "image": "pause"}}
+		}
+		_ = json.NewEncoder(w).Encode(Response{Allowed: true, Object: req.Object})
+	}))
+	defer srv.Close()
+	client := srv.Client()
+	client.Transport = rewrite{next: client.Transport, host: srv.URL}
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8scorev1.RegisterDefaults(scheme); err != nil {
+		t.Fatal(err)
+	}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "default"}}
+	attrs := admission.NewAttributesRecord(pod, nil, schema.GroupVersionKind{Version: "v1", Kind: "Pod"}, "default", "p", schema.GroupVersionResource{Version: "v1", Resource: "pods"}, "", admission.Create, nil, false, &user.DefaultInfo{Name: "admin"})
+	mut := New(client).(admission.MutationInterface)
+	if err := mut.Admit(context.Background(), attrs, admission.NewObjectInterfacesFromScheme(scheme)); err != nil {
+		t.Fatal(err)
+	}
+	if len(pod.Spec.InitContainers) != 1 {
+		t.Fatalf("init containers = %d", len(pod.Spec.InitContainers))
+	}
+	init := pod.Spec.InitContainers[0]
+	if init.ImagePullPolicy == "" || init.TerminationMessagePolicy == "" {
+		t.Fatalf("mutated container was not defaulted: %+v", init)
 	}
 }
 

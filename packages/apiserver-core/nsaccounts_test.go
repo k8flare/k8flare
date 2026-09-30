@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -119,8 +120,20 @@ func TestEnsureExtensionAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 	dataMap := got.(*corev1.ConfigMap).Data
-	if dataMap["requestheader-username-headers"] != "X-Remote-User" || dataMap["requestheader-group-headers"] != "X-Remote-Group" {
-		t.Fatalf("headers: %#v", dataMap)
+	want := map[string][]string{
+		"requestheader-username-headers":     {"X-Remote-User"},
+		"requestheader-group-headers":        {"X-Remote-Group"},
+		"requestheader-extra-headers-prefix": {"X-Remote-Extra-"},
+		"requestheader-allowed-names":        {},
+	}
+	for key, values := range want {
+		var decoded []string
+		if err := json.Unmarshal([]byte(dataMap[key]), &decoded); err != nil {
+			t.Fatalf("%s must be a JSON list as kube-apiserver writes it: %q: %v", key, dataMap[key], err)
+		}
+		if strings.Join(decoded, ",") != strings.Join(values, ",") {
+			t.Fatalf("%s = %v want %v", key, decoded, values)
+		}
 	}
 }
 
