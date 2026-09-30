@@ -126,9 +126,10 @@ Add-ons run on Cloudflare unless they must touch the node:
 | Network policy | Node | Enforced by the agent's embedded controller |
 | CoreDNS | Node | One small replica serving `10.43.0.10`, answering from the control plane's view of Services and Endpoints |
 | local-path provisioner | Node | Default `local-path` StorageClass with `WaitForFirstConsumer`; helper pods run only while a volume is created or deleted |
+| Node API proxy | Node | Host-network DaemonSet (`ghcr.io/k8flare/node-proxy`, a static Go binary limited to 64 MiB) that serves the in-cluster `kubernetes` Service at `10.43.0.1:443` and forwards to the Cloudflare hostname; it holds no node credential |
 
-A node therefore runs containerd, the kubelet, flannel, kube-proxy, and
-CoreDNS, and nothing else from the platform.
+A node therefore runs containerd, the kubelet, flannel, kube-proxy,
+CoreDNS, and the small node API proxy, and nothing else from the platform.
 
 ## Operations
 
