@@ -208,8 +208,8 @@ func TestCAStatuses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(statuses) != 4 {
-		t.Fatalf("got %d entries, want the new and the old of both CAs", len(statuses))
+	if len(statuses) != 6 {
+		t.Fatalf("got %d entries, want the new and the old of all three CAs", len(statuses))
 	}
 	current := map[string]int{}
 	for _, s := range statuses {
@@ -220,7 +220,7 @@ func TestCAStatuses(t *testing.T) {
 			t.Errorf("%s: unexpected expiry %v", s.Name, s.NotAfter)
 		}
 	}
-	if current["server-ca"] != 1 || current["client-ca"] != 1 {
+	if current["server-ca"] != 1 || current["client-ca"] != 1 || current[RequestHeaderCAName] != 1 {
 		t.Fatalf("each CA needs exactly one current entry: %v", current)
 	}
 }

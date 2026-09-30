@@ -262,6 +262,52 @@ func (s *Supervisor) KubeletClient(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+const (
+	RequestHeaderCAName = "request-header-ca"
+	RequestHeaderCN     = "system:auth-proxy"
+	proxyClientLifetime = 24 * time.Hour
+)
+
+func (s *Supervisor) ProxyClient(w http.ResponseWriter, r *http.Request) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{}, key)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	csr, err := x509.ParseCertificateRequest(csrDER)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	requestHeaderCA, err := s.vault.ca(r.Context(), RequestHeaderCAName)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	tmpl := clientCertTemplate(RequestHeaderCN)
+	tmpl.NotAfter = time.Now().Add(proxyClientLifetime)
+	cert, err := requestHeaderCA.sign(csr, tmpl)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"cert": string(cert),
+		"key":  string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})),
+	})
+}
+
 // New returns the supervisor for a cluster whose agents join with joinToken.
 func New(vault *Vault, joinToken string) *Supervisor {
 	return &Supervisor{vault: vault, joinToken: joinToken}

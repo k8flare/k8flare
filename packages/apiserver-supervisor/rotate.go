@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-var caNames = []string{"server-ca", "client-ca"}
+var caNames = []string{"server-ca", "client-ca", RequestHeaderCAName}
 
 type CAStatus struct {
 	Name      string    `json:"name"`

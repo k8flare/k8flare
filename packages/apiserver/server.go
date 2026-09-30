@@ -146,6 +146,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	kubeletSupervisor := supervisor.New(v, cfg.JoinToken)
 	kubeletSupervisor.ClientCerts = edgeCert
 	mux.HandleFunc("/internal/kubelet-client", kubeletSupervisor.KubeletClient)
+	mux.HandleFunc("/internal/proxy-client", adminOnly(kubeletSupervisor.ProxyClient))
 	installSecretsEncrypt(mux, client)
 	installTokens(mux, v)
 	installEdgeCertificate(mux, v)
