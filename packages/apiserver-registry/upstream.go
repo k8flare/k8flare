@@ -7,9 +7,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apiserver/pkg/registry/rest"
+	"k8s.io/kubernetes/pkg/api/legacyscheme"
 )
 
-var InternalScheme = runtime.NewScheme()
+var InternalScheme = legacyscheme.Scheme
 
 type Upstream struct {
 	Strategy rest.RESTCreateUpdateStrategy

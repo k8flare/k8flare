@@ -7,7 +7,6 @@ import (
 func init() {
 	registry.Customizers["jobs"] = func(store *registry.Store, _ registry.Deps) {
 		store.DeleteStrategy = registry.OrphanByDefault{RESTDeleteStrategy: store.DeleteStrategy}
-		store.CreateStrategy = jobCreateStrategy{store.CreateStrategy}
 	}
 
 }

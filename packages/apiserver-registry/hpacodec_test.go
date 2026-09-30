@@ -11,7 +11,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
 
-	_ "github.com/k8flare/k8flare/packages/apiserver-autoscaling"
 	"github.com/k8flare/k8flare/packages/apiserver-autoscaling/storageconv"
 )
 
