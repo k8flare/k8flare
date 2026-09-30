@@ -29,7 +29,11 @@ type Supervisor struct {
 	vault       *Vault
 	joinToken   string
 	ClientCerts authenticator.Request
+
+	ServiceAccounts authenticator.Request
 }
+
+const nodeProxyUser = "system:serviceaccount:kube-system:k8flare-node-proxy"
 
 // k3sControlConfig is the subset of k3s's config.Control the agent reads
 // from /v1-k3s/config, with the same field names and types so the JSON
@@ -280,7 +284,11 @@ func (s *Supervisor) Register(mux *http.ServeMux) {
 	})
 	v1.HandleFunc("GET /v1-k3s/apiservers", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode([]string{publicHost(r)})
+		host := publicHost(r)
+		if _, _, err := net.SplitHostPort(host); err != nil {
+			host = net.JoinHostPort(host, "443")
+		}
+		_ = json.NewEncoder(w).Encode([]string{host})
 	})
 	v1.HandleFunc("GET /v1-k3s/client-ca.crt", func(w http.ResponseWriter, r *http.Request) { s.caPEM(w, r, "client-ca") })
 	v1.HandleFunc("GET /v1-k3s/server-ca.crt", func(w http.ResponseWriter, r *http.Request) { s.caPEM(w, r, "server-ca") })
@@ -297,6 +305,29 @@ func (s *Supervisor) Register(mux *http.ServeMux) {
 				"kubernetes", "kubernetes.default", "kubernetes.default.svc", "kubernetes.default.svc.cluster.local",
 			},
 			IPAddresses: append([]net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1"), clusterIP}, id.ips...),
+			KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+			ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		})
+	})
+	v1.HandleFunc("POST /v1-k3s/serving-node-proxy.crt", func(w http.ResponseWriter, r *http.Request) {
+		if s.ServiceAccounts == nil {
+			http.Error(w, "not authorized", http.StatusUnauthorized)
+			return
+		}
+		resp, ok, err := s.ServiceAccounts.AuthenticateRequest(r)
+		if err != nil || !ok {
+			http.Error(w, "not authorized", http.StatusUnauthorized)
+			return
+		}
+		if resp.User.GetName() != nodeProxyUser {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		clusterIP, _ := utilnet.GetIndexedIP(ServiceCIDR, 1)
+		s.signCSR(w, r, "server-ca", &x509.Certificate{
+			Subject:     pkix.Name{CommonName: "kube-apiserver"},
+			DNSNames:    []string{"kubernetes", "kubernetes.default", "kubernetes.default.svc", "kubernetes.default.svc.cluster.local"},
+			IPAddresses: []net.IP{clusterIP},
 			KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 			ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		})
@@ -328,7 +359,7 @@ func (s *Supervisor) Register(mux *http.ServeMux) {
 		s.signCSR(w, r, "client-ca", clientCertTemplate("system:k3s-controller"))
 	})
 	mux.Handle("/v1-k3s/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1-k3s/node-tunnel" && !s.authorized(r) {
+		if r.URL.Path != "/v1-k3s/node-tunnel" && r.URL.Path != "/v1-k3s/serving-node-proxy.crt" && !s.authorized(r) {
 			http.Error(w, "not authorized", http.StatusUnauthorized)
 			return
 		}
