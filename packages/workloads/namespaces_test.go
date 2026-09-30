@@ -80,7 +80,7 @@ func TestMergeTerminatingPrefersHinted(t *testing.T) {
 	}
 }
 
-func TestDeleteTerminatingHintedOnlyIgnoresStale(t *testing.T) {
+func TestDeleteTerminatingTakesHintedThenListed(t *testing.T) {
 	now := metav1.Now()
 	old := metav1.NewTime(now.Add(-time.Hour))
 	client := fake.NewSimpleClientset(
@@ -94,14 +94,13 @@ func TestDeleteTerminatingHintedOnlyIgnoresStale(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Terminating != 1 || result.Deleted != 1 || result.NextMs <= 0 {
+	if result.Terminating != 2 || result.Deleted != 2 || len(result.Names) != 0 {
 		t.Fatalf("result=%+v", result)
 	}
-	if _, err := client.CoreV1().Pods("fresh").Get(context.Background(), "test-pod", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
-		t.Fatalf("fresh pod still present: %v", err)
-	}
-	if _, err := client.CoreV1().Pods("stale").Get(context.Background(), "old-pod", metav1.GetOptions{}); err != nil {
-		t.Fatalf("stale pod should remain: %v", err)
+	for ns, pod := range map[string]string{"fresh": "test-pod", "stale": "old-pod"} {
+		if _, err := client.CoreV1().Pods(ns).Get(context.Background(), pod, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+			t.Fatalf("%s pod still present: %v", ns, err)
+		}
 	}
 }
 
@@ -154,7 +153,7 @@ func TestDeleteTerminatingFinalizesEmpty(t *testing.T) {
 	}
 }
 
-func TestDeleteTerminatingRetriesUnhinted(t *testing.T) {
+func TestDeleteTerminatingClearsUnhintedInTheSameCall(t *testing.T) {
 	now := metav1.Now()
 	client := fake.NewSimpleClientset(
 		&v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "gone", DeletionTimestamp: &now}, Spec: v1.NamespaceSpec{Finalizers: []v1.FinalizerName{v1.FinalizerKubernetes}}},
@@ -165,7 +164,7 @@ func TestDeleteTerminatingRetriesUnhinted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Deleted != 1 || len(result.Names) != 1 || result.Names[0] != "left" {
+	if result.Deleted != 2 || len(result.Names) != 0 {
 		t.Fatalf("result=%+v", result)
 	}
 }

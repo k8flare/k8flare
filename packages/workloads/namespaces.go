@@ -790,17 +790,7 @@ func (d *Deleter) DeleteTerminating(ctx context.Context, client kubernetes.Inter
 	if err != nil {
 		return nil, err
 	}
-	hinted := mergeTerminating(names, nil)
-	var selected []string
-	var more bool
-	if len(hinted) > 0 {
-		selected, more = pickTerminating(hinted, namespaceBatch)
-		if len(listed) > len(selected) {
-			more = true
-		}
-	} else {
-		selected, more = pickTerminating(mergeTerminating(nil, listed), namespaceBatch)
-	}
+	selected, more := pickTerminating(mergeTerminating(names, listed), namespaceBatch)
 	result := &NamespaceResult{}
 	done := map[string]bool{}
 	budgeted, cancel := context.WithTimeout(ctx, namespaceBudget)
