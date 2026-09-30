@@ -221,7 +221,7 @@ wrangler.dev.jsonc: wrangler.jsonc
 	sed 's/"observability": { "enabled": true }/"observability": { "enabled": false }/' $< > $@
 
 dev: wrangler.dev.jsonc
-	env -u CLAUDECODE -u AI_AGENT pnpm exec wrangler dev -c wrangler.dev.jsonc --local --persist-to .wrangler/state --port 18787
+	env -u CLAUDECODE -u AI_AGENT X_LOCAL_OBSERVABILITY=false pnpm exec wrangler dev -c wrangler.dev.jsonc --local --persist-to .wrangler/state --port 18787
 
 devtls:
 	cd scripts && go run ./devtls -listen :6443 -upstream http://127.0.0.1:18787 -dir ../.build/devtls

@@ -150,7 +150,7 @@ up() {
   make wrangler.dev.jsonc
   local admin worker
   admin=$(sed -n 's/^ADMIN_TOKEN=//p' .dev.vars)
-  nohup pnpm exec wrangler dev -c wrangler.dev.jsonc --local --enable-containers=false --persist-to "$STATE" --port 18787 \
+  X_LOCAL_OBSERVABILITY=false nohup pnpm exec wrangler dev -c wrangler.dev.jsonc --local --enable-containers=false --persist-to "$STATE" --port 18787 \
     < /dev/null 2>&1 | stamped "$LOGS/dev.log" &
   wait_for "the control plane" 360 5 curl -sf -m 10 -o /dev/null -H "Authorization: Bearer $admin" http://127.0.0.1:18787/livez
   worker=$(user_worker_port "$admin")
@@ -178,7 +178,7 @@ up() {
 
 sample_resources() {
   while true; do
-    echo "resources $(date -u +%H:%M:%S) $(free -m | awk '/^Mem:/ { print "mem_used_mb=" $3 " mem_available_mb=" $7 }') $(df -m / /dev/shm | awk 'NR > 1 { printf "%s_used_mb=%s ", $6, $3 }') workerd_rss_mb=$(ps -C workerd -o rss= | awk '{ s += $1 } END { print int(s / 1024) }')"
+    echo "resources $(date -u +%H:%M:%S) $(free -m | awk '/^Mem:/ { print "mem_used_mb=" $3 " mem_available_mb=" $7 }') $(df -m / /dev/shm | awk 'NR > 1 { printf "%s_used_mb=%s ", $6, $3 }') $(du -sm "$STATE"/v3/* 2>/dev/null | awk '{ n = split($2, a, "/"); printf "state_%s_mb=%s ", a[n], $1 }') workerd_rss_mb=$(ps -C workerd -o rss= | awk '{ s += $1 } END { print int(s / 1024) }')"
     sleep 60
   done
 }

@@ -483,3 +483,33 @@ it. Remove an entry when the behaviour exists and CI covers it.
       is not TokenRequest: it is the kubelet's 1 s wait for the
       `kube-root-ca.crt` reflector to sync (`watch_based_manager.go`),
       four occurrences in the run, each retried within seconds.
+- Runs 36698321866 (76 min) and 36721106686 (95 min, 322 passed / 27
+  failed of 349) were interrupted by the 16 GB runner running out of
+  memory: `/dev/shm` (the Durable Object state, `STATE` in
+  `scripts/ci/e2e.sh`) grew 0.15 GB to 2.9 GB and workerd's RSS 7.2 GB to
+  10.9 GB before `mem_available_mb` reached 242. The `/dev/shm` growth is
+  wrangler's local observability trace store
+  (`v3/observability/miniflare-wobs-trace-store`, one SQLite DO that
+  records every span and log of every invocation and never prunes: its
+  only delete is a `clear` RPC nothing calls). `wrangler.dev.jsonc`
+  setting `observability.enabled: false` never turned it off: wrangler
+  4.131 enables the local collector from the `X_LOCAL_OBSERVABILITY`
+  environment variable (default true), not from the config. A local
+  checkout that ran with that config for a day had a 3.85 GB trace store
+  next to a 3 MB Cluster DO. Measured with 10 min of kubectl churn
+  (ConfigMap create/label/delete plus an unschedulable Pod per round):
+  default, 356 rounds, trace store 4.7 MB to 447 MB, Cluster DO 0.6 MB
+  to 14.5 MB; `X_LOCAL_OBSERVABILITY=false`, 593 rounds in the same
+  10 min, no trace store, Cluster DO 0.3 MB to 23.7 MB. The Cluster DO
+  is bounded: compaction leaves 47 % of its pages on the freelist
+  (1975 of 4234) and SQLite reuses them, so the file stops growing at
+  about ten minutes of writes. `make dev` and `e2e.sh up` now start
+  wrangler with `X_LOCAL_OBSERVABILITY=false`, and the per-minute
+  sampler prints each `STATE/v3/*` subtree size. Not explained: the
+  workerd RSS. Locally it grows about the same with the collector off
+  (user workerd 1.7 GB to 2.1 GB in 10 min, noisy) and the dynamic
+  workers are loaded once each (the Worker Loader key is
+  `name@sha256@isolate`, `loaded=` stops at the number of distinct
+  workers), so it is neither the trace store nor isolates piling up; the
+  Go heaps inside the wasm workers, which never shrink, are the next
+  suspect and there is no memstats endpoint to read them.
