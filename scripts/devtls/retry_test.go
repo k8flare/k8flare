@@ -80,3 +80,40 @@ func TestGivesUpAfterRepeatedDrops(t *testing.T) {
 		t.Fatalf("calls=%d, want three attempts", calls.Load())
 	}
 }
+
+func TestReplaysARequestTheBackendClosedWithoutAnswering(t *testing.T) {
+	logged := captureLog(t)
+	var calls atomic.Int32
+	var bodies []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(b))
+		if calls.Add(1) == 1 {
+			conn, _, err := http.NewResponseController(w).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			conn.Close()
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	req, _ := http.NewRequest(http.MethodPatch, upstream.URL+"/api/v1/nodes/n", strings.NewReader("[]"))
+	resp, err := retryDropped{base: http.DefaultTransport}.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("PATCH after the backend closed the first attempt: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("got %d, want the replayed 200", resp.StatusCode)
+	}
+	if calls.Load() != 2 || bodies[1] != "[]" {
+		t.Fatalf("calls=%d bodies=%q, want the same body sent twice", calls.Load(), bodies)
+	}
+	if !strings.Contains(logged.String(), "PATCH /api/v1/nodes/n lost its connection") {
+		t.Fatalf("log %q does not record the replay", logged.String())
+	}
+}

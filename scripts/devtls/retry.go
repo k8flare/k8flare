@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -48,6 +49,10 @@ func (t retryDropped) send(req *http.Request, body []byte) (*http.Response, erro
 			try.ContentLength = int64(len(body))
 		}
 		resp, err := t.base.RoundTrip(try)
+		if errors.Is(err, io.EOF) && attempt < droppedRetries {
+			log.Printf("devtls: %s %s lost its connection before wrangler dev answered, retrying", req.Method, req.URL.Path)
+			continue
+		}
 		if err != nil || resp.StatusCode != http.StatusInternalServerError || attempt == droppedRetries {
 			return resp, err
 		}

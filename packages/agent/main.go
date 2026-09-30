@@ -9,7 +9,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -17,11 +16,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/k3s-io/k3s/pkg/agent"
@@ -30,6 +27,7 @@ import (
 	"github.com/k3s-io/k3s/pkg/daemons/control/deps"
 	"github.com/k3s-io/k3s/pkg/daemons/executor"
 	"github.com/k3s-io/k3s/pkg/executor/embed"
+	"github.com/k3s-io/k3s/pkg/signals"
 )
 
 const kubeconfigTemplate = `apiVersion: v1
@@ -92,8 +90,7 @@ func main() {
 		h.Set("Authorization", "Bearer node:"+*nodeName+":"+strings.TrimSpace(string(password)))
 		return h
 	}
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer cancel()
+	ctx := signals.SetupSignalContext()
 	cfg := cmds.Agent{
 		Token:               *token,
 		ServerURL:           *server,

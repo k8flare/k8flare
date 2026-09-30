@@ -69,6 +69,27 @@ it. Remove an entry when the behaviour exists and CI covers it.
   scripts/ci/e2e.sh up` joins the stock agent with the node-proxy image
   built and preloaded from `packages/node-proxy`.
 - The agent must run with `--disable-apiserver-lb`.
+- Conformance run 36737225707 (cda859a) aborted with the node
+  NetworkUnavailable: flannel logged "Starting flannel" and nothing more.
+  Not the podCIDR order, not the `metadata.name` watch: four E2E shards
+  of the same day had the podCIDR assigned before flannel started and
+  saw "Flannel found PodCIDR" within seconds, and in the failing run
+  flannel's SelfSubjectAccessReview and node watch never reached the
+  Worker (`front` and audit logs). What happened: after flannel's
+  `GET /api/v1/nodes/<name>` (9 s, devtls) its `PATCH` of the address
+  annotations got `http: proxy error: EOF` from wrangler dev at
+  15:36:09.364 (a 502 to k3s; the kubelet's lease PUT got the same at
+  15:36:21), `flannel.Run` returned, and k3s's `startNetwork` goroutine
+  called `signals.RequestShutdown(err)`, which k8flare-agent dropped
+  because it never installed k3s's shutdown handler
+  (`signal.NotifyContext` instead of `signals.SetupSignalContext`), so
+  the agent ran on with no CNI and no error line. Now the agent uses
+  `signals.SetupSignalContext`, so such a failure is logged
+  ("Shutdown request received") and ends the agent like the stock one;
+  and devtls replays a request whose backend connection returned EOF
+  before any response (the body is already buffered for the
+  "Network connection lost" retry). k3s itself does not retry the
+  annotation sync; upstream relies on systemd restarting the agent.
 - Unchecked against Cloudflare: BYO-CA mTLS is Enterprise only, a
   `user_defined` custom certificate from a private CA, and that
   `certRFC9440` is populated for BYO-CA certificates.
