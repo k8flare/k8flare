@@ -322,12 +322,39 @@ it. Remove an entry when the behaviour exists and CI covers it.
     controller's own status writes while the pod snapshot is re-listed live
     after a failed pod create (`catchUp`), and an overlapping pass on
     another isolate. Needs the workloads log of a rerun with `focus`.
-  - EndpointSliceMirroring: one `Sync(["endpoints"])` creates the slice in
-    a unit test, and the queue plan maps the Endpoints key to `endpoints`,
-    so the controller is fine. The spec allows 12 seconds; a pass lists
-    every source the selected controllers need and the batch waits behind
-    any running pass. Treat it as the same latency problem as the Services
-    endpoints-latency spec.
+  - EndpointSliceMirroring: not the 12 s window. See the focused run below.
+- Focused run 36716240747 (65cd7e8, 16 of 20 passed). The four failures
+  share two causes, found in `dev.log` (a workloads line reading
+  `workloads:  drained=false` with nothing between the spaces is a busy
+  answer: empty objects, `syncLockWait` = 10 s, matching the 10.1-10.6 s
+  batch durations):
+  - VolumeAttributesClass, EndpointSliceMirroring, PV/PVC lifecycle: every
+    workloads batch inside each spec's window was turned away as busy. One
+    pass listed at 13:03:49.6 and drained until 13:05:23.8 (1m33s) while
+    the Endpoints write (13:04:15.4), the VAC DeleteCollection (13:03:49.8)
+    and the PVC delete (13:04:38.5) waited. The finalizer releases
+    (`releaseVolumeAttributesClasses`, `releaseStorageProtection`) sat
+    behind that lock although they only list and update; they now run
+    before it (conflicts tolerated). A busy sync now also asks the running
+    pass to yield: `drain` stops waiting for queued work once another sync
+    has waited and the pass has run for `yieldGrace`, still waiting for
+    in-flight calls. The mirroring controller still needs a pass, so it
+    depends on the yield and on the shorter passes below.
+  - Long passes: 26 controllers and 200+ `ss2` status updates by the
+    controller-manager in 95 s. The StatefulSet controller's status write
+    conflicted forever: its snapshot copy of the StatefulSet kept the
+    resourceVersion from the pass start, the update retry re-reads the
+    lister (the same stale copy), and the requeue repeats until the pass
+    ends (`Error syncing StatefulSet ... the object has been modified`).
+    The same loop explains the StatefulSet scale spec: the first status
+    write was made before ss-0 existed (`status.replicas=0`) and every
+    later one conflicted, so `GET /scale` returned `status.replicas=0`
+    while the pod was Ready. Status and spec writes by the StatefulSet
+    controller now enter its snapshot (`observeStatefulSets`).
+  - Not verified in CI yet. The Job controller logs the same conflict
+    ("adding uncounted pods to status ... has been modified"), which fits
+    the backoffLimitPerIndex suspect above; Jobs, ReplicaSets and
+    Deployments have no write observer.
   - The interruption at 76 minutes: GitHub reports the step as cancelled
     with only "The operation was canceled." (no runner shutdown, timeout
     or out-of-memory message), the job's later `always()` steps were
