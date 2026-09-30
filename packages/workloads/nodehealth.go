@@ -9,6 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
+	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 )
 
 const (
@@ -38,6 +39,14 @@ func NodeHealth(ctx context.Context, client kubernetes.Interface, name string) (
 	node = node.DeepCopy()
 	held, known, expiry := nodeLeaseState(ctx, client, name)
 	if held {
+		if readyStatus(node) == v1.ConditionFalse {
+			result, err := taintAndEvict(ctx, client, node, v1.TaintNodeNotReady, v1.TaintNodeUnreachable, false)
+			if err != nil {
+				return nil, err
+			}
+			result.NextMs = soonest(result.NextMs, time.Duration(untilExpiry(expiry))*time.Millisecond)
+			return result, nil
+		}
 		if removeUnreachableTaints(node) {
 			if node, err = nodes.Update(ctx, node, metav1.UpdateOptions{}); err != nil {
 				return nil, err
@@ -59,24 +68,36 @@ func NodeHealth(ctx context.Context, client kubernetes.Interface, name string) (
 			return nil, err
 		}
 	}
-	taint := v1.Taint{Key: v1.TaintNodeUnreachable, Effect: v1.TaintEffectNoExecute, TimeAdded: &now}
-	if addTaints(node, now) {
-		if node, err = nodes.Update(ctx, node, metav1.UpdateOptions{}); err != nil {
+	return taintAndEvict(ctx, client, node, v1.TaintNodeUnreachable, v1.TaintNodeNotReady, true)
+}
+
+func taintAndEvict(ctx context.Context, client kubernetes.Interface, node *v1.Node, key, oppositeKey string, markPodsNotReady bool) (*NodeHealthResult, error) {
+	now := metav1.Now()
+	taint := v1.Taint{Key: key, Effect: v1.TaintEffectNoExecute, TimeAdded: &now}
+	if swapTaints(node, key, oppositeKey, now) {
+		updated, err := client.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+		if err != nil {
 			return nil, err
 		}
+		node = updated
 	}
 	for _, t := range node.Spec.Taints {
-		if t.Key == v1.TaintNodeUnreachable && t.Effect == v1.TaintEffectNoExecute && t.TimeAdded != nil {
+		if t.Key == key && t.Effect == v1.TaintEffectNoExecute && t.TimeAdded != nil {
 			taint.TimeAdded = t.TimeAdded
 		}
 	}
-	pods, err := client.CoreV1().Pods("").List(ctx, metav1.ListOptions{FieldSelector: "spec.nodeName=" + name, Limit: listPage})
+	pods, err := client.CoreV1().Pods("").List(ctx, metav1.ListOptions{FieldSelector: "spec.nodeName=" + node.Name, Limit: listPage})
 	if err != nil {
 		return nil, err
 	}
 	result := &NodeHealthResult{}
 	for i := range pods.Items {
 		pod := &pods.Items[i]
+		if markPodsNotReady {
+			if err := markPodNotReady(ctx, client, pod); err != nil {
+				return nil, err
+			}
+		}
 		if pod.DeletionTimestamp != nil || ownedByDaemonSet(pod) {
 			continue
 		}
@@ -98,6 +119,34 @@ func NodeHealth(ctx context.Context, client kubernetes.Interface, name string) (
 		result.NextMs = evictionRetry.Milliseconds()
 	}
 	return result, nil
+}
+
+func markPodNotReady(ctx context.Context, client kubernetes.Interface, pod *v1.Pod) error {
+	pod = pod.DeepCopy()
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type != v1.PodReady {
+			continue
+		}
+		cond.Status = v1.ConditionFalse
+		if !podutil.UpdatePodCondition(&pod.Status, &cond) {
+			return nil
+		}
+		_, err := client.CoreV1().Pods(pod.Namespace).UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func readyStatus(node *v1.Node) v1.ConditionStatus {
+	for _, c := range node.Status.Conditions {
+		if c.Type == v1.NodeReady {
+			return c.Status
+		}
+	}
+	return ""
 }
 
 func nodeLeaseState(ctx context.Context, client kubernetes.Interface, name string) (held, known bool, expiry time.Time) {
@@ -159,17 +208,26 @@ func markUnknown(node *v1.Node, now metav1.Time) bool {
 	return changed
 }
 
-func addTaints(node *v1.Node, now metav1.Time) bool {
+func swapTaints(node *v1.Node, key, oppositeKey string, now metav1.Time) bool {
 	changed := false
+	kept := node.Spec.Taints[:0]
+	for _, t := range node.Spec.Taints {
+		if t.Key == oppositeKey {
+			changed = true
+			continue
+		}
+		kept = append(kept, t)
+	}
+	node.Spec.Taints = kept
 	for _, effect := range []v1.TaintEffect{v1.TaintEffectNoSchedule, v1.TaintEffectNoExecute} {
 		present := false
 		for _, t := range node.Spec.Taints {
-			if t.Key == v1.TaintNodeUnreachable && t.Effect == effect {
+			if t.Key == key && t.Effect == effect {
 				present = true
 			}
 		}
 		if !present {
-			node.Spec.Taints = append(node.Spec.Taints, v1.Taint{Key: v1.TaintNodeUnreachable, Effect: effect, TimeAdded: &now})
+			node.Spec.Taints = append(node.Spec.Taints, v1.Taint{Key: key, Effect: effect, TimeAdded: &now})
 			changed = true
 		}
 	}
