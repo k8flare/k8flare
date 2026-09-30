@@ -3,6 +3,9 @@
 package storage
 
 import (
+	_ "embed"
+
+	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
 	external "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -11,7 +14,11 @@ import (
 
 const GroupVersion = "storage.k8s.io/v1"
 
+//go:embed openapi.json
+var openAPIDefinitions []byte
+
 func init() {
+	runtime.Must(registry.UseOpenAPIDefinitions(openAPIDefinitions))
 	runtime.Must(external.AddToScheme(scheme.Scheme))
 	runtime.Must(internal.AddToScheme(scheme.Scheme))
 }

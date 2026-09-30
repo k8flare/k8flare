@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/rest"
+	"k8s.io/client-go/kubernetes/scheme"
 )
 
 func TestLegacyBindingAssignsNode(t *testing.T) {
@@ -62,11 +63,13 @@ func TestLegacyBindingAssignsNode(t *testing.T) {
 	}
 	registry.Customizers["pods"](pods, registry.Deps{})
 	ctx := genericapirequest.WithNamespace(context.Background(), "ns")
-	if _, err := pods.Create(ctx, &corev1.Pod{
+	created := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "ns"},
 		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "pause"}}},
 		Status:     corev1.PodStatus{NominatedNodeName: "other"},
-	}, rest.ValidateAllObjectFunc, &metav1.CreateOptions{}); err != nil {
+	}
+	scheme.Scheme.Default(created)
+	if _, err := pods.Create(ctx, created, rest.ValidateAllObjectFunc, &metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	prev := bindingPods.store

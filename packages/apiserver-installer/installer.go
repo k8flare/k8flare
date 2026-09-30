@@ -14,7 +14,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/util/managedfields"
 	"k8s.io/apiserver/pkg/admission"
 	"k8s.io/apiserver/pkg/endpoints"
 	"k8s.io/apiserver/pkg/endpoints/discovery"
@@ -58,6 +57,10 @@ type Installed struct {
 }
 
 func Install(mux *http.ServeMux, deps registry.Deps, only ...schema.GroupVersion) (*Installed, error) {
+	typeConverter, err := registry.TypeConverter()
+	if err != nil {
+		return nil, err
+	}
 	stores := map[string]*registry.Store{}
 	container := restful.NewContainer()
 	container.ServeMux = mux
@@ -132,7 +135,7 @@ func Install(mux *http.ServeMux, deps registry.Deps, only ...schema.GroupVersion
 			Serializer:                  scheme.Codecs,
 			ParameterCodec:              scheme.ParameterCodec,
 			EquivalentResourceRegistry:  runtime.NewEquivalentResourceRegistry(),
-			TypeConverter:               managedfields.NewDeducedTypeConverter(),
+			TypeConverter:               typeConverter,
 			Admit:                       admitHandler(deps.Admission),
 			Authorizer:                  authz.New(deps.Kine),
 			MinRequestTimeout:           30 * time.Minute,

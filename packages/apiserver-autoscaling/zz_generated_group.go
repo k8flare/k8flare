@@ -3,6 +3,9 @@
 package autoscaling
 
 import (
+	_ "embed"
+
+	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
 	externalv2 "k8s.io/api/autoscaling/v2"
 	externalv1 "k8s.io/api/autoscaling/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
@@ -13,7 +16,11 @@ import (
 
 const GroupVersion = "autoscaling/v2"
 
+//go:embed openapi.json
+var openAPIDefinitions []byte
+
 func init() {
+	runtime.Must(registry.UseOpenAPIDefinitions(openAPIDefinitions))
 	runtime.Must(externalv2.AddToScheme(scheme.Scheme))
 	runtime.Must(internalv2.AddToScheme(scheme.Scheme))
 	runtime.Must(externalv1.AddToScheme(scheme.Scheme))
