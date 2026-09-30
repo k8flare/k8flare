@@ -48,6 +48,23 @@ async function kubeletCredentials(env: Env): Promise<Record<string, string>> {
   return { KUBELET_CLIENT_CERT: issued.cert, KUBELET_CLIENT_KEY: issued.key, KUBELET_CA: issued.ca };
 }
 
+async function proxyClientCredentials(env: Env): Promise<Record<string, string>> {
+  const resp = await apiserverFetch(
+    env,
+    new Request("https://apiserver.internal/internal/proxy-client", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env.ADMIN_TOKEN}` },
+    }),
+  );
+  if (!resp.ok) throw new Error(`proxy client credentials: ${resp.status}`);
+  const issued = (await resp.json()) as { cert: string; key: string };
+  return { PROXY_CLIENT_CERT: issued.cert, PROXY_CLIENT_KEY: issued.key };
+}
+
+async function tunnelCredentials(env: Env): Promise<Record<string, string>> {
+  return { ...(await kubeletCredentials(env)), ...(await proxyClientCredentials(env)) };
+}
+
 const kubeletCredentialsRefreshMs = 60 * 60 * 1000;
 
 type SockKind = { kind: "agent" | "stream" };
@@ -112,7 +129,7 @@ export class NodeTunnel extends DurableObject<Env> {
 
   private go(): Promise<Binding> {
     if (!this.goInstance) {
-      this.goInstance = kubeletCredentials(this.env)
+      this.goInstance = tunnelCredentials(this.env)
         .then((kubelet) => {
           this.goEnv = { ADMIN_TOKEN: this.env.ADMIN_TOKEN, ...kubelet };
           this.kubeletRefreshAt = Date.now() + kubeletCredentialsRefreshMs;
@@ -131,7 +148,7 @@ export class NodeTunnel extends DurableObject<Env> {
 
   private refreshKubeletCredentials(): Promise<void> {
     if (!this.goEnv || Date.now() < this.kubeletRefreshAt) return Promise.resolve();
-    this.kubeletRefresh ??= kubeletCredentials(this.env)
+    this.kubeletRefresh ??= tunnelCredentials(this.env)
       .then((kubelet) => {
         Object.assign(this.goEnv!, kubelet);
         this.kubeletRefreshAt = Date.now() + kubeletCredentialsRefreshMs;
