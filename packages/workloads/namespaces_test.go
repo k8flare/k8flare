@@ -430,6 +430,42 @@ func TestDeleteTerminatingKeepsNamespaceWhileLeaseRemains(t *testing.T) {
 	}
 }
 
+func TestDeleteTerminatingReportsContentConditionsWhilePodRemains(t *testing.T) {
+	now := metav1.Now()
+	client := fake.NewSimpleClientset(
+		&v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns", DeletionTimestamp: &now}, Spec: v1.NamespaceSpec{Finalizers: []v1.FinalizerName{v1.FinalizerKubernetes}}},
+		&v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "ns", Finalizers: []string{"e2e.example.com/finalizer"}}},
+		&v1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "test-configmap", Namespace: "ns"}},
+	)
+	client.PrependReactor("delete", "pods", func(clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, nil
+	})
+	d := NewDeleter(context.Background(), client, nil)
+	result, err := d.DeleteTerminating(context.Background(), client, []string{"ns"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Remaining != 1 {
+		t.Fatalf("result=%+v", result)
+	}
+	got, err := client.CoreV1().Namespaces().Get(context.Background(), "ns", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, condition := range got.Status.Conditions {
+		if condition.Type == v1.NamespaceDeletionContentFailure {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("conditions=%+v", got.Status.Conditions)
+	}
+	if _, err := client.CoreV1().ConfigMaps("ns").Get(context.Background(), "test-configmap", metav1.GetOptions{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestClearCoreKeepsConfigMapWhilePodRemains(t *testing.T) {
 	client := fake.NewSimpleClientset(
 		&v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "ns"}},
