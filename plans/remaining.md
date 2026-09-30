@@ -128,15 +128,13 @@ known deadline.
   not the turn machinery. Judging the remaining specs needs a run against real
   Cloudflare rather than `wrangler dev --local`.
 
-- The attach/detach controller is no longer deployed. `packages/attachdetach`
-  still holds it, but its worker was 69.9 MB against a 64 MiB cap with no
-  removable outlier: `k8s.io/api` is 12.6 MB of it, and the CSI gRPC stack it
-  pulls through the controller itself accounts for most of the rest -- passing
-  `nil` for `csi.ProbeVolumePlugins()` buys only 754 KB, and unlike the expand
-  controller csiPlugin genuinely implements AttachableVolumePlugin. It had never
-  loaded, and both `[sig-storage] VolumeAttachment Conformance` specs pass
-  without it, so nothing regressed. Re-enabling it needs the shared client base
-  trimmed, not a change to the controller.
+- The attach/detach controller is deployed again, built with `-tags
+  grpcnotrace`. The 69.9 MB worker was not a fat client base: grpc imports
+  `golang.org/x/net/trace`, which imports `html/template`, and template's
+  `MethodByName` makes the linker keep every exported method of every reachable
+  type (54,006 functions against 26,239 without it). With the tag the optimized
+  worker is 44.1 MB. `make wasm` has not been run against it yet, so the worker
+  has still never loaded on a real runtime.
 
 - `make wasm` while `wrangler dev` is watching the assets directory kills the
   dev server: its reload stats a chunk that the build is still rewriting and

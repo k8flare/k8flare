@@ -20,6 +20,7 @@ export { APIServer } from "./apiserver.ts";
 export { Storage } from "./storage.ts";
 export { NodeTunnels } from "./nodetunnel.ts";
 export { Admission } from "./admission.ts";
+export { AttachDetach } from "./attachdetach.ts";
 export { Hooks } from "./hooks.ts";
 export { Outbound } from "./outbound.ts";
 export { Metrics };
