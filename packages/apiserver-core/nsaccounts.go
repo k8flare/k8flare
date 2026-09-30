@@ -65,20 +65,25 @@ func ensureExtensionAuth(ctx context.Context) {
 		return
 	}
 	ca := ""
+	requestHeaderCA := ""
 	if nsAccounts.kine != nil {
-		if pem, err := supervisor.NewVault(nsAccounts.kine).CAPEM(ctx, "server-ca"); err == nil {
+		vault := supervisor.NewVault(nsAccounts.kine)
+		if pem, err := vault.CAPEM(ctx, "server-ca"); err == nil {
 			ca = string(pem)
+		}
+		if pem, err := vault.CAPEM(ctx, supervisor.RequestHeaderCAName); err == nil {
+			requestHeaderCA = string(pem)
 		}
 	}
 	create(genericapirequest.WithNamespace(ctx, metav1.NamespaceSystem), nsAccounts.cms, &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "extension-apiserver-authentication", Namespace: metav1.NamespaceSystem},
 		Data: map[string]string{
 			"client-ca-file":                     ca,
-			"requestheader-client-ca-file":       ca,
+			"requestheader-client-ca-file":       requestHeaderCA,
 			"requestheader-username-headers":     `["X-Remote-User"]`,
 			"requestheader-group-headers":        `["X-Remote-Group"]`,
 			"requestheader-extra-headers-prefix": `["X-Remote-Extra-"]`,
-			"requestheader-allowed-names":        "[]",
+			"requestheader-allowed-names":        `["` + supervisor.RequestHeaderCN + `"]`,
 		},
 	})
 }

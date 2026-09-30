@@ -13,6 +13,7 @@ import (
 
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
+	supervisor "github.com/k8flare/k8flare/packages/apiserver-supervisor"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -124,7 +125,18 @@ func TestEnsureExtensionAuth(t *testing.T) {
 		"requestheader-username-headers":     {"X-Remote-User"},
 		"requestheader-group-headers":        {"X-Remote-Group"},
 		"requestheader-extra-headers-prefix": {"X-Remote-Extra-"},
-		"requestheader-allowed-names":        {},
+		"requestheader-allowed-names":        {"system:auth-proxy"},
+	}
+	requestHeaderCA, err := supervisor.NewVault(client).CAPEM(context.Background(), supervisor.RequestHeaderCAName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverCA, err := supervisor.NewVault(client).CAPEM(context.Background(), "server-ca")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dataMap["requestheader-client-ca-file"] != string(requestHeaderCA) || string(requestHeaderCA) == string(serverCA) {
+		t.Fatalf("requestheader-client-ca-file must be the request-header CA, not the server CA")
 	}
 	for key, values := range want {
 		var decoded []string
