@@ -173,9 +173,22 @@ it. Remove an entry when the behaviour exists and CI covers it.
     validations is unchecked.
   - Requests that match no rule fall through to the API, so a
     hostless catch-all Ingress does not shadow `k8flare.com`,
-    `api.k8flare.com`, `*.workers.dev` or `{name}--{namespace}` hosts.
-    A custom cluster domain is not excluded, and the `/svc/{ns}/{name}`
-    path form now applies only to those control-plane hosts.
+    `api.k8flare.com`, `*.workers.dev`, `*.internal`, `localhost`, IP
+    literals or `{name}--{namespace}` hosts. A custom cluster domain
+    (`k8flare.kooffice.jp` in wrangler.jsonc) is still not excluded, and
+    the `/svc/{ns}/{name}` path form applies only to those control-plane
+    hosts. Full Conformance run 36746667748 showed what the gap costs:
+    the Ingress API spec creates Ingresses with a `defaultBackend` and no
+    class, admission assigns the default `k8flare` class, the edge pass
+    compiles a hostless `/` rule, and from 17:15:09 UTC every request on
+    the devtls address `127.0.0.1` answered 500 `service not found` ahead
+    of audit and the API (3109 watch responses in devtls.log, plus every
+    kubectl and kubelet read), including the deletes that would have
+    removed the Ingress; 372 specs then timed out. The edge certificate
+    hosts (`k8flare edge-certificate --hosts`) are the natural source for
+    the cluster domain but are not persisted, so a hostless Ingress on a
+    custom-domain deployment still hijacks the API until it is deleted
+    through an excluded host.
   - Changes to any Service also run the edge pass (ResolvedRefs depends on
     Services); backends are looked up per ref rather than listed.
 - local-path runs as a resident Deployment, not helper pods only.
