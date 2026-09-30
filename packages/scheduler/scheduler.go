@@ -8,9 +8,11 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	resourceapi "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/watch"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -33,8 +35,6 @@ const (
 	schedulerName  = "default-scheduler"
 	reportingActor = "default-scheduler"
 )
-
-var withheldPlugins = map[string]bool{"DynamicResources": true}
 
 func init() {
 	_ = utilfeature.DefaultMutableFeatureGate.SetFromMap(map[string]bool{
@@ -113,19 +113,15 @@ func Schedule(ctx context.Context, client kubernetes.Interface) (*Result, error)
 	if err != nil {
 		return nil, err
 	}
-	enabled := config.Profiles[0].Plugins.MultiPoint.Enabled[:0]
-	for _, p := range config.Profiles[0].Plugins.MultiPoint.Enabled {
-		if !withheldPlugins[p.Name] {
-			enabled = append(enabled, p)
-		}
-	}
-	config.Profiles[0].Plugins.MultiPoint.Enabled = enabled
 	for _, pc := range config.Profiles[0].PluginConfig {
 		if args, ok := pc.Args.(*schedconfig.VolumeBindingArgs); ok {
 			args.BindTimeoutSeconds = 0
 		}
 	}
 	factory := scheduler.NewInformerFactory(client, 0)
+	if err := startResourceInformers(ctx, client, factory); err != nil {
+		return nil, err
+	}
 	var scheduled atomic.Int64
 	sched, err := scheduler.New(ctx, client, factory, nil, syncRecorderFactory(client, &scheduled),
 		scheduler.WithComponentConfigVersion(config.TypeMeta.APIVersion),
@@ -311,6 +307,46 @@ func fillSupporting(ctx context.Context, client kubernetes.Interface, factory in
 		return err
 	}
 	return fillVolumes(ctx, client, factory)
+}
+
+func startResourceInformers(ctx context.Context, client kubernetes.Interface, factory informers.SharedInformerFactory) error {
+	resources := client.ResourceV1()
+	sources := map[runtime.Object]cache.ListerWatcher{
+		&resourceapi.ResourceClaim{}: listOnly(func(ctx context.Context, opts metav1.ListOptions) (runtime.Object, error) {
+			return resources.ResourceClaims("").List(ctx, opts)
+		}),
+		&resourceapi.ResourceSlice{}: listOnly(func(ctx context.Context, opts metav1.ListOptions) (runtime.Object, error) {
+			return resources.ResourceSlices().List(ctx, opts)
+		}),
+		&resourceapi.DeviceClass{}: listOnly(func(ctx context.Context, opts metav1.ListOptions) (runtime.Object, error) {
+			return resources.DeviceClasses().List(ctx, opts)
+		}),
+	}
+	for obj, source := range sources {
+		informer := factory.InformerFor(obj, func(_ kubernetes.Interface, _ time.Duration) cache.SharedIndexInformer {
+			return cache.NewSharedIndexInformer(source, obj, 0, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
+		})
+		go informer.Run(ctx.Done())
+		if !cache.WaitForCacheSync(ctx.Done(), informer.HasSynced) {
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+type listOnlyWatcher struct {
+	*cache.ListWatch
+}
+
+func (listOnlyWatcher) IsWatchListSemanticsUnSupported() bool { return true }
+
+func listOnly(list func(context.Context, metav1.ListOptions) (runtime.Object, error)) cache.ListerWatcher {
+	return listOnlyWatcher{&cache.ListWatch{
+		ListWithContextFunc: list,
+		WatchFuncWithContext: func(context.Context, metav1.ListOptions) (watch.Interface, error) {
+			return watch.NewFake(), nil
+		},
+	}}
 }
 
 func fillVolumes(ctx context.Context, client kubernetes.Interface, factory informers.SharedInformerFactory) error {

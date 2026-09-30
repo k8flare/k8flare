@@ -22,7 +22,7 @@ const NAMESPACE_PREFIX = "/registry/namespaces/";
 const ACCOUNT_PREFIXES = [NAMESPACE_PREFIX, "/registry/serviceaccounts/", "/registry/configmaps/"];
 const CRD_PREFIX = "/registry/apiextensions.k8s.io/customresourcedefinitions/";
 const WORKLOAD_PREFIXES = ["/registry/replicasets/", "/registry/deployments/", "/registry/replicationcontrollers/", "/registry/services/", "/registry/endpoints/", "/registry/endpointslices/", "/registry/jobs/", "/registry/statefulsets/", "/registry/daemonsets/", "/registry/controllerrevisions/", "/registry/persistentvolumeclaims/", "/registry/persistentvolumes/", "/registry/storage.k8s.io/", "/registry/storageclasses/", "/registry/certificatesigningrequests/", "/registry/certificates.k8s.io/", "/registry/clusterroles/", "/registry/rbac.authorization.k8s.io/", "/registry/cronjobs/", "/registry/horizontalpodautoscalers/", "/registry/gateway.networking.k8s.io/", "/registry/resourcequotas/", "/registry/secrets/", "/registry/configmaps/", "/registry/poddisruptionbudgets/"];
-const SCHEDULER_VOLUME_PREFIXES = ["/registry/persistentvolumeclaims/", "/registry/persistentvolumes/", "/registry/storageclasses/", "/registry/csinodes/", "/registry/csidrivers/", "/registry/csistoragecapacities/", "/registry/volumeattachments/", "/registry/storage.k8s.io/"];
+const SCHEDULER_VOLUME_PREFIXES = ["/registry/persistentvolumeclaims/", "/registry/persistentvolumes/", "/registry/storageclasses/", "/registry/csinodes/", "/registry/csidrivers/", "/registry/csistoragecapacities/", "/registry/volumeattachments/", "/registry/storage.k8s.io/", "/registry/resourceclaims/", "/registry/resourceslices/", "/registry/deviceclasses/"];
 
 export type QueueMessage =
   | { kind: "change"; key: string; type: string; rev: number }

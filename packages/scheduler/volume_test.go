@@ -6,11 +6,13 @@ import (
 	"testing"
 
 	v1 "k8s.io/api/core/v1"
+	resourceapi "k8s.io/api/resource/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
+	st "k8s.io/kubernetes/pkg/scheduler/testing"
 )
 
 func classNamed(name string, mode storagev1.VolumeBindingMode) *storagev1.StorageClass {
@@ -74,5 +76,29 @@ func TestScheduleKeepsPodWithUnboundImmediateClaimUnschedulable(t *testing.T) {
 	}
 	if !strings.Contains(message, "unbound immediate PersistentVolumeClaims") {
 		t.Fatalf("condition message = %q", message)
+	}
+}
+
+func TestScheduleAllocatesDynamicResourceClaim(t *testing.T) {
+	class := &resourceapi.DeviceClass{ObjectMeta: metav1.ObjectMeta{Name: "gpu"}}
+	slice := st.MakeResourceSlice("n1", "example.com").Device("gpu-0").Obj()
+	claim := st.MakeResourceClaim().Name("gpu-claim").Namespace("default").Request("gpu").Obj()
+	app := pod("app", "a", "100m")
+	claimName := "gpu-claim"
+	app.Spec.ResourceClaims = []v1.PodResourceClaim{{Name: "gpu", ResourceClaimName: &claimName}}
+	client := fake.NewSimpleClientset(node("n1", "1"), class, slice, claim, app)
+	result, err := Schedule(context.Background(), client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Bound != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+	got, err := client.ResourceV1().ResourceClaims("default").Get(context.Background(), "gpu-claim", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Allocation == nil {
+		t.Fatalf("claim status = %+v", got.Status)
 	}
 }
