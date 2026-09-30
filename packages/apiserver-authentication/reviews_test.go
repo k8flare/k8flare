@@ -2,6 +2,7 @@ package authentication
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
@@ -68,5 +69,72 @@ func TestTokenReviewCopiesCredentialID(t *testing.T) {
 	ids := []string(review.Status.User.Extra[user.CredentialIDKey])
 	if len(ids) != 1 || ids[0] != "JTI=abc" {
 		t.Fatalf("credential-id %v", ids)
+	}
+}
+
+type audienceEcho struct{ seen *authenticator.Audiences }
+
+func (a audienceEcho) AuthenticateToken(ctx context.Context, _ string) (*authenticator.Response, bool, error) {
+	auds, _ := authenticator.AudiencesFrom(ctx)
+	*a.seen = auds
+	return &authenticator.Response{User: &user.DefaultInfo{Name: "sa"}, Audiences: auds}, true, nil
+}
+
+type failingToken struct{ err error }
+
+func (f failingToken) AuthenticateToken(context.Context, string) (*authenticator.Response, bool, error) {
+	return nil, false, f.err
+}
+
+func newTokenReviewStore(t *testing.T, tokens authenticator.Token) rest.Creater {
+	build, ok := registry.Resources["tokenreviews"]
+	if !ok {
+		t.Fatal("tokenreviews not registered")
+	}
+	store, ok := build(schema.GroupVersion{Group: "authentication.k8s.io", Version: "v1"}, metav1.APIResource{Kind: "TokenReview", SingularName: "tokenreview"}, registry.Deps{Tokens: tokens}).(rest.Creater)
+	if !ok {
+		t.Fatal("not a create store")
+	}
+	return store
+}
+
+func TestTokenReviewHonoursSpecAudiences(t *testing.T) {
+	var seen authenticator.Audiences
+	store := newTokenReviewStore(t, audienceEcho{seen: &seen})
+	got, err := store.Create(context.Background(), &authenticationv1.TokenReview{Spec: authenticationv1.TokenReviewSpec{Token: "tok", Audiences: []string{"aud-a"}}}, rest.ValidateAllObjectFunc, &metav1.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := got.(*authenticationv1.TokenReview)
+	if len(seen) != 1 || seen[0] != "aud-a" {
+		t.Fatalf("authenticator saw audiences %v", seen)
+	}
+	if len(review.Status.Audiences) != 1 || review.Status.Audiences[0] != "aud-a" {
+		t.Fatalf("status audiences %v", review.Status.Audiences)
+	}
+}
+
+func TestTokenReviewDefaultsToAPIAudiences(t *testing.T) {
+	var seen authenticator.Audiences
+	store := newTokenReviewStore(t, audienceEcho{seen: &seen})
+	got, err := store.Create(context.Background(), &authenticationv1.TokenReview{Spec: authenticationv1.TokenReviewSpec{Token: "tok"}}, rest.ValidateAllObjectFunc, &metav1.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := got.(*authenticationv1.TokenReview)
+	if len(seen) == 0 || len(review.Status.Audiences) != len(seen) {
+		t.Fatalf("seen %v status %v", seen, review.Status.Audiences)
+	}
+}
+
+func TestTokenReviewReportsAuthenticatorError(t *testing.T) {
+	store := newTokenReviewStore(t, failingToken{err: errors.New("token audiences are invalid")})
+	got, err := store.Create(context.Background(), &authenticationv1.TokenReview{Spec: authenticationv1.TokenReviewSpec{Token: "tok"}}, rest.ValidateAllObjectFunc, &metav1.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := got.(*authenticationv1.TokenReview)
+	if review.Status.Authenticated || review.Status.Error != "token audiences are invalid" {
+		t.Fatalf("%+v", review.Status)
 	}
 }
