@@ -102,6 +102,7 @@ func main() {
 		DisableLoadBalancer: true,
 		WithNodeID:          *withNodeID,
 	}
+	_ = cfg.Labels.Set("k8flare.com/agent=k8flare")
 	if *nodeLabels != "" {
 		_ = cfg.Labels.Set(*nodeLabels)
 	}
