@@ -149,3 +149,62 @@ through `getTcpPort().connect()`.
 | 6 | exec / attach / port-forward routing | e2e with kubectl against the deployment |
 | 7 | Ingress / LoadBalancer to Pod DOs | e2e through the edge hostname |
 | 8 | README section; remove NodeVM backend | README matches behaviour; `make sizes`, full CI green |
+
+## Progress
+
+Steps 1 and 2 are done (`packages/containers`, the scheduler worker,
+`packages/admission/computeclass.go`, `packages/workloads/nodehealth.go`).
+The contract the `PodKubelet` DO consumes:
+
+- Admission (`k8flare.com/compute: containers` on the Pod or its
+  Namespace) sets `spec.schedulerName: k8flare-containers`, tolerates
+  `k8flare.com/pod-on-containers=true:NoSchedule`, and sets
+  `automountServiceAccountToken: false` unless the Pod set it. The
+  ServiceAccount admission honours that field exactly as upstream
+  `shouldAutomount` does (`plugin/pkg/admission/serviceaccount/admission.go`),
+  so no `kube-api-access` volume is added and the DO has nothing to skip.
+  The NodeVM nodeSelector, hostname pin and tier annotation are no longer
+  written.
+- The placement pass runs inside the scheduler worker after every
+  kube-scheduler pump (the scheduler queue already wakes on every unbound
+  Pod write). It lists Pods by `spec.schedulerName=k8flare-containers`,
+  validates, and binds through `pods/binding` with the annotations on the
+  Binding (the binding REST merges them into the Pod in the same write):
+  - `containers.k8flare.com/instance`: `lite`, `basic`, `standard-1`, or
+    `{"vcpu":1.5,"memoryMib":4608,"diskMb":8000}` for 1–4 vCPU. CPU and
+    memory are the max over the container's request and limit;
+    `ephemeral-storage` becomes `diskMb` (floored at 2000, at most
+    20000). A Pod with no requests or limits gets `lite`. A Pod at or
+    above 1 vCPU is never rounded: memory below 3072 MiB per vCPU, above
+    12288 MiB, or more than 4 vCPU is rejected naming the constraint.
+  - `containers.k8flare.com/image`: `images/<name>` for a name listed in
+    the `CONTAINERS_IMAGES` var (a JSON array of the names declared under
+    `containers[].images` in `wrangler.jsonc`, passed to the scheduler
+    worker's env), otherwise the literal `cloudflare/debian-trixie` or
+    `registry.cloudflare.com/<account>/<repo>@sha256:<64 hex>`.
+  - Rejected Pods stay Pending with `PodScheduled=False`, reason
+    `Unschedulable`, and one Warning Event `FailedScheduling` per distinct
+    message (the count is bumped on repeats). Rejections in v1: more than
+    one container, init or ephemeral containers, hostNetwork/hostPID/
+    hostIPC, privileged, any volume (including projected), an image that
+    is neither declared nor digest-pinned, a shape outside the limits.
+- Virtual Node `cloudflare`: labels `type=virtual-kubelet`,
+  `kubernetes.io/role=agent`, `k8flare.com/compute=containers`,
+  `kubernetes.io/hostname=cloudflare`, `kubernetes.io/os=linux`,
+  `kubernetes.io/arch=amd64`; taint `k8flare.com/pod-on-containers=true:
+  NoSchedule`; capacity 4 CPU / 12Gi / 20G ephemeral / 110 Pods; Ready
+  condition set once at creation; `status.addresses` holds only
+  `Hostname=cloudflare` on purpose, because the `kubernetes` EndpointSlice
+  publishes every Ready node's InternalIP on 6443
+  (`apiserver-core/k8sep.go`). `spec.podCIDR` is assigned by the
+  apiserver's node CIDR allocator (`apiserver-core/nodecidr.go`, a /24
+  from the cluster CIDR); the DO reads it from the Node. The node health
+  check skips nodes labelled `type=virtual-kubelet`, so the missing lease
+  never marks it unreachable.
+- kube-scheduler ignores these Pods: `Schedule` queues only Pods whose
+  `schedulerName` is `default-scheduler`.
+
+Not yet done: the pass re-evaluates a rejected Pod only when the scheduler
+queue is woken again (any unbound Pod write), not when `CONTAINERS_IMAGES`
+changes; the containers queue still wakes the NodeVM `CFContainersScheduler`,
+which finds nothing to do until step 8 removes it.
