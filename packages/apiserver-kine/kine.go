@@ -571,7 +571,7 @@ func (s *Storage) Watch(ctx context.Context, key string, opts storage.ListOption
 					return
 				}
 				if ev.Type == "progress" {
-					if opts.Predicate.AllowWatchBookmarks {
+					if opts.ProgressNotify || opts.Predicate.AllowWatchBookmarks {
 						bookmark := s.newFunc()
 						if versioner.UpdateObject(bookmark, uint64(ev.Rev)) == nil {
 							select {
@@ -696,9 +696,12 @@ func (s *Storage) GetCurrentResourceVersion(ctx context.Context) (uint64, error)
 	return uint64(rev), err
 }
 
-func (s *Storage) Stats(context.Context) (storage.Stats, error)        { return storage.Stats{}, nil }
-func (s *Storage) ReadinessCheck() error                               { return nil }
-func (s *Storage) RequestWatchProgress(context.Context) error          { return nil }
+func (s *Storage) Stats(context.Context) (storage.Stats, error) { return storage.Stats{}, nil }
+func (s *Storage) ReadinessCheck() error                        { return nil }
+func (s *Storage) RequestWatchProgress(ctx context.Context) error {
+	_, err := s.client.call(ctx, http.MethodPost, "/progress", nil, struct{}{})
+	return err
+}
 func (s *Storage) EnableResourceSizeEstimation(storage.KeysFunc) error { return nil }
 func (s *Storage) CompactRevision() int64                              { return 0 }
 
