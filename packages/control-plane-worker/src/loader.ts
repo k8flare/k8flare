@@ -23,6 +23,7 @@ export async function apiserverFetch(env: Env, request: Request): Promise<Respon
     ADMIN_TOKEN: env.ADMIN_TOKEN,
     READONLY_TOKEN: env.READONLY_TOKEN,
     JOIN_TOKEN: env.JOIN_TOKEN,
+    SECRETS_ENCRYPTION_KEYS: env.SECRETS_ENCRYPTION_KEYS,
     ACCESS_TEAM_DOMAIN: env.ACCESS_TEAM_DOMAIN,
     ACCESS_AUD: env.ACCESS_AUD,
     CLUSTER_UID: env.CLUSTER_UID,

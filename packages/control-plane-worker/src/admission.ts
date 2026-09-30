@@ -10,6 +10,7 @@ export class Admission extends WorkerEntrypoint<Env> {
       OUTBOUND: this.env.OUTBOUND,
       APISERVER: this.env.APISERVER,
       ADMIN_TOKEN: this.env.ADMIN_TOKEN,
+      SECRETS_ENCRYPTION_KEYS: this.env.SECRETS_ENCRYPTION_KEYS,
     }, this.env.APISERVER);
     return worker.fetch(request);
   }

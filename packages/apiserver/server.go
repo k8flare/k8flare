@@ -49,6 +49,8 @@ type Config struct {
 	AccessTeam      string
 	AccessAUD       string
 	ClusterUID      string
+
+	SecretsEncryptionKeys string
 }
 
 const (
@@ -76,7 +78,11 @@ func seedVaultTokens(ctx context.Context, v *supervisor.Vault, cfg Config) {
 }
 
 func NewHandler(cfg Config) (http.Handler, error) {
-	client := &kine.Client{HTTP: cfg.Kine}
+	secrets, err := kine.ParseSecretKeys(cfg.SecretsEncryptionKeys)
+	if err != nil {
+		return nil, err
+	}
+	client := &kine.Client{HTTP: cfg.Kine, Secrets: secrets}
 	v := supervisor.NewVault(client)
 	access := auth.Access{Team: cfg.AccessTeam, Audience: cfg.AccessAUD, HTTP: cfg.Outbound}
 	sa := auth.ServiceAccountToken{HMAC: []byte(cfg.AdminToken), Objects: auth.KineObjects{Client: client}}
@@ -124,6 +130,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	root := http.NewServeMux()
 	kubeletSupervisor := supervisor.New(v, cfg.JoinToken)
 	mux.HandleFunc("/internal/kubelet-client", kubeletSupervisor.KubeletClient)
+	installSecretsEncrypt(mux, client)
 	kubeletSupervisor.Register(root)
 	root.Handle("/", auth.WithAuth(auth.WithRequestInfo(auth.WithAuthorization(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-K8flare-Stream-Locate") == "1" {

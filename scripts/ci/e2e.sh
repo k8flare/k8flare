@@ -51,8 +51,8 @@ build_shard() {
 
 dev_vars() {
   [ -f .dev.vars ] && return 0
-  printf 'ADMIN_TOKEN=%s\nREADONLY_TOKEN=%s\nJOIN_TOKEN=%s\nKUBELET_SCHEME=http\nKUBELET_PORT=10255\n' \
-    "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" > .dev.vars
+  printf 'ADMIN_TOKEN=%s\nREADONLY_TOKEN=%s\nJOIN_TOKEN=%s\nSECRETS_ENCRYPTION_KEYS=ci:%s\nKUBELET_SCHEME=http\nKUBELET_PORT=10255\n' \
+    "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" "$(openssl rand -base64 32)" > .dev.vars
   chmod 600 .dev.vars
 }
 

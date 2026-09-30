@@ -25,6 +25,8 @@ func main() {
 		AccessTeam:      bridge.Getenv("ACCESS_TEAM_DOMAIN"),
 		AccessAUD:       bridge.Getenv("ACCESS_AUD"),
 		ClusterUID:      bridge.Getenv("CLUSTER_UID"),
+
+		SecretsEncryptionKeys: bridge.Getenv("SECRETS_ENCRYPTION_KEYS"),
 	})
 	if err != nil {
 		panic(err)

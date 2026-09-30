@@ -15,6 +15,7 @@ export class APIGroups extends WorkerEntrypoint<Env> {
       ADMISSION: this.env.ADMISSION,
       ADMIN_TOKEN: this.env.ADMIN_TOKEN,
       READONLY_TOKEN: this.env.READONLY_TOKEN,
+      SECRETS_ENCRYPTION_KEYS: this.env.SECRETS_ENCRYPTION_KEYS,
     }, this.env.APISERVER);
     return worker.fetch(request);
   }
