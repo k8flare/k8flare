@@ -29,7 +29,7 @@ func Proxy(w http.ResponseWriter, r *http.Request, store *kine.Client, tunnel *h
 }
 
 func proxyLoadBalancer(w http.ResponseWriter, r *http.Request, store *kine.Client, tunnel *http.Client, ref Ref) bool {
-	svc, ok := getService(r, store, ref)
+	svc, ok := edge.service(r, store, ref)
 	if !ok {
 		http.Error(w, "service not found", http.StatusNotFound)
 		return true
@@ -38,17 +38,30 @@ func proxyLoadBalancer(w http.ResponseWriter, r *http.Request, store *kine.Clien
 		http.Error(w, "not a load balancer", http.StatusNotFound)
 		return true
 	}
-	return dialService(w, r, store, tunnel, ref, svc.Spec.Ports, ServicePath(r, ref))
+	return dialService(w, r, store, tunnel, dialSpec{
+		Ref: ref, Ports: svc.Spec.Ports, Sel: portSel{Number: pickPort(svc.Spec.Ports)},
+		Path: ServicePath(r, ref), Host: IngressHostname(ref.Namespace, ref.Name),
+	})
 }
 
-func dialService(w http.ResponseWriter, r *http.Request, store *kine.Client, tunnel *http.Client, ref Ref, ports []corev1.ServicePort, path string) bool {
-	node, host, port := resolveDial(r, store, ref, ports)
-	if node == "" || host == "" || port == "" {
+type dialSpec struct {
+	Ref            Ref
+	Ports          []corev1.ServicePort
+	Sel            portSel
+	Path           string
+	Host           string
+	ForwardedHost  string
+	ResponseHeader []*HeaderModifier
+}
+
+func dialService(w http.ResponseWriter, r *http.Request, store *kine.Client, tunnel *http.Client, spec dialSpec) bool {
+	target, cacheKey := edge.dial(r, store, spec.Ref, spec.Ports, spec.Sel)
+	if target.Node == "" {
 		http.Error(w, "no ready endpoints", http.StatusServiceUnavailable)
 		return true
 	}
-	target := "https://nodetunnel.internal/dial/" + node + "/" + host + "/" + port + path
-	out, err := http.NewRequestWithContext(r.Context(), r.Method, target, r.Body)
+	upstream := "https://nodetunnel.internal/dial/" + target.Node + "/" + target.Host + "/" + target.Port + spec.Path
+	out, err := http.NewRequestWithContext(r.Context(), r.Method, upstream, r.Body)
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return true
@@ -62,14 +75,18 @@ func dialService(w http.ResponseWriter, r *http.Request, store *kine.Client, tun
 			out.Header.Add(k, v)
 		}
 	}
-	out.Host = IngressHostname(ref.Namespace, ref.Name)
+	out.Host = spec.Host
 	out.Header.Set("Host", out.Host)
+	if spec.ForwardedHost != "" {
+		out.Header.Set("X-Forwarded-Host", spec.ForwardedHost)
+	}
 	out.Header.Set("X-Forwarded-Proto", "https")
 	if client := r.Header.Get("CF-Connecting-IP"); client != "" {
 		out.Header.Set("X-Forwarded-For", client)
 	}
 	resp, err := tunnel.Do(out)
 	if err != nil {
+		edge.evictDial(cacheKey)
 		http.Error(w, "tunnel unavailable", http.StatusBadGateway)
 		return true
 	}
@@ -78,6 +95,9 @@ func dialService(w http.ResponseWriter, r *http.Request, store *kine.Client, tun
 		for _, v := range vs {
 			w.Header().Add(k, v)
 		}
+	}
+	for _, m := range spec.ResponseHeader {
+		modifyHeader(w.Header(), m)
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
@@ -92,12 +112,15 @@ func getService(r *http.Request, store *kine.Client, ref Ref) (corev1.Service, b
 	return svc, true
 }
 
-func resolveDial(r *http.Request, store *kine.Client, ref Ref, ports []corev1.ServicePort) (node, host, port string) {
-	want := pickPort(ports, r.Header.Get("X-K8flare-Port"))
+func resolveDial(r *http.Request, store *kine.Client, ref Ref, ports []corev1.ServicePort, sel portSel) (node, host, port string) {
+	sp, ok := selectServicePort(ports, sel)
+	if !ok {
+		return "", "", ""
+	}
 	var ep corev1.Endpoints
 	if loadJSON(r, store, "/registry/endpoints/"+ref.Namespace+"/"+ref.Name, &ep) {
 		for _, subset := range ep.Subsets {
-			p := subsetPort(subset.Ports, want)
+			p := subsetPort(subset.Ports, sp)
 			for _, addr := range subset.Addresses {
 				n := nodeOf(r, store, deref(addr.NodeName), addr.TargetRef)
 				if addr.IP != "" && n != "" && p != "" {
@@ -118,9 +141,9 @@ func resolveDial(r *http.Request, store *kine.Client, ref Ref, ports []corev1.Se
 		if slice.Labels["kubernetes.io/service-name"] != ref.Name {
 			continue
 		}
-		p := slicePort(slice.Ports, want)
+		p := slicePort(slice.Ports, sp)
 		for _, endpoint := range slice.Endpoints {
-			if len(endpoint.Addresses) == 0 {
+			if len(endpoint.Addresses) == 0 || (endpoint.Conditions.Ready != nil && !*endpoint.Conditions.Ready) {
 				continue
 			}
 			nodeName := ""
@@ -150,10 +173,7 @@ func nodeOf(r *http.Request, store *kine.Client, nodeName string, ref *corev1.Ob
 	return pod.Spec.NodeName
 }
 
-func pickPort(ports []corev1.ServicePort, named string) int32 {
-	if n, err := strconv.Atoi(named); err == nil && n > 0 {
-		return int32(n)
-	}
+func pickPort(ports []corev1.ServicePort) int32 {
 	for _, p := range ports {
 		if p.Name == "http" || p.Port == 80 {
 			return p.Port
@@ -170,40 +190,35 @@ func pickPort(ports []corev1.ServicePort, named string) int32 {
 	return 0
 }
 
-func subsetPort(ports []corev1.EndpointPort, want int32) string {
-	if want != 0 {
-		for _, p := range ports {
-			if p.Port == want {
-				return strconv.Itoa(int(p.Port))
-			}
+func selectServicePort(ports []corev1.ServicePort, sel portSel) (corev1.ServicePort, bool) {
+	for _, p := range ports {
+		if (sel.Name != "" && p.Name == sel.Name) || (sel.Name == "" && sel.Number != 0 && p.Port == sel.Number) {
+			return p, true
 		}
 	}
+	return corev1.ServicePort{}, false
+}
+
+func subsetPort(ports []corev1.EndpointPort, sp corev1.ServicePort) string {
 	for _, p := range ports {
-		if p.Port != 0 {
+		if p.Name == sp.Name && p.Port != 0 {
 			return strconv.Itoa(int(p.Port))
 		}
 	}
-	if want != 0 {
-		return strconv.Itoa(int(want))
+	if len(ports) == 1 && ports[0].Port != 0 {
+		return strconv.Itoa(int(ports[0].Port))
 	}
 	return ""
 }
 
-func slicePort(ports []discoveryv1.EndpointPort, want int32) string {
-	if want != 0 {
-		for _, p := range ports {
-			if p.Port != nil && *p.Port == want {
-				return strconv.Itoa(int(*p.Port))
-			}
-		}
-	}
+func slicePort(ports []discoveryv1.EndpointPort, sp corev1.ServicePort) string {
 	for _, p := range ports {
-		if p.Port != nil && *p.Port != 0 {
+		if p.Port != nil && *p.Port != 0 && deref(p.Name) == sp.Name {
 			return strconv.Itoa(int(*p.Port))
 		}
 	}
-	if want != 0 {
-		return strconv.Itoa(int(want))
+	if len(ports) == 1 && ports[0].Port != nil && *ports[0].Port != 0 {
+		return strconv.Itoa(int(*ports[0].Port))
 	}
 	return ""
 }

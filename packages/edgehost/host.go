@@ -74,7 +74,7 @@ func ParseServiceRoute(r *http.Request) (Ref, bool) {
 		return ref, true
 	}
 	parts := strings.Split(r.URL.Path, "/")
-	if len(parts) >= 4 && parts[1] == "svc" && dnsLabel.MatchString(parts[2]) && dnsLabel.MatchString(parts[3]) {
+	if !IsGatewayHost(RequestHost(r)) && len(parts) >= 4 && parts[1] == "svc" && dnsLabel.MatchString(parts[2]) && dnsLabel.MatchString(parts[3]) {
 		return Ref{Namespace: parts[2], Name: parts[3]}, true
 	}
 	return Ref{}, false
