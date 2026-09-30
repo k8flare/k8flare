@@ -51,6 +51,8 @@ var (
 	ClusterCIDR = mustCIDR("10.42.0.0/16")
 	ServiceCIDR = mustCIDR("10.43.0.0/16")
 	ClusterDNS  = net.ParseIP("10.43.0.10")
+
+	ClusterDomain = "cluster.local"
 )
 
 func mustCIDR(s string) *net.IPNet {
@@ -79,7 +81,7 @@ func (s *Supervisor) config(r *http.Request) k3sControlConfig {
 		HTTPSPort: port, SupervisorPort: port,
 		ClusterIPRange: ClusterCIDR, ServiceIPRange: ServiceCIDR,
 		ClusterIPRanges: []*net.IPNet{ClusterCIDR}, ServiceIPRanges: []*net.IPNet{ServiceCIDR},
-		ClusterDNS: ClusterDNS, ClusterDNSs: []net.IP{ClusterDNS}, ClusterDomain: "cluster.local",
+		ClusterDNS: ClusterDNS, ClusterDNSs: []net.IP{ClusterDNS}, ClusterDomain: ClusterDomain,
 		FlannelBackend: "vxlan", DisableNPC: true, DisableCCM: true,
 		EgressSelectorMode: "cluster",
 	}
