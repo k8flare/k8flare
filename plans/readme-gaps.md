@@ -278,10 +278,10 @@ it. Remove an entry when the behaviour exists and CI covers it.
     28 s against a 20 s limit) with the same cluster taking 30 s to turn a
     Deployment into a pod. Load-dependent on `wrangler dev --local` with
     four spec processes (see `plans/remaining.md`); not addressed.
-  - Addon deploy still fails on the Helm CRD: server-side apply of
-    `helmcharts.helm.cattle.io` returns "no authorizer provided, unable to
+  - Addon deploy failed on the Helm CRD: server-side apply of
+    `helmcharts.helm.cattle.io` returned "no authorizer provided, unable to
     authorize a create on update", so `addons: ok=false` and the queue
-    retries. CoreDNS and local-path are applied on the way.
+    retried. Fixed (see below); not yet re-run against the addons deployer.
   - StatefulSet: five specs fail in BeforeEach.
   - EndpointSliceMirroring, Events API lifecycle, Job
     backoffLimitPerIndex, OrderedNamespaceDeletion, pod generation.
@@ -348,10 +348,27 @@ it. Remove an entry when the behaviour exists and CI covers it.
       arrays and every extension apiserver `json.Unmarshal`s them in
       `RunOnce` at start, so the sample apiserver exited (restart count 5).
       Existing clusters keep the old ConfigMap because it is only created
-      when missing. Still open: the aggregator dials the extension over
-      the node tunnel without a client certificate, so request-header
-      authentication of the proxied user cannot work; a front-proxy client
-      certificate signed by the request-header CA is needed.
+      when missing. The aggregator dialed the extension over the node
+      tunnel without a client certificate, so request-header
+      authentication of the proxied user could not work. Now the vault has
+      a `request-header-ca` (rotated with the others), `/internal/proxy-client`
+      (admin only) issues a `system:auth-proxy` client certificate from it,
+      node-tunnel fetches it next to the kubelet client certificate and
+      presents it on every `X-Dial-TLS` dial, and the ConfigMap publishes
+      the request-header CA and `requestheader-allowed-names`
+      `["system:auth-proxy"]`. Open: the ConfigMap is only created when
+      missing, so an existing cluster keeps the server CA and empty allowed
+      names until the ConfigMap is deleted and re-provisioned (and
+      `client-ca-file` still holds the server CA rather than the client CA);
+      the sample-apiserver spec was not re-run.
+    - Create on update (server-side apply or PATCH of a missing object): the
+      CRD group in `customresources` had no `Authorizer` in its
+      `APIGroupVersion`, and the custom-resource handler was given an
+      allow-all authorizer, so a create by apply was either an internal
+      error or unchecked. Both now use `authz.New` (privileged group, node,
+      RBAC), as the group workers already did; apply-create needs the
+      `create` verb. It adds about 3.9 MB to customresources (59.65 MB to
+      63.53 MB after wasm-opt, 3.5 MB below the cap).
     - VolumeAttributesClass lifecycle: writes under
       `/registry/volumeattributesclasses/` were not routed to the workloads
       queue, so the `vac-protection` finalizer was never released after a
