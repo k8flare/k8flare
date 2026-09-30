@@ -14,6 +14,7 @@ import (
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
 	"k8s.io/apiserver/pkg/registry/rest"
+	"k8s.io/client-go/kubernetes/scheme"
 	utilnet "k8s.io/utils/net"
 )
 
@@ -25,8 +26,7 @@ func bootstrapCluster(namespaces, services *genericregistry.Store, next http.Han
 		once.Do(func() {
 			ctx := genericapirequest.WithNamespace(r.Context(), metav1.NamespaceNone)
 			for _, name := range systemNamespaces {
-				ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}, Status: corev1.NamespaceStatus{Phase: corev1.NamespaceActive}}
-				create(ctx, namespaces, ns)
+				create(ctx, namespaces, systemNamespace(name))
 			}
 			create(genericapirequest.WithNamespace(r.Context(), metav1.NamespaceDefault), services, kubernetesService())
 			reconcileKubernetesEndpoints(r.Context())
@@ -37,9 +37,18 @@ func bootstrapCluster(namespaces, services *genericregistry.Store, next http.Han
 }
 
 func create(ctx context.Context, store *genericregistry.Store, obj metav1.Object) {
-	if _, err := store.Create(ctx, obj.(runtime.Object), rest.ValidateAllObjectFunc, &metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+	if _, err := store.Create(ctx, bootstrapObject(obj.(runtime.Object)), rest.ValidateAllObjectFunc, &metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 		println("apiserver: bootstrap", obj.GetName(), ":", err.Error())
 	}
+}
+
+func bootstrapObject(obj runtime.Object) runtime.Object {
+	scheme.Scheme.Default(obj)
+	return obj
+}
+
+func systemNamespace(name string) *corev1.Namespace {
+	return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}, Status: corev1.NamespaceStatus{Phase: corev1.NamespaceActive}}
 }
 
 func kubernetesService() *corev1.Service {
