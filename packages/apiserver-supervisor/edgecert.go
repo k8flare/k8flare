@@ -65,6 +65,10 @@ func (v *Vault) IssueEdgeCertificate(ctx context.Context, hosts []string, ttl ti
 	if err != nil {
 		return EdgeCertificate{}, err
 	}
+	serverBundle, err := v.CAPEM(ctx, "server-ca")
+	if err != nil {
+		return EdgeCertificate{}, err
+	}
 	clientCA, err := v.CAPEM(ctx, "client-ca")
 	if err != nil {
 		return EdgeCertificate{}, err
@@ -72,7 +76,7 @@ func (v *Vault) IssueEdgeCertificate(ctx context.Context, hosts []string, ttl ti
 	return EdgeCertificate{
 		Cert:     string(cert),
 		Key:      string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})),
-		ServerCA: string(serverCA.certPEM),
+		ServerCA: string(serverBundle),
 		ClientCA: string(clientCA),
 	}, nil
 }

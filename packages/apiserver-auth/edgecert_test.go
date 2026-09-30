@@ -116,3 +116,19 @@ func TestEdgeClientCert(t *testing.T) {
 		}
 	})
 }
+
+func TestEdgeClientCertAcceptsBothCAsDuringRotation(t *testing.T) {
+	oldCA := newTestCA(t, "old-client-ca")
+	newCA := newTestCA(t, "new-client-ca")
+	foreign := newTestCA(t, "foreign")
+	bundle := append(append([]byte(nil), newCA.pem...), oldCA.pem...)
+	a := EdgeClientCert{ClientCA: func(context.Context) ([]byte, error) { return bundle, nil }}
+	for name, ca := range map[string]testCA{"old": oldCA, "new": newCA} {
+		if _, ok, err := a.AuthenticateRequest(edgeRequest(rfc9440(ca.leaf(t, "system:node:n1", []string{"system:nodes"}, x509.ExtKeyUsageClientAuth)))); err != nil || !ok {
+			t.Errorf("%s CA leaf: ok=%v err=%v", name, ok, err)
+		}
+	}
+	if _, ok, _ := a.AuthenticateRequest(edgeRequest(rfc9440(foreign.leaf(t, "system:node:n1", []string{"system:nodes"}, x509.ExtKeyUsageClientAuth)))); ok {
+		t.Error("a certificate from a CA outside the bundle was accepted")
+	}
+}

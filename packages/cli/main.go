@@ -20,6 +20,7 @@ const usage = `usage: k8flare <command>
 
 commands:
   token create|list|delete|rotate
+  certificate rotate-ca|check
   edge-certificate --hosts <name,...> [--out-dir <dir>] [--ttl <duration>]
   secrets-encrypt status|reencrypt
   snapshot save|list|restore
@@ -167,6 +168,8 @@ func run(args []string, out io.Writer) error {
 	switch args[0] {
 	case "token":
 		return runToken(args[1:], out)
+	case "certificate":
+		return runCertificate(args[1:], out)
 	case "edge-certificate":
 		return runEdgeCertificate(args[1:], out)
 	case "secrets-encrypt":
