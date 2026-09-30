@@ -18,6 +18,7 @@ type Target = "scheduler" | "workloads" | "crds" | "gc" | "accounts" | "extensio
 const targets: Target[] = ["scheduler", "workloads", "crds", "gc", "accounts", "extensions", "metrics", "containers"];
 const SCHEMA_VERSION = 1;
 const controllerAnnot = "k8flare.io/controller";
+const REGISTRY_PREFIX = "/registry/";
 const NAMESPACE_PREFIX = "/registry/namespaces/";
 const ACCOUNT_PREFIXES = [NAMESPACE_PREFIX, "/registry/serviceaccounts/", "/registry/configmaps/"];
 const CRD_PREFIX = "/registry/apiextensions.k8s.io/customresourcedefinitions/";
@@ -249,8 +250,57 @@ export class Cluster extends DurableObject<Env> {
         if (at === null) return new Response("invalid to", { status: 400 });
         const bookmark = await this.ctx.storage.getBookmarkForTime(at);
         await this.ctx.storage.onNextSessionRestoreBookmark(bookmark);
-        this.ctx.abort("pitr restore");
         return Response.json({ ok: true, bookmark, to: new Date(at).toISOString() });
+      }
+      case "POST /restore/apply": {
+        this.ctx.abort("pitr restore");
+        return Response.json({ ok: true });
+      }
+      case "GET /snapshots": {
+        const bucket = (this.env as Env & { PODS_R2?: R2Bucket }).PODS_R2;
+        if (!bucket) return new Response("r2 unbound", { status: 503 });
+        const prefix = `clusters/${(this.env as Env).CLUSTER_UID || "default"}/snapshots/`;
+        const items: { key: string; size: number; uploaded: string }[] = [];
+        let cursor: string | undefined;
+        do {
+          const page = await bucket.list({ prefix, cursor });
+          for (const o of page.objects) items.push({ key: o.key, size: o.size, uploaded: o.uploaded.toISOString() });
+          cursor = page.truncated ? page.cursor : undefined;
+        } while (cursor);
+        return Response.json({ items });
+      }
+      case "POST /snapshot/restore": {
+        const bucket = (this.env as Env & { PODS_R2?: R2Bucket }).PODS_R2;
+        if (!bucket) return new Response("r2 unbound", { status: 503 });
+        const body = (await request.json()) as { key?: string; force?: boolean };
+        if (!body.key || !body.key.startsWith("clusters/") || !body.key.endsWith(".json")) {
+          return Response.json({ error: "key must be a snapshot object under clusters/" }, { status: 400 });
+        }
+        const object = await bucket.get(body.key);
+        if (!object) return Response.json({ error: "snapshot not found" }, { status: 404 });
+        const snapshot = (await object.json()) as { schemaVersion: number; keys: { key: string; value: string }[] };
+        if (snapshot.schemaVersion !== this.schemaVersion()) {
+          return Response.json({ error: `snapshot schema ${snapshot.schemaVersion} does not match ${this.schemaVersion()}` }, { status: 409 });
+        }
+        const wanted = new Map(snapshot.keys.filter((k) => k.key.startsWith(REGISTRY_PREFIX)).map((k) => [k.key, fromBase64(k.value)]));
+        const live = this.latest(REGISTRY_PREFIX, false, REGISTRY_PREFIX, -1);
+        if (live.length > 0 && !body.force) {
+          return Response.json({ error: "cluster is not empty; restoring replaces its contents, pass force to proceed", keys: live.length }, { status: 409 });
+        }
+        let removed = 0;
+        let written = 0;
+        for (const kv of live) {
+          if (wanted.has(kv.key)) continue;
+          this.insert(kv.key, 1, kv.value, kv);
+          removed++;
+        }
+        for (const [key, value] of wanted) {
+          const cur = this.current(key);
+          if (cur && bytesEqual(cur.value, value)) continue;
+          this.insert(key, 0, value, cur);
+          written++;
+        }
+        return Response.json({ ok: true, key: body.key, written, removed, revision: this.revision() });
       }
       case "GET /list": {
         const prefix = url.searchParams.get("prefix") ?? "";
@@ -574,6 +624,12 @@ function fromBase64(s: string): Uint8Array {
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 
 function conflict(revision: number, error: string): Response {

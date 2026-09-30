@@ -26,6 +26,16 @@ export { Metrics };
 export { CFContainersScheduler } from "./nodes/scheduler.ts";
 export { NodeVMSmall, NodeVMMedium, NodeVMLarge } from "./nodes/nodevm.ts";
 
+async function digest(value: string): Promise<ArrayBuffer> {
+  return crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+}
+
+async function isAdmin(request: Request, env: Env): Promise<boolean> {
+  if (!env.ADMIN_TOKEN) return false;
+  const [given, want] = await Promise.all([digest(request.headers.get("Authorization") ?? ""), digest(`Bearer ${env.ADMIN_TOKEN}`)]);
+  return crypto.subtle.timingSafeEqual(given, want);
+}
+
 function withAuthorization(request: Request, extra?: Headers): Headers {
   const headers = new Headers(request.headers);
   const auth = request.headers.get("Authorization");
@@ -88,22 +98,24 @@ export default {
     const path = new URL(request.url).pathname;
     console.log(`front iso=${isolateId()} ${request.method} ${path}`);
     if (path === "/v1-k3s/connect") return acceptTunnel(request, env);
-    if (path === "/stats" && request.headers.get("Authorization") === `Bearer ${env.ADMIN_TOKEN}`) {
+    if (path === "/stats" && await isAdmin(request, env)) {
       return clusterStub(env).fetch("https://cluster.internal/stats");
     }
-    if (path === "/vpc" && request.headers.get("Authorization") === `Bearer ${env.ADMIN_TOKEN}`) {
+    if (path === "/vpc" && await isAdmin(request, env)) {
       const { vpcConnectAvailable } = await import("./vpc.ts");
       return Response.json({ vpc: await vpcConnectAvailable(env), tunnel: "nodetunnel" });
     }
-    if (path === "/snapshot" && request.method === "POST" && request.headers.get("Authorization") === `Bearer ${env.ADMIN_TOKEN}`) {
+    if (path === "/snapshot" && request.method === "POST" && await isAdmin(request, env)) {
       return clusterStub(env).fetch(new Request("https://cluster.internal/snapshot", { method: "POST" }));
     }
-    if (path === "/restore" && request.method === "POST" && request.headers.get("Authorization") === `Bearer ${env.ADMIN_TOKEN}`) {
+    if (path === "/restore" && request.method === "POST" && await isAdmin(request, env)) {
+      const stub = clusterStub(env);
+      const prepared = await stub.fetch(new Request(`https://cluster.internal/restore${new URL(request.url).search}`, { method: "POST" }));
+      if (!prepared.ok) return prepared;
       try {
-        return await clusterStub(env).fetch(new Request(`https://cluster.internal/restore${new URL(request.url).search}`, { method: "POST" }));
-      } catch {
-        return Response.json({ ok: true, restored: true });
-      }
+        await stub.fetch(new Request("https://cluster.internal/restore/apply", { method: "POST" }));
+      } catch {}
+      return prepared;
     }
     if ((request.headers.get("Upgrade") || "").toLowerCase() === "websocket" && isStreamPath(path)) {
       const headers = new Headers(request.headers);
