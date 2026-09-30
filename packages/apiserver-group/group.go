@@ -34,7 +34,7 @@ func NewHandler(gv schema.GroupVersion, cfg Config) (http.Handler, error) {
 	vault := supervisor.NewVault(client)
 	deps := registry.Deps{
 		Kine:      client,
-		Tokens:    union.New(auth.AdminToken(cfg.AdminToken), auth.ReadonlyToken(cfg.ReadonlyToken), auth.VaultToken{Vault: vault}, auth.NodeToken{Vault: vault}, auth.ServiceAccountToken{HMAC: []byte(cfg.AdminToken), Objects: auth.NewServiceAccountObjects(auth.KineObjects{Client: client})}),
+		Tokens:    auth.WithAuthenticatedGroup(union.New(auth.AdminToken(cfg.AdminToken), auth.ReadonlyToken(cfg.ReadonlyToken), auth.VaultToken{Vault: vault}, auth.NodeToken{Vault: vault}, auth.ServiceAccountToken{HMAC: []byte(cfg.AdminToken), Objects: auth.NewServiceAccountObjects(auth.KineObjects{Client: client})})),
 		Kubelet:   cfg.Kubelet,
 		Admission: cfg.Admission,
 		Hooks:     cfg.Hooks,

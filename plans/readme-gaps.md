@@ -491,6 +491,14 @@ it. Remove an entry when the behaviour exists and CI covers it.
     passes as `true` (`pkg/daemons/control/server.go`); no worker ever
     called it, so the default `false` applied to every upstream strategy.
     `apiserver-registry` now runs the same setup for all of them.
+    `ServiceAccounts should mount an API token into pods` failed on the
+    TokenReview groups: upstream never adds `system:authenticated` inside
+    an authenticator; `group.NewAuthenticatedGroupAdder` wraps the whole
+    chain (`pkg/kubeapiserver/authenticator/config.go`) and TokenReview
+    goes through that same request authenticator. Here each authenticator
+    appended the group itself except the service-account one. The
+    apiserver's request chain now has the upstream adder and both token
+    unions (apiserver, group workers' TokenReview) get the same rule.
 - Runs 36698321866 (76 min) and 36721106686 (95 min, 322 passed / 27
   failed of 349) were interrupted by the 16 GB runner running out of
   memory: `/dev/shm` (the Durable Object state, `STATE` in
