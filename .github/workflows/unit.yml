@@ -42,6 +42,10 @@ jobs:
         with:
           node-version: 22
 
+      - name: Test the Cluster Durable Object
+        run: node --import ./test/register.mjs --test test/*.test.ts
+        working-directory: packages/cluster-store
+
       - name: Fetch the Kubernetes mirrors
         run: make mirrors
 
