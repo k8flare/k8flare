@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math/rand"
 	"net"
 	"strings"
 
@@ -115,10 +117,11 @@ func init() {
 			if err := healthCheckNodePortAllowed(serviceOf(obj), nil); err != nil {
 				return nil, err
 			}
+			picked := serviceOf(obj) != nil && needsClusterIP(serviceOf(obj))
 			if err := assign(ctx, obj); err != nil {
 				return nil, err
 			}
-			return finishServiceIPs(ctx, deps, nil, serviceOf(obj))
+			return claimPickedClusterIP(ctx, deps, serviceOf(obj), picked)
 		}
 		store.BeginUpdate = func(ctx context.Context, obj, old runtime.Object, _ *metav1.UpdateOptions) (genericregistry.FinishFunc, error) {
 			if err := immutableClusterIP(serviceOf(obj), serviceOf(old)); err != nil {
@@ -760,6 +763,28 @@ func serviceOf(obj runtime.Object) *corev1.Service {
 	return svc
 }
 
+const clusterIPAttempts = 8
+
+func claimPickedClusterIP(ctx context.Context, deps registry.Deps, svc *corev1.Service, picked bool) (genericregistry.FinishFunc, error) {
+	for attempt := 1; ; attempt++ {
+		finish, err := finishServiceIPs(ctx, deps, nil, svc)
+		var allocated ipAllocatedError
+		if err == nil || !picked || attempt >= clusterIPAttempts || !errors.As(err, &allocated) {
+			return finish, err
+		}
+		ip, err := freeClusterIP(ctx, deps)
+		if err != nil {
+			return nil, err
+		}
+		svc.Spec.ClusterIP = ip
+		svc.Spec.ClusterIPs = []string{ip}
+	}
+}
+
+type ipAllocatedError string
+
+func (e ipAllocatedError) Error() string { return "ipaddress " + string(e) + " is already allocated" }
+
 func finishServiceIPs(ctx context.Context, deps registry.Deps, old, next *corev1.Service) (genericregistry.FinishFunc, error) {
 	previous := serviceIPs(old)
 	current := serviceIPs(next)
@@ -859,7 +884,7 @@ func claimServiceIPs(ctx context.Context, deps registry.Deps, svc *corev1.Servic
 				continue
 			}
 			if err == kine.ErrConflict {
-				return fmt.Errorf("ipaddress %s is already allocated", name)
+				return ipAllocatedError(name)
 			}
 			releaseIPs(ctx, deps, ips)
 			return err
@@ -1033,7 +1058,7 @@ func freeClusterIP(ctx context.Context, deps registry.Deps) (string, error) {
 			taken[ip] = true
 		}
 	}
-	return pickClusterIP(taken)
+	return pickClusterIP(taken, rand.Int())
 }
 
 func ipFromAddressKey(key string) (string, bool) {
@@ -1064,7 +1089,7 @@ func reservedClusterIPs() map[string]bool {
 	return out
 }
 
-func pickClusterIP(taken map[string]bool) (string, error) {
+func pickClusterIP(taken map[string]bool, start int) (string, error) {
 	cidr := supervisor.ServiceCIDR
 	base := cidr.IP.Mask(cidr.Mask).To4()
 	if base == nil {
@@ -1072,7 +1097,8 @@ func pickClusterIP(taken map[string]bool) (string, error) {
 	}
 	ones, bits := cidr.Mask.Size()
 	n := 1 << uint(bits-ones)
-	for i := 1; i < n; i++ {
+	for step := 0; step < n-1; step++ {
+		i := 1 + (start%(n-1)+step)%(n-1)
 		ip := net.IPv4(base[0], base[1], byte(i>>8), byte(i))
 		if !cidr.Contains(ip) {
 			continue

@@ -139,7 +139,7 @@ func TestIPFromAddressKey(t *testing.T) {
 func TestPickClusterIPSkipsReservedAndTaken(t *testing.T) {
 	taken := reservedClusterIPs()
 	taken["10.43.0.2"] = true
-	ip, err := pickClusterIP(taken)
+	ip, err := pickClusterIP(taken, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -662,5 +662,50 @@ func TestNeedsClusterIP(t *testing.T) {
 	}
 	if !needsClusterIP(&corev1.Service{Spec: corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer}}) {
 		t.Fatal("load balancer")
+	}
+}
+
+func TestClaimPickedClusterIPRetriesAfterAMidAirCollision(t *testing.T) {
+	var puts []string
+	taken, err := runtime.Encode(ipCodec, &networkingv1.IPAddress{
+		ObjectMeta: metav1.ObjectMeta{Name: "10.43.0.2"},
+		Spec:       networkingv1.IPAddressSpec{ParentRef: &networkingv1.ParentReference{Resource: "services", Namespace: "default", Name: "winner"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/list":
+			_ = json.NewEncoder(w).Encode(map[string]any{"revision": 1, "kvs": []any{}})
+		case r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{"revision": 1, "kv": map[string]any{"key": r.URL.Query().Get("key"), "value": base64.StdEncoding.EncodeToString(taken), "modRevision": 1}})
+		case r.Method == http.MethodPut:
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			puts = append(puts, body["key"].(string))
+			if len(puts) == 1 {
+				w.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(map[string]any{"revision": 1})
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"revision": 2})
+		}
+	}))
+	t.Cleanup(srv.Close)
+	deps := registry.Deps{Kine: &kine.Client{HTTP: &http.Client{Transport: rewrite{base: srv.URL, next: srv.Client().Transport}}}}
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "loser", Namespace: "default"}, Spec: corev1.ServiceSpec{ClusterIP: "10.43.0.2", ClusterIPs: []string{"10.43.0.2"}}}
+	finish, err := claimPickedClusterIP(context.Background(), deps, svc, true)
+	if err != nil || finish == nil {
+		t.Fatalf("picked ip was not retried: %v", err)
+	}
+	if len(puts) != 2 || svc.Spec.ClusterIP == "10.43.0.2" || svc.Spec.ClusterIPs[0] != svc.Spec.ClusterIP {
+		t.Fatalf("puts=%v clusterIP=%s clusterIPs=%v", puts, svc.Spec.ClusterIP, svc.Spec.ClusterIPs)
+	}
+	puts = nil
+	specified := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "loser", Namespace: "default"}, Spec: corev1.ServiceSpec{ClusterIP: "10.43.0.2", ClusterIPs: []string{"10.43.0.2"}}}
+	if _, err := claimPickedClusterIP(context.Background(), deps, specified, false); err == nil || !strings.Contains(err.Error(), "already allocated") {
+		t.Fatalf("a user-specified ip was retried: %v", err)
 	}
 }
