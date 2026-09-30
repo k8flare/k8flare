@@ -163,7 +163,7 @@ async function loadOnce(
           "wasm_exec.js": await (await asset(assets, "wasm_exec.js")).text(),
           "app.wasm": { wasm: (await assemble(assets, manifest)).buffer as ArrayBuffer },
         },
-        env,
+        env: { WORKER_NAME: name, ...env },
         ...(tail ? { tails: [tail] } : {}),
       };
       loadedWorkers.add(name);

@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -98,7 +99,28 @@ func Getenv(name string) string {
 	return v.String()
 }
 
+const memReportEvery = 60 * time.Second
+
+func reportMemory(name string) {
+	var last runtime.MemStats
+	runtime.ReadMemStats(&last)
+	for range time.Tick(memReportEvery) {
+		var ms runtime.MemStats
+		runtime.ReadMemStats(&ms)
+		println("mem worker="+name,
+			"heap_alloc_mb", strconv.FormatUint(ms.HeapAlloc>>20, 10),
+			"heap_sys_mb", strconv.FormatUint(ms.HeapSys>>20, 10),
+			"sys_mb", strconv.FormatUint(ms.Sys>>20, 10),
+			"gc_runs", strconv.FormatUint(uint64(ms.NumGC-last.NumGC), 10),
+			"gc_pause_ms", strconv.FormatUint((ms.PauseTotalNs-last.PauseTotalNs)/1e6, 10),
+			"gc_cpu_pct", strconv.Itoa(int(ms.GCCPUFraction*100)),
+			"goroutines", strconv.Itoa(runtime.NumGoroutine()))
+		last = ms
+	}
+}
+
 func Serve(handler http.Handler) {
+	go reportMemory(Getenv("WORKER_NAME"))
 	rt := js.Global().Get("context")
 	binding := rt.Get("binding")
 	binding.Set("tick", js.FuncOf(func(js.Value, []js.Value) any {

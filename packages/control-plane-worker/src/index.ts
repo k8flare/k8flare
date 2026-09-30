@@ -272,7 +272,7 @@ export default {
             continue;
           }
           const klog = /^[EW]\d{4} /.test(m);
-          if (m.startsWith("bridge:") || m.startsWith("pods/status:") || m.startsWith("kine:") || m.startsWith("go program") || m.includes("panic") || m.startsWith("fatal error") || klog) {
+          if (m.startsWith("bridge:") || m.startsWith("mem worker=") || m.startsWith("pods/status:") || m.startsWith("kine:") || m.startsWith("go program") || m.includes("panic") || m.startsWith("fatal error") || klog) {
             console.log(m.slice(0, 400));
           }
         }
