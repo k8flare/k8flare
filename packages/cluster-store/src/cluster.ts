@@ -28,6 +28,7 @@ const REGISTRY_PREFIX = "/registry/";
 const NAMESPACE_PREFIX = "/registry/namespaces/";
 const ACCOUNT_PREFIXES = [NAMESPACE_PREFIX, "/registry/serviceaccounts/", "/registry/configmaps/"];
 const ADDON_PREFIX = "/registry/k3s.cattle.io/addons/";
+const HELM_PREFIXES = ["/registry/helm.cattle.io/helmcharts/", "/registry/helm.cattle.io/helmchartconfigs/"];
 const CRD_PREFIX = "/registry/apiextensions.k8s.io/customresourcedefinitions/";
 const WORKLOAD_PREFIXES = ["/registry/replicasets/", "/registry/deployments/", "/registry/replicationcontrollers/", "/registry/services/", "/registry/endpoints/", "/registry/endpointslices/", "/registry/jobs/", "/registry/statefulsets/", "/registry/daemonsets/", "/registry/controllerrevisions/", "/registry/persistentvolumeclaims/", "/registry/persistentvolumes/", "/registry/storage.k8s.io/", "/registry/storageclasses/", "/registry/certificatesigningrequests/", "/registry/certificates.k8s.io/", "/registry/clusterroles/", "/registry/rbac.authorization.k8s.io/", "/registry/cronjobs/", "/registry/horizontalpodautoscalers/", "/registry/gateway.networking.k8s.io/", "/registry/ingresses/", "/registry/ingressclasses/", "/registry/resourcequotas/", "/registry/secrets/", "/registry/configmaps/", "/registry/poddisruptionbudgets/"];
 const ATTACH_PREFIXES = ["/registry/pods/", "/registry/minions/", "/registry/nodes/", "/registry/persistentvolumeclaims/", "/registry/persistentvolumes/", "/registry/storage.k8s.io/", "/registry/storageclasses/"];
@@ -616,6 +617,7 @@ export class Cluster extends DurableObject<Env> {
     if (ACCOUNT_PREFIXES.some((p) => name.startsWith(p))) routes.push("accounts");
     if (name.startsWith(CRD_PREFIX)) routes.push("crds");
     if (name.startsWith(ADDON_PREFIX) && type === "deleted") routes.push("addons");
+    if (HELM_PREFIXES.some((p) => name.startsWith(p))) routes.push("addons");
     if (isExtensionKey(name, value, type)) routes.push("extensions");
     if (type === "deleted" || collectable(value)) routes.push("gc");
     if (name.startsWith("/registry/pods/")) {

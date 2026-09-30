@@ -2,7 +2,7 @@ import type { QueueMessage } from "@k8flare/cluster-store";
 import { Trace } from "./otel";
 import { apiserverFetch } from "./loader.ts";
 import { clusterStub } from "./clusterid.ts";
-import { deployAddons } from "./addons.ts";
+import { deployAddons, reconcileHelm } from "./addons.ts";
 
 type Target = "scheduler" | "leases" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "metrics" | "containers" | "attachdetach" | "addons";
 
@@ -296,8 +296,10 @@ async function dispatch(batch: MessageBatch<QueueMessage>, env: Env, target: Tar
 }
 
 async function consumeAddons(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
-  const ok = await deployAddons(env);
-  console.log(`addons: ok=${ok} msgs=${batch.messages.length}`);
+  const addonsOK = await deployAddons(env);
+  const helmOK = await reconcileHelm(env);
+  const ok = addonsOK && helmOK;
+  console.log(`addons: ok=${ok} addons=${addonsOK} helm=${helmOK} msgs=${batch.messages.length}`);
   await applySends(env, (await followUp(env, { target: "addons", ok })).sends);
   batch.ackAll();
 }

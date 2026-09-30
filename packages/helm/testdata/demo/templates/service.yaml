@@ -1,0 +1,12 @@
+{{- if .Capabilities.APIVersions.Has "apps/v1" }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "demo.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  ports:
+    - port: {{ .Values.service.port }}
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
