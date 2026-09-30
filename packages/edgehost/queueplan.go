@@ -53,7 +53,7 @@ func planQueue(msgs []queueMessage) QueuePlan {
 			if strings.HasPrefix(msg.Key, "/registry/services/") {
 				plan.ServiceKeys = append(plan.ServiceKeys, msg.Key)
 			}
-			if strings.HasPrefix(msg.Key, "/registry/gateway.networking.k8s.io/") {
+			if strings.HasPrefix(msg.Key, gatewayAPIPrefix) || strings.HasPrefix(msg.Key, ingressPrefix) || strings.HasPrefix(msg.Key, ingressClassPrefix) || strings.HasPrefix(msg.Key, servicePrefix) {
 				plan.GatewayKeys = append(plan.GatewayKeys, msg.Key)
 			}
 		} else if msg.Kind == "retry" {

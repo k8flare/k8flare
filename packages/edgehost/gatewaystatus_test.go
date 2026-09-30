@@ -34,6 +34,14 @@ func TestProvisionGatewayClassAccepted(t *testing.T) {
 			body, _ := json.Marshal(map[string]any{"kvs": kvs})
 			return jsonResp(200, body), nil
 		case "/kv":
+			if r.Method == http.MethodGet {
+				v, ok := stored[r.URL.Query().Get("key")]
+				if !ok {
+					return jsonResp(404, []byte(`{"revision":3}`)), nil
+				}
+				body, _ := json.Marshal(map[string]any{"kv": map[string]any{"key": r.URL.Query().Get("key"), "value": base64.StdEncoding.EncodeToString(v), "modRevision": 2}})
+				return jsonResp(200, body), nil
+			}
 			var req struct {
 				Key   string `json:"key"`
 				Value string `json:"value"`
