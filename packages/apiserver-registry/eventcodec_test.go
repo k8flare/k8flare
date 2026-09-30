@@ -8,13 +8,17 @@ import (
 	eventsv1 "k8s.io/api/events/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
+	eventsinternal "k8s.io/kubernetes/pkg/apis/events/v1"
 
-	_ "github.com/k8flare/k8flare/packages/apiserver-events"
 	"github.com/k8flare/k8flare/packages/apiserver-events/storageconv"
 )
 
-func init() { storageconv.Install() }
+func init() {
+	utilruntime.Must(eventsinternal.AddToScheme(scheme.Scheme))
+	storageconv.Install()
+}
 
 func TestEventStorageCodecRoundTrip(t *testing.T) {
 	in := &eventsv1.Event{

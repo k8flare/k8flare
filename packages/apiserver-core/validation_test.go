@@ -1,6 +1,7 @@
 package core
 
 import (
+	"strings"
 	"testing"
 
 	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
@@ -146,5 +147,25 @@ func TestServiceCreateAcceptsValid(t *testing.T) {
 	scheme.Scheme.Default(service)
 	if err := registrytest.Create(store, service); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestTypeConverterKnowsPodContainersAreKeyedByName(t *testing.T) {
+	converter, err := registry.TypeConverter()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod := validPod()
+	pod.APIVersion, pod.Kind = "v1", "Pod"
+	typed, err := converter.ObjectToTyped(pod)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields, err := typed.ToFieldSet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(fields.String(), `.spec.containers[name="c"]`) {
+		t.Fatalf("containers are not keyed by name: %s", fields.String())
 	}
 }

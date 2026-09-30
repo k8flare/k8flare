@@ -47,7 +47,9 @@ func main() {
 		total += len(body)
 		return body
 	}
-	write("/openapi/v2", "v2.json", "application/json")
+	if err := writeGroupDefinitions(write("/openapi/v2", "v2.json", "application/json")); err != nil {
+		fail(err)
+	}
 	root := write("/openapi/v3", "v3.json", "application/json")
 	var discovery struct {
 		Paths map[string]json.RawMessage `json:"paths"`
