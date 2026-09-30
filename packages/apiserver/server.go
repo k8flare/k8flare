@@ -365,6 +365,7 @@ func rootAPIs(addresses discovery.Addresses, cfg Config) http.Handler {
 			root.AddGroup(installer.APIGroup(sgv.GV))
 		}
 	}
+	root.AddGroup(apiextensionsGroup())
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		groups, err := root.Groups(r.Context(), r)
 		if err != nil {
@@ -381,7 +382,11 @@ func rootAPIs(addresses discovery.Addresses, cfg Config) http.Handler {
 					decodeErr := json.NewDecoder(resp.Body).Decode(&list)
 					resp.Body.Close()
 					if decodeErr == nil && resp.StatusCode == http.StatusOK {
-						groups = append(groups, list.Groups...)
+						for _, g := range list.Groups {
+							if g.Name != apiextensionsGroupName {
+								groups = append(groups, g)
+							}
+						}
 					}
 				}
 			}

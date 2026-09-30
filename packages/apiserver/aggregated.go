@@ -44,6 +44,7 @@ func builtinResourceManager(path string, core bool) aggregated.ResourceManager {
 		})
 	}
 	if !core {
+		addApiextensionsDiscovery(manager)
 		addMetricsDiscovery(manager)
 	}
 	return manager
@@ -85,6 +86,9 @@ func addDynamicAggregated(cfg Config) func(context.Context, aggregated.ResourceM
 	return func(ctx context.Context, manager aggregated.ResourceManager) {
 		crd := manager.WithSource(aggregated.CRDSource)
 		for _, g := range fetchCRDAggregated(ctx, cfg) {
+			if g.Name == apiextensionsGroupName {
+				continue
+			}
 			for _, v := range g.Versions {
 				crd.AddGroupVersion(g.Name, v)
 			}

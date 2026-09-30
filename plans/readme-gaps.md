@@ -397,6 +397,17 @@ it. Remove an entry when the behaviour exists and CI covers it.
     `spec.tolerations` dropped the defaulted ones and validation refused it.
     The later steps of that spec (generation bumps, observedGeneration)
     were not reached in CI.
+  - CRD discovery (run 36784977844 attempt 1, `required (0)`): `/apis`
+    answered 200 without `apiextensions.k8s.io` after 30.4 s. The front
+    took the whole group list, `apiextensions.k8s.io` included, from the
+    customresources Worker's `/apis` and dropped all of it when that call
+    failed; here the CRD Worker answered in 134 ms (`crd-diag`) but the
+    front's fetch promise never resolved (`bridge: fetch timed out ...
+    binding=CUSTOMRESOURCES ... GET /apis`, a `STORAGE GET /kv` timed out
+    in the same second). The front now serves `apiextensions.k8s.io/v1`
+    from its own table in both the APIGroupList and the aggregated
+    document and only takes CRD groups from the Worker. The 30 s stall
+    of every fetch in one dispatch window is not explained.
 - Not fixed:
   - Job backoffLimitPerIndex: the run made 10 pods where 6 are correct
     (indexes 0 and 2 ran twice, index 1 four times, Failed=6). The job
