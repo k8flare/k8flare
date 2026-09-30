@@ -4,8 +4,12 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 WORK=.build/ci
 LOGS=$WORK/logs
-API=127.0.0.1:16443
+API_PORT=16443
+API=127.0.0.1:$API_PORT
+CONTAINER_API=host.docker.internal:$API_PORT
 K3S_VERSION=${K3S_VERSION:-v1.36.2+k3s1}
+K3S_IMAGE=rancher/k3s:${K3S_VERSION/+/-}
+NODES=${NODES:-1}
 KUBECONFIG_PATH=$PWD/$WORK/kubeconfig.yaml
 STATE=${STATE:-/dev/shm/k8flare-state}
 mkdir -p "$LOGS"
@@ -68,12 +72,18 @@ dev_vars() {
   chmod 600 .dev.vars
 }
 
-node_ready() {
-  kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s get nodes --no-headers | awk '$2=="Ready"' | grep -q .
+schedulable_nodes() {
+  kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s get nodes \
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{range .status.conditions[?(@.type=="Ready")]}{.status}{end}{"\t"}{range .status.conditions[?(@.type=="NetworkUnavailable")]}{.status}{end}{"\t"}{.spec.unschedulable}{"\t"}{.spec.taints}{"\n"}{end}' |
+    awk -F'\t' '$2 == "True" && $3 != "True" && $4 != "true" && $5 == ""' | wc -l
+}
+
+nodes_ready() {
+  [ "$(schedulable_nodes)" -ge "$1" ]
 }
 
 node_proxy_ready() {
-  kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s -n kube-system get ds k8flare-node-proxy -o jsonpath='{.status.numberReady}' | grep -qx '[1-9][0-9]*'
+  [ "$(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s -n kube-system get ds k8flare-node-proxy -o jsonpath='{.status.numberReady}')" -ge "$NODES" ]
 }
 
 write_accepted() {
@@ -120,22 +130,50 @@ sample_procs() {
   done
 }
 
-join_node() {
-  local admin=$1 token join
+join_token() {
   if [ "${AGENT:-k8flare}" = k8flare ]; then
-    join=$(sed -n 's/^JOIN_TOKEN=//p' .dev.vars)
+    sed -n 's/^JOIN_TOKEN=//p' .dev.vars
+    return 0
+  fi
+  "$WORK/k8flare" token create --kubeconfig "$KUBECONFIG_PATH" --ttl 1h --description ci
+}
+
+join_node() {
+  local token=$1
+  if [ "${AGENT:-k8flare}" = k8flare ]; then
     sudo install -m 0644 .build/devtls/server-ca.crt /usr/local/share/ca-certificates/k8flare-dev-ca.crt
     sudo update-ca-certificates >/dev/null
-    sudo nohup "$WORK/k8flare-agent" --server "https://$API" --token "$join" --node-name "$(hostname)" \
+    sudo nohup "$WORK/k8flare-agent" --server "https://$API" --token "$token" --node-name "$(hostname)" \
       > "$LOGS/agent.log" 2>&1 < /dev/null &
     return 0
   fi
-  token=$("$WORK/k8flare" token create --kubeconfig "$KUBECONFIG_PATH" --ttl 1h --description ci)
   docker build -t ghcr.io/k8flare/node-proxy:latest packages/node-proxy
   sudo mkdir -p /var/lib/rancher/k3s/agent/images
   docker save ghcr.io/k8flare/node-proxy:latest | sudo tee /var/lib/rancher/k3s/agent/images/node-proxy.tar >/dev/null
   sudo nohup /usr/local/bin/k3s agent --server "https://$API" --token "$token" --node-name "$(hostname)" --disable-apiserver-lb \
     > "$LOGS/agent.log" 2>&1 < /dev/null &
+}
+
+join_container_node() {
+  local token=$1 index=$2 name
+  name=$(hostname)-$index
+  local -a run=(docker run -d --name "$name" --hostname "$name" --privileged --tmpfs /run --tmpfs /var/run
+    --add-host "${CONTAINER_API%%:*}:host-gateway")
+  if [ "${AGENT:-k8flare}" = k8flare ]; then
+    "${run[@]}" \
+      -v /var/lib/rancher/k3s/data:/var/lib/rancher/k3s/data:ro \
+      -v "$PWD/$WORK/k8flare-agent:/k8flare-agent:ro" \
+      -v "$PWD/.build/devtls/server-ca.crt:/k8flare-dev-ca.crt:ro" \
+      -e SSL_CERT_FILE=/k8flare-dev-ca.crt \
+      --entrypoint /k8flare-agent "$K3S_IMAGE" \
+      --server "https://$CONTAINER_API" --token "$token" --node-name "$name" >/dev/null
+  else
+    "${run[@]}" \
+      -v /var/lib/rancher/k3s/agent/images:/var/lib/rancher/k3s/agent/images:ro \
+      "$K3S_IMAGE" \
+      agent --server "https://$CONTAINER_API" --token "$token" --node-name "$name" --disable-apiserver-lb >/dev/null
+  fi
+  nohup docker logs -f "$name" > "$LOGS/agent-$index.log" 2>&1 < /dev/null &
 }
 
 up() {
@@ -159,7 +197,7 @@ up() {
   runtime=$(ss -ltnpH "sport = :$worker" | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
   nohup bash -c "$(declare -f thread_ms sample_procs); sample_procs $runtime $(ps -o ppid= -p "$runtime")" \
     < /dev/null 2>&1 | stamped "$LOGS/procs.log" &
-  nohup "$WORK/devtls" -listen "$API" -upstream "http://127.0.0.1:$worker" -dir .build/devtls -hosts localhost -admin-token "$admin" \
+  nohup "$WORK/devtls" -listen ":$API_PORT" -upstream "http://127.0.0.1:$worker" -dir .build/devtls -hosts "localhost,${CONTAINER_API%%:*}" -admin-token "$admin" \
     < /dev/null 2>&1 | stamped "$LOGS/devtls.log" &
   wait_for "devtls" 180 1 curl -sf -m 10 --cacert .build/devtls/server-ca.crt -o /dev/null -H "Authorization: Bearer $admin" "https://$API/livez"
 
@@ -167,8 +205,17 @@ up() {
     "$API" "$PWD" "$admin" > "$KUBECONFIG_PATH"
   chmod 600 "$KUBECONFIG_PATH"
 
-  join_node "$admin"
-  wait_for "a Ready node" 120 5 node_ready
+  local token index
+  token=$(join_token)
+  join_node "$token"
+  wait_for "a Ready node" 120 5 nodes_ready 1
+  if [ "$NODES" -gt 1 ]; then
+    docker pull -q "$K3S_IMAGE"
+    for index in $(seq 2 "$NODES"); do
+      join_container_node "$token" "$index"
+    done
+    wait_for "$NODES Ready untainted nodes" 120 5 nodes_ready "$NODES"
+  fi
   wait_for "the API to accept a write" 60 5 write_accepted
   if [ "${AGENT:-k8flare}" = k3s ]; then
     wait_for "the node proxy" 60 5 node_proxy_ready
