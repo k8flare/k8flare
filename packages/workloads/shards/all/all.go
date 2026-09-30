@@ -130,7 +130,7 @@ func build(ctx context.Context, d workloads.Deps, controllers map[string]bool) (
 		runs = append(runs, func(ctx context.Context) { cleaner.Run(ctx) })
 	}
 	if controllers["rootca"] {
-		publisher, err := rootcacertpublisher.NewPublisher(core.ConfigMaps(), core.Namespaces(), client, rootCA)
+		publisher, err := rootcacertpublisher.NewPublisher(core.ConfigMaps(), d.ActiveNamespaces(), client, rootCA)
 		if err != nil {
 			return nil, err
 		}
