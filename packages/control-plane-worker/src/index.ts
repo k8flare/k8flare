@@ -3,6 +3,7 @@ import { isolateId } from "@k8flare/loader-kit";
 import type { QueueMessage } from "@k8flare/cluster-store";
 import { consume } from "./queues.ts";
 import { withClientCert } from "./clientcert.ts";
+import { refuseUpgradeAfterAdmission } from "./upgrade.ts";
 import { clusterStub, tunnelName } from "./clusterid.ts";
 import { Metrics } from "./metrics.ts";
 import { bytesOf, sendBinary, sendLog } from "./podstream.ts";
@@ -83,21 +84,6 @@ function isNonWebSocketUpgrade(request: Request): boolean {
   return upgrade !== "" && upgrade !== "websocket" && isStreamPath(new URL(request.url).pathname);
 }
 
-function refuseUpgrade(): Response {
-  return Response.json(
-    {
-      kind: "Status",
-      apiVersion: "v1",
-      metadata: {},
-      status: "Failure",
-      message: "only WebSocket upgrades are served; retry with a WebSocket client (v5.channel.k8s.io)",
-      reason: "Invalid",
-      code: 426,
-    },
-    { status: 426, headers: { Upgrade: "websocket", Connection: "Upgrade" } },
-  );
-}
-
 function asAPIRequest(request: Request): Request {
   if ((request.headers.get("Upgrade") || "").toLowerCase() !== "websocket") {
     return request;
@@ -140,7 +126,15 @@ export default {
       } catch {}
       return prepared;
     }
-    if (isNonWebSocketUpgrade(request)) return refuseUpgrade();
+    if (isNonWebSocketUpgrade(request)) {
+      return refuseUpgradeAfterAdmission(() => {
+        const headers = new Headers(request.headers);
+        headers.delete("Upgrade");
+        headers.delete("Connection");
+        headers.set("X-K8flare-Stream-Locate", "1");
+        return apiserverFetch(env, new Request(request.url, { method: request.method, headers }));
+      });
+    }
     if ((request.headers.get("Upgrade") || "").toLowerCase() === "websocket" && isStreamPath(path)) {
       const headers = new Headers(request.headers);
       headers.set("X-K8flare-Stream-Locate", "1");
