@@ -269,6 +269,12 @@ export default {
       for (const l of e.logs ?? []) {
         for (const m of l.message ?? []) {
           if (typeof m !== "string") continue;
+          if (m.includes('{"kind":"Event","apiVersion":"audit.k8s.io/v1"')) {
+            for (const line of m.split("\n")) {
+              if (line.startsWith('{"kind":"Event","apiVersion":"audit.k8s.io/v1"')) console.log(line);
+            }
+            continue;
+          }
           const klog = /^[EW]\d{4} /.test(m);
           if (m.startsWith("bridge:") || m.startsWith("pods/status:") || m.startsWith("kine:") || m.startsWith("go program") || m.includes("panic") || m.startsWith("fatal error") || klog) {
             console.log(m.slice(0, 400));

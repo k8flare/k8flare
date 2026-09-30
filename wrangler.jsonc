@@ -30,6 +30,7 @@
     "MAX_REQUESTS_INFLIGHT": "400",
     "MAX_MUTATING_REQUESTS_INFLIGHT": "200",
     "CLUSTER_UID": "",
+    "AUDIT_POLICY": "",
     "DISABLE": "",
     "GATEWAY_URL": "https://api.k8flare.com",
     "R2_ACCOUNT_ID": "ed17c5c18eb6052e70234ec181709fba",
