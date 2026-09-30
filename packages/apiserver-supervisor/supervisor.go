@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/user"
@@ -204,14 +205,16 @@ func (s *Supervisor) signCSR(w http.ResponseWriter, r *http.Request, caName stri
 }
 
 func (s *Supervisor) caPEM(w http.ResponseWriter, r *http.Request, name string) {
-	ca, err := s.vault.ca(r.Context(), name)
+	bundle, err := s.vault.CAPEM(r.Context(), name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/x-pem-file")
-	_, _ = w.Write(ca.certPEM)
+	_, _ = w.Write(bundle)
 }
+
+const kubeletClientLifetime = 24 * time.Hour
 
 func (s *Supervisor) KubeletClient(w http.ResponseWriter, r *http.Request) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -234,7 +237,9 @@ func (s *Supervisor) KubeletClient(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	cert, err := clientCA.sign(csr, clientCertTemplate(user.APIServerUser, user.SystemPrivilegedGroup))
+	tmpl := clientCertTemplate(user.APIServerUser, user.SystemPrivilegedGroup)
+	tmpl.NotAfter = time.Now().Add(kubeletClientLifetime)
+	cert, err := clientCA.sign(csr, tmpl)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

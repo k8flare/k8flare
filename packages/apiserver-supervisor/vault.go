@@ -33,15 +33,23 @@ type Vault struct {
 }
 
 type ca struct {
-	cert    *x509.Certificate
-	key     crypto.Signer
-	certPEM []byte
+	cert     *x509.Certificate
+	key      crypto.Signer
+	certPEM  []byte
+	previous []string
+	cross    []string
+	revision int64
+	loaded   time.Time
 }
 
 type caRecord struct {
-	Cert string `json:"cert"`
-	Key  string `json:"key"`
+	Cert     string   `json:"cert"`
+	Key      string   `json:"key"`
+	Previous []string `json:"previous,omitempty"`
+	Cross    []string `json:"cross,omitempty"`
 }
+
+const caCacheTTL = 30 * time.Second
 
 var errNodePasswordMismatch = errors.New("node password does not match the stored one")
 
@@ -54,13 +62,13 @@ func (v *Vault) CAPEM(ctx context.Context, name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return append([]byte(nil), c.certPEM...), nil
+	return c.bundle(v.now()), nil
 }
 
 func (v *Vault) ca(ctx context.Context, name string) (*ca, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if c, ok := v.cas[name]; ok {
+	if c, ok := v.cas[name]; ok && v.now().Sub(c.loaded) < caCacheTTL {
 		return c, nil
 	}
 	key := "/vault/ca/" + name
@@ -71,6 +79,7 @@ func (v *Vault) ca(ctx context.Context, name string) (*ca, error) {
 			if err != nil {
 				return nil, err
 			}
+			c.loaded = v.now()
 			v.cas[name] = c
 			return c, nil
 		}
@@ -97,6 +106,15 @@ func parseCA(kv *kine.KV) (*ca, error) {
 	if err := json.Unmarshal(data, &record); err != nil {
 		return nil, err
 	}
+	c, err := newCA(record)
+	if err != nil {
+		return nil, err
+	}
+	c.revision = kv.ModRevision
+	return c, nil
+}
+
+func newCA(record caRecord) (*ca, error) {
 	certBlock, _ := pem.Decode([]byte(record.Cert))
 	keyBlock, _ := pem.Decode([]byte(record.Key))
 	if certBlock == nil || keyBlock == nil {
@@ -110,7 +128,46 @@ func parseCA(kv *kine.KV) (*ca, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &ca{cert: cert, key: key, certPEM: []byte(record.Cert)}, nil
+	return &ca{cert: cert, key: key, certPEM: []byte(record.Cert), previous: record.Previous, cross: record.Cross}, nil
+}
+
+func (c *ca) bundle(now time.Time) []byte {
+	out := append([]byte(nil), c.certPEM...)
+	for _, previous := range c.previous {
+		block, _ := pem.Decode([]byte(previous))
+		if block == nil {
+			continue
+		}
+		if cert, err := x509.ParseCertificate(block.Bytes); err == nil && cert.NotAfter.After(now) {
+			out = append(out, previous...)
+		}
+	}
+	return out
+}
+
+func (c *ca) chain() []byte {
+	out := append([]byte(nil), c.certPEM...)
+	for _, cross := range c.cross {
+		out = append(out, cross...)
+	}
+	return out
+}
+
+func (c *ca) crossSign(next *ca) (string, error) {
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(time.Now().UnixNano()),
+		Subject:               next.cert.Subject,
+		NotBefore:             next.cert.NotBefore,
+		NotAfter:              c.cert.NotAfter,
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, c.cert, next.cert.PublicKey, c.key)
+	if err != nil {
+		return "", err
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), nil
 }
 
 func generateCA(cn string) (caRecord, error) {
@@ -156,7 +213,7 @@ func (c *ca) sign(csr *x509.CertificateRequest, tmpl *x509.Certificate) ([]byte,
 		return nil, err
 	}
 	out := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	return append(out, c.certPEM...), nil
+	return append(out, c.chain()...), nil
 }
 
 func hashPassword(password string) string {
