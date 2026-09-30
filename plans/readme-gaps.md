@@ -483,6 +483,14 @@ it. Remove an entry when the behaviour exists and CI covers it.
       is not TokenRequest: it is the kubelet's 1 s wait for the
       `kube-root-ca.crt` reflector to sync (`watch_based_manager.go`),
       four occurrences in the run, each retried within seconds.
+  - Run 36743032029: three Job specs could not create a Job whose template
+    has `securityContext.privileged: true` ("disallowed by cluster
+    policy"). Upstream validation reads `capabilities.Get().AllowPrivileged`,
+    which kube-apiserver sets from `--allow-privileged`
+    (`capabilities.Setup`, `cmd/kube-apiserver/app/server.go`) and k3s
+    passes as `true` (`pkg/daemons/control/server.go`); no worker ever
+    called it, so the default `false` applied to every upstream strategy.
+    `apiserver-registry` now runs the same setup for all of them.
 - Runs 36698321866 (76 min) and 36721106686 (95 min, 322 passed / 27
   failed of 349) were interrupted by the 16 GB runner running out of
   memory: `/dev/shm` (the Durable Object state, `STATE` in

@@ -8,9 +8,16 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apiserver/pkg/registry/rest"
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
+	"k8s.io/kubernetes/pkg/capabilities"
 )
 
 var InternalScheme = legacyscheme.Scheme
+
+const allowPrivileged = true
+
+func init() {
+	capabilities.Setup(allowPrivileged, 0)
+}
 
 type Upstream struct {
 	Strategy rest.RESTCreateUpdateStrategy

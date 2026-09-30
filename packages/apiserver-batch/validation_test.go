@@ -30,6 +30,27 @@ func TestUpstreamRejectsInvalid(t *testing.T) {
 	registrytest.RequireFieldError(t, err, "spec.parallelism", "must be greater than or equal to 0")
 }
 
+func TestUpstreamAllowsPrivilegedTemplate(t *testing.T) {
+	store := registrytest.Store(t, schema.GroupVersion{Group: "batch", Version: "v1"}, metav1.APIResource{Name: "jobs", Kind: "Job", Namespaced: true})
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: "j", Namespace: "default"},
+		Spec: batchv1.JobSpec{
+			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+				RestartPolicy: corev1.RestartPolicyNever,
+				Containers: []corev1.Container{{
+					Name:            "c",
+					Image:           "busybox",
+					SecurityContext: &corev1.SecurityContext{Privileged: ptr.To(true)},
+				}},
+			}},
+		},
+	}
+	scheme.Scheme.Default(job)
+	if err := registrytest.Create(store, job); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestUpstreamGeneratesJobSelector(t *testing.T) {
 	store := registrytest.Store(t, schema.GroupVersion{Group: "batch", Version: "v1"}, metav1.APIResource{Name: "jobs", Kind: "Job", Namespaced: true})
 	job := &batchv1.Job{

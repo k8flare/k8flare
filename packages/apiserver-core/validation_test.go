@@ -12,7 +12,17 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 )
+
+func TestPodAllowsPrivilegedContainer(t *testing.T) {
+	store := coreStore(t, "pods", "Pod", true)
+	pod := validPod()
+	pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{Privileged: ptr.To(true)}
+	if err := registrytest.Create(store, pod); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func coreStore(t *testing.T, name, kind string, namespaced bool) *registry.Store {
 	t.Helper()
