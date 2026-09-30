@@ -118,5 +118,18 @@ it. Remove an entry when the behaviour exists and CI covers it.
 
 ## Conformance
 
-- CI gates on 21 required specs. The nightly full run has no recorded
-  result yet. Multi-node networking is not exercised.
+- CI gates on 21 required specs. Multi-node networking is not exercised.
+- First full run (run 36698321866, main at 005a405, one node): 290 of 446
+  specs ran before the job was interrupted at 76 minutes (cause not yet
+  found; the job timeout is 355 minutes): 255 passed, 35 failed.
+  - DNS: the four `[sig-network] DNS` specs.
+  - Services and proxying: NodePort, session affinity (3), multiport,
+    ClusterIP/NodePort to ExternalName, proxy through a service and a
+    pod, endpoints latency, the kubectl guestbook.
+  - StatefulSet: five specs fail in BeforeEach.
+  - EndpointSliceMirroring, Events API lifecycle, Job
+    backoffLimitPerIndex, OrderedNamespaceDeletion, pod generation.
+  - AdmissionWebhook (deny attaching pod, mutate pod with defaults),
+    Aggregator sample API server, ServiceAccountIssuerDiscovery.
+  - Storage: CSI PV/PVC lifecycle, VolumeAttributesClass lifecycle.
+  - "at least two untainted nodes" needs a second node in CI.
