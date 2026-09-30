@@ -48,6 +48,8 @@ async function kubeletCredentials(env: Env): Promise<Record<string, string>> {
   return { KUBELET_CLIENT_CERT: issued.cert, KUBELET_CLIENT_KEY: issued.key, KUBELET_CA: issued.ca };
 }
 
+const kubeletCredentialsRefreshMs = 60 * 60 * 1000;
+
 type SockKind = { kind: "agent" | "stream" };
 
 function sockKind(ws: WebSocket): SockKind["kind"] {
@@ -77,6 +79,9 @@ function instantiate(env: Record<string, unknown>): Promise<Binding> {
 }
 export class NodeTunnel extends DurableObject<Env> {
   private goInstance: Promise<Binding> | null = null;
+  private goEnv: Record<string, unknown> | null = null;
+  private kubeletRefreshAt = 0;
+  private kubeletRefresh: Promise<void> | null = null;
   private attached = false;
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -108,13 +113,37 @@ export class NodeTunnel extends DurableObject<Env> {
   private go(): Promise<Binding> {
     if (!this.goInstance) {
       this.goInstance = kubeletCredentials(this.env)
-        .then((kubelet) => instantiate({ ADMIN_TOKEN: this.env.ADMIN_TOKEN, ...kubelet }))
+        .then((kubelet) => {
+          this.goEnv = { ADMIN_TOKEN: this.env.ADMIN_TOKEN, ...kubelet };
+          this.kubeletRefreshAt = Date.now() + kubeletCredentialsRefreshMs;
+          return instantiate(this.goEnv);
+        })
         .catch((err: unknown) => {
           this.goInstance = null;
           throw err;
         });
     }
-    return this.goInstance;
+    return this.goInstance.then(async (binding) => {
+      await this.refreshKubeletCredentials();
+      return binding;
+    });
+  }
+
+  private refreshKubeletCredentials(): Promise<void> {
+    if (!this.goEnv || Date.now() < this.kubeletRefreshAt) return Promise.resolve();
+    this.kubeletRefresh ??= kubeletCredentials(this.env)
+      .then((kubelet) => {
+        Object.assign(this.goEnv!, kubelet);
+        this.kubeletRefreshAt = Date.now() + kubeletCredentialsRefreshMs;
+      })
+      .catch((err: unknown) => {
+        console.error("kubelet credentials refresh failed", err);
+        this.kubeletRefreshAt = Date.now() + 60 * 1000;
+      })
+      .finally(() => {
+        this.kubeletRefresh = null;
+      });
+    return this.kubeletRefresh;
   }
 
   async fetch(request: Request): Promise<Response> {

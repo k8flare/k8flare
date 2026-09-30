@@ -51,7 +51,33 @@ it. Remove an entry when the behaviour exists and CI covers it.
 
 ## Operations
 
-- Certificates: no leaf or CA rotation.
+- Certificates:
+  - CA rotation: `k8flare certificate rotate-ca` (`POST
+    /internal/certificate/rotate-ca`, admin only) replaces server-ca and
+    client-ca together. The old certificate stays in the bundle that
+    `/cacerts`, `/v1-k3s/server-ca.crt` and `/v1-k3s/client-ca.crt` serve (new
+    first, expired ones dropped), and the new CA is cross-signed by the old
+    one, which every leaf chain carries, so a node that still trusts only the
+    old CA accepts new leaves. Edge client-cert auth verifies against the
+    bundle. `k8flare certificate check` lists each CA with its expiry (the
+    apiserver keeps no record of issued leaves, so it cannot list them).
+    Unit tests only, not run against workerd or a real k3s agent.
+  - Old CAs are never retired before they expire; a compromised CA cannot be
+    dropped from the bundle yet. The service-account signing key is not
+    rotated (k3s does that separately).
+  - After a rotation the edge certificate and the Cloudflare mTLS client CA
+    are still uploaded by hand: rerun `k8flare edge-certificate`. A K10 token
+    embeds the hash of the whole `/cacerts` bundle, so tokens printed before a
+    rotation no longer validate for new joins, as in k3s.
+  - Leaf lifetimes match k3s (leaves 1 year, CAs 10 years). k3s renews a leaf
+    inside 90 days of expiry, and only when the agent restarts: the agent
+    asks the supervisor for its kubelet, kube-proxy and k3s-controller
+    certificates on every start. The supervisor issues a fresh one each time
+    and does not check for expiry. The agent's own rotation is not exercised
+    here. The apiserver-to-kubelet client cert is now valid for 24 hours and
+    node-tunnel refetches it (and the CA bundle) hourly into the running
+    instance without dropping the tunnel; the TypeScript refresh is not
+    covered by a test.
 - Snapshots: scheduled ones (`SNAPSHOT_INTERVAL_HOURS`, default 12, 0 disables;
   `SNAPSHOT_RETENTION`, default 5) are tested against a fake R2 only, not
   against workerd.
