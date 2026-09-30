@@ -1,7 +1,4 @@
 import { loadWasmWorker } from "@k8flare/loader-kit";
-import { declaredImages } from "./podkubelet/images.generated.ts";
-
-const containersImages = JSON.stringify(Object.keys(declaredImages));
 
 function forwardedHost(request: Request): string {
   const fromURL = new URL(request.url).host;
@@ -46,7 +43,6 @@ export async function apiserverFetch(env: Env, request: Request): Promise<Respon
     TUNNEL: env.TUNNEL,
     ADMISSION: env.ADMISSION,
     HOOKS: env.HOOKS,
-    CONTAINERS_IMAGES: containersImages,
   }, env.APISERVER);
   return worker.fetch(request);
 }

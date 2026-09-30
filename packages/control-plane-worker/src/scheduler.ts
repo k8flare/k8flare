@@ -1,6 +1,7 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { componentToken } from "./componenttoken.ts";
 import { loadWasmWorker } from "@k8flare/loader-kit";
+import { declaredImages } from "./podkubelet/images.generated.ts";
 
 export interface ScheduleResult {
   bound: number;
@@ -15,7 +16,7 @@ export class Scheduler extends WorkerEntrypoint<Env> {
     const worker = await loadWasmWorker(this.env.LOADER, this.env.ASSETS, "scheduler", {
       APISERVER: this.env.APISERVER,
       API_TOKEN: await componentToken(this.env, "scheduler"),
-      CONTAINERS_IMAGES: (this.env as Env & { CONTAINERS_IMAGES?: string }).CONTAINERS_IMAGES ?? "[]",
+      CONTAINERS_IMAGES: JSON.stringify(Object.keys(declaredImages)),
     }, this.env.APISERVER);
     const resp = await worker.fetch("https://scheduler.internal/schedule", {
       method: "POST",
