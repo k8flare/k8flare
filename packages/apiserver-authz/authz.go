@@ -17,6 +17,7 @@ import (
 	"k8s.io/apiserver/pkg/authorization/authorizerfactory"
 	"k8s.io/apiserver/pkg/storage"
 	"k8s.io/client-go/kubernetes/scheme"
+	rbacregistryvalidation "k8s.io/kubernetes/pkg/registry/rbac/validation"
 	rbacauthorizer "k8s.io/kubernetes/plugin/pkg/auth/authorizer/rbac"
 	"k8s.io/kubernetes/plugin/pkg/auth/authorizer/rbac/bootstrappolicy"
 )
@@ -41,6 +42,11 @@ func New(client *kine.Client) authorizer.Authorizer {
 
 func Resolver(client *kine.Client) authorizer.RuleResolver {
 	return rbacFor(client)
+}
+
+func RuleResolver(client *kine.Client) rbacregistryvalidation.AuthorizationRuleResolver {
+	p := &policy{client: client, codec: scheme.Codecs.LegacyCodec(rbacv1.SchemeGroupVersion)}
+	return rbacregistryvalidation.NewDefaultRuleResolver(p, p, p, p)
 }
 
 func rbacFor(client *kine.Client) *rbacauthorizer.RBACAuthorizer {
