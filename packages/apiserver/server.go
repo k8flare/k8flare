@@ -135,6 +135,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	mux.HandleFunc("/internal/kubelet-client", kubeletSupervisor.KubeletClient)
 	installSecretsEncrypt(mux, client)
 	installTokens(mux, v)
+	installEdgeCertificate(mux, v)
 	installSnapshots(mux, client)
 	kubeletSupervisor.Register(root)
 	root.Handle("/", auth.WithAuth(auth.WithRequestInfo(auth.WithAuthorization(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
