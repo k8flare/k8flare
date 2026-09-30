@@ -227,6 +227,11 @@ it. Remove an entry when the behaviour exists and CI covers it.
   `NodeRestriction`, so they are intentionally not
   enabled. Serving ClusterTrustBundles would need the attest check added.
 
+- `kube-system/extension-apiserver-authentication` publishes the server CA as
+  `client-ca-file`; kube-apiserver publishes the client CA there. Existing
+  clusters also keep an old copy of the ConfigMap, which is only created
+  when missing.
+
 ## Cloudflare features
 
 - Unit tests only (the `Hooks` entrypoint serves only `hookecho`, so no
