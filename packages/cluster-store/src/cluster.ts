@@ -619,7 +619,7 @@ export class Cluster extends DurableObject<Env> {
     if (name.startsWith(ADDON_PREFIX) && type === "deleted") routes.push("addons");
     if (HELM_PREFIXES.some((p) => name.startsWith(p))) routes.push("addons");
     if (isExtensionKey(name, value, type)) routes.push("extensions");
-    if (type === "deleted" || collectable(value)) routes.push("gc");
+    if (type === "deleted" || collectable(value, type === "modified" && prev ? prev.value : null)) routes.push("gc");
     if (name.startsWith("/registry/pods/")) {
       if (type !== "modified" || !prev || podWorkChanged(prev.value, value)) routes.push("workloads");
       if (type === "deleted" || !podBound(value)) routes.push("scheduler");
@@ -791,12 +791,17 @@ function isExtensionKey(name: string, value: Uint8Array, type: string): boolean 
   return !builtinGroups.has(parts[2]);
 }
 
-function collectable(value: Uint8Array): boolean {
-  const meta = (decodeJSON(value) as { metadata?: { ownerReferences?: unknown[]; finalizers?: string[]; deletionTimestamp?: string } } | null)?.metadata;
+function collectable(value: Uint8Array, before: Uint8Array | null): boolean {
+  const meta = ownerMeta(value);
   if (!meta) return false;
-  if (meta.ownerReferences && meta.ownerReferences.length > 0) return true;
   if (meta.deletionTimestamp && meta.finalizers && meta.finalizers.length > 0) return true;
-  return false;
+  if (!meta.ownerReferences || meta.ownerReferences.length === 0) return false;
+  if (!before) return true;
+  return JSON.stringify(ownerMeta(before)?.ownerReferences ?? []) !== JSON.stringify(meta.ownerReferences);
+}
+
+function ownerMeta(value: Uint8Array): { ownerReferences?: unknown[]; finalizers?: string[]; deletionTimestamp?: string } | null {
+  return (decodeJSON(value) as { metadata?: { ownerReferences?: unknown[]; finalizers?: string[]; deletionTimestamp?: string } } | null)?.metadata ?? null;
 }
 
 function wantsContainers(value: Uint8Array): boolean {

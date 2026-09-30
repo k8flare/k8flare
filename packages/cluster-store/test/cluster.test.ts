@@ -166,3 +166,24 @@ test("HelmChart and HelmChartConfig writes of every kind reach the addons queue"
     "/registry/helm.cattle.io/helmcharts/kube-system/traefik",
   ]);
 });
+
+test("the garbage collector hears about ownership and deletion, not every status write of an owned object", async () => {
+  const sent: string[] = [];
+  const gc = { send: async () => {}, sendBatch: async (batch: { body: { key: string; type: string } }[]) => void sent.push(...batch.map((m) => `${m.body.type} ${m.body.key}`)) };
+  const r = rig({ GC_Q: gc } as any);
+  await r.settle();
+  const owned = (status: string, owners = '[{"uid":"rs-1"}]') => `{"metadata":{"ownerReferences":${owners}},"status":{"phase":"${status}"}}`;
+  await r.put("/registry/pods/default/a", owned("Pending"));
+  await r.put("/registry/pods/default/a", owned("Running"), 2);
+  await r.put("/registry/pods/default/a", owned("Running", '[{"uid":"rs-2"}]'), 3);
+  await r.put("/registry/pods/default/b", `{"metadata":{}}`);
+  await r.put("/registry/pods/default/b", `{"metadata":{"deletionTimestamp":"2026-01-01T00:00:00Z","finalizers":["foregroundDeletion"]}}`, 5);
+  await r.remove("/registry/pods/default/a");
+  await r.settle();
+  assert.deepEqual(sent, [
+    "created /registry/pods/default/a",
+    "modified /registry/pods/default/a",
+    "modified /registry/pods/default/b",
+    "deleted /registry/pods/default/a",
+  ]);
+});
