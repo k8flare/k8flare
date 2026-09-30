@@ -318,7 +318,27 @@ it. Remove an entry when the behaviour exists and CI covers it.
 
 ## Conformance
 
-- CI gates on 21 required specs. Multi-node networking is not exercised.
+- CI gates on 21 required specs on one node. The Conformance job runs
+  `scripts/ci/e2e.sh up` with `NODES=2`: the host agent joins first, then
+  each extra node is a privileged `rancher/k3s` container of the same
+  version (`--tmpfs /run --tmpfs /var/run`, the k3d shape) on the default
+  Docker bridge, reaching devtls at `host.docker.internal:16443` (devtls now
+  listens on every interface and has that name as a SAN). With the default
+  `AGENT=k8flare` the container runs the CI-built `k8flare-agent` with the
+  host's unpacked `/var/lib/rancher/k3s/data` mounted read-only (it needs
+  `data/current/bin`) and `SSL_CERT_FILE` pointing at the devtls CA; with
+  `AGENT=k3s` it runs the image's `k3s agent` with the host's
+  `agent/images` (the node-proxy tar) mounted. Each node has its own
+  network namespace, so kubelet 10250, flannel VXLAN 8472 and NodePorts do
+  not collide; the host reaches the container's node IP over `docker0`
+  and the container reaches the host's over its default route. `up` waits
+  until `NODES` nodes are Ready, not NetworkUnavailable, schedulable and
+  untainted before the write check. Unverified until a Conformance run:
+  flannel VXLAN between the host node and the container node (pods on
+  different nodes reaching each other and NodePorts across nodes), and
+  the container node going Ready under `wrangler dev` load. The
+  `[Serial]` specs that behave differently with one node (taint
+  eviction, DaemonSet rollback, pod spreading) have not been run on two.
 - First full run (run 36698321866, main at 005a405, one node): 290 of 446
   specs ran before the job was interrupted at 76 minutes (cause not yet
   found; the job timeout is 355 minutes): 255 passed, 35 failed.
@@ -358,7 +378,8 @@ it. Remove an entry when the behaviour exists and CI covers it.
   - AdmissionWebhook (deny attaching pod, mutate pod with defaults),
     Aggregator sample API server, ServiceAccountIssuerDiscovery.
   - Storage: CSI PV/PVC lifecycle, VolumeAttributesClass lifecycle.
-  - "at least two untainted nodes" needs a second node in CI.
+  - "at least two untainted nodes": the Conformance job now joins a
+    second node in a container (`NODES=2`, above); not yet run.
 - Fixed from that run, each with a unit test but not yet re-run in CI (start
   with the workflow_dispatch `focus` input):
   - StatefulSet (5 specs): a headless Service created with only
