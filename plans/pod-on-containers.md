@@ -183,11 +183,12 @@ rules, `kubelet.ts` the DO, `ledger.ts`, `api.ts`, `egress.ts`, `wake.ts`,
   the platform:** whether a DO stub is accepted where the docs say
   "Worker entrypoint or service binding"; if not, swap in a
   `WorkerEntrypoint` and carry the Pod UID another way.
-- **Not runnable locally.** `wrangler dev` does not run
-  `scheduling_policy: durable_object` containers, so the DO is tested with
-  the container API, storage, alarms, ledger and apiserver faked
-  (`test/kubelet.test.ts`); the platform-facing calls remain to be
-  exercised on a real deployment (step 3's check column).
+- **Not exercised locally.** Whether `wrangler dev` runs
+  `scheduling_policy: durable_object` containers is unverified (the dev
+  server was not started for this step; it needs `make wasm` assets), so
+  the DO is tested with the container API, storage, alarms, ledger and
+  apiserver faked (`test/kubelet.test.ts`); the platform-facing calls
+  remain to be exercised on a real deployment (step 3's check column).
 - **Deviations from the design text above:** exit-code parsing of
   `monitor()` rejections is by regex over the message (the exact text is
   not recorded in FINDINGS); kubelet `monitor()` errors matching the
