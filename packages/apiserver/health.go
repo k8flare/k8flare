@@ -26,7 +26,10 @@ func installHealth(mux *http.ServeMux, client *kine.Client) {
 		}
 		return h.Controllers(nil)
 	})
+	secretsEncryption := healthz.NamedCheck("secrets-encryption", func(*http.Request) error {
+		return client.Secrets.Ready()
+	})
 	healthz.InstallLivezHandler(mux)
-	healthz.InstallReadyzHandler(mux, healthz.PingHealthz, datastore, queues, controllers)
-	healthz.InstallHandler(mux, healthz.PingHealthz, datastore, queues, controllers)
+	healthz.InstallReadyzHandler(mux, healthz.PingHealthz, datastore, queues, controllers, secretsEncryption)
+	healthz.InstallHandler(mux, healthz.PingHealthz, datastore, queues, controllers, secretsEncryption)
 }

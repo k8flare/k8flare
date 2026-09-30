@@ -20,6 +20,8 @@ const (
 	secretsScanLimit = 500
 )
 
+var errNoSecretsKey = errors.New("SECRETS_ENCRYPTION_KEYS is not set: refusing to write a Secret in plaintext")
+
 type SecretCipher struct {
 	names       []string
 	transformer value.Transformer
@@ -60,13 +62,23 @@ func ParseSecretKeys(spec string) (*SecretCipher, error) {
 	return cipher, nil
 }
 
+func (s *SecretCipher) Ready() error {
+	if s != nil && s.transformer == nil {
+		return errNoSecretsKey
+	}
+	return nil
+}
+
 func (s *SecretCipher) covers(key string) bool {
 	return s != nil && strings.HasPrefix(key, secretsPrefix)
 }
 
 func (s *SecretCipher) Seal(key string, plain []byte) ([]byte, error) {
-	if !s.covers(key) || s.transformer == nil {
+	if !s.covers(key) {
 		return plain, nil
+	}
+	if s.transformer == nil {
+		return nil, errNoSecretsKey
 	}
 	return s.transformer.TransformToStorage(context.Background(), plain, value.DefaultContext(key))
 }
@@ -165,6 +177,9 @@ func (c *Client) SecretsStatus(ctx context.Context) (SecretsStatus, error) {
 }
 
 func (c *Client) ReencryptSecrets(ctx context.Context) (int, error) {
+	if err := c.Secrets.Ready(); err != nil {
+		return 0, err
+	}
 	rewritten := 0
 	err := c.scanSecrets(ctx, func(kv KV, plain []byte, stale bool) error {
 		if !stale {

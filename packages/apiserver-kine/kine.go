@@ -604,7 +604,17 @@ func (s *Storage) Watch(ctx context.Context, key string, opts storage.ListOption
 					}
 					continue
 				}
-				out, ok := s.watchEvent(ev, opts.Predicate)
+				out, ok, err := s.watchEvent(ev, opts.Predicate)
+				if err != nil {
+					closeFn()
+					println("kine: watch end", prefix, "reason=decode-failed:", err.Error())
+					failure := apierrors.NewInternalError(err)
+					select {
+					case events <- watch.Event{Type: watch.Error, Object: &failure.ErrStatus}:
+					case <-w.StopChan():
+					}
+					return
+				}
 				if !ok {
 					continue
 				}
@@ -620,32 +630,37 @@ func (s *Storage) Watch(ctx context.Context, key string, opts storage.ListOption
 	return w, nil
 }
 
-func (s *Storage) decodeValue(key, b64 string, rev int64) (runtime.Object, bool) {
+func (s *Storage) decodeValue(key, b64 string, rev int64) (runtime.Object, bool, error) {
 	if b64 == "" {
-		return nil, false
+		return nil, false, nil
 	}
 	stored, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
-		return nil, false
+		return nil, false, nil
 	}
 	data, _, err := s.client.Secrets.Open(key, stored)
 	if err != nil {
-		println("kine: watch event decrypt failed", key+":", err.Error())
-		return nil, false
+		return nil, false, err
 	}
 	obj := s.newFunc()
 	if err := s.decodeInto(data, rev, obj); err != nil {
-		return nil, false
+		return nil, false, nil
 	}
-	return obj, true
+	return obj, true, nil
 }
 
 // watchEvent applies upstream's filtering rule: an object that stops
 // matching the predicate is reported as deleted, one that starts matching
 // as added.
-func (s *Storage) watchEvent(ev kineEvent, pred storage.SelectionPredicate) (watch.Event, bool) {
-	cur, hasCur := s.decodeValue(ev.Key, ev.Value, ev.Rev)
-	prev, hasPrev := s.decodeValue(ev.Key, ev.Prev, ev.Rev)
+func (s *Storage) watchEvent(ev kineEvent, pred storage.SelectionPredicate) (watch.Event, bool, error) {
+	cur, hasCur, err := s.decodeValue(ev.Key, ev.Value, ev.Rev)
+	if err != nil {
+		return watch.Event{}, false, err
+	}
+	prev, hasPrev, err := s.decodeValue(ev.Key, ev.Prev, ev.Rev)
+	if err != nil {
+		return watch.Event{}, false, err
+	}
 	matches := func(obj runtime.Object, ok bool) bool {
 		if !ok {
 			return false
@@ -657,23 +672,23 @@ func (s *Storage) watchEvent(ev kineEvent, pred storage.SelectionPredicate) (wat
 	switch ev.Type {
 	case "deleted":
 		if curMatch {
-			return watch.Event{Type: watch.Deleted, Object: cur}, true
+			return watch.Event{Type: watch.Deleted, Object: cur}, true, nil
 		}
 	case "created":
 		if curMatch {
-			return watch.Event{Type: watch.Added, Object: cur}, true
+			return watch.Event{Type: watch.Added, Object: cur}, true, nil
 		}
 	case "modified":
 		switch {
 		case curMatch && prevMatch:
-			return watch.Event{Type: watch.Modified, Object: cur}, true
+			return watch.Event{Type: watch.Modified, Object: cur}, true, nil
 		case curMatch:
-			return watch.Event{Type: watch.Added, Object: cur}, true
+			return watch.Event{Type: watch.Added, Object: cur}, true, nil
 		case prevMatch:
-			return watch.Event{Type: watch.Deleted, Object: cur}, true
+			return watch.Event{Type: watch.Deleted, Object: cur}, true, nil
 		}
 	}
-	return watch.Event{}, false
+	return watch.Event{}, false, nil
 }
 
 func (s *Storage) GetCurrentResourceVersion(ctx context.Context) (uint64, error) {

@@ -11,12 +11,14 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/apiserver/pkg/storage"
 	"k8s.io/client-go/kubernetes/scheme"
 )
@@ -227,8 +229,8 @@ func TestSecretsWatchEventsDecrypt(t *testing.T) {
 		t.Fatal(err)
 	}
 	ev := kineEvent{Rev: 5, Type: "created", Key: "/registry/secrets/ns/s1", Value: base64.StdEncoding.EncodeToString(sealed)}
-	out, ok := s.watchEvent(ev, storage.Everything)
-	if !ok {
+	out, ok, err := s.watchEvent(ev, storage.Everything)
+	if err != nil || !ok {
 		t.Fatal("event dropped")
 	}
 	if got := out.Object.(*corev1.Secret); string(got.Data["k"]) != "watched" {
@@ -295,5 +297,67 @@ func TestParseSecretKeysRejectsBadInput(t *testing.T) {
 	}
 	if c, err := ParseSecretKeys(""); err != nil || c == nil {
 		t.Fatalf("empty spec: %v", err)
+	}
+}
+
+func TestSecretsWriteWithoutKeysIsRejected(t *testing.T) {
+	mem, hc := newMemKine(t)
+	ctx := context.Background()
+	client := &Client{HTTP: hc, Secrets: mustCipher(t, "")}
+	s := secretStorage(client)
+	err := s.Create(ctx, "/secrets/ns/s1", newSecret("s1", "v1"), nil, 0)
+	if err == nil || !strings.Contains(err.Error(), "SECRETS_ENCRYPTION_KEYS") {
+		t.Fatalf("create: %v", err)
+	}
+	if len(mem.data) != 0 {
+		t.Fatalf("plaintext was stored: %v", mem.data)
+	}
+	if _, err := client.Put(ctx, "/registry/configmaps/ns/c", []byte("ok"), 0); err != nil {
+		t.Fatalf("non-secret write: %v", err)
+	}
+}
+
+func TestSecretsPlaintextReadsWithoutKeys(t *testing.T) {
+	_, hc := newMemKine(t)
+	ctx := context.Background()
+	if err := secretStorage(&Client{HTTP: hc}).Create(ctx, "/secrets/ns/old", newSecret("old", "legacy"), nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	var got corev1.Secret
+	if err := secretStorage(&Client{HTTP: hc, Secrets: mustCipher(t, "")}).Get(ctx, "/secrets/ns/old", storage.GetOptions{}, &got); err != nil || string(got.Data["k"]) != "legacy" {
+		t.Fatalf("%v %q", err, got.Data["k"])
+	}
+}
+
+func TestReencryptWithoutKeysIsRejected(t *testing.T) {
+	_, hc := newMemKine(t)
+	client := &Client{HTTP: hc, Secrets: mustCipher(t, "")}
+	if _, err := client.ReencryptSecrets(context.Background()); err == nil || !strings.Contains(err.Error(), "SECRETS_ENCRYPTION_KEYS") {
+		t.Fatalf("reencrypt: %v", err)
+	}
+}
+
+func TestSecretsWatchDecryptFailureSendsAnErrorEvent(t *testing.T) {
+	_, hc := newMemKine(t)
+	previous := WatchDialer
+	defer func() { WatchDialer = previous }()
+	msgs := make(chan []byte, 1)
+	msgs <- []byte(`{"rev":5,"type":"created","key":"/registry/secrets/ns/s1","value":"` + base64.StdEncoding.EncodeToString([]byte("k8s:enc:aesgcm:v1:a:garbage")) + `"}`)
+	WatchDialer = func(context.Context, string) (<-chan []byte, func(), error) {
+		return msgs, func() {}, nil
+	}
+	s := secretStorage(&Client{HTTP: hc, Secrets: mustCipher(t, keyA)})
+	w, err := s.Watch(context.Background(), "/secrets/ns/", storage.ListOptions{Recursive: true, ResourceVersion: "1", Predicate: storage.Everything})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Stop()
+	select {
+	case ev := <-w.ResultChan():
+		if ev.Type != watch.Error {
+			t.Fatalf("event %v", ev.Type)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no event")
 	}
 }
