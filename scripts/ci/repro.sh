@@ -62,10 +62,12 @@ for round in $(seq 1 "$ROUNDS"); do
     capture "$round"
     exit 1
   fi
+  requests=()
   for path in /api /apis /api/v1/namespaces /api/v1/nodes /apis/apps/v1/deployments; do
     curl -s -m 20 -o /dev/null -H "Authorization: Bearer $admin" "http://127.0.0.1:18787$path" &
+    requests+=($!)
   done
-  wait
+  wait "${requests[@]}"
   sleep 15
   if ! curl -sf -m 20 -o /dev/null -H "Authorization: Bearer $admin" http://127.0.0.1:18787/api/v1/namespaces; then
     echo "round $round: stopped answering"
