@@ -43,11 +43,10 @@ func main() {
 		if r.Body != nil {
 			_ = json.NewDecoder(r.Body).Decode(&extra)
 		}
-		files := addons.Packaged()
+		files := addons.Render(addons.Packaged(), addons.Vars())
 		for name, content := range extra {
 			files = append(files, addons.File{Name: name, Content: []byte(content)})
 		}
-		files = addons.Render(files, addons.Vars())
 		deployer := &addons.Deployer{Client: client, Mapper: restmapper.NewDiscoveryRESTMapper(groups)}
 		if err := deployer.Deploy(r.Context(), files, addons.ParseDisable(bridge.Getenv("DISABLE"))); err != nil {
 			println("addons: deploy failed:", err.Error())

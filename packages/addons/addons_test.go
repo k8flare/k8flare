@@ -153,8 +153,8 @@ func TestDeployInstallsAddonCRDOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if n := count(verbs(c, "patch"), "patch customresourcedefinitions"); n != 1 {
-		t.Fatalf("crd applied %d times, want 1", n)
+	if n := count(verbs(c, "create"), "create customresourcedefinitions"); n != 1 {
+		t.Fatalf("crd created %d times, want 1", n)
 	}
 }
 

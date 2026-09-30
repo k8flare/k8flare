@@ -21,7 +21,6 @@ const controllerAnnot = "k8flare.io/controller";
 const NAMESPACE_PREFIX = "/registry/namespaces/";
 const ACCOUNT_PREFIXES = [NAMESPACE_PREFIX, "/registry/serviceaccounts/", "/registry/configmaps/"];
 const ADDON_PREFIX = "/registry/k3s.cattle.io/addons/";
-const KUBE_SYSTEM_KEY = NAMESPACE_PREFIX + "kube-system";
 const CRD_PREFIX = "/registry/apiextensions.k8s.io/customresourcedefinitions/";
 const WORKLOAD_PREFIXES = ["/registry/replicasets/", "/registry/deployments/", "/registry/replicationcontrollers/", "/registry/services/", "/registry/endpoints/", "/registry/endpointslices/", "/registry/jobs/", "/registry/statefulsets/", "/registry/daemonsets/", "/registry/controllerrevisions/", "/registry/persistentvolumeclaims/", "/registry/persistentvolumes/", "/registry/storage.k8s.io/", "/registry/storageclasses/", "/registry/certificatesigningrequests/", "/registry/certificates.k8s.io/", "/registry/clusterroles/", "/registry/rbac.authorization.k8s.io/", "/registry/cronjobs/", "/registry/horizontalpodautoscalers/", "/registry/gateway.networking.k8s.io/", "/registry/resourcequotas/", "/registry/secrets/", "/registry/configmaps/", "/registry/poddisruptionbudgets/"];
 
@@ -29,6 +28,12 @@ export type QueueMessage =
   | { kind: "change"; key: string; type: string; rev: number }
   | { kind: "lease-check"; node: string }
   | { kind: "retry"; attempt?: number; changed?: string[]; names?: string[] };
+
+function versionStamp(version: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < version.length; i++) hash = Math.imul(hash ^ version.charCodeAt(i), 16777619) >>> 0;
+  return hash;
+}
 
 function closeQuietly(ws: WebSocket, reason: string): void {
   console.log(`cluster: closing watch socket reason=${reason}`);
@@ -63,6 +68,7 @@ export class Cluster extends DurableObject<Env> {
       );
       this.sweepNamespaces();
       this.seedMetrics();
+      this.seedAddons();
     });
   }
 
@@ -76,6 +82,21 @@ export class Cluster extends DurableObject<Env> {
       now,
     );
     this.ctx.waitUntil(this.env.METRICS_Q.send({ kind: "retry" }));
+  }
+
+  private seedAddons(): void {
+    const stamp = versionStamp(this.env.CF_VERSION?.id ?? "");
+    const rows = this.ctx.storage.sql.exec("SELECT value FROM meta WHERE key = 'addons_seed'").toArray();
+    if (rows.length > 0 && rows[0].value === stamp) return;
+    this.ctx.waitUntil(
+      (async () => {
+        await this.env.ADDON_Q.send({ kind: "retry" } satisfies QueueMessage);
+        this.ctx.storage.sql.exec(
+          "INSERT INTO meta (key, value) VALUES ('addons_seed', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+          stamp,
+        );
+      })(),
+    );
   }
 
   private sweepNamespaces(): void {
@@ -452,7 +473,7 @@ export class Cluster extends DurableObject<Env> {
     } else if (WORKLOAD_PREFIXES.some((p) => name.startsWith(p))) routes.push("workloads");
     if (ACCOUNT_PREFIXES.some((p) => name.startsWith(p))) routes.push("accounts");
     if (name.startsWith(CRD_PREFIX)) routes.push("crds");
-    if ((name.startsWith(ADDON_PREFIX) && type === "deleted") || (name === KUBE_SYSTEM_KEY && type === "created")) routes.push("addons");
+    if (name.startsWith(ADDON_PREFIX) && type === "deleted") routes.push("addons");
     if (isExtensionKey(name, value, type)) routes.push("extensions");
     if (type === "deleted" || collectable(value)) routes.push("gc");
     if (name.startsWith("/registry/pods/")) {
@@ -460,7 +481,7 @@ export class Cluster extends DurableObject<Env> {
       if (type === "deleted" || !podBound(value)) routes.push("scheduler");
       if (wantsContainers(value) || (prev && wantsContainers(prev.value))) routes.push("containers");
     } else if (name.startsWith("/registry/minions/") || name.startsWith("/registry/nodes/")) {
-      if (type !== "modified" || !prev || nodeChanged(prev.value, value)) routes.push("scheduler", "workloads", "metrics", "addons");
+      if (type !== "modified" || !prev || nodeChanged(prev.value, value)) routes.push("scheduler", "workloads", "metrics");
     }
     for (const target of routes) {
       this.ctx.storage.sql.exec("INSERT INTO outbox (target, rev, key, type) VALUES (?, ?, ?, ?)", target, rev, name, type);

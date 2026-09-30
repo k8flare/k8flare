@@ -103,7 +103,7 @@ func (d *Deployer) ensureAddonCRD(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if _, err := crds.Apply(ctx, addonCRDName, objs[0], applyOptions()); err != nil {
+		if _, err := crds.Create(ctx, objs[0], metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 			return err
 		}
 	} else if err != nil {
