@@ -263,3 +263,39 @@ it. Remove an entry when the behaviour exists and CI covers it.
     Aggregator sample API server, ServiceAccountIssuerDiscovery.
   - Storage: CSI PV/PVC lifecycle, VolumeAttributesClass lifecycle.
   - "at least two untainted nodes" needs a second node in CI.
+  - Root causes found for the API-machinery, auth and storage failures:
+    - AdmissionWebhook deny attaching pod: kubectl tries WebSocket, any
+      bad handshake makes client-go fall back to SPDY, and the front
+      answered SPDY with 426 before admission ran, so the denial was never
+      reported. The front now runs the stream-locate (authn, authz,
+      admission) for a non-WebSocket upgrade and returns its denial;
+      an allowed connect still gets the 426.
+    - AdmissionWebhook mutate pod with defaults: the remote admission
+      plugin decoded the mutated object without defaulting it (upstream
+      calls `GetObjectDefaulter().Default` after the patch,
+      `webhook/mutating/dispatcher.go`), so an added init container failed
+      validation on imagePullPolicy and terminationMessagePolicy.
+    - Aggregator: `extension-apiserver-authentication` stored the
+      request-header lists as bare strings; kube-apiserver stores JSON
+      arrays and every extension apiserver `json.Unmarshal`s them in
+      `RunOnce` at start, so the sample apiserver exited (restart count 5).
+      Existing clusters keep the old ConfigMap because it is only created
+      when missing. Still open: the aggregator dials the extension over
+      the node tunnel without a client certificate, so request-header
+      authentication of the proxied user cannot work; a front-proxy client
+      certificate signed by the request-header CA is needed.
+    - VolumeAttributesClass lifecycle: writes under
+      `/registry/volumeattributesclasses/` were not routed to the workloads
+      queue, so the `vac-protection` finalizer was never released after a
+      delete. The PVC lifecycle spec has the same symptom (finalizer not
+      released within 30 s) but its key is routed; the cause is not found
+      (suspect: a busy or slow workloads consumer under load).
+    - ServiceAccountIssuerDiscovery: the discovery and JWKS handlers, the
+      bootstrap `system:service-account-issuer-discovery` role and the
+      binding work; the pod failed on the DNS lookup of
+      `kubernetes.default.svc.cluster.local` (both the in-cluster and the
+      fallback path), which is the DNS failure above.
+    - `FailedMount ... kube-api-access ... failed to sync configmap cache`
+      is not TokenRequest: it is the kubelet's 1 s wait for the
+      `kube-root-ca.crt` reflector to sync (`watch_based_manager.go`),
+      four occurrences in the run, each retried within seconds.
