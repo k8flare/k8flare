@@ -1,0 +1,67 @@
+name: Unit
+
+on:
+  push:
+    branches: [main, feat/minimal-rewrite]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Restore Go caches
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-unit-${{ runner.os }}-${{ hashFiles('go.sum', 'scripts/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-unit-${{ runner.os }}-${{ hashFiles('go.sum', 'scripts/go.sum') }}-
+            go-unit-${{ runner.os }}-
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Fetch the Kubernetes mirrors
+        run: make mirrors
+
+      - name: Test the host packages
+        run: |
+          go test -count=1 -timeout 20m \
+            -skip '^(TestAdmissionExtensions|TestCompaction|TestConfigMapVerbs|TestControllers|TestCustomResources|TestInformerWatchList|TestOpenAPI|TestNodePodCIDRAndPodLifecycle|TestRBAC|TestScheduler|TestSchedulerWakesOnNode|TestSupervisorJoin|TestTables|TestWatch|TestWatchSelectorTransitions|TestNodeFieldSelectorDefaults)$' \
+            ./packages/...
+
+      - name: Test the js/wasm packages
+        env:
+          GOOS: js
+          GOARCH: wasm
+        run: go test -count=1 "-exec=env -i PATH=$PATH $(go env GOROOT)/lib/wasm/go_js_wasm_exec" ./packages/worker-bridge
+
+      - name: Save Go caches
+        if: always()
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-unit-${{ runner.os }}-${{ hashFiles('go.sum', 'scripts/go.sum') }}-${{ github.sha }}
