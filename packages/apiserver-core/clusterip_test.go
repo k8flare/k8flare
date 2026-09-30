@@ -611,6 +611,17 @@ func TestExternalNameDropsClusterIP(t *testing.T) {
 	}
 }
 
+func TestHeadlessServiceGetsNoneClusterIPs(t *testing.T) {
+	svc := &corev1.Service{Spec: corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone}}
+	defaultHeadlessClusterIPs(svc)
+	if len(svc.Spec.ClusterIPs) != 1 || svc.Spec.ClusterIPs[0] != corev1.ClusterIPNone {
+		t.Fatalf("clusterIPs=%v", svc.Spec.ClusterIPs)
+	}
+	if err := clusterIPSliceAgrees(svc); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDefaultServiceIPFamily(t *testing.T) {
 	svc := &corev1.Service{Spec: corev1.ServiceSpec{ClusterIP: "10.43.0.2"}}
 	defaultServiceIPFamily(svc)

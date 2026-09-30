@@ -49,6 +49,7 @@ func init() {
 				return nil
 			}
 			if svc.Spec.ClusterIP == corev1.ClusterIPNone {
+				defaultHeadlessClusterIPs(svc)
 				return nil
 			}
 			if svc.Spec.ClusterIP == "" {
@@ -931,6 +932,12 @@ func ipAddressKeyName(ip string) string {
 		return strings.ReplaceAll(parsed.String(), ":", "-")
 	}
 	return strings.ReplaceAll(ip, ":", "-")
+}
+
+func defaultHeadlessClusterIPs(svc *corev1.Service) {
+	if svc.Spec.ClusterIP == corev1.ClusterIPNone && len(svc.Spec.ClusterIPs) == 0 {
+		svc.Spec.ClusterIPs = []string{corev1.ClusterIPNone}
+	}
 }
 
 func releaseExternalName(svc *corev1.Service) bool {
