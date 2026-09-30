@@ -20,6 +20,7 @@ import (
 	informers "k8s.io/apiextensions-apiserver/pkg/client/informers/externalversions"
 	listers "k8s.io/apiextensions-apiserver/pkg/client/listers/apiextensions/v1"
 	"k8s.io/apiextensions-apiserver/pkg/controller/establish"
+	generatedopenapi "k8s.io/apiextensions-apiserver/pkg/generated/openapi"
 	"k8s.io/apiextensions-apiserver/pkg/registry/customresourcedefinition"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,6 +35,7 @@ import (
 	"k8s.io/apiserver/pkg/endpoints/discovery"
 	"k8s.io/apiserver/pkg/endpoints/handlers/negotiation"
 	"k8s.io/apiserver/pkg/endpoints/handlers/responsewriters"
+	openapinamer "k8s.io/apiserver/pkg/endpoints/openapi"
 	"k8s.io/apiserver/pkg/registry/generic"
 	registryrest "k8s.io/apiserver/pkg/registry/rest"
 	kmux "k8s.io/apiserver/pkg/server/mux"
@@ -43,7 +45,11 @@ import (
 	"k8s.io/apiserver/pkg/util/webhook"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
+	openapibuilder3 "k8s.io/kube-openapi/pkg/builder3"
+	openapicommon "k8s.io/kube-openapi/pkg/common"
 	"k8s.io/kube-openapi/pkg/handler3"
+	openapiutil "k8s.io/kube-openapi/pkg/util"
+	"k8s.io/kube-openapi/pkg/validation/spec"
 )
 
 type Config struct {
@@ -60,9 +66,31 @@ var apiGroup = metav1.APIGroup{
 	PreferredVersion: metav1.GroupVersionForDiscovery{GroupVersion: apiextensionsv1.SchemeGroupVersion.String(), Version: apiextensionsv1.SchemeGroupVersion.Version},
 }
 
+func crdTypeConverter() (managedfields.TypeConverter, error) {
+	namer := openapinamer.NewDefinitionNamer(apiextensionsapiserver.Scheme)
+	config := &openapicommon.OpenAPIV3Config{
+		GetOperationIDAndTags: openapinamer.GetOperationIDAndTags,
+		GetDefinitionName:     namer.GetDefinitionName,
+		GetDefinitions:        generatedopenapi.GetOpenAPIDefinitions,
+	}
+	config.Definitions = generatedopenapi.GetOpenAPIDefinitions(func(name string) spec.Ref {
+		defName, _ := config.GetDefinitionName(name)
+		return spec.MustCreateRef("#/components/schemas/" + openapicommon.EscapeJsonPointer(defName))
+	})
+	models, err := openapibuilder3.BuildOpenAPIDefinitionsForResources(config, openapiutil.GetCanonicalTypeName(&apiextensionsv1.CustomResourceDefinition{}))
+	if err != nil {
+		return nil, err
+	}
+	return managedfields.NewTypeConverter(models, false)
+}
+
 func NewHandler(cfg Config) (http.Handler, error) {
 	scheme, codecs := apiextensionsapiserver.Scheme, apiextensionsapiserver.Codecs
 	client := &kine.Client{HTTP: cfg.Kine}
+	crdConverter, err := crdTypeConverter()
+	if err != nil {
+		return nil, err
+	}
 	crdREST, err := customresourcedefinition.NewREST(scheme, restOptions{client: client, codec: codecs.LegacyCodec(apiextensionsv1.SchemeGroupVersion)})
 	if err != nil {
 		return nil, err
@@ -89,7 +117,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 		Serializer:                 codecs,
 		ParameterCodec:             metav1.ParameterCodec,
 		EquivalentResourceRegistry: runtime.NewEquivalentResourceRegistry(),
-		TypeConverter:              managedfields.NewDeducedTypeConverter(),
+		TypeConverter:              crdConverter,
 		Admit:                      crdAdmit(cfg.Admission),
 		MinRequestTimeout:          30 * time.Minute,
 	}
