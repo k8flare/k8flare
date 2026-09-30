@@ -132,6 +132,8 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	kubeletSupervisor := supervisor.New(v, cfg.JoinToken)
 	mux.HandleFunc("/internal/kubelet-client", kubeletSupervisor.KubeletClient)
 	installSecretsEncrypt(mux, client)
+	installTokens(mux, v)
+	installSnapshots(mux, client)
 	kubeletSupervisor.Register(root)
 	root.Handle("/", auth.WithAuth(auth.WithRequestInfo(auth.WithAuthorization(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-K8flare-Stream-Locate") == "1" {
