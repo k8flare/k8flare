@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/informers"
@@ -28,12 +29,14 @@ import (
 )
 
 const (
-	listPage       = 500
-	inFlightWait   = 20 * time.Second
-	bindGrace      = 70 * time.Second
-	inFlightPoll   = 50 * time.Millisecond
-	schedulerName  = "default-scheduler"
-	reportingActor = "default-scheduler"
+	listPage          = 500
+	inFlightWait      = 20 * time.Second
+	bindGrace         = 70 * time.Second
+	inFlightPoll      = 50 * time.Millisecond
+	resourceCachePoll = 10 * time.Millisecond
+	resourceCacheWait = 10 * time.Second
+	schedulerName     = "default-scheduler"
+	reportingActor    = "default-scheduler"
 )
 
 func init() {
@@ -132,6 +135,9 @@ func Schedule(ctx context.Context, client kubernetes.Interface) (*Result, error)
 		scheduler.WithParallelism(config.Parallelism),
 	)
 	if err != nil {
+		return nil, err
+	}
+	if err := waitForResourceCaches(ctx, sched, factory); err != nil {
 		return nil, err
 	}
 	logger := klog.FromContext(ctx)
@@ -332,6 +338,26 @@ func startResourceInformers(ctx context.Context, client kubernetes.Interface, fa
 		}
 	}
 	return nil
+}
+
+func waitForResourceCaches(ctx context.Context, sched *scheduler.Scheduler, factory informers.SharedInformerFactory) error {
+	drm := sched.Profiles[schedulerName].SharedDRAManager()
+	if drm == nil {
+		return nil
+	}
+	claims := factory.Resource().V1().ResourceClaims().Informer().GetStore()
+	slices := factory.Resource().V1().ResourceSlices().Informer().GetStore()
+	return wait.PollUntilContextTimeout(ctx, resourceCachePoll, resourceCacheWait, true, func(context.Context) (bool, error) {
+		assumedClaims, err := drm.ResourceClaims().List()
+		if err != nil {
+			return false, err
+		}
+		trackedSlices, err := drm.ResourceSlices().ListWithDeviceTaintRules()
+		if err != nil {
+			return false, err
+		}
+		return len(assumedClaims) == len(claims.List()) && len(trackedSlices) == len(slices.List()), nil
+	})
 }
 
 type listOnlyWatcher struct {
