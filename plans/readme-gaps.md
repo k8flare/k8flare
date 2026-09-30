@@ -634,3 +634,48 @@ it. Remove an entry when the behaviour exists and CI covers it.
     (server CA, bare-string allowed names) until the ConfigMap is deleted
     and kube-system re-provisioned, which nothing does automatically; the
     sample apiserver crash-loops on the bare string.
+- Run 36759859775 (c5ec39f, full): two deterministic failures.
+  - DRA CRUD `resource.k8s.io/v1 ResourceClaim`: the apply patch of an
+    existing claim got `no corresponding type for resource.k8s.io/v1,
+    Kind=ResourceClaim` from the server-side apply type converter.
+    `genopenapi` skipped `resource.k8s.io/` and `apiregistration.k8s.io/`
+    when collecting root models, `genresources` left both packages out of
+    the host-side spec closure, and the installer skipped `resource.k8s.io`
+    when no Kine client was given, which is how `bakeopenapi` runs. So the
+    baked documents had no models for either group and each worker's
+    `openapi.json` held only the meta and Scale schemas, while every other
+    group's converter was schema-aware. Now both groups are generated,
+    baked (`/openapi/v3/apis/resource.k8s.io/v1` and
+    `.../apiregistration.k8s.io/v1` exist) and embedded; `DeleteOptions`
+    and `WatchEvent` gained the two groups' GVK entries in every worker.
+    Cost: +18 KB raw on the resource worker, +11 KB on apiregistration,
+    no new functions (the definitions package is linked only into the
+    host-side spec builder). `TestApplyPatchOfExistingResourceClaimHasATypedSchema`
+    reproduces the run's error with the old `openapi.json`, and
+    `TestEveryServedKindHasATypeInTheTypeConverter` checks every served
+    kind against the converter on the host.
+  - Watchers "should receive events on concurrent watches in same order":
+    not a store or client ordering bug. In `dev.log` every one of the 14
+    watches the spec had opened by 19:38:39.8 was dialed at the revision of
+    the previous event (14009 ... 14048); the producer's next write, `DELETE
+    .../watch-8955/configmaps/cm-4`, reached the front at 19:38:39.827
+    (devtls start 19:38:39.665) and never produced an audit
+    `ResponseComplete`; devtls logged it as 502 at 19:38:49.877 when the
+    spec's 10 s wait gave up and cancelled it. The claim was gone by the
+    namespace sweep at 19:40:17, so the delete was applied without its
+    response ever leaving the core worker. The same window shows other
+    core requests taking 4-16 s (`GET .../statefulsets/ss2` 7.7 s, `DELETE
+    /api/v1/namespaces/projected-3054` 16.2 s), the scheduler and
+    workloads getting `bridge: response body did not finish in time`, and
+    the runner at 1.1 GB available with workerd at 11.8 GB RSS. Storage
+    level tests now cover the spec's shape: `watchorder.test.ts` opens a
+    watch from the revision of every event of a producer stream with
+    node-lease progress interleaved and checks all streams match, and
+    `TestConcurrentWatchesFromEachRevisionSeeTheSameOrderAcrossRedials`
+    does the same against the kine client with sockets that close
+    mid-stream. Both pass, so the missing event was a stalled response in
+    the core isolate under memory pressure, not a gap in the store, the
+    replay window or the redial. Open: why a single unary DELETE in the
+    core worker can stall for more than 10 s while neighbouring requests
+    complete; the loader drives each request's window every 25 ms, so the
+    stall is inside the isolate, not the pump.
