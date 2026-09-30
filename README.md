@@ -91,8 +91,8 @@ with certificates, not shared secrets.
 
 The agent reaches the kubelet API through a remotedialer tunnel held by
 a per-node Durable Object, so nodes need no public address or inbound
-port. `kubectl logs`, `exec`, `attach`, and `port-forward` work over
-both WebSocket and SPDY.
+port. `kubectl logs`, `exec`, `attach`, and `port-forward` stream over
+WebSocket, the protocol kubectl uses by default.
 
 ## Packaged components
 

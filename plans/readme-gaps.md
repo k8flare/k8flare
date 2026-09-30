@@ -13,13 +13,9 @@ it. Remove an entry when the behaviour exists and CI covers it.
 - VAP bindings, MutatingAdmissionPolicy, resourceclaims and
   resourceclaimtemplates have no upstream strategy.
 - CRDs still use the deduced SSA type converter.
-- SPDY is not served and cannot be: workerd only accepts `Upgrade:
-  websocket` (KJ `HttpHeaders::isWebSocket`, `acceptWebSocket`), so stream
-  paths answer other upgrades with 426. exec, attach and port-forward
-  (`v5`/`v4.channel.k8s.io`, `SPDY/3.1+portforward.k8s.io`) and pod logs
-  (`binary.k8s.io`, `base64.binary.k8s.io`) work over WebSocket. The pod-log
-  fix (fetch `containerLogs` over HTTP, relay one way) has no recorded CI
-  run; README needs "over WebSocket" and no SPDY claim.
+- Streaming over WebSocket (logs, exec, attach, port-forward) has no CI
+  spec yet. SPDY cannot be served: workerd only accepts `Upgrade:
+  websocket`, so stream paths answer other upgrades with 426.
 - Watch: 1000-revision compaction window, no RequestWatchProgress,
   progress notifications only on node-lease writes.
 
