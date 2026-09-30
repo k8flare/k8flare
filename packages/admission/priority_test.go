@@ -49,6 +49,22 @@ func TestPriorityClassMissingIsForbidden(t *testing.T) {
 	}
 }
 
+func TestSystemPriorityClassesResolveBeforeBootstrap(t *testing.T) {
+	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	defer kineSrv.Close()
+	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
+	for name, want := range map[string]int{"system-cluster-critical": 2000000000, "system-node-critical": 2000001000} {
+		out := postAdmit(t, h, priorityPodReq(name, nil))
+		if !out.Allowed {
+			t.Fatalf("%s: expected allow: %+v", name, out)
+		}
+		spec, _ := out.Object["spec"].(map[string]any)
+		if spec["priorityClassName"] != name || intFromJSON(spec["priority"]) != want {
+			t.Fatalf("%s: spec = %v", name, spec)
+		}
+	}
+}
+
 func TestPriorityDefaultWhenNoClass(t *testing.T) {
 	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()

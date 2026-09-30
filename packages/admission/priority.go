@@ -8,6 +8,7 @@ import (
 	admit "github.com/k8flare/k8flare/packages/apiserver-admit"
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
+	schedhelpers "k8s.io/kubernetes/pkg/apis/scheduling/v1"
 )
 
 func applyPriority(ctx context.Context, s *store, req *admit.Request) error {
@@ -64,9 +65,21 @@ func resolvePriority(ctx context.Context, s *store, className string) (string, i
 		return "", 0, nil, err
 	}
 	if !ok {
+		pc, ok = systemPriorityClass(className)
+	}
+	if !ok {
 		return "", 0, nil, fmt.Errorf("no PriorityClass with name %s was found", className)
 	}
 	return className, pc.Value, pc.PreemptionPolicy, nil
+}
+
+func systemPriorityClass(name string) (schedulingv1.PriorityClass, bool) {
+	for _, pc := range schedhelpers.SystemPriorityClasses() {
+		if pc.Name == name {
+			return *pc, true
+		}
+	}
+	return schedulingv1.PriorityClass{}, false
 }
 
 func defaultPriority(ctx context.Context, s *store) (string, int32, *corev1.PreemptionPolicy, error) {
