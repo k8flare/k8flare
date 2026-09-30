@@ -5,13 +5,15 @@ it. Remove an entry when the behaviour exists and CI covers it.
 
 ## What you get
 
-- Upstream validation is not used for admissionregistration (CEL pushed
-  the worker past 64 MiB) and pods and nodes run local strategies
-  (upstream `pkg/registry/core/{pod,node}` pulls in the kubelet client and
-  grpc). Retry with `-tags grpcnotrace`, which cut attach/detach from
-  69.9 MB to 44.1 MB.
-- VAP bindings, MutatingAdmissionPolicy, resourceclaims and
-  resourceclaimtemplates have no upstream strategy.
+- Upstream validation is not used for admissionregistration. Every
+  upstream strategy there imports `pkg/apis/admissionregistration/validation`,
+  which links the CEL compiler: the group worker goes from 56.1 MB to
+  70.1 MB (50,963 functions), over the 64 MiB cap even with
+  `-tags grpcnotrace`. This also leaves VAP bindings and
+  MutatingAdmissionPolicy (and its binding) on the local strategy.
+- Claim status writes skip the two upstream authorization checks
+  (`resourceclaims/binding`, `resourceclaims/driver`): the strategy gets an
+  allow-all authorizer, as the group worker has none.
 - CRDs still use the deduced SSA type converter.
 - exec, attach and port-forward work over WebSocket only; pod logs over
   WebSocket are broken. SPDY is not served.
