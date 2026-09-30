@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -55,6 +56,7 @@ type Config struct {
 	MaxRequestsInflight         int
 	MaxMutatingRequestsInflight int
 	ClusterUID                  string
+	AuditPolicy                 string
 
 	SecretsEncryptionKeys string
 }
@@ -97,6 +99,10 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	tokens := union.New(auth.AdminToken(cfg.AdminToken), auth.ReadonlyToken(cfg.ReadonlyToken), auth.ComponentTokens{Key: []byte(cfg.AdminToken)}, auth.VaultToken{Vault: v}, auth.NodeToken{Vault: v}, sa, oidc, access)
 	authn := requnion.New(bearertoken.New(tokens), access)
 	authorizer := authz.New(client)
+	audits, err := newAuditor(cfg.AuditPolicy, os.Stdout)
+	if err != nil {
+		return nil, fmt.Errorf("audit policy: %w", err)
+	}
 	mux := http.NewServeMux()
 	installHealth(mux, client)
 	mux.HandleFunc("/.well-known/openid-configuration", sa.ServeOpenID)
@@ -142,13 +148,13 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	installTokens(mux, v)
 	installSnapshots(mux, client)
 	kubeletSupervisor.Register(root)
-	root.Handle("/", auth.WithAuth(auth.WithRequestInfo(withInflightLimit(auth.WithAuthorization(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	root.Handle("/", withFrontFilters(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-K8flare-Stream-Locate") == "1" {
 			edgehost.LocateStream(w, r, client, cfg.Admission)
 			return
 		}
 		mux.ServeHTTP(w, r)
-	}), authorizer), cfg.MaxRequestsInflight, cfg.MaxMutatingRequestsInflight)), authn))
+	}), authn, authorizer, audits, cfg.MaxRequestsInflight, cfg.MaxMutatingRequestsInflight))
 	var once sync.Once
 	var keyReady atomic.Bool
 	return recoverPanics(redirectBareProxy(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

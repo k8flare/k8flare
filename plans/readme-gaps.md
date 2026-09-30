@@ -42,7 +42,16 @@ it. Remove an entry when the behaviour exists and CI covers it.
 - Cluster store: compaction keeps 5 to 10 minutes of history with a
   100000-revision cap; the cluster-store tests run the Durable Object on
   node:sqlite, not workerd.
-- Audit log: none.
+- Audit log: the front records every request it routes as metadata
+  (`AUDIT_POLICY` overrides `DefaultAuditPolicy`), unit tests only. Not yet:
+  - Request and RequestResponse levels behave as Metadata; bodies and
+    upstream's `omitManagedFields` need the group workers, which run the
+    REST handlers, to log objects.
+  - `edgehost.Proxy` and the supervisor routes bypass the filter chain.
+  - Error `Status` messages (403 reason) are not in the event, and the
+    401 "attempted: bearer" detail is overwritten by the 401 body.
+  - Not run in a deployed Worker: `tail()` must relay the lines to
+    Workers Logs.
 - Upgrades: no storage migration mechanism.
 - Bootstrap-token Secrets are not accepted for joins.
 
