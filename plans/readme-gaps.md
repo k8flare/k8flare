@@ -679,3 +679,70 @@ it. Remove an entry when the behaviour exists and CI covers it.
     core worker can stall for more than 10 s while neighbouring requests
     complete; the loader drives each request's window every 25 ms, so the
     stall is inside the isolate, not the pump.
+- Run 36759859775, where the 8444 s went (14 of the 20 failures were
+  timeouts), read from `procs.log`, the audit events and the pass logs.
+  Every audit line is printed twice in `dev.log` (223 735 distinct
+  requests, 26/s); `wasmcpu` is 0 under wrangler dev, so CPU is attributed
+  by request and pass counts.
+  - workerd's main thread was at 100 % (`main_ms` 1035 per 1 s sample)
+    from 18:50 to the end; RSS 0.9 GB at start, 8.8 GB after ten minutes,
+    12.1 GB at the end.
+  - The workloads pass: 362 passes, drain 7212 s in total (p50 1.5 s, p90
+    100 s, max 164 s), 34 drains gave up at the 160 s limit, 22 passes
+    left controllers behind. From 19:00 to 20:40 there were one to four
+    passes per ten minutes, each 160 s, and every give-up named
+    `root_ca_cert_publisher=N/1`: the publisher was creating
+    kube-root-ca.crt in Terminating namespaces (3216 refused creates, one
+    worker, one at a time), so a handler was always in flight and the
+    drain could not end early. Lists and build+fill cost 0.7 s and 0.4 s
+    per pass; the live feed applied 12 602 events.
+  - The namespace deleter: 5.5k rounds, each 35 namespaced lists, a get,
+    up to 35 delete-collections and a finalize, were 100k of the 224k
+    requests. 198 invocations were aborted by the 90 s RPC timeout, so a
+    namespace needed a median of 16 rounds and 36 minutes (p90 100 min),
+    the first round came a median of 104 s (p90 54 min) after the delete,
+    and up to 116 namespaces were Terminating at once. The deleter walked
+    its batch one request at a time and, when the batch named any
+    namespace, processed only those: its own status writes name the
+    namespaces it is already working on, so the listed ones starved. Inside
+    a round the isolate issued its next request 7-20 s after the previous
+    answer while the server answered in 0.01-0.2 s and the kubelet's
+    requests in the same seconds paced at 0.2 s.
+  - The pile of Terminating namespaces fed two more storms: the scheduler
+    retried binding their pods every pass (4778 `Error scheduling pod`,
+    4356 refused bindings and 2050 events for one namespace's nine pods,
+    1.6 s per write) and the publisher retries above.
+  - Lease checks leaked: every lease-check follow-up sent a new check to
+    the queue and the Cluster DO started another chain after each 50 s of
+    lease writes, so checks grew linearly from 56 to 2904 per ten minutes
+    (11.5k checks, 23k reads, one follow-up and one queue send each).
+  - The garbage collector ran 1988 collects (one per 4 s, 600-1400 items)
+    with a discovery round trip each; not changed.
+  - Fixed: one pending lease check per node, scheduled through the DO by
+    both the lease write path and the follow-up (`POST /lease-check`);
+    the publisher sees only Active namespaces (`Deps.ActiveNamespaces`);
+    the deleter clears eight namespaces at a time under a 60 s budget,
+    reports the rest instead of being aborted, and fills its batch from
+    the listed terminating namespaces after the hinted ones; every dynamic
+    worker prints `mem worker=<name> heap_alloc_mb ... gc_cpu_pct` once a
+    minute so the next run says which Go heaps grew.
+  - Local dev stack (this Mac, no node; 40 namespaces each with a
+    Deployment of 2, a Service and a ConfigMap, deleted at once; before is
+    the c5ec39f build): before, 8 of 40 namespaces were gone after 441 s,
+    the deleter fetched the same three deleted namespaces on every call
+    and never reached the other 35, 6 invocations hit the 90 s timeout, 57
+    refused root-CA creates for the 8; after, all 40 were gone in 215 s
+    (19 by 120 s), 16 deleter rounds, no timeout, 38 refused creates (one
+    per namespace, from the configmap delete the deleter itself makes).
+    Requests inside the deleter still paused 4-5 s every few requests on
+    the idle Mac while the server answered in 0.01-0.3 s, so the isolate
+    stall is not only runner saturation.
+  - Seen on the way: upstream's `NewNamespacedResourcesDeleter` calls
+    `klog.FlushAndExit` when discovery returns nothing, which ends the
+    workloads Go program (`Go program has already exited` on every later
+    RPC until the isolate is replaced); it happened on the dev stack when
+    the deleter's first discovery got 401 from mismatched assets, not in
+    CI.
+  - Open: the 7-20 s (CI) and 4-5 s (local) stalls inside an isolate
+    between consecutive requests; the scheduler's per-pass retry of pods
+    whose bind is refused; the memory the mem lines will attribute.
