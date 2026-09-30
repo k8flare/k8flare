@@ -18,8 +18,8 @@ func init() {
 	registry.Resources["bindings"] = func(_ schema.GroupVersion, _ metav1.APIResource, _ registry.Deps) rest.Storage {
 		return legacyBindingREST{}
 	}
-	registry.Resources["componentstatuses"] = func(_ schema.GroupVersion, _ metav1.APIResource, _ registry.Deps) rest.Storage {
-		return newComponentStatusREST()
+	registry.Resources["componentstatuses"] = func(_ schema.GroupVersion, _ metav1.APIResource, deps registry.Deps) rest.Storage {
+		return newComponentStatusREST(deps.Kine)
 	}
 	registry.Customizers["pods"] = func(store *registry.Store, _ registry.Deps) {
 		store.CreateStrategy = podCreateStrategy{store.CreateStrategy}
