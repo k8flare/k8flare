@@ -13,6 +13,7 @@ export class APIGroups extends WorkerEntrypoint<Env> {
       PRINTERS: this.env.PRINTERS,
       TUNNEL: this.env.TUNNEL,
       ADMISSION: this.env.ADMISSION,
+      HOOKS: this.env.HOOKS,
       ADMIN_TOKEN: this.env.ADMIN_TOKEN,
       READONLY_TOKEN: this.env.READONLY_TOKEN,
       SECRETS_ENCRYPTION_KEYS: this.env.SECRETS_ENCRYPTION_KEYS,

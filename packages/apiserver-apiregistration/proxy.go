@@ -23,12 +23,25 @@ import (
 	"k8s.io/streaming/pkg/httpstream"
 )
 
-const tunnelDialBase = "https://nodetunnel.internal/dial/"
+const (
+	tunnelDialBase = "https://nodetunnel.internal/dial/"
+	hooksBase      = "https://hooks.internal/hook/"
+	workerAnnot    = "k8flare.com/worker"
+)
 
 var (
 	kineClient *kine.Client
 	tunnel     http.RoundTripper
+	hooks      http.RoundTripper
 )
+
+func workerName(svc *apiregistrationv1.APIService) string {
+	return strings.Trim(strings.TrimSpace(svc.Annotations[workerAnnot]), "/")
+}
+
+func isRemote(svc *apiregistrationv1.APIService) bool {
+	return svc.Spec.Service != nil || workerName(svc) != ""
+}
 
 type proxyResponder struct{ w http.ResponseWriter }
 
@@ -43,13 +56,17 @@ func (r proxyResponder) Error(_ http.ResponseWriter, _ *http.Request, err error)
 func proxyRemote() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == remoteDiscoveryPath {
+				serveRemoteDiscovery(w, r)
+				return
+			}
 			if strings.HasPrefix(r.URL.Path, "/apis/apiregistration.k8s.io/") || r.URL.Path == "/apis/apiregistration.k8s.io" {
 				next.ServeHTTP(w, r)
 				return
 			}
 			group, version := splitGroupVersion(r.URL.Path)
 			svc, ok := loadStoredAPIService(r.Context(), version+"."+group)
-			if !ok || svc.Spec.Service == nil {
+			if !ok || !isRemote(svc) {
 				http.NotFound(w, r)
 				return
 			}
@@ -92,36 +109,64 @@ func loadStoredAPIService(ctx context.Context, name string) (*apiregistrationv1.
 }
 
 func serveAggregated(w http.ResponseWriter, r *http.Request, svc *apiregistrationv1.APIService) error {
-	if tunnel == nil {
-		return fmt.Errorf("service unavailable")
+	target, err := resolveRemote(r.Context(), svc, r.URL.RequestURI())
+	if err != nil {
+		return err
+	}
+	out := r.Clone(r.Context())
+	out.RequestURI = ""
+	out.URL = target.location
+	for k, v := range target.header {
+		out.Header[k] = v
+	}
+	if u, ok := genericapirequest.UserFrom(r.Context()); ok {
+		transport.SetAuthProxyHeaders(out, u.GetName(), u.GetUID(), u.GetGroups(), u.GetExtra())
+	}
+	handler := proxy.NewUpgradeAwareHandler(target.location, target.transport, true, httpstream.IsUpgradeRequest(r), proxyResponder{w: w})
+	handler.ServeHTTP(w, out)
+	return nil
+}
+
+type remoteTarget struct {
+	location  *url.URL
+	transport http.RoundTripper
+	header    http.Header
+}
+
+func resolveRemote(ctx context.Context, svc *apiregistrationv1.APIService, requestURI string) (remoteTarget, error) {
+	if name := workerName(svc); name != "" {
+		if hooks == nil || strings.Contains(name, "/") {
+			return remoteTarget{}, fmt.Errorf("service unavailable")
+		}
+		location, err := url.Parse(hooksBase + name + requestURI)
+		if err != nil {
+			return remoteTarget{}, err
+		}
+		return remoteTarget{location: location, transport: hooks}, nil
+	}
+	if tunnel == nil || svc.Spec.Service == nil {
+		return remoteTarget{}, fmt.Errorf("service unavailable")
 	}
 	ref := svc.Spec.Service
 	port := int32(443)
 	if ref.Port != nil && *ref.Port != 0 {
 		port = *ref.Port
 	}
-	target, node, err := resolveService(r.Context(), ref.Namespace, ref.Name, port)
+	target, node, err := resolveService(ctx, ref.Namespace, ref.Name, port)
 	if err != nil {
-		return err
+		return remoteTarget{}, err
 	}
-	location, err := url.Parse(tunnelDialBase + node + "/" + target.host + "/" + target.port + r.URL.RequestURI())
+	location, err := url.Parse(tunnelDialBase + node + "/" + target.host + "/" + target.port + requestURI)
 	if err != nil {
-		return err
+		return remoteTarget{}, err
 	}
-	out := r.Clone(r.Context())
-	out.RequestURI = ""
-	out.URL = location
-	out.Header.Set("X-Dial-TLS", "1")
-	out.Header.Set("X-Dial-ServerName", ref.Name+"."+ref.Namespace+".svc")
+	header := http.Header{}
+	header.Set("X-Dial-TLS", "1")
+	header.Set("X-Dial-ServerName", ref.Name+"."+ref.Namespace+".svc")
 	if len(svc.Spec.CABundle) > 0 {
-		out.Header.Set("X-Dial-CA", base64.StdEncoding.EncodeToString(svc.Spec.CABundle))
+		header.Set("X-Dial-CA", base64.StdEncoding.EncodeToString(svc.Spec.CABundle))
 	}
-	if u, ok := genericapirequest.UserFrom(r.Context()); ok {
-		transport.SetAuthProxyHeaders(out, u.GetName(), u.GetUID(), u.GetGroups(), u.GetExtra())
-	}
-	handler := proxy.NewUpgradeAwareHandler(location, tunnel, true, httpstream.IsUpgradeRequest(r), proxyResponder{w: w})
-	handler.ServeHTTP(w, out)
-	return nil
+	return remoteTarget{location: location, transport: tunnel, header: header}, nil
 }
 
 type dialTarget struct{ host, port string }
@@ -190,8 +235,15 @@ func applyAvailability(obj runtime.Object) {
 	if !ok {
 		return
 	}
-	if svc.Spec.Service == nil {
+	if !isRemote(svc) {
 		helper.SetAPIServiceCondition(svc, helper.NewLocalAvailableAPIServiceCondition())
+		return
+	}
+	if workerName(svc) != "" {
+		helper.SetAPIServiceCondition(svc, apiregistrationv1.APIServiceCondition{
+			Type: apiregistrationv1.Available, Status: apiregistrationv1.ConditionTrue, LastTransitionTime: metav1.Now(),
+			Reason: "Passed", Message: "all checks passed",
+		})
 		return
 	}
 	port := int32(443)

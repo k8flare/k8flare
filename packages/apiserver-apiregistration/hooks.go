@@ -20,6 +20,9 @@ func init() {
 	registry.Customizers["apiservices"] = func(store *registry.Store, deps registry.Deps) {
 		kineClient = deps.Kine
 		tunnel = deps.Kubelet.Transport
+		if deps.Hooks != nil {
+			hooks = deps.Hooks.Transport
+		}
 		store.BeginCreate = markLocalAvailable
 		store.BeginUpdate = markLocalAvailableUpdate
 		store.Decorator = applyAvailability
@@ -44,7 +47,7 @@ func markLocalAvailableUpdate(_ context.Context, obj, _ runtime.Object, _ *metav
 
 func markLocal(obj runtime.Object) {
 	svc, ok := obj.(*apiregistrationv1.APIService)
-	if !ok || svc.Spec.Service != nil {
+	if !ok || isRemote(svc) {
 		return
 	}
 	helper.SetAPIServiceCondition(svc, helper.NewLocalAvailableAPIServiceCondition())

@@ -13,6 +13,8 @@ import (
 	aggregated "k8s.io/apiserver/pkg/endpoints/discovery/aggregated"
 )
 
+const remoteDiscoveryPath = "/internal/remote-discovery"
+
 const aggregatedAccept = "application/json;g=apidiscovery.k8s.io;v=v2;as=APIGroupDiscoveryList"
 
 func builtinResourceManager(path string, core bool) aggregated.ResourceManager {
@@ -124,6 +126,9 @@ func fetchCRDAggregated(ctx context.Context, cfg Config) []apidiscoveryv2.APIGro
 }
 
 func apiServiceAggregated(ctx context.Context, cfg Config) []apidiscoveryv2.APIGroupDiscovery {
+	if groups := fetchRemoteAggregated(ctx, cfg); groups != nil {
+		return groups
+	}
 	groups := remoteAPIServiceGroups(ctx, kineStore(cfg.Kine))
 	if len(groups) == 0 {
 		return nil
@@ -140,4 +145,28 @@ func apiServiceAggregated(ctx context.Context, cfg Config) []apidiscoveryv2.APIG
 		out = append(out, item)
 	}
 	return out
+}
+
+func fetchRemoteAggregated(ctx context.Context, cfg Config) []apidiscoveryv2.APIGroupDiscovery {
+	if cfg.Groups == nil {
+		return nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, groupsBase+remoteDiscoveryPath, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set(workerHeader, "apiserver-apiregistration")
+	resp, err := cfg.Groups.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	var list apidiscoveryv2.APIGroupDiscoveryList
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil || list.Kind != "APIGroupDiscoveryList" {
+		return nil
+	}
+	return list.Items
 }

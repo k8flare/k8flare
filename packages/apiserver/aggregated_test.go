@@ -1,10 +1,13 @@
 package apiserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	apidiscoveryv2 "k8s.io/api/apidiscovery/v2"
@@ -124,5 +127,42 @@ func TestServeAPIsRootDoesNotForward(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/apis/apps/v1", nil))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("group path %d", rec.Code)
+	}
+}
+
+func TestAPIServiceAggregatedUsesRemoteDiscovery(t *testing.T) {
+	var path, worker string
+	groups := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		path, worker = r.URL.Path, r.Header.Get(workerHeader)
+		list := apidiscoveryv2.APIGroupDiscoveryList{
+			TypeMeta: metav1.TypeMeta{APIVersion: "apidiscovery.k8s.io/v2", Kind: "APIGroupDiscoveryList"},
+			Items: []apidiscoveryv2.APIGroupDiscovery{{
+				ObjectMeta: metav1.ObjectMeta{Name: "wardle.example.com"},
+				Versions: []apidiscoveryv2.APIVersionDiscovery{{
+					Version:   "v1",
+					Freshness: apidiscoveryv2.DiscoveryFreshnessCurrent,
+					Resources: []apidiscoveryv2.APIResourceDiscovery{{Resource: "flunders"}},
+				}},
+			}},
+		}
+		data, _ := json.Marshal(list)
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(data)), Header: http.Header{}, Request: r}, nil
+	})}
+	got := apiServiceAggregated(t.Context(), Config{Kine: workerAPIServiceStore(t, "wardle").HTTP, Groups: groups})
+	if path != remoteDiscoveryPath || worker != "apiserver-apiregistration" {
+		t.Fatalf("asked %q on %q", path, worker)
+	}
+	if len(got) != 1 || len(got[0].Versions) != 1 || len(got[0].Versions[0].Resources) != 1 || got[0].Versions[0].Freshness != apidiscoveryv2.DiscoveryFreshnessCurrent {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestAPIServiceAggregatedIsStaleWhenGroupsUnavailable(t *testing.T) {
+	groups := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader("")), Header: http.Header{}, Request: r}, nil
+	})}
+	got := apiServiceAggregated(t.Context(), Config{Kine: workerAPIServiceStore(t, "wardle").HTTP, Groups: groups})
+	if len(got) != 1 || len(got[0].Versions) != 1 || got[0].Versions[0].Freshness != apidiscoveryv2.DiscoveryFreshnessStale {
+		t.Fatalf("got %+v", got)
 	}
 }
