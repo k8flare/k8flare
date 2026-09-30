@@ -48,6 +48,17 @@ build_shard() {
   echo "shard $shard/$shards builds ${mine[*]}"
   make mirrors
   make "${mine[@]}"
+  local f keep
+  for f in .build/wasm/*.opt.wasm; do
+    keep=0
+    for m in "${mine[@]}"; do
+      [ "$f" = "$m" ] && keep=1
+    done
+    if [ "$keep" = 0 ]; then
+      echo "shard $shard/$shards drops $f, another shard builds it"
+      rm -f "$f" "$f.sha256" "${f%.opt.wasm}.raw.wasm"
+    fi
+  done
 }
 
 dev_vars() {
@@ -58,12 +69,12 @@ dev_vars() {
 }
 
 node_ready() {
-  kubectl --kubeconfig "$KUBECONFIG_PATH" get nodes --no-headers | awk '$2=="Ready"' | grep -q .
+  kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s get nodes --no-headers | awk '$2=="Ready"' | grep -q .
 }
 
 write_accepted() {
-  kubectl --kubeconfig "$KUBECONFIG_PATH" create namespace ci-writecheck &&
-    kubectl --kubeconfig "$KUBECONFIG_PATH" delete namespace ci-writecheck --wait=false
+  kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s create namespace ci-writecheck &&
+    kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s delete namespace ci-writecheck --wait=false
 }
 
 user_worker_port() {
@@ -134,7 +145,7 @@ up() {
   admin=$(sed -n 's/^ADMIN_TOKEN=//p' .dev.vars)
   nohup pnpm exec wrangler dev -c wrangler.dev.jsonc --local --enable-containers=false --persist-to "$STATE" --port 18787 \
     < /dev/null 2>&1 | stamped "$LOGS/dev.log" &
-  wait_for "the control plane" 360 5 curl -sf -o /dev/null -H "Authorization: Bearer $admin" http://127.0.0.1:18787/livez
+  wait_for "the control plane" 360 5 curl -sf -m 10 -o /dev/null -H "Authorization: Bearer $admin" http://127.0.0.1:18787/livez
   worker=$(user_worker_port "$admin")
   echo "user worker listens on 127.0.0.1:$worker"
   local runtime
@@ -143,7 +154,7 @@ up() {
     < /dev/null 2>&1 | stamped "$LOGS/procs.log" &
   nohup "$WORK/devtls" -listen "$API" -upstream "http://127.0.0.1:$worker" -dir .build/devtls -hosts localhost -admin-token "$admin" \
     < /dev/null 2>&1 | stamped "$LOGS/devtls.log" &
-  wait_for "devtls" 180 1 curl -sf --cacert .build/devtls/server-ca.crt -o /dev/null -H "Authorization: Bearer $admin" "https://$API/livez"
+  wait_for "devtls" 180 1 curl -sf -m 10 --cacert .build/devtls/server-ca.crt -o /dev/null -H "Authorization: Bearer $admin" "https://$API/livez"
 
   printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: k8flare-ci\n  cluster:\n    server: https://%s\n    certificate-authority: %s/.build/devtls/server-ca.crt\nusers:\n- name: admin\n  user:\n    token: %s\ncontexts:\n- name: k8flare-ci\n  context:\n    cluster: k8flare-ci\n    user: admin\ncurrent-context: k8flare-ci\n' \
     "$API" "$PWD" "$admin" > "$KUBECONFIG_PATH"
