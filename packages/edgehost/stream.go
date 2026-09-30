@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -60,9 +61,14 @@ func LocateStream(w http.ResponseWriter, r *http.Request, store *kine.Client, ad
 	// The kubelet serves logs as a plain HTTP read rather than an upgrade, so
 	// the caller has to fetch rather than dial; the _q path segment exists for
 	// the upgrade path, which cannot carry a query.
-	transport, protocols := "websocket", channelProtocols
+	transport, protocol := "websocket", streamProtocol(r.Header.Get("Sec-WebSocket-Protocol"), channelProtocols)
 	if kind == "containerLogs" {
-		transport, protocols = "http", readerProtocols
+		transport = "http"
+		var ok bool
+		if protocol, ok = readerProtocol(r.Header.Get("Sec-WebSocket-Protocol")); !ok {
+			http.Error(w, "requested protocol(s) are not supported", http.StatusBadRequest)
+			return
+		}
 	} else if incoming != "" {
 		path += "/_q/" + url.PathEscape(incoming)
 	}
@@ -79,7 +85,7 @@ func LocateStream(w http.ResponseWriter, r *http.Request, store *kine.Client, ad
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"node": pod.Spec.NodeName, "url": target, "transport": transport,
-		"protocol": streamProtocol(r.Header.Get("Sec-WebSocket-Protocol"), protocols),
+		"protocol": protocol,
 	})
 }
 
@@ -98,7 +104,20 @@ var (
 // carries no Sec-WebSocket-Protocol -- which wsstream reads as binary.
 func StreamProtocol(header string) string { return streamProtocol(header, channelProtocols) }
 
-func streamProtocol(header string, want []string) string {
+func readerProtocol(header string) (string, bool) {
+	parts := offeredProtocols(header)
+	if len(parts) == 0 {
+		return "", true
+	}
+	for _, part := range parts {
+		if slices.Contains(readerProtocols, part) {
+			return part, true
+		}
+	}
+	return "", false
+}
+
+func offeredProtocols(header string) []string {
 	var parts []string
 	for _, part := range strings.Split(header, ",") {
 		part = strings.TrimSpace(part)
@@ -106,6 +125,11 @@ func streamProtocol(header string, want []string) string {
 			parts = append(parts, part)
 		}
 	}
+	return parts
+}
+
+func streamProtocol(header string, want []string) string {
+	parts := offeredProtocols(header)
 	for _, want := range want {
 		for _, part := range parts {
 			if part == want {
