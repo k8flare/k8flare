@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -16,9 +17,26 @@ import (
 )
 
 const (
-	namespaceRetry = 2 * time.Second
-	namespaceBatch = 40
+	namespaceRetry   = 2 * time.Second
+	namespaceBatch   = 40
+	namespaceWorkers = 8
 )
+
+var namespaceBudget = 60 * time.Second
+
+type deleteOutcome struct {
+	terminating bool
+	deleted     bool
+	remaining   bool
+	retry       time.Duration
+}
+
+func remainingAfter(wait time.Duration) deleteOutcome {
+	if wait <= 0 {
+		wait = namespaceRetry
+	}
+	return deleteOutcome{terminating: true, remaining: true, retry: wait}
+}
 
 type NamespaceResult struct {
 	Terminating int      `json:"terminating"`
@@ -785,64 +803,41 @@ func (d *Deleter) DeleteTerminating(ctx context.Context, client kubernetes.Inter
 	}
 	result := &NamespaceResult{}
 	done := map[string]bool{}
+	budgeted, cancel := context.WithTimeout(ctx, namespaceBudget)
+	defer cancel()
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, namespaceWorkers)
 	for _, name := range selected {
-		ns, err := client.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
-		if apierrors.IsNotFound(err) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		if ns.DeletionTimestamp == nil {
-			continue
-		}
-		result.Terminating++
-		if err := clearCore(ctx, client, ns.Name); err != nil {
-			println("namespaces: clear", ns.Name, "failed:", err.Error())
+		if budgeted.Err() != nil {
+			mu.Lock()
 			result.Remaining++
 			result.NextMs = soonest(result.NextMs, namespaceRetry)
+			mu.Unlock()
 			continue
 		}
-		if podsGone, _ := namespacePodsGone(ctx, client, ns.Name); !podsGone {
-			if err := reportDeletionConditions(ctx, client, ns); err != nil {
-				println("namespaces: conditions", ns.Name, "failed:", err.Error())
+		slots <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-slots }()
+			outcome := d.deleteOne(budgeted, client, name)
+			mu.Lock()
+			defer mu.Unlock()
+			if outcome.terminating {
+				result.Terminating++
 			}
-		}
-		if gone, _ := namespaceContentGone(ctx, client, ns.Name); !gone {
-			result.Remaining++
-			result.NextMs = soonest(result.NextMs, namespaceRetry)
-			continue
-		}
-		if d.inner != nil {
-			if err := d.inner.Delete(ctx, ns.Name); err != nil {
-				var remain *deletion.ResourcesRemainingError
-				if errors.As(err, &remain) {
-					result.Remaining++
-					wait := time.Duration(remain.Estimate) * time.Second
-					if wait <= 0 {
-						wait = namespaceRetry
-					}
-					result.NextMs = soonest(result.NextMs, wait)
-					continue
-				}
-				println("namespaces: delete", ns.Name, "failed:", err.Error())
+			if outcome.deleted {
+				result.Deleted++
+				done[name] = true
+			}
+			if outcome.remaining {
 				result.Remaining++
-				result.NextMs = soonest(result.NextMs, namespaceRetry)
-				continue
+				result.NextMs = soonest(result.NextMs, outcome.retry)
 			}
-			result.Deleted++
-			done[ns.Name] = true
-			continue
-		}
-		if err := finalizeKubernetes(ctx, client, ns); err != nil {
-			println("namespaces: finalize", ns.Name, "failed:", err.Error())
-			result.Remaining++
-			result.NextMs = soonest(result.NextMs, namespaceRetry)
-			continue
-		}
-		result.Deleted++
-		done[ns.Name] = true
+		}()
 	}
+	wg.Wait()
 	if more || result.Remaining > 0 {
 		result.NextMs = soonest(result.NextMs, namespaceRetry)
 		for _, name := range listed {
@@ -852,4 +847,46 @@ func (d *Deleter) DeleteTerminating(ctx context.Context, client kubernetes.Inter
 		}
 	}
 	return result, nil
+}
+
+func (d *Deleter) deleteOne(ctx context.Context, client kubernetes.Interface, name string) deleteOutcome {
+	ns, err := client.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return deleteOutcome{}
+	}
+	if err != nil {
+		println("namespaces: get", name, "failed:", err.Error())
+		return deleteOutcome{remaining: true, retry: namespaceRetry}
+	}
+	if ns.DeletionTimestamp == nil {
+		return deleteOutcome{}
+	}
+	if err := clearCore(ctx, client, ns.Name); err != nil {
+		println("namespaces: clear", ns.Name, "failed:", err.Error())
+		return remainingAfter(namespaceRetry)
+	}
+	if podsGone, _ := namespacePodsGone(ctx, client, ns.Name); !podsGone {
+		if err := reportDeletionConditions(ctx, client, ns); err != nil {
+			println("namespaces: conditions", ns.Name, "failed:", err.Error())
+		}
+	}
+	if gone, _ := namespaceContentGone(ctx, client, ns.Name); !gone {
+		return remainingAfter(namespaceRetry)
+	}
+	if d.inner != nil {
+		if err := d.inner.Delete(ctx, ns.Name); err != nil {
+			var remain *deletion.ResourcesRemainingError
+			if errors.As(err, &remain) {
+				return remainingAfter(time.Duration(remain.Estimate) * time.Second)
+			}
+			println("namespaces: delete", ns.Name, "failed:", err.Error())
+			return remainingAfter(namespaceRetry)
+		}
+		return deleteOutcome{terminating: true, deleted: true}
+	}
+	if err := finalizeKubernetes(ctx, client, ns); err != nil {
+		println("namespaces: finalize", ns.Name, "failed:", err.Error())
+		return remainingAfter(namespaceRetry)
+	}
+	return deleteOutcome{terminating: true, deleted: true}
 }

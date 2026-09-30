@@ -170,6 +170,30 @@ func TestDeleteTerminatingRetriesUnhinted(t *testing.T) {
 	}
 }
 
+func TestDeleteTerminatingStopsAtTheBudgetAndReportsTheRest(t *testing.T) {
+	saved := namespaceBudget
+	namespaceBudget = 0
+	defer func() { namespaceBudget = saved }()
+	now := metav1.Now()
+	client := fake.NewSimpleClientset(
+		&v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "a", DeletionTimestamp: &now}, Spec: v1.NamespaceSpec{Finalizers: []v1.FinalizerName{v1.FinalizerKubernetes}}},
+		&v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "b", DeletionTimestamp: &now}, Spec: v1.NamespaceSpec{Finalizers: []v1.FinalizerName{v1.FinalizerKubernetes}}},
+	)
+	d := NewDeleter(context.Background(), client, nil)
+	result, err := d.DeleteTerminating(context.Background(), client, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Deleted != 0 || result.Remaining != 2 || len(result.Names) != 2 || result.NextMs <= 0 {
+		t.Fatalf("result=%+v", result)
+	}
+	for _, ns := range []string{"a", "b"} {
+		if _, err := client.CoreV1().Namespaces().Get(context.Background(), ns, metav1.GetOptions{}); err != nil {
+			t.Fatalf("namespace %s should be untouched: %v", ns, err)
+		}
+	}
+}
+
 func TestDeleteTerminatingKeepsNamespaceWhilePDBRemains(t *testing.T) {
 	now := metav1.Now()
 	client := fake.NewSimpleClientset(
