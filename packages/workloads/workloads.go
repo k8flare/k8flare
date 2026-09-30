@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -51,6 +52,7 @@ const (
 	syncLockWait         = 10 * time.Second
 	listBudget           = 30 * time.Second
 	syncBusyRetry        = 2 * time.Second
+	yieldGrace           = time.Second
 	shutdownGrace        = 5 * time.Second
 	maxEndpointsPerSlice = 100
 	daemonSetWorkers     = 2
@@ -343,6 +345,8 @@ func changedHas(changed []string, name string) bool {
 
 var syncMu sync.Mutex
 
+var yieldRequested atomic.Bool
+
 func lockSync(ctx context.Context, budget time.Duration) bool {
 	wait := syncLockWait
 	if budget > 0 && budget/4 < wait {
@@ -351,8 +355,10 @@ func lockSync(ctx context.Context, budget time.Duration) bool {
 	deadline := time.Now().Add(wait)
 	for {
 		if syncMu.TryLock() {
+			yieldRequested.Store(false)
 			return true
 		}
+		yieldRequested.Store(true)
 		if time.Now().After(deadline) || ctx.Err() != nil {
 			return false
 		}
@@ -372,6 +378,9 @@ func SyncWithin(ctx context.Context, client kubernetes.Interface, rootCA, signin
 		ctx, cancel = context.WithDeadline(ctx, deadline)
 		defer cancel()
 	}
+	if err := releaseProtection(ctx, client, changed); err != nil {
+		return nil, err
+	}
 	if !lockSync(ctx, budget) {
 		return &Result{Objects: map[string]int{}, NextMs: int64(syncBusyRetry / time.Millisecond)}, nil
 	}
@@ -380,12 +389,6 @@ func SyncWithin(ctx context.Context, client kubernetes.Interface, rootCA, signin
 		defer holdWhileRunning(ctx)()
 	}
 	if err := ensureServiceIPAddresses(ctx, client, changed); err != nil {
-		return nil, err
-	}
-	if err := releaseVolumeAttributesClasses(ctx, client, changed); err != nil {
-		return nil, err
-	}
-	if err := releaseStorageProtection(ctx, client, changed); err != nil {
 		return nil, err
 	}
 	controllers, _ := wanted(changed)
@@ -413,6 +416,16 @@ func SyncWithin(ctx context.Context, client kubernetes.Interface, rootCA, signin
 		result.NextMs = soonest(result.NextMs, retry)
 	}
 	return result, nil
+}
+
+func releaseProtection(ctx context.Context, client kubernetes.Interface, changed []string) error {
+	if err := releaseVolumeAttributesClasses(ctx, client, changed); err != nil && !apierrors.IsConflict(err) {
+		return err
+	}
+	if err := releaseStorageProtection(ctx, client, changed); err != nil && !apierrors.IsConflict(err) {
+		return err
+	}
+	return nil
 }
 
 func replicaControllers(controllers map[string]bool) bool {
@@ -765,7 +778,8 @@ func drain(owned func(string) bool, limit, grace time.Duration, budgetBy time.Ti
 		if now.After(finishBy) {
 			return false
 		}
-		if now.After(deadline) && !work.inFlight(owned) && !work.idle(owned) {
+		yielding := yieldRequested.Load() && now.Sub(started) > yieldGrace
+		if (now.After(deadline) || yielding) && !work.inFlight(owned) && !work.idle(owned) {
 			return false
 		}
 	}

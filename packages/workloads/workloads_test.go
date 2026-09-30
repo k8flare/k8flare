@@ -339,6 +339,32 @@ func TestDrainStopsQueuedWorkAtDeadline(t *testing.T) {
 	}
 }
 
+func TestDrainYieldsToAWaitingSync(t *testing.T) {
+	work.reset(func(string) bool { return true })
+	work.of("replicationmanager").depth.Store(1)
+	yieldRequested.Store(true)
+	defer yieldRequested.Store(false)
+	started := time.Now()
+	if drain(func(string) bool { return true }, time.Minute, time.Minute, time.Time{}) {
+		t.Fatal("queued work reported drained")
+	}
+	if time.Since(started) > 2*time.Second {
+		t.Fatalf("held the pass %s after another sync asked for it", time.Since(started))
+	}
+}
+
+func TestBusySyncAsksTheRunningPassToYield(t *testing.T) {
+	syncMu.Lock()
+	defer syncMu.Unlock()
+	yieldRequested.Store(false)
+	if _, err := SyncWithin(context.Background(), fake.NewSimpleClientset(), []byte("ca"), nil, nil, []string{"pods"}, 4*time.Second, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !yieldRequested.Load() {
+		t.Fatal("a sync turned away as busy did not ask the running pass to yield")
+	}
+}
+
 func TestReplicaGapRetriesWhileStatusLags(t *testing.T) {
 	replicas := int32(40)
 	matched := int32(2)

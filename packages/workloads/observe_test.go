@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -11,6 +12,21 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/cache"
 )
+
+func TestStatefulSetStatusWriteEntersSnapshot(t *testing.T) {
+	set := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "ss", Namespace: "default", ResourceVersion: "1"}}
+	sets := newSnapshotInformer(&appsv1.StatefulSet{})
+	client := observeWrites(fake.NewSimpleClientset(set), []loadedSource{{informer: sets}})
+	update := set.DeepCopy()
+	update.Status.Replicas = 1
+	if _, err := client.AppsV1().StatefulSets("default").UpdateStatus(context.Background(), update, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	stored, exists, err := sets.GetIndexer().GetByKey("default/ss")
+	if err != nil || !exists || stored.(*appsv1.StatefulSet).Status.Replicas != 1 {
+		t.Fatalf("exists=%v err=%v stored=%#v", exists, err, stored)
+	}
+}
 
 func TestPodCreateEntersSnapshot(t *testing.T) {
 	pods := newSnapshotInformer(&corev1.Pod{})

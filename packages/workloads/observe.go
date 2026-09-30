@@ -3,11 +3,13 @@ package workloads
 import (
 	"context"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	appsv1client "k8s.io/client-go/kubernetes/typed/apps/v1"
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/tools/cache"
 )
@@ -27,9 +29,11 @@ func observeWrites(client kubernetes.Interface, all []loadedSource) kubernetes.I
 			observed.pods = l.informer
 		case *corev1.ReplicationController:
 			observed.rcs = l.informer
+		case *appsv1.StatefulSet:
+			observed.sets = l.informer
 		}
 	}
-	if observed.volumes == nil && observed.claims == nil && observed.pods == nil && observed.rcs == nil {
+	if observed.volumes == nil && observed.claims == nil && observed.pods == nil && observed.rcs == nil && observed.sets == nil {
 		return client
 	}
 	return observed
@@ -68,6 +72,41 @@ type observeClient struct {
 	claims  cache.Indexer
 	pods    *snapshotInformer
 	rcs     *snapshotInformer
+	sets    *snapshotInformer
+}
+
+func (c *observeClient) AppsV1() appsv1client.AppsV1Interface {
+	return observeApps{AppsV1Interface: c.Interface.AppsV1(), sets: c.sets}
+}
+
+type observeApps struct {
+	appsv1client.AppsV1Interface
+	sets *snapshotInformer
+}
+
+func (a observeApps) StatefulSets(namespace string) appsv1client.StatefulSetInterface {
+	return observeStatefulSets{StatefulSetInterface: a.AppsV1Interface.StatefulSets(namespace), sets: a.sets}
+}
+
+type observeStatefulSets struct {
+	appsv1client.StatefulSetInterface
+	sets *snapshotInformer
+}
+
+func (s observeStatefulSets) Update(ctx context.Context, set *appsv1.StatefulSet, opts metav1.UpdateOptions) (*appsv1.StatefulSet, error) {
+	got, err := s.StatefulSetInterface.Update(ctx, set, opts)
+	if err == nil {
+		s.sets.note(got)
+	}
+	return got, err
+}
+
+func (s observeStatefulSets) UpdateStatus(ctx context.Context, set *appsv1.StatefulSet, opts metav1.UpdateOptions) (*appsv1.StatefulSet, error) {
+	got, err := s.StatefulSetInterface.UpdateStatus(ctx, set, opts)
+	if err == nil {
+		s.sets.note(got)
+	}
+	return got, err
 }
 
 func (c *observeClient) CoreV1() corev1client.CoreV1Interface {

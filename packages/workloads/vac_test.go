@@ -3,6 +3,7 @@ package workloads
 import (
 	"context"
 	"testing"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
@@ -113,6 +114,35 @@ func TestReleaseVolumeAttributesClassDropsUnusedFinalizer(t *testing.T) {
 	}
 	if !hasFinalizer(busy.Finalizers, vacProtectionFinalizer) {
 		t.Fatal("busy finalizer was removed")
+	}
+}
+
+func TestSyncWithinReleasesProtectionWhileAPassHoldsTheLock(t *testing.T) {
+	now := metav1.Now()
+	client := fake.NewSimpleClientset(
+		&storagev1.VolumeAttributesClass{ObjectMeta: metav1.ObjectMeta{Name: "vac", DeletionTimestamp: &now, Finalizers: []string{vacProtectionFinalizer}}},
+		&v1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "claim", Namespace: "default", DeletionTimestamp: &now, Finalizers: []string{pvcProtectionFinalizer}}},
+	)
+	syncMu.Lock()
+	defer syncMu.Unlock()
+
+	changed := []string{"volumeattributesclasses", "persistentvolumeclaims"}
+	if _, err := SyncWithin(context.Background(), client, []byte("ca"), nil, nil, changed, 4*time.Second, nil); err != nil {
+		t.Fatal(err)
+	}
+	vac, err := client.StorageV1().VolumeAttributesClasses().Get(context.Background(), "vac", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasFinalizer(vac.Finalizers, vacProtectionFinalizer) {
+		t.Fatalf("vac finalizers=%v", vac.Finalizers)
+	}
+	claim, err := client.CoreV1().PersistentVolumeClaims("default").Get(context.Background(), "claim", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasFinalizer(claim.Finalizers, pvcProtectionFinalizer) {
+		t.Fatalf("claim finalizers=%v", claim.Finalizers)
 	}
 }
 
