@@ -86,6 +86,35 @@ func TestPodCreateAcceptsValid(t *testing.T) {
 	}
 }
 
+func TestPodCreateMergesMatchLabelKeysIntoTopologySpreadSelector(t *testing.T) {
+	store := coreStore(t, "pods", "Pod", true)
+	pod := validPod()
+	pod.Labels = map[string]string{"app": "web"}
+	pod.Spec.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{{
+		MaxSkew:           1,
+		TopologyKey:       "zone",
+		WhenUnsatisfiable: corev1.DoNotSchedule,
+		LabelSelector:     &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "front"}},
+		MatchLabelKeys:    []string{"app"},
+	}}
+	if err := registrytest.Create(store, pod); err != nil {
+		t.Fatal(err)
+	}
+	selector := pod.Spec.TopologySpreadConstraints[0].LabelSelector
+	if len(selector.MatchExpressions) != 1 || selector.MatchExpressions[0].Key != "app" {
+		t.Fatalf("selector=%+v", selector)
+	}
+}
+
+func TestNodeCreateWarnsOnNonCanonicalPodCIDR(t *testing.T) {
+	store := coreStore(t, "nodes", "Node", false)
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "n"}, Spec: corev1.NodeSpec{PodCIDR: "010.0.0.0/24", PodCIDRs: []string{"010.0.0.0/24"}}}
+	warnings := store.CreateStrategy.WarningsOnCreate(registrytest.Context(store), node)
+	if len(warnings) == 0 {
+		t.Fatal("no warnings")
+	}
+}
+
 func TestPodUpdateRejectsResourceChange(t *testing.T) {
 	store := coreStore(t, "pods", "Pod", true)
 	old := validPod()
