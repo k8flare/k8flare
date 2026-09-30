@@ -88,7 +88,8 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	access := auth.Access{Team: cfg.AccessTeam, Audience: cfg.AccessAUD, HTTP: cfg.Outbound}
 	sa := auth.ServiceAccountToken{HMAC: []byte(cfg.AdminToken), Objects: auth.NewServiceAccountObjects(auth.KineObjects{Client: client})}
 	tokens := union.New(auth.AdminToken(cfg.AdminToken), auth.ReadonlyToken(cfg.ReadonlyToken), auth.VaultToken{Vault: v}, auth.NodeToken{Vault: v}, sa, access)
-	authn := requnion.New(bearertoken.New(tokens), access)
+	edgeCert := auth.EdgeClientCert{ClientCA: func(ctx context.Context) ([]byte, error) { return v.CAPEM(ctx, "client-ca") }}
+	authn := requnion.New(bearertoken.New(tokens), edgeCert, access)
 	authorizer := authz.New(client)
 	mux := http.NewServeMux()
 	installHealth(mux, client)
@@ -130,6 +131,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	mux.Handle("/openapi/v3/", openAPIV3Router(cfg))
 	root := http.NewServeMux()
 	kubeletSupervisor := supervisor.New(v, cfg.JoinToken)
+	kubeletSupervisor.ClientCerts = edgeCert
 	mux.HandleFunc("/internal/kubelet-client", kubeletSupervisor.KubeletClient)
 	installSecretsEncrypt(mux, client)
 	installTokens(mux, v)
