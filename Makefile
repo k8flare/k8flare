@@ -90,6 +90,16 @@ $(BUILD)/gc.opt.wasm: $(BUILD)/gc.raw.wasm
 $(ASSETS)/gc.manifest.json: $(BUILD)/gc.opt.wasm
 	cd scripts && go run ./wasmpack chunk ../$< ../$(ASSETS) gc
 
+$(BUILD)/attachdetach.raw.wasm: $(GO_SRC) | mirrors
+	mkdir -p $(BUILD)
+	GOOS=js GOARCH=wasm go build -tags grpcnotrace -buildvcs=false -ldflags="-s -w" -trimpath -o $@ ./packages/attachdetach/cmd/attachdetach-wasm
+
+$(BUILD)/attachdetach.opt.wasm: $(BUILD)/attachdetach.raw.wasm
+	$(OPTIMIZE)
+
+$(ASSETS)/attachdetach.manifest.json: $(BUILD)/attachdetach.opt.wasm
+	cd scripts && go run ./wasmpack chunk ../$< ../$(ASSETS) attachdetach
+
 $(BUILD)/hpa.raw.wasm: $(GO_SRC) | mirrors
 	mkdir -p $(BUILD)
 	GOOS=js GOARCH=wasm go build -buildvcs=false -ldflags="-s -w" -trimpath -o $@ ./packages/hpa/cmd/hpa-wasm
@@ -171,12 +181,12 @@ $(NODE_TUNNEL_WASM): $(BUILD)/node-tunnel.opt.wasm
 	mkdir -p $(dir $@)
 	cp $< $@
 
-OPT_WASM := $(BUILD)/apiserver.opt.wasm $(foreach g,$(API_GROUPS),$(BUILD)/apiserver-$(g).opt.wasm) $(foreach w,openapi customresources scheduler workloads workloads-vap hpa gc admission hookecho node-tunnel,$(BUILD)/$(w).opt.wasm) $(foreach g,$(GROUPS),$(BUILD)/printers-$(g).opt.wasm)
+OPT_WASM := $(BUILD)/apiserver.opt.wasm $(foreach g,$(API_GROUPS),$(BUILD)/apiserver-$(g).opt.wasm) $(foreach w,openapi customresources scheduler workloads workloads-vap attachdetach hpa gc admission hookecho node-tunnel,$(BUILD)/$(w).opt.wasm) $(foreach g,$(GROUPS),$(BUILD)/printers-$(g).opt.wasm)
 
 opt-wasm-list:
 	@echo $(OPT_WASM)
 
-wasm: $(ASSETS)/wasm_exec.js $(ASSETS)/apiserver.manifest.json $(foreach g,$(API_GROUPS),$(ASSETS)/apiserver-$(g).manifest.json) $(ASSETS)/openapi.manifest.json $(ASSETS)/customresources.manifest.json $(ASSETS)/scheduler.manifest.json $(ASSETS)/workloads.manifest.json $(ASSETS)/workloads-vap.manifest.json $(ASSETS)/hpa.manifest.json $(ASSETS)/gc.manifest.json $(ASSETS)/admission.manifest.json $(ASSETS)/hookecho.manifest.json $(foreach g,$(GROUPS),$(ASSETS)/printers-$(g).manifest.json) $(NODE_TUNNEL_WASM)
+wasm: $(ASSETS)/wasm_exec.js $(ASSETS)/apiserver.manifest.json $(foreach g,$(API_GROUPS),$(ASSETS)/apiserver-$(g).manifest.json) $(ASSETS)/openapi.manifest.json $(ASSETS)/customresources.manifest.json $(ASSETS)/scheduler.manifest.json $(ASSETS)/workloads.manifest.json $(ASSETS)/workloads-vap.manifest.json $(ASSETS)/attachdetach.manifest.json $(ASSETS)/hpa.manifest.json $(ASSETS)/gc.manifest.json $(ASSETS)/admission.manifest.json $(ASSETS)/hookecho.manifest.json $(foreach g,$(GROUPS),$(ASSETS)/printers-$(g).manifest.json) $(NODE_TUNNEL_WASM)
 
 gen:
 	cd scripts && go run ./genresources && go run ./genprinters && go run ./genopenapi
