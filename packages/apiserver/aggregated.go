@@ -126,12 +126,12 @@ func fetchCRDAggregated(ctx context.Context, cfg Config) []apidiscoveryv2.APIGro
 }
 
 func apiServiceAggregated(ctx context.Context, cfg Config) []apidiscoveryv2.APIGroupDiscovery {
-	if groups := fetchRemoteAggregated(ctx, cfg); groups != nil {
-		return groups
-	}
 	groups := remoteAPIServiceGroups(ctx, kineStore(cfg.Kine))
 	if len(groups) == 0 {
 		return nil
+	}
+	if fetched := fetchRemoteAggregated(ctx, cfg); fetched != nil {
+		return fetched
 	}
 	out := make([]apidiscoveryv2.APIGroupDiscovery, 0, len(groups))
 	for _, g := range groups {

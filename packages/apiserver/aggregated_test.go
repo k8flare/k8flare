@@ -166,3 +166,13 @@ func TestAPIServiceAggregatedIsStaleWhenGroupsUnavailable(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+func TestAPIServiceAggregatedSkipsGroupsWithoutRemoteAPIServices(t *testing.T) {
+	groups := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		t.Fatal("groups called without remote APIServices")
+		return nil, nil
+	})}
+	if got := apiServiceAggregated(t.Context(), Config{Groups: groups}); got != nil {
+		t.Fatalf("got %+v", got)
+	}
+}

@@ -112,19 +112,25 @@ it. Remove an entry when the behaviour exists and CI covers it.
   lean client-go (no FlowControl informers) and its controller needs
   goroutines and informers the Workers do not keep; no Workers Rate
   Limiting binding is wired.
-- Admission: the default-on upstream plugins are all present except
-  ClusterTrustBundleAttest, which is a no-op here: it only acts when the
-  `ClusterTrustBundle` feature gate is on (default off) and no
-  `clustertrustbundles` resource is served. OwnerReferencesPermissionEnforcement
-  and DenyServiceExternalIPs are in upstream's `DefaultOffAdmissionPlugins`,
-  and k3s enables only `NodeRestriction`, so they are intentionally not
+- Admission: every default-on upstream plugin that acts under upstream's
+  default feature gates is present. Default-on but inert here, so not
+  added: ClusterTrustBundleAttest (needs the `ClusterTrustBundle` gate, off
+  by default, and no `clustertrustbundles` resource is served) and
+  PodGroupProtection, PodGroupWorkloadExists and JobValidation (need the
+  alpha `GenericWorkload` / `WorkloadWithJob` gates, off by default).
+  OwnerReferencesPermissionEnforcement and DenyServiceExternalIPs are in
+  upstream's `DefaultOffAdmissionPlugins`, and k3s enables only
+  `NodeRestriction`, so they are intentionally not
   enabled. Serving ClusterTrustBundles would need the attest check added.
 
 ## Cloudflare features
 
-- An `APIService` points at a Worker with the `k8flare.com/worker`
+- Unit tests only (the `Hooks` entrypoint serves only `hookecho`, so no
+  dev or CI run can serve an aggregated API from a Worker yet). An
+  `APIService` points at a Worker with the `k8flare.com/worker`
   annotation (the same key admission webhooks use); `spec.service` is not
-  needed. Requests reach the Worker as `https://hooks.internal/hook/<name>`
+  needed (README's `https://k8flare.com/worker/<name>` form has no field to
+  live in: `APIService` has no `url`). Requests reach the Worker as `https://hooks.internal/hook/<name>`
   followed by the original API path; the requesting user travels in
   `X-Remote-*` headers.
   - Aggregated discovery fetches the remote's `/apis` (aggregated v2, or the
