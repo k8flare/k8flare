@@ -24,6 +24,7 @@ const ACCOUNT_PREFIXES = [NAMESPACE_PREFIX, "/registry/serviceaccounts/", "/regi
 const CRD_PREFIX = "/registry/apiextensions.k8s.io/customresourcedefinitions/";
 const WORKLOAD_PREFIXES = ["/registry/replicasets/", "/registry/deployments/", "/registry/replicationcontrollers/", "/registry/services/", "/registry/endpoints/", "/registry/endpointslices/", "/registry/jobs/", "/registry/statefulsets/", "/registry/daemonsets/", "/registry/controllerrevisions/", "/registry/persistentvolumeclaims/", "/registry/persistentvolumes/", "/registry/storage.k8s.io/", "/registry/storageclasses/", "/registry/certificatesigningrequests/", "/registry/certificates.k8s.io/", "/registry/clusterroles/", "/registry/rbac.authorization.k8s.io/", "/registry/cronjobs/", "/registry/horizontalpodautoscalers/", "/registry/gateway.networking.k8s.io/", "/registry/resourcequotas/", "/registry/secrets/", "/registry/configmaps/", "/registry/poddisruptionbudgets/"];
 const ATTACH_PREFIXES = ["/registry/pods/", "/registry/minions/", "/registry/nodes/", "/registry/persistentvolumeclaims/", "/registry/persistentvolumes/", "/registry/storage.k8s.io/", "/registry/storageclasses/"];
+const SCHEDULER_VOLUME_PREFIXES = ["/registry/persistentvolumeclaims/", "/registry/persistentvolumes/", "/registry/storageclasses/", "/registry/csinodes/", "/registry/csidrivers/", "/registry/csistoragecapacities/", "/registry/volumeattachments/", "/registry/storage.k8s.io/", "/registry/resourceclaims/", "/registry/resourceslices/", "/registry/deviceclasses/"];
 
 export type QueueMessage =
   | { kind: "change"; key: string; type: string; rev: number }
@@ -504,6 +505,7 @@ export class Cluster extends DurableObject<Env> {
     } else if (name.startsWith("/registry/nodes/") || name.startsWith("/registry/minions/")) {
       if (type !== "modified" || !prev || nodeChanged(prev.value, value)) routes.push("attachdetach");
     } else if (ATTACH_PREFIXES.some((p) => name.startsWith(p))) routes.push("attachdetach");
+    if (SCHEDULER_VOLUME_PREFIXES.some((p) => name.startsWith(p))) routes.push("scheduler");
     if (ACCOUNT_PREFIXES.some((p) => name.startsWith(p))) routes.push("accounts");
     if (name.startsWith(CRD_PREFIX)) routes.push("crds");
     if (isExtensionKey(name, value, type)) routes.push("extensions");

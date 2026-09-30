@@ -29,7 +29,7 @@ func build(ctx context.Context, d workloads.Deps, controllers map[string]bool) (
 			ClassInformer:             factory.Storage().V1().StorageClasses(),
 			PodInformer:               core.Pods(),
 			NodeInformer:              core.Nodes(),
-			EnableDynamicProvisioning: false,
+			EnableDynamicProvisioning: true,
 		})
 		if err != nil {
 			return nil, err
