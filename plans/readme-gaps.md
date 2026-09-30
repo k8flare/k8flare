@@ -16,8 +16,6 @@ it. Remove an entry when the behaviour exists and CI covers it.
 - Streaming over WebSocket (logs, exec, attach, port-forward) has no CI
   spec yet. SPDY cannot be served: workerd only accepts `Upgrade:
   websocket`, so stream paths answer other upgrades with 426.
-- Watch: 1000-revision compaction window, no RequestWatchProgress,
-  progress notifications only on node-lease writes.
 
 ## Joining a node
 
@@ -38,7 +36,12 @@ it. Remove an entry when the behaviour exists and CI covers it.
 ## Operations
 
 - Certificates: no leaf or CA rotation.
-- Snapshots: no scheduled snapshots.
+- Snapshots: scheduled ones (`SNAPSHOT_INTERVAL_HOURS`, default 12, 0 disables;
+  `SNAPSHOT_RETENTION`, default 5) are tested against a fake R2 only, not
+  against workerd.
+- Cluster store: compaction keeps 5 to 10 minutes of history with a
+  100000-revision cap; the cluster-store tests run the Durable Object on
+  node:sqlite, not workerd.
 - Audit log: none.
 - Upgrades: no storage migration mechanism.
 - Bootstrap-token Secrets are not accepted for joins.
