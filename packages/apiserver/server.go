@@ -84,12 +84,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	authn := requnion.New(bearertoken.New(tokens), access)
 	authorizer := authz.New(client)
 	mux := http.NewServeMux()
-	for _, p := range []string{"/healthz", "/readyz", "/livez"} {
-		mux.HandleFunc(p, func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "text/plain")
-			_, _ = w.Write([]byte("ok"))
-		})
-	}
+	installHealth(mux, client)
 	mux.HandleFunc("/.well-known/openid-configuration", sa.ServeOpenID)
 	mux.HandleFunc("/openid/v1/jwks", sa.ServeJWKS)
 	mux.HandleFunc("/version", func(w http.ResponseWriter, _ *http.Request) {
