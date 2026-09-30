@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -47,12 +49,16 @@ func tokenCreate(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	caHash, err := c.serverCAHash()
+	if err != nil {
+		return err
+	}
 	var created tokenRecord
 	body := map[string]any{"description": *description, "ttlSeconds": int64(ttl.Seconds())}
 	if err := c.call("POST", "/internal/tokens", nil, body, &created); err != nil {
 		return err
 	}
-	fmt.Fprintln(out, created.Token)
+	fmt.Fprintln(out, k10Token(caHash, created.Token))
 	return nil
 }
 
@@ -85,6 +91,19 @@ func tokenList(args []string, out io.Writer) error {
 		fmt.Fprintf(w, "%s\t%s\t%s\n", t.ID, expires, description)
 	}
 	return w.Flush()
+}
+
+func (c *client) serverCAHash() (string, error) {
+	pem, err := c.do("GET", "/cacerts", nil, nil)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(pem)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func k10Token(caHash, token string) string {
+	return "K10" + caHash + "::" + token
 }
 
 func tokenID(arg string) string {
@@ -128,10 +147,14 @@ func tokenRotate(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	caHash, err := c.serverCAHash()
+	if err != nil {
+		return err
+	}
 	var rotated tokenRecord
 	if err := c.call("POST", "/internal/tokens/"+tokenID(ids[0])+"/rotate", nil, nil, &rotated); err != nil {
 		return err
 	}
-	fmt.Fprintln(out, rotated.Token)
+	fmt.Fprintln(out, k10Token(caHash, rotated.Token))
 	return nil
 }

@@ -2,6 +2,16 @@ package main
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/hex"
+	"encoding/pem"
+	"math/big"
+	"time"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +22,27 @@ import (
 	"strings"
 	"testing"
 )
+
+func testCAPEM(t *testing.T) string {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "server-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+}
 
 type seen struct {
 	method, path, query, auth, body string
@@ -26,7 +57,7 @@ type fakeCluster struct {
 
 func newFakeCluster(t *testing.T) *fakeCluster {
 	t.Helper()
-	f := &fakeCluster{status: http.StatusOK, respond: map[string]string{}}
+	f := &fakeCluster{status: http.StatusOK, respond: map[string]string{"GET /cacerts": testCAPEM(t)}}
 	f.server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		f.calls = append(f.calls, seen{r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization"), string(body)})
@@ -46,15 +77,22 @@ func (f *fakeCluster) run(t *testing.T, args ...string) (string, error) {
 
 func (f *fakeCluster) last() seen { return f.calls[len(f.calls)-1] }
 
-func TestTokenCreateSendsTTLAndDescriptionAndPrintsOnlyTheToken(t *testing.T) {
+func k10Of(t *testing.T, caPEM, creds string) string {
+	t.Helper()
+	sum := sha256.Sum256([]byte(caPEM))
+	return "K10" + hex.EncodeToString(sum[:]) + "::" + creds
+}
+
+func TestTokenCreateSendsTTLAndDescriptionAndPrintsOnlyTheK10Token(t *testing.T) {
 	f := newFakeCluster(t)
 	f.respond["POST /internal/tokens"] = `{"id":"abc123","token":"abc123.0123456789abcdef"}`
 	out, err := f.run(t, "token", "create", "--ttl", "1h", "--description", "ci")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out != "abc123.0123456789abcdef\n" {
-		t.Fatalf("output %q", out)
+	want := k10Of(t, f.respond["GET /cacerts"], "abc123.0123456789abcdef") + "\n"
+	if out != want {
+		t.Fatalf("output %q, want %q", out, want)
 	}
 	c := f.last()
 	if c.method != "POST" || c.path != "/internal/tokens" || c.auth != "Bearer admin-secret" {
@@ -128,7 +166,7 @@ func TestTokenRotatePrintsTheNewToken(t *testing.T) {
 	f := newFakeCluster(t)
 	f.respond["POST /internal/tokens/abc123/rotate"] = `{"id":"abc123","token":"abc123.newnewnewnewnew0"}`
 	out, err := f.run(t, "token", "rotate", "abc123")
-	if err != nil || out != "abc123.newnewnewnewnew0\n" {
+	if err != nil || out != k10Of(t, f.respond["GET /cacerts"], "abc123.newnewnewnewnew0")+"\n" {
 		t.Fatalf("%q %v", out, err)
 	}
 }
