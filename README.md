@@ -120,15 +120,25 @@ CoreDNS, and nothing else from the platform.
 ## Operations
 
 - **Tokens.** Create, list, rotate, and revoke join tokens, including
-  short-lived bootstrap tokens, from `k8flare token`.
+  short-lived bootstrap tokens, from `k8flare token`. A created token is
+  `<id>.<secret>`, optionally expires (`--ttl`, default 24h, `0` never), is
+  stored hashed in the vault, and is accepted next to `JOIN_TOKEN`.
 - **Certificates.** Leaf certificates rotate automatically before
   expiry. The server and client CAs rotate on demand without
   re-joining nodes, as `k3s certificate rotate-ca` does.
 - **Secrets encryption.** Secrets are encrypted at rest with a key
-  held outside the datastore. Keys rotate with `k8flare secrets-encrypt`.
+  held outside the datastore. Keys rotate with `k8flare secrets-encrypt`:
+  prepend a new key to the `SECRETS_ENCRYPTION_KEYS` Worker secret, redeploy,
+  run `k8flare secrets-encrypt reencrypt`, then check
+  `k8flare secrets-encrypt status` for `0 stale` before removing the old key.
 - **Snapshots and restore.** Scheduled and on-demand snapshots go to R2,
   exclude key material, and restore into the same or a new cluster.
-  Point-in-time recovery covers the last 30 days.
+  Point-in-time recovery covers the last 30 days. `k8flare snapshot
+  save|list|restore` manages snapshots; restoring one into a cluster that
+  already holds data needs `--force` and replaces its contents (the vault
+  and its keys are never touched, and encrypted Secrets need the same
+  `SECRETS_ENCRYPTION_KEYS`). `k8flare restore --to <time>` does
+  point-in-time recovery.
 - **Audit log.** Every request is recorded under an audit policy and
   shipped to Workers Logs or any Logpush destination.
 - **Health.** `/livez`, `/readyz`, and `/healthz` report the datastore,

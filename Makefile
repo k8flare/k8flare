@@ -11,7 +11,7 @@ GROUPS := core coordination discovery node storage apps policy resource rbac bat
 API_GROUPS := core coordination discovery events node storage authentication authorization apps policy resource rbac batch admissionregistration autoscaling scheduling networking certificates flowcontrol apiregistration
 WASM_OPT := wasm-opt -Oz --strip-debug --strip-producers --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals
 
-.PHONY: mirrors wasm opt-wasm-list gen agent dev devtls kubeconfig check vet test test-packages clean e2e deploycheck sizes
+.PHONY: mirrors wasm opt-wasm-list gen agent cli dev devtls kubeconfig check vet test test-packages clean e2e deploycheck sizes
 
 mirrors:
 	cd scripts && go run ./mirror
@@ -184,6 +184,9 @@ gen:
 
 agent: mirrors
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o .build/bin/k8flare-agent-linux-arm64 ./packages/agent
+
+cli: mirrors
+	CGO_ENABLED=0 go build -o .build/bin/k8flare ./packages/cli
 
 node-image: mirrors
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o packages/control-plane-worker/images/node/k8flare-agent ./packages/agent
