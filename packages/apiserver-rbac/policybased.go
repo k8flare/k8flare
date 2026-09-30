@@ -21,17 +21,17 @@ import (
 )
 
 func init() {
-	registry.Wrappers["roles"] = func(s rest.Storage, deps registry.Deps) rest.Storage {
-		return newRoleStorage(s.(rest.StandardStorage), newPolicy(deps))
+	registry.Wrappers["roles"] = func(s *registry.Store, res metav1.APIResource, deps registry.Deps) rest.Storage {
+		return newRoleStorage(s, res, newPolicy(deps))
 	}
-	registry.Wrappers["clusterroles"] = func(s rest.Storage, deps registry.Deps) rest.Storage {
-		return newClusterRoleStorage(s.(rest.StandardStorage), newPolicy(deps))
+	registry.Wrappers["clusterroles"] = func(s *registry.Store, res metav1.APIResource, deps registry.Deps) rest.Storage {
+		return newClusterRoleStorage(s, res, newPolicy(deps))
 	}
-	registry.Wrappers["rolebindings"] = func(s rest.Storage, deps registry.Deps) rest.Storage {
-		return newRoleBindingStorage(s.(rest.StandardStorage), newPolicy(deps))
+	registry.Wrappers["rolebindings"] = func(s *registry.Store, res metav1.APIResource, deps registry.Deps) rest.Storage {
+		return newRoleBindingStorage(s, res, newPolicy(deps))
 	}
-	registry.Wrappers["clusterrolebindings"] = func(s rest.Storage, deps registry.Deps) rest.Storage {
-		return newClusterRoleBindingStorage(s.(rest.StandardStorage), newPolicy(deps))
+	registry.Wrappers["clusterrolebindings"] = func(s *registry.Store, res metav1.APIResource, deps registry.Deps) rest.Storage {
+		return newClusterRoleBindingStorage(s, res, newPolicy(deps))
 	}
 }
 
@@ -50,10 +50,21 @@ func newPolicy(deps registry.Deps) *policy {
 }
 
 type guard struct {
-	rest.StandardStorage
-	trusted func(ctx context.Context) bool
-	check   func(ctx context.Context, obj, old runtime.Object) error
+	*registry.Store
+	next       rest.StandardStorage
+	shortNames []string
+	categories []string
+	trusted    func(ctx context.Context) bool
+	check      func(ctx context.Context, obj, old runtime.Object) error
 }
+
+func newGuard(store *registry.Store, res metav1.APIResource, trusted func(context.Context) bool, check func(context.Context, runtime.Object, runtime.Object) error) *guard {
+	return &guard{Store: store, next: store, shortNames: res.ShortNames, categories: res.Categories, trusted: trusted, check: check}
+}
+
+func (g *guard) ShortNames() []string { return g.shortNames }
+
+func (g *guard) Categories() []string { return g.categories }
 
 func (g *guard) Create(ctx context.Context, obj runtime.Object, createValidation rest.ValidateObjectFunc, options *metav1.CreateOptions) (runtime.Object, error) {
 	if !g.trusted(ctx) {
@@ -61,12 +72,12 @@ func (g *guard) Create(ctx context.Context, obj runtime.Object, createValidation
 			return nil, err
 		}
 	}
-	return g.StandardStorage.Create(ctx, obj, createValidation, options)
+	return g.next.Create(ctx, obj, createValidation, options)
 }
 
 func (g *guard) Update(ctx context.Context, name string, objInfo rest.UpdatedObjectInfo, createValidation rest.ValidateObjectFunc, updateValidation rest.ValidateObjectUpdateFunc, forceAllowCreate bool, options *metav1.UpdateOptions) (runtime.Object, bool, error) {
 	if g.trusted(ctx) {
-		return g.StandardStorage.Update(ctx, name, objInfo, createValidation, updateValidation, forceAllowCreate, options)
+		return g.next.Update(ctx, name, objInfo, createValidation, updateValidation, forceAllowCreate, options)
 	}
 	nonEscalating := rest.WrapUpdatedObjectInfo(objInfo, func(ctx context.Context, obj, old runtime.Object) (runtime.Object, error) {
 		if rbacregistry.IsOnlyMutatingGCFields(obj, old, kapihelper.Semantic) {
@@ -77,35 +88,7 @@ func (g *guard) Update(ctx context.Context, name string, objInfo rest.UpdatedObj
 		}
 		return obj, nil
 	})
-	return g.StandardStorage.Update(ctx, name, nonEscalating, createValidation, updateValidation, forceAllowCreate, options)
-}
-
-func (g *guard) ShortNames() []string {
-	if p, ok := g.StandardStorage.(rest.ShortNamesProvider); ok {
-		return p.ShortNames()
-	}
-	return nil
-}
-
-func (g *guard) Categories() []string {
-	if p, ok := g.StandardStorage.(rest.CategoriesProvider); ok {
-		return p.Categories()
-	}
-	return nil
-}
-
-func (g *guard) GetSingularName() string {
-	if p, ok := g.StandardStorage.(rest.SingularNameProvider); ok {
-		return p.GetSingularName()
-	}
-	return ""
-}
-
-func (g *guard) StorageVersion() runtime.GroupVersioner {
-	if p, ok := g.StandardStorage.(rest.StorageVersionProvider); ok {
-		return p.StorageVersion()
-	}
-	return nil
+	return g.next.Update(ctx, name, nonEscalating, createValidation, updateValidation, forceAllowCreate, options)
 }
 
 func groupResource(resource string) schema.GroupResource {
@@ -127,19 +110,19 @@ func (p *policy) confirmNoEscalation(ctx context.Context, resource, name string,
 	return nil
 }
 
-func newRoleStorage(s rest.StandardStorage, p *policy) *guard {
-	return &guard{StandardStorage: s, trusted: p.trustedToEscalateRoles, check: func(ctx context.Context, obj, _ runtime.Object) error {
+func newRoleStorage(s *registry.Store, res metav1.APIResource, p *policy) *guard {
+	return newGuard(s, res, p.trustedToEscalateRoles, func(ctx context.Context, obj, _ runtime.Object) error {
 		role := obj.(*rbacv1.Role)
 		return p.confirmNoEscalation(ctx, "roles", role.Name, role.Rules)
-	}}
+	})
 }
 
 func hasAggregationRule(role *rbacv1.ClusterRole) bool {
 	return role != nil && role.AggregationRule != nil && len(role.AggregationRule.ClusterRoleSelectors) > 0
 }
 
-func newClusterRoleStorage(s rest.StandardStorage, p *policy) *guard {
-	return &guard{StandardStorage: s, trusted: p.trustedToEscalateRoles, check: func(ctx context.Context, obj, old runtime.Object) error {
+func newClusterRoleStorage(s *registry.Store, res metav1.APIResource, p *policy) *guard {
+	return newGuard(s, res, p.trustedToEscalateRoles, func(ctx context.Context, obj, old runtime.Object) error {
 		role := obj.(*rbacv1.ClusterRole)
 		if err := p.confirmNoEscalation(ctx, "clusterroles", role.Name, role.Rules); err != nil {
 			return err
@@ -151,7 +134,7 @@ func newClusterRoleStorage(s rest.StandardStorage, p *policy) *guard {
 			}
 		}
 		return nil
-	}}
+	})
 }
 
 func (p *policy) checkBinding(ctx context.Context, resource, name string, ref rbacv1.RoleRef, namespace string) error {
@@ -166,20 +149,20 @@ func (p *policy) checkBinding(ctx context.Context, resource, name string, ref rb
 	return p.confirmNoEscalation(ctx, resource, name, rules)
 }
 
-func newRoleBindingStorage(s rest.StandardStorage, p *policy) *guard {
-	return &guard{StandardStorage: s, trusted: trustedToEscalate, check: func(ctx context.Context, obj, _ runtime.Object) error {
+func newRoleBindingStorage(s *registry.Store, res metav1.APIResource, p *policy) *guard {
+	return newGuard(s, res, trustedToEscalate, func(ctx context.Context, obj, _ runtime.Object) error {
 		namespace, ok := genericapirequest.NamespaceFrom(ctx)
 		if !ok {
 			return apierrors.NewBadRequest("namespace is required")
 		}
 		binding := obj.(*rbacv1.RoleBinding)
 		return p.checkBinding(ctx, "rolebindings", binding.Name, binding.RoleRef, namespace)
-	}}
+	})
 }
 
-func newClusterRoleBindingStorage(s rest.StandardStorage, p *policy) *guard {
-	return &guard{StandardStorage: s, trusted: trustedToEscalate, check: func(ctx context.Context, obj, _ runtime.Object) error {
+func newClusterRoleBindingStorage(s *registry.Store, res metav1.APIResource, p *policy) *guard {
+	return newGuard(s, res, trustedToEscalate, func(ctx context.Context, obj, _ runtime.Object) error {
 		binding := obj.(*rbacv1.ClusterRoleBinding)
 		return p.checkBinding(ctx, "clusterrolebindings", binding.Name, binding.RoleRef, metav1.NamespaceNone)
-	}}
+	})
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -63,6 +64,12 @@ func staticPolicy(users map[string][]rbacv1.PolicyRule) *policy {
 	}
 	resolver, static := rbacregistryvalidation.NewTestRuleResolver(nil, nil, roles, bindings)
 	return &policy{authorizer: rbacauthorizer.New(static, static, static, static), resolver: resolver}
+}
+
+func guarded(build func(*registry.Store, metav1.APIResource, *policy) *guard, inner rest.StandardStorage, p *policy) *guard {
+	g := build(nil, metav1.APIResource{}, p)
+	g.next = inner
+	return g
 }
 
 func requestCtx(u user.Info, resource, namespace string) context.Context {
@@ -140,22 +147,22 @@ func TestBindingEscalation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run("rolebinding create/"+tc.name, func(t *testing.T) {
 			inner := &recordingStorage{}
-			err := create(newRoleBindingStorage(inner, p), requestCtx(tc.user, "rolebindings", "ns"), roleBindingTo("cluster-admin"))
+			err := create(guarded(newRoleBindingStorage, inner, p), requestCtx(tc.user, "rolebindings", "ns"), roleBindingTo("cluster-admin"))
 			assertOutcome(t, err, tc.wantForbidden, inner.created == 1)
 		})
 		t.Run("rolebinding update/"+tc.name, func(t *testing.T) {
 			inner := &recordingStorage{old: roleBindingTo("view")}
-			err := update(newRoleBindingStorage(inner, p), requestCtx(tc.user, "rolebindings", "ns"), roleBindingTo("cluster-admin"))
+			err := update(guarded(newRoleBindingStorage, inner, p), requestCtx(tc.user, "rolebindings", "ns"), roleBindingTo("cluster-admin"))
 			assertOutcome(t, err, tc.wantForbidden, inner.updated == 1)
 		})
 		t.Run("clusterrolebinding create/"+tc.name, func(t *testing.T) {
 			inner := &recordingStorage{}
-			err := create(newClusterRoleBindingStorage(inner, p), requestCtx(tc.user, "clusterrolebindings", ""), clusterRoleBindingTo("cluster-admin"))
+			err := create(guarded(newClusterRoleBindingStorage, inner, p), requestCtx(tc.user, "clusterrolebindings", ""), clusterRoleBindingTo("cluster-admin"))
 			assertOutcome(t, err, tc.wantForbidden, inner.created == 1)
 		})
 		t.Run("clusterrolebinding update/"+tc.name, func(t *testing.T) {
 			inner := &recordingStorage{old: clusterRoleBindingTo("view")}
-			err := update(newClusterRoleBindingStorage(inner, p), requestCtx(tc.user, "clusterrolebindings", ""), clusterRoleBindingTo("cluster-admin"))
+			err := update(guarded(newClusterRoleBindingStorage, inner, p), requestCtx(tc.user, "clusterrolebindings", ""), clusterRoleBindingTo("cluster-admin"))
 			assertOutcome(t, err, tc.wantForbidden, inner.updated == 1)
 		})
 	}
@@ -178,22 +185,22 @@ func TestRoleEscalation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run("clusterrole create/"+tc.name, func(t *testing.T) {
 			inner := &recordingStorage{}
-			err := create(newClusterRoleStorage(inner, p), requestCtx(tc.user, "clusterroles", ""), clusterRole)
+			err := create(guarded(newClusterRoleStorage, inner, p), requestCtx(tc.user, "clusterroles", ""), clusterRole)
 			assertOutcome(t, err, tc.wantForbidden, inner.created == 1)
 		})
 		t.Run("clusterrole update/"+tc.name, func(t *testing.T) {
 			inner := &recordingStorage{old: &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: "reader"}}}
-			err := update(newClusterRoleStorage(inner, p), requestCtx(tc.user, "clusterroles", ""), clusterRole)
+			err := update(guarded(newClusterRoleStorage, inner, p), requestCtx(tc.user, "clusterroles", ""), clusterRole)
 			assertOutcome(t, err, tc.wantForbidden, inner.updated == 1)
 		})
 		t.Run("role create/"+tc.name, func(t *testing.T) {
 			inner := &recordingStorage{}
-			err := create(newRoleStorage(inner, p), requestCtx(tc.user, "roles", "ns"), role)
+			err := create(guarded(newRoleStorage, inner, p), requestCtx(tc.user, "roles", "ns"), role)
 			assertOutcome(t, err, tc.wantForbidden, inner.created == 1)
 		})
 		t.Run("role update/"+tc.name, func(t *testing.T) {
 			inner := &recordingStorage{old: &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: "reader", Namespace: "ns"}}}
-			err := update(newRoleStorage(inner, p), requestCtx(tc.user, "roles", "ns"), role)
+			err := update(guarded(newRoleStorage, inner, p), requestCtx(tc.user, "roles", "ns"), role)
 			assertOutcome(t, err, tc.wantForbidden, inner.updated == 1)
 		})
 	}
@@ -212,7 +219,7 @@ func TestAggregationRuleRequiresFullAuthority(t *testing.T) {
 	}
 	for name, wantForbidden := range map[string]bool{"limited": true, "admin": false} {
 		inner := &recordingStorage{}
-		err := create(newClusterRoleStorage(inner, p), requestCtx(&user.DefaultInfo{Name: name}, "clusterroles", ""), aggregated)
+		err := create(guarded(newClusterRoleStorage, inner, p), requestCtx(&user.DefaultInfo{Name: name}, "clusterroles", ""), aggregated)
 		assertOutcome(t, err, wantForbidden, inner.created == 1)
 	}
 }
@@ -223,6 +230,6 @@ func TestGarbageCollectionUpdatesAreNotEscalation(t *testing.T) {
 	updated := old.DeepCopy()
 	updated.Finalizers = []string{"example.com/finalizer"}
 	inner := &recordingStorage{old: old}
-	err := update(newClusterRoleBindingStorage(inner, p), requestCtx(&user.DefaultInfo{Name: "limited"}, "clusterrolebindings", ""), updated)
+	err := update(guarded(newClusterRoleBindingStorage, inner, p), requestCtx(&user.DefaultInfo{Name: "limited"}, "clusterrolebindings", ""), updated)
 	assertOutcome(t, err, false, inner.updated == 1)
 }
