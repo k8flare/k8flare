@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	eventsv1 "k8s.io/api/events/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
@@ -18,6 +19,17 @@ import (
 // (registered in defaults.go from upstream). Event's "source" is the one
 // label whose name is not its JSON path.
 var fieldAliases = map[string]string{"source": "source.component"}
+
+var eventsV1FieldAliases = map[string]string{
+	"reportingComponent":             "reportingController",
+	"involvedObject.kind":            "regarding.kind",
+	"involvedObject.namespace":       "regarding.namespace",
+	"involvedObject.name":            "regarding.name",
+	"involvedObject.uid":             "regarding.uid",
+	"involvedObject.apiVersion":      "regarding.apiVersion",
+	"involvedObject.resourceVersion": "regarding.resourceVersion",
+	"involvedObject.fieldPath":       "regarding.fieldPath",
+}
 
 func attrsFor(selector fields.Selector) storage.AttrFunc {
 	requirements := selector.Requirements()
@@ -41,6 +53,11 @@ func attrsFor(selector fields.Selector) storage.AttrFunc {
 			path := r.Field
 			if alias, ok := fieldAliases[path]; ok {
 				path = alias
+			}
+			if _, ok := obj.(*eventsv1.Event); ok {
+				if alias, ok := eventsV1FieldAliases[path]; ok {
+					path = alias
+				}
 			}
 			value := lookupField(u, strings.Split(path, "."))
 			if value == "" && (r.Value == "true" || r.Value == "false") {

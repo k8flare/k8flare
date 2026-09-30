@@ -7,6 +7,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	eventsv1 "k8s.io/api/events/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -18,6 +19,22 @@ import (
 func init() {
 	utilruntime.Must(eventsinternal.AddToScheme(scheme.Scheme))
 	storageconv.Install()
+}
+
+func TestEventsV1FieldSelectorUsesConvertedLabels(t *testing.T) {
+	event := &eventsv1.Event{
+		ObjectMeta:          metav1.ObjectMeta{Name: "web.1", Namespace: "default"},
+		Regarding:           corev1.ObjectReference{Kind: "Pod", Name: "web"},
+		ReportingController: "test-controller",
+	}
+	selector := fields.SelectorFromSet(fields.Set{"reportingComponent": "test-controller", "involvedObject.name": "web"})
+	_, set, err := attrsFor(selector)(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !selector.Matches(set) {
+		t.Fatalf("selector %q does not match %v", selector, set)
+	}
 }
 
 func TestEventStorageCodecRoundTrip(t *testing.T) {
