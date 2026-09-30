@@ -54,7 +54,11 @@ it. Remove an entry when the behaviour exists and CI covers it.
     71 MB, past the 64 MiB cap). It accepts RS/PS/ES algorithms, drops
     `system:` groups from claims, has no CEL claim rules or
     `--oidc-signing-algs`, and does not refetch keys on an unknown `kid`
-    until the 10 minute cache expires.
+    until the 10 minute cache expires. Next: refetch on unknown `kid`,
+    match upstream's algorithm and `system:` rules, and serve
+    `AuthenticationConfiguration` CEL (claimMappings,
+    claimValidationRules, userValidationRules) by delegating expression
+    evaluation to the admission Worker, which already links CEL.
   - Access groups come from the token's `custom.<ACCESS_GROUPS_CLAIM>`;
     the IdP must send them, and Access trims `custom` above about 1 KB.
     `get-identity` is not used.
