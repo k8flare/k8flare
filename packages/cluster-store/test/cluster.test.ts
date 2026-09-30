@@ -136,3 +136,22 @@ test("snapshots are not taken before the interval and can be disabled", async (t
   await off.fire();
   assert.equal(off.bucket.objects.size, 0);
 });
+
+test("HelmChart and HelmChartConfig writes of every kind reach the addons queue", async () => {
+  const sent: string[] = [];
+  const addons = { send: async () => {}, sendBatch: async (batch: { body: { key: string } }[]) => void sent.push(...batch.map((m) => m.body.key)) };
+  const r = rig({ ADDON_Q: addons } as any);
+  await r.settle();
+  await r.put("/registry/helm.cattle.io/helmcharts/kube-system/traefik", "v1");
+  await r.put("/registry/helm.cattle.io/helmcharts/kube-system/traefik", "v2", 2);
+  await r.put("/registry/helm.cattle.io/helmchartconfigs/kube-system/traefik", "v1");
+  await r.remove("/registry/helm.cattle.io/helmcharts/kube-system/traefik");
+  await r.put("/registry/pods/default/a", "v1");
+  await r.settle();
+  assert.deepEqual(sent, [
+    "/registry/helm.cattle.io/helmcharts/kube-system/traefik",
+    "/registry/helm.cattle.io/helmcharts/kube-system/traefik",
+    "/registry/helm.cattle.io/helmchartconfigs/kube-system/traefik",
+    "/registry/helm.cattle.io/helmcharts/kube-system/traefik",
+  ]);
+});

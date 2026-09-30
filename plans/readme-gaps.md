@@ -41,9 +41,46 @@ it. Remove an entry when the behaviour exists and CI covers it.
 
 ## Packaged components
 
-- HelmChart is not installed by anything. Helm's engine does not fit a
-  Worker (about 70 MB); options are a text/template + sprig engine or
-  k3s's klipper-helm Job.
+- HelmChart and HelmChartConfig are honoured by a Worker-side controller in
+  the addons Worker (`packages/helm`, `/helm` on the addons Worker, run
+  from the `k8flare-addons` queue after the manifest deployer; HelmChart
+  and HelmChartConfig writes route there from `cluster.ts`). The CRDs ship
+  as the `helm-crd` add-on; `DISABLE=helm-controller` turns the controller
+  off. It uses Helm's own `pkg/engine`, `chartutil`, `loader` and
+  `releaseutil`, so `include`, `tpl`, `required`, `toYaml`, sprig,
+  subcharts, `condition`/`tags`, `global`, `.Files`, `.helmignore`,
+  `values.schema.json` and `crds/` behave as in `helm install`. The 70 MB
+  figure belonged to `pkg/action`, `pkg/kube` and `cli-runtime`, which are
+  not linked; the addons Worker is 50.1 MB after wasm-opt (24.9 MB before).
+  Releases are stored as `sh.helm.release.v1.<name>.v<N>` Secrets in the
+  release namespace in Helm's own encoding, so `helm list` and `helm
+  history` on a workstation see them; objects carry the
+  `meta.helm.sh/release-*` ownership metadata. Verified against fakes and
+  `helm template` output, not against a running cluster or workerd. Not
+  supported:
+  - Hooks are recorded in the release but never run (no pre/post-install
+    Jobs, no `helm test`).
+  - `spec.failurePolicy` (`reinstall`, `retry`), `timeout`, `backOffLimit`,
+    `jobImage`, `repoCA`, `insecureSkipTLSVerify` and `dockerRegistrySecret`
+    are ignored; there is no Job. Objects are always server-side applied
+    with force; `serverSide` and `forceConflicts` are ignored.
+  - `spec.chart` must be a repo chart name with `spec.repo`, a chart URL,
+    `oci://` or `spec.chartContent`; repo aliases such as `stable/x` are
+    not resolved. OCI covers anonymous and basic/bearer-token registries,
+    not `dockerRegistrySecret` or registry redirects that need extra auth.
+  - Changes to Secrets named in `valuesSecrets` do not trigger a run and
+    are not part of the config hash; the next spec change or deploy does.
+  - `lookup` goes through the addons Worker's API binding and has not been
+    run under workerd. Chart `.Capabilities.APIVersions` comes from
+    discovery.
+  - Deleting a HelmChart uninstalls through a finalizer
+    (`wrangler.cattle.io/on-helm-chart-remove`); `crds/` objects are never
+    removed, as in Helm. History is trimmed to 10 revisions, never
+    dropping the deployed one. A failed apply records a failed revision and
+    the queue retries with backoff; retries of the same spec update that
+    revision instead of adding new ones.
+  - Charts that need `helm dependency build` must be packaged with their
+    `charts/` directory; `dependencies` are not fetched.
 - Ingress and Gateway API are not routed at the edge.
 - local-path runs as a resident Deployment, not helper pods only.
 - CoreDNS NodeHosts is never written.

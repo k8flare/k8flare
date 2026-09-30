@@ -27,11 +27,11 @@ func pinnedCapabilities() *chartutil.Capabilities {
 	return &caps
 }
 
-func demoChart() *helmv1.HelmChart {
+func demoChart(t *testing.T) *helmv1.HelmChart {
 	return &helmv1.HelmChart{
 		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "kube-system"},
 		Spec: helmv1.HelmChartSpec{
-			ValuesContent: string(readTestdataBytes("overrides.yaml")),
+			ValuesContent: string(readTestdata(t, "overrides.yaml")),
 			Set: map[string]intstr.IntOrString{
 				"replicaCount": intstr.FromInt32(3),
 				"image.tag":    intstr.FromString("1.2"),
@@ -40,16 +40,8 @@ func demoChart() *helmv1.HelmChart {
 	}
 }
 
-func readTestdataBytes(name string) []byte {
-	b, err := os.ReadFile("testdata/" + name)
-	if err != nil {
-		panic(err)
-	}
-	return b
-}
-
 func TestRenderMatchesHelmTemplate(t *testing.T) {
-	values, err := MergedValues(context.Background(), demoChart(), nil, nil)
+	values, err := MergedValues(context.Background(), demoChart(t), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +72,7 @@ func TestRenderMatchesHelmTemplate(t *testing.T) {
 }
 
 func TestRenderSubchartCanBeDisabled(t *testing.T) {
-	chart := demoChart()
+	chart := demoChart(t)
 	chart.Spec.Set["cache.enabled"] = intstr.FromString("false")
 	values, err := MergedValues(context.Background(), chart, nil, nil)
 	if err != nil {
@@ -96,7 +88,7 @@ func TestRenderSubchartCanBeDisabled(t *testing.T) {
 }
 
 func TestRenderRequiredFailsWithTheChartsMessage(t *testing.T) {
-	chart := demoChart()
+	chart := demoChart(t)
 	chart.Spec.Set["service.port"] = intstr.FromString("null")
 	values, err := MergedValues(context.Background(), chart, nil, nil)
 	if err != nil {
@@ -109,7 +101,7 @@ func TestRenderRequiredFailsWithTheChartsMessage(t *testing.T) {
 }
 
 func TestRenderMarksUpgrades(t *testing.T) {
-	values, _ := MergedValues(context.Background(), demoChart(), nil, nil)
+	values, _ := MergedValues(context.Background(), demoChart(t), nil, nil)
 	rendered, err := Render(RenderInput{Archive: readTestdata(t, "demo-0.1.0.tgz"), ReleaseName: "demo", Namespace: "apps", Revision: 2, IsUpgrade: true, Values: values, Capabilities: pinnedCapabilities()})
 	if err != nil {
 		t.Fatal(err)

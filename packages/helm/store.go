@@ -113,7 +113,7 @@ func (s store) delete(ctx context.Context, rec *record) error {
 
 func (s store) trim(ctx context.Context, records []*record) error {
 	for len(records) > historyMax {
-		var victim int = -1
+		victim := -1
 		for i, rec := range records {
 			if rec.release.Info.Status != release.StatusDeployed {
 				victim = i
