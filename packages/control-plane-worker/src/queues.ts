@@ -60,11 +60,16 @@ function queueOf(env: Env, name: string): Queue | null {
 
 async function applySends(env: Env, sends: FollowSend[]): Promise<void> {
   for (const send of sends) {
+    if (send.kind === "lease-check") {
+      await clusterStub(env).fetch("https://cluster.internal/lease-check", {
+        method: "POST",
+        body: JSON.stringify({ node: send.node ?? "", delayMs: (send.delaySeconds ?? 0) * 1000 }),
+      });
+      continue;
+    }
     const queue = queueOf(env, send.queue);
     if (!queue) continue;
-    const body: QueueMessage = send.kind === "lease-check"
-      ? { kind: "lease-check", node: send.node ?? "" }
-      : { kind: "retry", attempt: send.attempt, changed: send.changed, names: send.names };
+    const body: QueueMessage = { kind: "retry", attempt: send.attempt, changed: send.changed, names: send.names };
     await queue.send(body, send.delaySeconds ? { delaySeconds: send.delaySeconds } : undefined);
   }
 }

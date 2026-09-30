@@ -187,3 +187,29 @@ test("the garbage collector hears about ownership and deletion, not every status
     "deleted /registry/pods/default/a",
   ]);
 });
+
+test("a node keeps exactly one pending lease check: lease writes and follow-ups only schedule once the pending one is due", async (t) => {
+  const tick = clock(t);
+  const sent: { node: string; delaySeconds?: number }[] = [];
+  const ctrl = { send: async (body: { node: string }, opts?: { delaySeconds?: number }) => void sent.push({ node: body.node, delaySeconds: opts?.delaySeconds }), sendBatch: async () => {} };
+  const r = rig({ CTRL_Q: ctrl } as any);
+  await r.settle();
+  await r.put("/registry/leases/kube-node-lease/n1", "v1");
+  await r.settle();
+  assert.deepEqual(sent, [{ node: "n1", delaySeconds: 60 }]);
+  tick(10_000);
+  await r.put("/registry/leases/kube-node-lease/n1", "v2", 2);
+  await r.settle();
+  assert.equal((await (await r.post("/lease-check", { node: "n1", delayMs: 30_000 })).json()).scheduled, false);
+  assert.equal(sent.length, 1);
+  tick(51_000);
+  assert.equal((await (await r.post("/lease-check", { node: "n1", delayMs: 30_000 })).json()).scheduled, true);
+  assert.deepEqual(sent[1], { node: "n1", delaySeconds: 30 });
+  await r.put("/registry/leases/kube-node-lease/n1", "v3", 3);
+  await r.settle();
+  assert.equal(sent.length, 2);
+  tick(51_000);
+  await r.put("/registry/leases/kube-node-lease/n1", "v4", 4);
+  await r.settle();
+  assert.equal(sent.length, 3);
+});

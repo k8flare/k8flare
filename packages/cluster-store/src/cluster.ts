@@ -72,7 +72,10 @@ export class Cluster extends DurableObject<Env> {
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)`);
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, target TEXT NOT NULL, rev INTEGER NOT NULL, key TEXT NOT NULL, type TEXT NOT NULL)`);
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS passes (target TEXT PRIMARY KEY, triggered INTEGER NOT NULL, finished INTEGER NOT NULL)`);
-      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS lease_checks (node TEXT PRIMARY KEY, sent INTEGER NOT NULL)`);
+      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS lease_checks (node TEXT PRIMARY KEY, sent INTEGER NOT NULL, due INTEGER NOT NULL DEFAULT 0)`);
+      if (!ctx.storage.sql.exec("PRAGMA table_info(lease_checks)").toArray().some((c) => c.name === "due")) {
+        ctx.storage.sql.exec("ALTER TABLE lease_checks ADD COLUMN due INTEGER NOT NULL DEFAULT 0");
+      }
       ctx.storage.sql.exec(
         `INSERT INTO kine (name, deleted, value) SELECT '/k8flare/bootstrap', 0, X'' WHERE NOT EXISTS (SELECT 1 FROM kine)`,
       );
@@ -248,6 +251,12 @@ export class Cluster extends DurableObject<Env> {
           Date.now(),
         );
         return Response.json({ ok: true });
+      }
+      case "POST /lease-check": {
+        const body = (await request.json()) as { node: string; delayMs: number };
+        if (!body.node) return new Response("missing node", { status: 400 });
+        const scheduled = await this.scheduleLeaseCheck(body.node, Math.max(0, body.delayMs ?? 0));
+        return Response.json({ scheduled });
       }
       case "GET /kv": {
         const kv = this.current(url.searchParams.get("key") ?? "");
@@ -637,12 +646,21 @@ export class Cluster extends DurableObject<Env> {
     const now = Date.now();
     const rows = this.ctx.storage.sql.exec("SELECT sent FROM lease_checks WHERE node = ?", node).toArray();
     if (rows.length > 0 && now - (rows[0].sent as number) < LEASE_CHECK_EVERY_MS) return;
+    await this.scheduleLeaseCheck(node, LEASE_CHECK_DELAY_S * 1000);
+  }
+
+  private async scheduleLeaseCheck(node: string, delayMs: number): Promise<boolean> {
+    const now = Date.now();
+    const rows = this.ctx.storage.sql.exec("SELECT due FROM lease_checks WHERE node = ?", node).toArray();
+    if (rows.length > 0 && (rows[0].due as number) > now) return false;
     this.ctx.storage.sql.exec(
-      "INSERT INTO lease_checks (node, sent) VALUES (?, ?) ON CONFLICT(node) DO UPDATE SET sent = excluded.sent",
+      "INSERT INTO lease_checks (node, sent, due) VALUES (?, ?, ?) ON CONFLICT(node) DO UPDATE SET sent = excluded.sent, due = excluded.due",
       node,
       now,
+      now + delayMs,
     );
-    await this.env.CTRL_Q.send({ kind: "lease-check", node } satisfies QueueMessage, { delaySeconds: LEASE_CHECK_DELAY_S });
+    await this.env.CTRL_Q.send({ kind: "lease-check", node } satisfies QueueMessage, { delaySeconds: Math.ceil(delayMs / 1000) });
+    return true;
   }
 
   private markTriggered(target: Target): void {
