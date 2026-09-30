@@ -1,0 +1,20 @@
+{
+  "name": "k8flare-do-kubelet-spike",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-30",
+  "observability": { "enabled": true },
+  "containers": [
+    {
+      "class_name": "PodSandbox",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "nginx": { "dockerfile": "./image/Dockerfile" }
+      }
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "POD", "class_name": "PodSandbox" }]
+  },
+  "services": [{ "binding": "INTERCEPT", "service": "k8flare-do-kubelet-spike", "entrypoint": "Intercept" }],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PodSandbox"] }]
+}
