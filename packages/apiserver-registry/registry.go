@@ -142,6 +142,7 @@ type Deps struct {
 	Tokens    authenticator.Token
 	Kubelet   KubeletProxy
 	Admission *http.Client
+	Hooks     *http.Client
 	TokenHMAC []byte
 }
 

@@ -41,6 +41,7 @@ func Serve(groupVersion string) {
 		ReadonlyToken: bridge.Getenv("READONLY_TOKEN"),
 		Kubelet:       kubelet,
 		Admission:     &http.Client{Transport: bridge.BindingTransport{Name: "ADMISSION"}},
+		Hooks:         &http.Client{Transport: bridge.BindingTransport{Name: "HOOKS"}},
 
 		SecretsEncryptionKeys: bridge.Getenv("SECRETS_ENCRYPTION_KEYS"),
 	})

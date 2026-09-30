@@ -14,7 +14,10 @@ it. Remove an entry when the behaviour exists and CI covers it.
 - Claim status writes skip the two upstream authorization checks
   (`resourceclaims/binding`, `resourceclaims/driver`): the strategy gets an
   allow-all authorizer, as the group worker has none.
-- CRDs still use the deduced SSA type converter.
+- Custom resource instances were already schema-aware for SSA (the upstream
+  handler builds the type converter from each CRD's structural schema); the
+  `customresourcedefinitions` resource itself now uses one built from the
+  apiextensions OpenAPI models instead of the deduced converter.
 - Streaming over WebSocket (logs, exec, attach, port-forward) has no CI
   spec yet. SPDY cannot be served: workerd only accepts `Upgrade:
   websocket`, so stream paths answer other upgrades with 426.
@@ -135,12 +138,35 @@ it. Remove an entry when the behaviour exists and CI covers it.
   lean client-go (no FlowControl informers) and its controller needs
   goroutines and informers the Workers do not keep; no Workers Rate
   Limiting binding is wired.
-- Admission: OwnerReferencesPermissionEnforcement,
-  ClusterTrustBundleAttest and DenyServiceExternalIPs are missing.
+- Admission: every default-on upstream plugin that acts under upstream's
+  default feature gates is present. Default-on but inert here, so not
+  added: ClusterTrustBundleAttest (needs the `ClusterTrustBundle` gate, off
+  by default, and no `clustertrustbundles` resource is served) and
+  PodGroupProtection, PodGroupWorkloadExists and JobValidation (need the
+  alpha `GenericWorkload` / `WorkloadWithJob` gates, off by default).
+  OwnerReferencesPermissionEnforcement and DenyServiceExternalIPs are in
+  upstream's `DefaultOffAdmissionPlugins`, and k3s enables only
+  `NodeRestriction`, so they are intentionally not
+  enabled. Serving ClusterTrustBundles would need the attest check added.
 
 ## Cloudflare features
 
-- `APIService` cannot point at a Worker.
+- Unit tests only (the `Hooks` entrypoint serves only `hookecho`, so no
+  dev or CI run can serve an aggregated API from a Worker yet). An
+  `APIService` points at a Worker with the `k8flare.com/worker`
+  annotation (the same key admission webhooks use); `spec.service` is not
+  needed (README's `https://k8flare.com/worker/<name>` form has no field to
+  live in: `APIService` has no `url`). Requests reach the Worker as `https://hooks.internal/hook/<name>`
+  followed by the original API path; the requesting user travels in
+  `X-Remote-*` headers.
+  - Aggregated discovery fetches the remote's `/apis` (aggregated v2, or the
+    legacy `/apis/<group>/<version>` list when unsupported) as
+    `system:kube-aggregator`, caches it for a minute per APIService in the
+    apiregistration Worker, and marks it stale when the fetch fails. The
+    cache is per isolate and per APIService (upstream shares one per
+    service), and group/version priorities are not carried over.
+  - Availability of a Worker APIService is always `True`; the Worker is not
+    probed.
 
 ## Conformance
 

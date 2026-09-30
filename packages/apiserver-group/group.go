@@ -20,6 +20,7 @@ type Config struct {
 	ReadonlyToken string
 	Kubelet       registry.KubeletProxy
 	Admission     *http.Client
+	Hooks         *http.Client
 
 	SecretsEncryptionKeys string
 }
@@ -36,6 +37,7 @@ func NewHandler(gv schema.GroupVersion, cfg Config) (http.Handler, error) {
 		Tokens:    union.New(auth.AdminToken(cfg.AdminToken), auth.ReadonlyToken(cfg.ReadonlyToken), auth.VaultToken{Vault: vault}, auth.NodeToken{Vault: vault}, auth.ServiceAccountToken{HMAC: []byte(cfg.AdminToken), Objects: auth.NewServiceAccountObjects(auth.KineObjects{Client: client})}),
 		Kubelet:   cfg.Kubelet,
 		Admission: cfg.Admission,
+		Hooks:     cfg.Hooks,
 		TokenHMAC: []byte(cfg.AdminToken),
 	}
 	mux := http.NewServeMux()

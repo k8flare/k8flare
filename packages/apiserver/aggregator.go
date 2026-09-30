@@ -12,6 +12,12 @@ import (
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 )
 
+const workerAnnot = "k8flare.com/worker"
+
+func isRemoteAPIService(svc *apiregistrationv1.APIService) bool {
+	return svc.Spec.Service != nil || strings.TrimSpace(svc.Annotations[workerAnnot]) != ""
+}
+
 func kineStore(httpClient *http.Client) *kine.Client {
 	if httpClient == nil {
 		return nil
@@ -44,7 +50,7 @@ func loadAPIService(ctx context.Context, client *kine.Client, name string) (*api
 
 func remoteAPIService(ctx context.Context, client *kine.Client, group, version string) (*apiregistrationv1.APIService, bool) {
 	svc, ok := loadAPIService(ctx, client, apiServiceName(group, version))
-	if !ok || svc.Spec.Service == nil {
+	if !ok || !isRemoteAPIService(svc) {
 		return nil, false
 	}
 	return svc, true
@@ -67,7 +73,7 @@ func hasRemoteAPIServiceGroup(ctx context.Context, client *kine.Client, group st
 		if err := json.Unmarshal(data, &svc); err != nil {
 			continue
 		}
-		if svc.Spec.Service != nil && svc.Spec.Group == group {
+		if isRemoteAPIService(&svc) && svc.Spec.Group == group {
 			return true
 		}
 	}
@@ -90,7 +96,7 @@ func remoteAPIServiceGroups(ctx context.Context, client *kine.Client) []metav1.A
 			continue
 		}
 		var svc apiregistrationv1.APIService
-		if err := json.Unmarshal(data, &svc); err != nil || svc.Spec.Service == nil || svc.Spec.Group == "" {
+		if err := json.Unmarshal(data, &svc); err != nil || !isRemoteAPIService(&svc) || svc.Spec.Group == "" {
 			continue
 		}
 		gv := metav1.GroupVersionForDiscovery{GroupVersion: svc.Spec.Group + "/" + svc.Spec.Version, Version: svc.Spec.Version}
