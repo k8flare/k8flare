@@ -171,6 +171,10 @@ func NewStore(client *kine.Client, gv schema.GroupVersion, res metav1.APIResourc
 	strat := strategy{ObjectTyper: scheme.Scheme, NameGenerator: names.SimpleNameGenerator, namespaced: res.Namespaced}
 	prefix := "/" + res.Name
 	gr := gv.WithResource(res.Name).GroupResource()
+	var createUpdate rest.RESTCreateUpdateStrategy = strat
+	if up, ok := Upstreams[gr]; ok {
+		createUpdate = upstreamStrategy{strategy: strat, up: up.Strategy}
+	}
 	codec := scheme.Codecs.LegacyCodec(gv)
 	persist := storageCodec(gv)
 	kineStorage := kine.NewStorage(client, persist, newFunc)
@@ -179,8 +183,8 @@ func NewStore(client *kine.Client, gv schema.GroupVersion, res metav1.APIResourc
 		NewListFunc:               newListFunc,
 		DefaultQualifiedResource:  gr,
 		SingularQualifiedResource: gv.WithResource(res.SingularName).GroupResource(),
-		CreateStrategy:            strat,
-		UpdateStrategy:            strat,
+		CreateStrategy:            createUpdate,
+		UpdateStrategy:            createUpdate,
 		DeleteStrategy:            strat,
 		ReturnDeletedObject:       true,
 		EnableGarbageCollection:   true,

@@ -20,6 +20,9 @@ type statusREST struct {
 
 // NewStatusREST serves /status over parent.
 func NewStatusREST(parent *genericregistry.Store) *statusREST {
+	if up, ok := Upstreams[parent.DefaultQualifiedResource]; ok && up.Status != nil {
+		return NewUpdateOnlyREST(parent, upstreamStatusStrategy{RESTUpdateStrategy: parent.UpdateStrategy, up: up.Status})
+	}
 	return NewUpdateOnlyREST(parent, statusOnlyStrategy{parent.UpdateStrategy})
 }
 
