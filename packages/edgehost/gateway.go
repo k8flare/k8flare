@@ -23,6 +23,14 @@ type pathMatch struct {
 	re    *regexp.Regexp
 }
 
+func AddAPIHosts(list string) {
+	for _, host := range strings.Split(list, ",") {
+		if h := hostname(strings.TrimSpace(host)); h != "" {
+			gatewayAPIHosts[h] = true
+		}
+	}
+}
+
 func IsGatewayHost(host string) bool {
 	h := hostname(host)
 	if h == "" || h == "localhost" || net.ParseIP(h) != nil || strings.HasSuffix(h, ".workers.dev") || strings.HasSuffix(h, ".internal") || gatewayAPIHosts[h] {

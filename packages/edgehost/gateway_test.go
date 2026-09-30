@@ -48,3 +48,15 @@ func TestMatchHostname(t *testing.T) {
 		t.Fatal("port")
 	}
 }
+
+func TestConfiguredAPIHostIsNeverAGatewayHost(t *testing.T) {
+	AddAPIHosts(" K8flare.Example.JP , api2.example.org")
+	for _, host := range []string{"k8flare.example.jp", "k8flare.example.jp:443", "api2.example.org"} {
+		if IsGatewayHost(host) {
+			t.Fatal(host)
+		}
+	}
+	if !IsGatewayHost("app.example.jp") {
+		t.Fatal("app")
+	}
+}

@@ -71,6 +71,8 @@ importers:
 
   packages/cluster-store: {}
 
+  packages/containers: {}
+
   packages/control-plane-worker:
     dependencies:
       '@k8flare/cluster-store':

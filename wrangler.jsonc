@@ -16,6 +16,7 @@
   "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"] }],
   "triggers": { "crons": [] },
   "vars": {
+    "API_HOSTS": "k8flare.kooffice.jp",
     "ACCESS_TEAM_DOMAIN": "kooffice",
     "ACCESS_AUD": "f5b5bb1f97c02d095ecd20352a1e2282ddef9fca76a977800783a80172cc511e",
     "ACCESS_GROUPS_CLAIM": "groups",

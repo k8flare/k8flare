@@ -8,6 +8,7 @@ import (
 
 	"github.com/k8flare/k8flare/packages/apiserver"
 	auth "github.com/k8flare/k8flare/packages/apiserver-auth"
+	"github.com/k8flare/k8flare/packages/edgehost"
 	bridge "github.com/k8flare/k8flare/packages/worker-bridge"
 )
 
@@ -24,6 +25,7 @@ func inflightLimit(name string, fallback int) int {
 }
 
 func main() {
+	edgehost.AddAPIHosts(bridge.Getenv("API_HOSTS"))
 	requiredClaims, err := auth.ParseRequiredClaims(bridge.Getenv("OIDC_REQUIRED_CLAIMS"))
 	if err != nil {
 		panic(err)
