@@ -24,7 +24,8 @@ import (
 // Client speaks the Cluster Durable Object's key-value protocol
 // (packages/cluster-store). Every key is stored under "/registry".
 type Client struct {
-	HTTP *http.Client
+	HTTP    *http.Client
+	Secrets *SecretCipher
 }
 
 const kineBase = "http://cluster.internal"
@@ -99,10 +100,17 @@ func (c *Client) Get(ctx context.Context, key string) (*KV, int64, error) {
 	if out.KV == nil {
 		return nil, out.Revision, ErrNotFound
 	}
+	if err := c.Secrets.openKV(out.KV); err != nil {
+		return nil, 0, err
+	}
 	return out.KV, out.Revision, nil
 }
 
 func (c *Client) Put(ctx context.Context, key string, value []byte, revision int64) (int64, error) {
+	value, err := c.Secrets.Seal(key, value)
+	if err != nil {
+		return 0, err
+	}
 	out, err := c.call(ctx, http.MethodPut, "/kv", nil, map[string]any{
 		"key": key, "value": base64.StdEncoding.EncodeToString(value), "revision": revision,
 	})
@@ -125,6 +133,19 @@ func (c *Client) List(ctx context.Context, prefix, from string, limit int) ([]KV
 }
 
 func (c *Client) ListAt(ctx context.Context, prefix, from string, limit int, revision int64) ([]KV, int64, bool, error) {
+	kvs, rev, more, err := c.listRaw(ctx, prefix, from, limit, revision)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	for i := range kvs {
+		if err := c.Secrets.openKV(&kvs[i]); err != nil {
+			return nil, 0, false, err
+		}
+	}
+	return kvs, rev, more, nil
+}
+
+func (c *Client) listRaw(ctx context.Context, prefix, from string, limit int, revision int64) ([]KV, int64, bool, error) {
 	q := url.Values{"prefix": {prefix}}
 	if from != "" {
 		q.Set("from", from)
@@ -599,12 +620,17 @@ func (s *Storage) Watch(ctx context.Context, key string, opts storage.ListOption
 	return w, nil
 }
 
-func (s *Storage) decodeValue(b64 string, rev int64) (runtime.Object, bool) {
+func (s *Storage) decodeValue(key, b64 string, rev int64) (runtime.Object, bool) {
 	if b64 == "" {
 		return nil, false
 	}
-	data, err := base64.StdEncoding.DecodeString(b64)
+	stored, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
+		return nil, false
+	}
+	data, _, err := s.client.Secrets.Open(key, stored)
+	if err != nil {
+		println("kine: watch event decrypt failed", key+":", err.Error())
 		return nil, false
 	}
 	obj := s.newFunc()
@@ -618,8 +644,8 @@ func (s *Storage) decodeValue(b64 string, rev int64) (runtime.Object, bool) {
 // matching the predicate is reported as deleted, one that starts matching
 // as added.
 func (s *Storage) watchEvent(ev kineEvent, pred storage.SelectionPredicate) (watch.Event, bool) {
-	cur, hasCur := s.decodeValue(ev.Value, ev.Rev)
-	prev, hasPrev := s.decodeValue(ev.Prev, ev.Rev)
+	cur, hasCur := s.decodeValue(ev.Key, ev.Value, ev.Rev)
+	prev, hasPrev := s.decodeValue(ev.Key, ev.Prev, ev.Rev)
 	matches := func(obj runtime.Object, ok bool) bool {
 		if !ok {
 			return false

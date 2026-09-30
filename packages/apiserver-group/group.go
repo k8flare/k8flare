@@ -20,10 +20,16 @@ type Config struct {
 	ReadonlyToken string
 	Kubelet       registry.KubeletProxy
 	Admission     *http.Client
+
+	SecretsEncryptionKeys string
 }
 
 func NewHandler(gv schema.GroupVersion, cfg Config) (http.Handler, error) {
-	client := &kine.Client{HTTP: cfg.Kine}
+	secrets, err := kine.ParseSecretKeys(cfg.SecretsEncryptionKeys)
+	if err != nil {
+		return nil, err
+	}
+	client := &kine.Client{HTTP: cfg.Kine, Secrets: secrets}
 	vault := supervisor.NewVault(client)
 	deps := registry.Deps{
 		Kine:      client,

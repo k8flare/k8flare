@@ -20,6 +20,7 @@ type Config struct {
 	Outbound *http.Client
 	API      *http.Client
 	Token    string
+	Secrets  *kine.SecretCipher
 }
 
 type Handler struct {
@@ -35,7 +36,7 @@ func NewHandler(cfg Config) http.Handler {
 	_ = corev1.AddToScheme(scheme.Scheme)
 	_ = discoveryv1.AddToScheme(scheme.Scheme)
 	h := &Handler{
-		store:    &store{client: &kine.Client{HTTP: cfg.Kine}},
+		store:    &store{client: &kine.Client{HTTP: cfg.Kine, Secrets: cfg.Secrets}},
 		tunnel:   cfg.Tunnel,
 		hooks:    cfg.Hooks,
 		outbound: cfg.Outbound,
