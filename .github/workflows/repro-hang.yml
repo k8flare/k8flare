@@ -1,16 +1,14 @@
-name: E2E
+name: Startup hang repro
 
 on:
   push:
-    branches: [main, feat/minimal-rewrite]
-  pull_request:
-  workflow_dispatch:
+    branches: [diag/startup-hang]
 
 permissions:
   contents: read
 
 concurrency:
-  group: e2e-${{ github.ref }}
+  group: repro-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -82,17 +80,18 @@ jobs:
           path: |
             .build/wasm/*.wasm
             .build/wasm/*.sha256
+            .build/wasm/*.symbols
           retention-days: 1
           if-no-files-found: error
 
-  required:
+  repro:
     needs: workers
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2]
+        runner: [0, 1, 2, 3, 4, 5]
     steps:
       - name: Free disk space
         run: |
@@ -142,18 +141,14 @@ jobs:
         id: build
         run: scripts/ci/e2e.sh build
 
-      - name: Start the control plane and a node
-        run: scripts/ci/e2e.sh up
+      - name: Install gdb
+        run: sudo apt-get install -y -qq gdb >/dev/null
 
-      - name: Run the required e2e set
-        run: scripts/ci/e2e.sh test
-        env:
-          SET: required
-          SHARD: ${{ matrix.shard }}
-          SHARDS: 3
+      - name: Start the control plane until it stops answering
+        run: scripts/ci/repro.sh
 
       - name: Save Go caches
-        if: always() && steps.build.outcome == 'success' && matrix.shard == 0
+        if: always() && steps.build.outcome == 'success' && matrix.runner == 0
         uses: actions/cache/save@v6
         with:
           path: |
@@ -165,9 +160,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: e2e-logs-${{ matrix.shard }}
+          name: repro-${{ matrix.runner }}
           path: |
-            .build/ci/logs
-            .build/e2e/report
+            .build/ci/repro
+            .build/wasm/*.symbols
           retention-days: 7
           if-no-files-found: ignore
