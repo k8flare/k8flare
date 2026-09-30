@@ -11,6 +11,7 @@ import (
 	"github.com/emicklei/go-restful/v3"
 	admit "github.com/k8flare/k8flare/packages/apiserver-admit"
 	auth "github.com/k8flare/k8flare/packages/apiserver-auth"
+	authz "github.com/k8flare/k8flare/packages/apiserver-authz"
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	"github.com/k8flare/k8flare/packages/crdreconcile"
 	apiextensionshelpers "k8s.io/apiextensions-apiserver/pkg/apihelpers"
@@ -30,7 +31,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/managedfields"
 	"k8s.io/apiserver/pkg/admission"
-	"k8s.io/apiserver/pkg/authorization/authorizerfactory"
 	"k8s.io/apiserver/pkg/endpoints"
 	"k8s.io/apiserver/pkg/endpoints/discovery"
 	"k8s.io/apiserver/pkg/endpoints/handlers/negotiation"
@@ -91,6 +91,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	authorizer := authz.New(client)
 	crdREST, err := customresourcedefinition.NewREST(scheme, restOptions{client: client, codec: codecs.LegacyCodec(apiextensionsv1.SchemeGroupVersion)})
 	if err != nil {
 		return nil, err
@@ -119,6 +120,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 		EquivalentResourceRegistry: runtime.NewEquivalentResourceRegistry(),
 		TypeConverter:              crdConverter,
 		Admit:                      crdAdmit(cfg.Admission),
+		Authorizer:                 authorizer,
 		MinRequestTimeout:          30 * time.Minute,
 	}
 	if _, _, err := group.InstallREST(container); err != nil {
@@ -143,7 +145,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	crdHandler, err := apiextensionsapiserver.NewCustomResourceDefinitionHandler(
 		versionDiscovery, groupDiscovery, crdInformer, http.NotFoundHandler(), restOptions{client: client, codec: unstructured.UnstructuredJSONScheme},
 		crdAdmit(cfg.Admission), establishing, webhook.NewDefaultServiceResolver(), newConversionResolver(client, cfg.Tunnel, cfg.Outbound, cfg.Hooks).install(), 1,
-		authorizerfactory.NewAlwaysAllowAuthorizer(), 60*time.Second, 30*time.Minute, staticOpenAPISpec(), 3*1024*1024)
+		authorizer, 60*time.Second, 30*time.Minute, staticOpenAPISpec(), 3*1024*1024)
 	if err != nil {
 		return nil, err
 	}
