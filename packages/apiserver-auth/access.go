@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
@@ -98,7 +100,7 @@ func (a Access) key(tok *jwt.Token) (any, error) {
 	if kid == "" {
 		return nil, fmt.Errorf("missing kid")
 	}
-	return lookupAccessKey(a.client(), accessIssuer(a.Team), kid)
+	return lookupKey(a.client(), accessIssuer(a.Team)+"/cdn-cgi/access/certs", kid)
 }
 
 func (a Access) client() *http.Client {
@@ -125,6 +127,9 @@ type jwk struct {
 	Kty string `json:"kty"`
 	N   string `json:"n"`
 	E   string `json:"e"`
+	Crv string `json:"crv"`
+	X   string `json:"x"`
+	Y   string `json:"y"`
 }
 
 type jwksEntry struct {
@@ -137,9 +142,9 @@ var (
 	jwksCache = map[string]jwksEntry{}
 )
 
-func lookupAccessKey(client *http.Client, iss, kid string) (any, error) {
+func lookupKey(client *http.Client, jwksURL, kid string) (any, error) {
 	jwksMu.Lock()
-	entry, ok := jwksCache[iss]
+	entry, ok := jwksCache[jwksURL]
 	if ok && time.Now().Before(entry.expires) {
 		key, found := entry.keys[kid]
 		jwksMu.Unlock()
@@ -149,12 +154,12 @@ func lookupAccessKey(client *http.Client, iss, kid string) (any, error) {
 		return key, nil
 	}
 	jwksMu.Unlock()
-	keys, err := fetchJWKS(client, iss)
+	keys, err := fetchJWKS(client, jwksURL)
 	if err != nil {
 		return nil, err
 	}
 	jwksMu.Lock()
-	jwksCache[iss] = jwksEntry{keys: keys, expires: time.Now().Add(10 * time.Minute)}
+	jwksCache[jwksURL] = jwksEntry{keys: keys, expires: time.Now().Add(10 * time.Minute)}
 	key, found := keys[kid]
 	jwksMu.Unlock()
 	if !found {
@@ -163,8 +168,8 @@ func lookupAccessKey(client *http.Client, iss, kid string) (any, error) {
 	return key, nil
 }
 
-func fetchJWKS(client *http.Client, iss string) (map[string]any, error) {
-	resp, err := client.Get(iss + "/cdn-cgi/access/certs")
+func fetchJWKS(client *http.Client, jwksURL string) (map[string]any, error) {
+	resp, err := client.Get(jwksURL)
 	if err != nil {
 		return nil, err
 	}
@@ -179,14 +184,23 @@ func fetchJWKS(client *http.Client, iss string) (map[string]any, error) {
 	}
 	keys := map[string]any{}
 	for _, k := range set.Keys {
-		if k.Kty != "RSA" || k.Kid == "" {
+		if k.Kid == "" {
 			continue
 		}
-		pub, err := rsaPublic(k.N, k.E)
-		if err != nil {
-			return nil, err
+		switch k.Kty {
+		case "RSA":
+			pub, err := rsaPublic(k.N, k.E)
+			if err != nil {
+				return nil, err
+			}
+			keys[k.Kid] = pub
+		case "EC":
+			pub, err := ecPublic(k.Crv, k.X, k.Y)
+			if err != nil {
+				return nil, err
+			}
+			keys[k.Kid] = pub
 		}
-		keys[k.Kid] = pub
 	}
 	return keys, nil
 }
@@ -208,4 +222,31 @@ func rsaPublic(nB64, eB64 string) (*rsa.PublicKey, error) {
 		return nil, fmt.Errorf("invalid exponent")
 	}
 	return &rsa.PublicKey{N: new(big.Int).SetBytes(nBytes), E: eInt}, nil
+}
+
+func ecPublic(crv, xB64, yB64 string) (*ecdsa.PublicKey, error) {
+	var curve elliptic.Curve
+	switch crv {
+	case "P-256":
+		curve = elliptic.P256()
+	case "P-384":
+		curve = elliptic.P384()
+	case "P-521":
+		curve = elliptic.P521()
+	default:
+		return nil, fmt.Errorf("unsupported curve %q", crv)
+	}
+	xBytes, err := base64.RawURLEncoding.DecodeString(xB64)
+	if err != nil {
+		return nil, err
+	}
+	yBytes, err := base64.RawURLEncoding.DecodeString(yB64)
+	if err != nil {
+		return nil, err
+	}
+	pub := &ecdsa.PublicKey{Curve: curve, X: new(big.Int).SetBytes(xBytes), Y: new(big.Int).SetBytes(yBytes)}
+	if !curve.IsOnCurve(pub.X, pub.Y) {
+		return nil, fmt.Errorf("point is not on the curve")
+	}
+	return pub, nil
 }

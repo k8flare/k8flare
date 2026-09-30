@@ -163,7 +163,8 @@ CoreDNS, and nothing else from the platform.
 ## Cloudflare features
 
 - **Access sign-in.** `kubectl` authenticates through Cloudflare Access;
-  Access groups map to Kubernetes groups for RBAC.
+  Access groups map to Kubernetes groups for RBAC. A `kubectl` exec
+  credential plugin running `cloudflared access token` supplies the token.
 - **Workers as controllers.** Annotate a CRD with
   `k8flare.io/controller: <worker>` and changes to its resources are
   delivered to that Worker, which reconciles through the Kubernetes

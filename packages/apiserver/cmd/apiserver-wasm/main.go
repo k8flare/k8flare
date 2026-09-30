@@ -6,10 +6,15 @@ import (
 	"net/http"
 
 	"github.com/k8flare/k8flare/packages/apiserver"
+	auth "github.com/k8flare/k8flare/packages/apiserver-auth"
 	bridge "github.com/k8flare/k8flare/packages/worker-bridge"
 )
 
 func main() {
+	requiredClaims, err := auth.ParseRequiredClaims(bridge.Getenv("OIDC_REQUIRED_CLAIMS"))
+	if err != nil {
+		panic(err)
+	}
 	handler, err := apiserver.NewHandler(apiserver.Config{
 		Kine:               &http.Client{Transport: bridge.BindingTransport{Name: "STORAGE"}},
 		AdminToken:         bridge.Getenv("ADMIN_TOKEN"),
@@ -26,7 +31,16 @@ func main() {
 		AccessAUD:          bridge.Getenv("ACCESS_AUD"),
 		AccessGroupsClaim:  bridge.Getenv("ACCESS_GROUPS_CLAIM"),
 		AccessGroupsPrefix: bridge.Getenv("ACCESS_GROUPS_PREFIX"),
-		ClusterUID:         bridge.Getenv("CLUSTER_UID"),
+		OIDC: auth.OIDC{
+			IssuerURL:      bridge.Getenv("OIDC_ISSUER_URL"),
+			ClientID:       bridge.Getenv("OIDC_CLIENT_ID"),
+			UsernameClaim:  bridge.Getenv("OIDC_USERNAME_CLAIM"),
+			UsernamePrefix: bridge.Getenv("OIDC_USERNAME_PREFIX"),
+			GroupsClaim:    bridge.Getenv("OIDC_GROUPS_CLAIM"),
+			GroupsPrefix:   bridge.Getenv("OIDC_GROUPS_PREFIX"),
+			RequiredClaims: requiredClaims,
+		},
+		ClusterUID: bridge.Getenv("CLUSTER_UID"),
 
 		SecretsEncryptionKeys: bridge.Getenv("SECRETS_ENCRYPTION_KEYS"),
 	})
