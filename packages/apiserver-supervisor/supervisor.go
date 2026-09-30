@@ -1,10 +1,14 @@
 package supervisor
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/subtle"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
 	"net"
@@ -179,6 +183,50 @@ func (s *Supervisor) caPEM(w http.ResponseWriter, r *http.Request, name string) 
 	}
 	w.Header().Set("Content-Type", "application/x-pem-file")
 	_, _ = w.Write(ca.certPEM)
+}
+
+func (s *Supervisor) KubeletClient(w http.ResponseWriter, r *http.Request) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{}, key)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	csr, err := x509.ParseCertificateRequest(csrDER)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	clientCA, err := s.vault.ca(r.Context(), "client-ca")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	cert, err := clientCA.sign(csr, clientCertTemplate(user.APIServerUser, user.SystemPrivilegedGroup))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	serverCA, err := s.vault.CAPEM(r.Context(), "server-ca")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"cert": string(cert),
+		"key":  string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})),
+		"ca":   string(serverCA),
+	})
 }
 
 // New returns the supervisor for a cluster whose agents join with joinToken.

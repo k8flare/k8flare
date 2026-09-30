@@ -127,7 +127,9 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	mux.Handle("/openapi/v3", openAPIV3Root(cfg))
 	mux.Handle("/openapi/v3/", openAPIV3Router(cfg))
 	root := http.NewServeMux()
-	supervisor.New(v, cfg.JoinToken).Register(root)
+	kubeletSupervisor := supervisor.New(v, cfg.JoinToken)
+	mux.HandleFunc("/internal/kubelet-client", kubeletSupervisor.KubeletClient)
+	kubeletSupervisor.Register(root)
 	root.Handle("/", auth.WithAuth(auth.WithRequestInfo(auth.WithAuthorization(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-K8flare-Stream-Locate") == "1" {
 			edgehost.LocateStream(w, r, client, cfg.Admission)

@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -224,7 +225,11 @@ func startKubeletStream(rawURL string, header http.Header, send js.Value, onErr 
 		return
 	}
 	kubeletPath, embeddedQuery := splitEmbeddedQuery(kubeletPath)
-	tlsConfig, bearer := kubeletCredentials()
+	tlsConfig, err := kubeletCredentials()
+	if err != nil {
+		failUpgrade(onErr, err.Error())
+		return
+	}
 	dial := server.Dialer(nodeName)
 	d := websocket.Dialer{}
 	if proto := header.Get("Sec-WebSocket-Protocol"); proto != "" {
@@ -244,9 +249,6 @@ func startKubeletStream(rawURL string, header http.Header, send js.Value, onErr 
 	println("kubelet stream", kubeletPath, "q=", rawQuery)
 	kubeURL := &url.URL{Scheme: "wss", Host: "127.0.0.1:10250", Path: kubeletPath, RawQuery: rawQuery}
 	reqHeader := http.Header{}
-	if bearer != "" {
-		reqHeader.Set("Authorization", "Bearer "+bearer)
-	}
 	d.NetDialTLSContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
 		raw, err := dial(ctx, network, "127.0.0.1:10250")
 		if err != nil {
@@ -316,15 +318,11 @@ func handler() http.Handler {
 
 func kubeletProxy() http.Handler {
 	target := &url.URL{Scheme: "https", Host: "127.0.0.1:10250"}
-	tlsConfig, bearer := kubeletCredentials()
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
 			pr.Out.URL.Path = pr.In.URL.Path
 			pr.Out.URL.RawPath = ""
-			if bearer != "" {
-				pr.Out.Header.Set("Authorization", "Bearer "+bearer)
-			}
 		},
 		FlushInterval: -1,
 	}
@@ -343,6 +341,11 @@ func kubeletProxy() http.Handler {
 			r.URL.RawQuery = embeddedQuery
 		}
 		r.URL.RawQuery = kubeletStreamQuery(r.URL.RawQuery)
+		tlsConfig, err := kubeletCredentials()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
 		dial := server.Dialer(nodeName)
 		proxy.Transport = &http.Transport{
 			DialTLSContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
@@ -495,19 +498,21 @@ func splitEmbeddedQuery(p string) (path, query string) {
 	return path, q
 }
 
-func kubeletCredentials() (*tls.Config, string) {
-	certPEM := bridge.Getenv("KUBELET_CLIENT_CERT")
-	keyPEM := bridge.Getenv("KUBELET_CLIENT_KEY")
+func kubeletCredentials() (*tls.Config, error) {
+	return kubeletTLSConfig(bridge.Getenv("KUBELET_CLIENT_CERT"), bridge.Getenv("KUBELET_CLIENT_KEY"), bridge.Getenv("KUBELET_CA"))
+}
+
+func kubeletTLSConfig(certPEM, keyPEM, caPEM string) (*tls.Config, error) {
 	if certPEM == "" || keyPEM == "" {
-		return &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"http/1.1"}}, bridge.Getenv("ADMIN_TOKEN")
+		return nil, errors.New("kubelet client certificate is not configured")
 	}
 	cert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
 	if err != nil {
-		return &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"http/1.1"}}, bridge.Getenv("ADMIN_TOKEN")
+		return nil, err
 	}
 	pool := x509.NewCertPool()
-	if caPEM := bridge.Getenv("KUBELET_CA"); caPEM != "" {
-		pool.AppendCertsFromPEM([]byte(caPEM))
+	if !pool.AppendCertsFromPEM([]byte(caPEM)) {
+		return nil, errors.New("kubelet serving CA is not configured")
 	}
-	return &tls.Config{Certificates: []tls.Certificate{cert}, RootCAs: pool, NextProtos: []string{"http/1.1"}}, ""
+	return &tls.Config{Certificates: []tls.Certificate{cert}, RootCAs: pool, ServerName: "127.0.0.1", NextProtos: []string{"http/1.1"}}, nil
 }
