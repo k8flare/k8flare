@@ -186,6 +186,12 @@ func (s *Server) ServeConn(clientKey string, conn wsConn) error {
 				patch("", "iEvicted, jEvicted := eviction.PodIsEvicted(o[i].Status), eviction.PodIsEvicted(o[j].Status)",
 					`iEvicted, jEvicted := o[i].Status.Phase == v1.PodFailed && o[i].Status.Reason == "Evicted", o[j].Status.Phase == v1.PodFailed && o[j].Status.Reason == "Evicted"`),
 			}),
+			patch("pkg/controller/tainteviction/timed_workers.go",
+				"\t\"k8s.io/klog/v2\"\n",
+				"\t\"k8s.io/client-go/util/workqueue\"\n\t\"k8s.io/klog/v2\"\n"),
+			patch("pkg/controller/tainteviction/timed_workers.go",
+				"\tworker.Timer = clock.AfterFunc(delay, wrapper)\n",
+				"\tworker.Timer = clock.AfterFunc(delay, wrapper)\n\tworkqueue.ObserveDelay(delay)\n"),
 		},
 	},
 	{
@@ -209,6 +215,18 @@ func (s *Server) ServeConn(clientKey string, conn wsConn) error {
 			"util/certificate/csr/csr.go",
 		},
 		ops: []op{
+			patch("util/workqueue/delaying_queue.go",
+				"\tq.metrics.retry()\n",
+				"\tq.metrics.retry()\n\tObserveDelay(duration)\n"),
+			appendText("util/workqueue/delaying_queue.go", `
+var DelayObserver func(delay time.Duration)
+
+func ObserveDelay(delay time.Duration) {
+	if delay > 0 && DelayObserver != nil {
+		DelayObserver(delay)
+	}
+}
+`),
 			replaceJS("kubernetes/scheme/register.go", "client-go/register.go"),
 			replaceJS("kubernetes/clientset.go", "client-go/kubernetes/clientset.go"),
 			replaceJS("informers/factory.go", "client-go/informers/factory.go"),

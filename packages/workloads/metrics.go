@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"k8s.io/client-go/util/workqueue"
 )
@@ -21,8 +22,51 @@ type activity struct {
 
 var work = &activity{queues: map[string]*counters{}}
 
+var pending = &deadlines{}
+
 func init() {
 	workqueue.SetProvider(work)
+	workqueue.DelayObserver = pending.add
+}
+
+type deadlines struct {
+	mu sync.Mutex
+	at []time.Time
+}
+
+func (d *deadlines) add(delay time.Duration) {
+	now := time.Now()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	kept := d.at[:0]
+	for _, t := range d.at {
+		if t.After(now) {
+			kept = append(kept, t)
+		}
+	}
+	d.at = append(kept, now.Add(delay))
+}
+
+func (d *deadlines) reset() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.at = nil
+}
+
+func (d *deadlines) next() (time.Duration, bool) {
+	now := time.Now()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var earliest time.Time
+	for _, t := range d.at {
+		if t.After(now) && (earliest.IsZero() || t.Before(earliest)) {
+			earliest = t
+		}
+	}
+	if earliest.IsZero() {
+		return 0, false
+	}
+	return earliest.Sub(now), true
 }
 
 func (a *activity) of(name string) *counters {

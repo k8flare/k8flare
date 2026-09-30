@@ -505,6 +505,7 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 	}
 
 	work.reset(workloadQueue)
+	pending.reset()
 	factory := informers.NewSharedInformerFactory(client, 0)
 	result := &Result{Objects: map[string]int{}}
 	src := sources(client)
@@ -591,6 +592,9 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 	}
 	result.Drained = drain(workloadQueue, drainFor, grace, deadline)
 	took("drain")
+	if next, ok := pending.next(); ok {
+		result.NextMs = soonest(result.NextMs, next)
+	}
 	cancel()
 	stopping := time.NewTimer(shutdownGrace)
 	defer stopping.Stop()
