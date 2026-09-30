@@ -89,6 +89,19 @@ are verified at the edge with mutual TLS against the cluster's client
 CA and passed to the Worker, so nodes authenticate as `system:node:<name>`
 with certificates, not shared secrets.
 
+Set up the hostname once. `k8flare edge-certificate --hosts <cluster-host>`
+issues a serving certificate from the server CA; upload it with
+`bundle_method: user_defined` (a private CA is accepted only in that mode).
+Upload the client CA it also writes as a Cloudflare mTLS CA (bring your own
+CA, Enterprise) and associate it with the hostname. Do not add the WAF rule
+that blocks requests without a verified certificate: bearer-token clients
+and nodes that have not yet been issued a certificate present none. The
+Worker trusts only `request.cf.tlsClientAuth`, and the apiserver verifies
+the forwarded certificate against the client CA again. The agent needs
+`--disable-apiserver-lb` (or `disable-apiserver-lb: true` in its config),
+because the local load balancer makes the agent dial `127.0.0.1`, which
+sends no SNI for the edge to route on.
+
 The agent reaches the kubelet API through a remotedialer tunnel held by
 a per-node Durable Object, so nodes need no public address or inbound
 port. `kubectl logs`, `exec`, `attach`, and `port-forward` work over
@@ -120,8 +133,9 @@ CoreDNS, and nothing else from the platform.
 ## Operations
 
 - **Tokens.** Create, list, rotate, and revoke join tokens, including
-  short-lived bootstrap tokens, from `k8flare token`. A created token is
-  `<id>.<secret>`, optionally expires (`--ttl`, default 24h, `0` never), is
+  short-lived bootstrap tokens, from `k8flare token`. A created token is printed as
+  `K10<server CA hash>::<id>.<secret>`, the string `K3S_TOKEN` takes; it
+  optionally expires (`--ttl`, default 24h, `0` never), is
   stored hashed in the vault, and is accepted next to `JOIN_TOKEN`.
 - **Certificates.** Leaf certificates rotate automatically before
   expiry. The server and client CAs rotate on demand without
