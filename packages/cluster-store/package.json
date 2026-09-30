@@ -7,6 +7,7 @@
     ".": "./src/cluster.ts"
   },
   "scripts": {
-    "check": "cd ../.. && pnpm exec tsc --noEmit"
+    "check": "cd ../.. && pnpm exec tsc --noEmit",
+    "test": "node --import ./test/register.mjs --test test/*.test.ts"
   }
 }

@@ -1,11 +1,17 @@
 import { DurableObject } from "cloudflare:workers";
+import { compactionTarget, nextAlarmAt, snapshotSchedule, snapshotsToPrune, type SnapshotVars } from "./schedule.ts";
 
 // Cluster holds one cluster's state: a kine-style revisioned key-value log
 // in SQLite. Every write appends a row; the row id is the revision. A
 // bootstrap row makes the first revision 1, as in kine, because a resource
 // version of 0 is illegal for a list. Watchers are hibernatable WebSockets
 // tagged with the key prefix they asked for.
-const RETAINED_REVISIONS = 1000;
+const COMPACT_RETAIN_MS = 300_000;
+const COMPACT_INTERVAL_MS = 300_000;
+const MAX_RETAINED_REVISIONS = 100_000;
+const COMPACT_SLACK_REVISIONS = 10_000;
+const PROGRESS_INTERVAL_MS = 30_000;
+const SNAPSHOT_RETRY_MS = 600_000;
 const COMPACT_BATCH = 200;
 const WATCH_LEASE_MS = 360_000;
 const NODE_LEASE_PREFIX = "/registry/leases/kube-node-lease/";
@@ -55,8 +61,12 @@ export class Cluster extends DurableObject<Env> {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         deleted INTEGER NOT NULL DEFAULT 0,
-        value BLOB
+        value BLOB,
+        ts INTEGER NOT NULL DEFAULT 0
       )`);
+      if (!ctx.storage.sql.exec("PRAGMA table_info(kine)").toArray().some((c) => c.name === "ts")) {
+        ctx.storage.sql.exec("ALTER TABLE kine ADD COLUMN ts INTEGER NOT NULL DEFAULT 0");
+      }
       ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS kine_name_id ON kine (name, id)`);
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)`);
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, target TEXT NOT NULL, rev INTEGER NOT NULL, key TEXT NOT NULL, type TEXT NOT NULL)`);
@@ -72,6 +82,7 @@ export class Cluster extends DurableObject<Env> {
       this.sweepNamespaces();
       this.seedMetrics();
       this.seedAddons();
+      ctx.waitUntil(this.armAlarm());
     });
   }
 
@@ -133,25 +144,44 @@ export class Cluster extends DurableObject<Env> {
     return rows.length === 0 ? 0 : (rows[0].value as number);
   }
 
-  private compactBefore(target: number): void {
-    const removed = this.ctx.storage.sql.exec(
-      `DELETE FROM kine WHERE id IN (
-         SELECT old.id FROM kine AS old
-         WHERE old.id <= ?
-           AND (
-             old.deleted = 1
-             OR EXISTS (SELECT 1 FROM kine AS newer WHERE newer.name = old.name AND newer.id > old.id)
-           )
-         LIMIT ?
-       )`,
-      target,
-      COMPACT_BATCH,
-    ).rowsWritten;
-    if (removed >= COMPACT_BATCH) return;
-    this.ctx.storage.sql.exec(
-      "INSERT INTO meta (key, value) VALUES ('compact_revision', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-      target,
-    );
+  private setMeta(key: string, value: number): void {
+    this.ctx.storage.sql.exec("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", key, value);
+  }
+
+  private dueAt(key: string, intervalMs: number): number {
+    const rows = this.ctx.storage.sql.exec("SELECT value FROM meta WHERE key = ?", key).toArray();
+    if (rows.length > 0) return rows[0].value as number;
+    const due = Date.now() + intervalMs;
+    this.setMeta(key, due);
+    return due;
+  }
+
+  private compactTo(target: number): void {
+    if (target <= this.compactRevision()) return;
+    this.setMeta("compact_revision", target);
+    let removed: number;
+    do {
+      removed = this.ctx.storage.sql.exec(
+        `DELETE FROM kine WHERE id IN (
+           SELECT old.id FROM kine AS old
+           WHERE old.id <= ?1
+             AND (
+               old.deleted = 1
+               OR EXISTS (SELECT 1 FROM kine AS newer WHERE newer.name = old.name AND newer.id > old.id AND newer.id <= ?1)
+             )
+           ORDER BY old.id ASC
+           LIMIT ?2
+         )`,
+        target,
+        COMPACT_BATCH,
+      ).rowsWritten;
+    } while (removed >= COMPACT_BATCH);
+  }
+
+  private compactByTime(now: number): void {
+    const newest = this.ctx.storage.sql.exec("SELECT id FROM kine WHERE ts <= ? ORDER BY id DESC LIMIT 1", now - COMPACT_RETAIN_MS).toArray();
+    this.compactTo(compactionTarget({ revision: this.revision(), timeTarget: newest.length === 0 ? 0 : (newest[0].id as number), maxRetained: MAX_RETAINED_REVISIONS }));
+    this.setMeta("compact_due", now + COMPACT_INTERVAL_MS);
   }
 
   private current(name: string): KV | null {
@@ -246,29 +276,14 @@ export class Cluster extends DurableObject<Env> {
         return Response.json({ ok: true });
       }
       case "POST /snapshot": {
-        const bucket = (this.env as Env & { PODS_R2?: R2Bucket }).PODS_R2;
+        const bucket = this.snapshotBucket();
         if (!bucket) return new Response("r2 unbound", { status: 503 });
-        const rows = this.ctx.storage.sql
-          .exec(
-            `SELECT kv.id, kv.name, kv.deleted, kv.value FROM kine AS kv
-             JOIN (SELECT MAX(id) AS id FROM kine GROUP BY name) AS latest ON latest.id = kv.id
-             WHERE kv.deleted = 0 AND substr(kv.name, 1, 7) <> '/vault/' ORDER BY kv.name ASC`,
-          )
-          .toArray()
-          .map(rowToKV);
-        const revision = this.revision();
-        const taken = new Date().toISOString();
-        const cluster = (this.env as Env).CLUSTER_UID || "default";
-        const object = `clusters/${cluster}/snapshots/${taken.replace(/[:.]/g, "-")}.json`;
-        const body = JSON.stringify({
-          schemaVersion: this.schemaVersion(),
-          revision,
-          taken,
-          cluster,
-          keys: rows.map(encodeKV),
-        });
-        await bucket.put(object, body, { httpMetadata: { contentType: "application/json" } });
-        return Response.json({ ok: true, key: object, revision, count: rows.length, bytes: body.length });
+        return Response.json(await this.takeSnapshot(bucket, false));
+      }
+      case "POST /progress": {
+        this.restoreWatchers();
+        this.sendProgressToAll();
+        return Response.json({ ok: true, watchers: this.watchers.size });
       }
       case "POST /restore": {
         const at = parseRestoreTime(url.searchParams.get("to") ?? "");
@@ -350,13 +365,14 @@ export class Cluster extends DurableObject<Env> {
   private insert(name: string, deleted: number, value: Uint8Array, prev: KV | null): number {
     const rev = this.ctx.storage.sql
       .exec(
-        "INSERT INTO kine (name, deleted, value) VALUES (?, ?, ?) RETURNING id",
+        "INSERT INTO kine (name, deleted, value, ts) VALUES (?, ?, ?, ?) RETURNING id",
         name,
         deleted,
         value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength),
+        Date.now(),
       )
       .one().id as number;
-    if (rev - this.compactRevision() >= RETAINED_REVISIONS) this.compactBefore(rev - RETAINED_REVISIONS);
+    if (rev - this.compactRevision() >= MAX_RETAINED_REVISIONS + COMPACT_SLACK_REVISIONS) this.compactTo(rev - MAX_RETAINED_REVISIONS);
     const type = deleted ? "deleted" : prev ? "modified" : "created";
     this.record(name, type, rev, value, prev);
     this.restoreWatchers();
@@ -413,8 +429,9 @@ export class Cluster extends DurableObject<Env> {
     this.restoreWatchers();
     this.expireWatchers();
     this.watchers.set(server, watcher);
+    if (this.progressDue <= Date.now()) this.progressDue = Date.now() + PROGRESS_INTERVAL_MS;
     this.ctx.waitUntil(this.flushOutbox());
-    this.ctx.waitUntil(this.armWatchLease());
+    this.ctx.waitUntil(this.armAlarm());
     if (initial) {
       for (const kv of this.latest(watcher.prefix, watcher.exact, watcher.prefix, -1)) {
         server.send(JSON.stringify({ rev: kv.modRevision, type: "created", key: kv.key, value: toBase64(kv.value), prev: "" }));
@@ -423,8 +440,8 @@ export class Cluster extends DurableObject<Env> {
     } else {
       const rows = this.ctx.storage.sql
         .exec(
-          `SELECT id, name, deleted, value, prev FROM (
-             SELECT id, name, deleted, value, LAG(value) OVER (PARTITION BY name ORDER BY id) AS prev
+          `SELECT id, name, deleted, value, prev, prev_deleted FROM (
+             SELECT id, name, deleted, value, LAG(value) OVER (PARTITION BY name ORDER BY id) AS prev, LAG(deleted) OVER (PARTITION BY name ORDER BY id) AS prev_deleted
              FROM kine WHERE name >= ? AND name < ?)
            WHERE id > ? ORDER BY id ASC`,
           watcher.prefix,
@@ -434,7 +451,7 @@ export class Cluster extends DurableObject<Env> {
         .toArray();
       for (const r of rows) {
         const kv = rowToKV(r);
-        const type = r.deleted ? "deleted" : r.prev ? "modified" : "created";
+        const type = r.deleted ? "deleted" : r.prev_deleted === 0 ? "modified" : "created";
         const prev = type === "modified" ? toBase64(new Uint8Array(r.prev as ArrayBuffer)) : "";
         server.send(JSON.stringify({ rev: kv.modRevision, type, key: kv.key, value: toBase64(kv.value), prev }));
       }
@@ -462,27 +479,93 @@ export class Cluster extends DurableObject<Env> {
     }
   }
 
-  async alarm(): Promise<void> {
-    this.restoreWatchers();
-    this.expireWatchers();
-    await this.armWatchLease();
+  private progressDue = 0;
+
+  private sendProgressToAll(): void {
+    const rev = this.revision();
+    for (const ws of this.watchers.keys()) this.sendProgress(ws, rev);
+    this.progressDue = Date.now() + PROGRESS_INTERVAL_MS;
   }
 
-  private async armWatchLease(): Promise<void> {
+  async alarm(): Promise<void> {
+    const now = Date.now();
     this.restoreWatchers();
-    let next = 0;
-    for (const w of this.watchers.values()) {
-      const due = w.openedAt + WATCH_LEASE_MS;
-      if (next === 0 || due < next) next = due;
-    }
-    if (next === 0) {
-      await this.ctx.storage.deleteAlarm();
-      return;
-    }
-    const soonest = Math.max(next, Date.now() + 1000);
+    this.expireWatchers();
+    if (this.watchers.size > 0 && now >= this.progressDue) this.sendProgressToAll();
+    if (now >= this.dueAt("compact_due", COMPACT_INTERVAL_MS)) this.compactByTime(now);
+    await this.takeScheduledSnapshot(now);
+    await this.armAlarm();
+  }
+
+  private async armAlarm(): Promise<void> {
+    this.restoreWatchers();
+    const schedule = snapshotSchedule(this.env as Env & SnapshotVars);
+    const next = nextAlarmAt(
+      [
+        ...[...this.watchers.values()].map((w) => w.openedAt + WATCH_LEASE_MS),
+        this.watchers.size > 0 ? this.progressDue : null,
+        this.dueAt("compact_due", COMPACT_INTERVAL_MS),
+        schedule && this.snapshotBucket() ? this.dueAt("snapshot_due", schedule.intervalMs) : null,
+      ],
+      Date.now(),
+    );
     const existing = await this.ctx.storage.getAlarm();
-    if (existing === null || existing > soonest) {
-      await this.ctx.storage.setAlarm(soonest);
+    if (next !== null && (existing === null || existing > next)) {
+      await this.ctx.storage.setAlarm(next);
+    }
+  }
+
+  private snapshotBucket(): R2Bucket | undefined {
+    return (this.env as Env & { PODS_R2?: R2Bucket }).PODS_R2;
+  }
+
+  private snapshotPrefix(): string {
+    return `clusters/${(this.env as Env).CLUSTER_UID || "default"}/snapshots/`;
+  }
+
+  private async takeSnapshot(bucket: R2Bucket, scheduled: boolean) {
+    const rows = this.ctx.storage.sql
+      .exec(
+        `SELECT kv.id, kv.name, kv.deleted, kv.value FROM kine AS kv
+         JOIN (SELECT MAX(id) AS id FROM kine GROUP BY name) AS latest ON latest.id = kv.id
+         WHERE kv.deleted = 0 AND substr(kv.name, 1, 7) <> '/vault/' ORDER BY kv.name ASC`,
+      )
+      .toArray()
+      .map(rowToKV);
+    const revision = this.revision();
+    const taken = new Date().toISOString();
+    const cluster = (this.env as Env).CLUSTER_UID || "default";
+    const object = `${this.snapshotPrefix()}${scheduled ? "scheduled-" : ""}${taken.replace(/[:.]/g, "-")}.json`;
+    const body = JSON.stringify({
+      schemaVersion: this.schemaVersion(),
+      revision,
+      taken,
+      cluster,
+      keys: rows.map(encodeKV),
+    });
+    await bucket.put(object, body, { httpMetadata: { contentType: "application/json" } });
+    return { ok: true, key: object, revision, count: rows.length, bytes: body.length };
+  }
+
+  private async takeScheduledSnapshot(now: number): Promise<void> {
+    const schedule = snapshotSchedule(this.env as Env & SnapshotVars);
+    const bucket = this.snapshotBucket();
+    if (!schedule || !bucket || now < this.dueAt("snapshot_due", schedule.intervalMs)) return;
+    try {
+      await this.takeSnapshot(bucket, true);
+      const keys: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await bucket.list({ prefix: `${this.snapshotPrefix()}scheduled-`, cursor });
+        keys.push(...page.objects.map((o) => o.key));
+        cursor = page.truncated ? page.cursor : undefined;
+      } while (cursor);
+      const stale = snapshotsToPrune(keys, `${this.snapshotPrefix()}scheduled-`, schedule.retention);
+      if (stale.length > 0) await bucket.delete(stale);
+      this.setMeta("snapshot_due", Date.now() + schedule.intervalMs);
+    } catch (err) {
+      console.error("scheduled snapshot:", err);
+      this.setMeta("snapshot_due", Date.now() + Math.min(SNAPSHOT_RETRY_MS, schedule.intervalMs));
     }
   }
 
@@ -609,7 +692,7 @@ export class Cluster extends DurableObject<Env> {
   async webSocketClose(ws: WebSocket): Promise<void> {
     this.watchers.delete(ws);
     closeQuietly(ws, "peer");
-    this.ctx.waitUntil(this.armWatchLease());
+    this.ctx.waitUntil(this.armAlarm());
   }
 
   async webSocketError(ws: WebSocket): Promise<void> {
