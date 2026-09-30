@@ -48,10 +48,13 @@ and forwards identity over a Service Binding. Do not expose the `APIGroups`,
 `CustomResources`, `Workloads`, `Scheduler`, `GarbageCollector`, or
 `Storage` entrypoints on the public Internet.
 
-**Kubelet access defaults to insecure.** If `KUBELET_CLIENT_CERT` /
-`KUBELET_CLIENT_KEY` are unset, logs and exec fall back to
-`InsecureSkipVerify` and `ADMIN_TOKEN`. Set the kubelet client material
-before any real deployment.
+**Kubelet access uses a control-plane client certificate.** Logs and exec
+reach a kubelet with a `system:apiserver` (group `system:masters`) client
+certificate the control plane issues from its own client CA, and the
+kubelet's serving certificate is verified against the server CA. If
+`KUBELET_CLIENT_CERT`, `KUBELET_CLIENT_KEY` and `KUBELET_CA` are all set they
+are used instead. `ADMIN_TOKEN` is never sent to a kubelet, and there is no
+insecure fallback.
 
 **The default `*.workers.dev` URL is on the public Internet.** Protection
 is the strength and rotation of the three secrets. Cloudflare Access in

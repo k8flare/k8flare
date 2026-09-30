@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import "../../control-plane-worker/assets/wasm/wasm_exec.js";
+import { apiserverFetch } from "../../control-plane-worker/src/loader.ts";
 import nodeTunnelWasm from "../assets/node-tunnel.wasm";
 
 declare const Go: new () => {
@@ -26,6 +27,25 @@ interface Binding {
 
 function stringVar(env: Env, key: string): string {
   return (env as unknown as Record<string, string | undefined>)[key] ?? "";
+}
+
+async function kubeletCredentials(env: Env): Promise<Record<string, string>> {
+  const configured = {
+    KUBELET_CLIENT_CERT: stringVar(env, "KUBELET_CLIENT_CERT"),
+    KUBELET_CLIENT_KEY: stringVar(env, "KUBELET_CLIENT_KEY"),
+    KUBELET_CA: stringVar(env, "KUBELET_CA"),
+  };
+  if (configured.KUBELET_CLIENT_CERT && configured.KUBELET_CLIENT_KEY && configured.KUBELET_CA) return configured;
+  const resp = await apiserverFetch(
+    env,
+    new Request("https://apiserver.internal/internal/kubelet-client", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env.ADMIN_TOKEN}` },
+    }),
+  );
+  if (!resp.ok) throw new Error(`kubelet client credentials: ${resp.status}`);
+  const issued = (await resp.json()) as { cert: string; key: string; ca: string };
+  return { KUBELET_CLIENT_CERT: issued.cert, KUBELET_CLIENT_KEY: issued.key, KUBELET_CA: issued.ca };
 }
 
 type SockKind = { kind: "agent" | "stream" };
@@ -87,12 +107,12 @@ export class NodeTunnel extends DurableObject<Env> {
 
   private go(): Promise<Binding> {
     if (!this.goInstance) {
-      this.goInstance = instantiate({
-        ADMIN_TOKEN: this.env.ADMIN_TOKEN,
-        KUBELET_CLIENT_CERT: stringVar(this.env, "KUBELET_CLIENT_CERT"),
-        KUBELET_CLIENT_KEY: stringVar(this.env, "KUBELET_CLIENT_KEY"),
-        KUBELET_CA: stringVar(this.env, "KUBELET_CA"),
-      });
+      this.goInstance = kubeletCredentials(this.env)
+        .then((kubelet) => instantiate({ ADMIN_TOKEN: this.env.ADMIN_TOKEN, ...kubelet }))
+        .catch((err: unknown) => {
+          this.goInstance = null;
+          throw err;
+        });
     }
     return this.goInstance;
   }
