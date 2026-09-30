@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"flag"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -45,6 +46,7 @@ func main() {
 		Addr:              *listen,
 		Handler:           newProxy(server, pool),
 		ReadHeaderTimeout: 30 * time.Second,
+		ErrorLog:          log.New(io.Discard, "", 0),
 		TLSConfig:         &tls.Config{GetCertificate: store.get, MinVersion: tls.VersionTLS12},
 	}
 	go func() {
