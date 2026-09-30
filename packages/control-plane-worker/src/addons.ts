@@ -1,4 +1,5 @@
 import { loadWasmWorker } from "@k8flare/loader-kit";
+import { componentToken } from "./componenttoken.ts";
 
 const DEPLOY_TIMEOUT_MS = 120_000;
 
@@ -19,7 +20,7 @@ export async function deployAddons(env: ManifestsEnv): Promise<boolean> {
   try {
     const worker = await loadWasmWorker(env.LOADER, env.ASSETS, "addons", {
       APISERVER: env.APISERVER,
-      ADMIN_TOKEN: env.ADMIN_TOKEN,
+      API_TOKEN: await componentToken(env, "addons"),
       DISABLE: env.DISABLE ?? "",
     }, env.APISERVER);
     const resp = await worker.fetch("https://addons.internal/deploy", {

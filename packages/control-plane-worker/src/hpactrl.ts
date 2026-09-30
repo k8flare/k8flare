@@ -1,4 +1,5 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { componentToken } from "./componenttoken.ts";
 import { loadWasmWorker } from "@k8flare/loader-kit";
 
 export interface SyncResult {
@@ -11,7 +12,7 @@ export async function runSync(env: Env): Promise<SyncResult | null> {
   try {
     const worker = await loadWasmWorker(env.LOADER, env.ASSETS, "hpa", {
       APISERVER: env.APISERVER,
-      ADMIN_TOKEN: env.ADMIN_TOKEN,
+      API_TOKEN: await componentToken(env, "hpa"),
     }, env.APISERVER);
     const resp = await worker.fetch("https://hpa.internal/sync", { method: "POST", signal: AbortSignal.timeout(60_000) });
     const text = await resp.text();

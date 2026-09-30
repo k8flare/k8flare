@@ -92,7 +92,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	oidc := cfg.OIDC
 	oidc.HTTP = cfg.Outbound
 	sa := auth.ServiceAccountToken{HMAC: []byte(cfg.AdminToken), Objects: auth.NewServiceAccountObjects(auth.KineObjects{Client: client})}
-	tokens := union.New(auth.AdminToken(cfg.AdminToken), auth.ReadonlyToken(cfg.ReadonlyToken), auth.VaultToken{Vault: v}, auth.NodeToken{Vault: v}, sa, oidc, access)
+	tokens := union.New(auth.AdminToken(cfg.AdminToken), auth.ReadonlyToken(cfg.ReadonlyToken), auth.ComponentTokens{Key: []byte(cfg.AdminToken)}, auth.VaultToken{Vault: v}, auth.NodeToken{Vault: v}, sa, oidc, access)
 	authn := requnion.New(bearertoken.New(tokens), access)
 	authorizer := authz.New(client)
 	mux := http.NewServeMux()

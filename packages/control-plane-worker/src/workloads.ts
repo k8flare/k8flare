@@ -1,4 +1,5 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { componentToken } from "./componenttoken.ts";
 import { loadWasmWorker } from "@k8flare/loader-kit";
 import { Span, Trace } from "./otel";
 
@@ -85,7 +86,7 @@ export class Workloads extends WorkerEntrypoint<Env> {
   private async call<T>(path: string, timeoutMs = 120_000, body?: string, name = "workloads", parent?: Span): Promise<T | null> {
     const bindings: Record<string, unknown> = {
       APISERVER: this.env.APISERVER,
-      ADMIN_TOKEN: this.env.ADMIN_TOKEN,
+      API_TOKEN: await componentToken(this.env, "workloads"),
       STORAGE: this.env.STORAGE_SVC,
       CLUSTER_SERVER: (this.env as Env & { GATEWAY_URL?: string }).GATEWAY_URL || "https://api.k8flare.com",
     };

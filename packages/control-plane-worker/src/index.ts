@@ -16,7 +16,7 @@ export { APIGroups } from "./apigroups.ts";
 export { Scheduler } from "./scheduler.ts";
 export { Workloads } from "./workloads.ts";
 export { GarbageCollector } from "./gc.ts";
-export { APIServer } from "./apiserver.ts";
+export { HPAAPIServer, AttachDetachAPIServer } from "./apiserver.ts";
 export { Storage } from "./storage.ts";
 export { NodeTunnels } from "./nodetunnel.ts";
 export { Admission } from "./admission.ts";

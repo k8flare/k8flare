@@ -1,4 +1,5 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { componentToken } from "./componenttoken.ts";
 import { loadWasmWorker } from "@k8flare/loader-kit";
 
 export interface CollectResult {
@@ -13,7 +14,7 @@ export class GarbageCollector extends WorkerEntrypoint<Env> {
     const worker = await loadWasmWorker(this.env.LOADER, this.env.ASSETS, "gc", {
       APISERVER: this.env.APISERVER,
       STORAGE: this.env.STORAGE_SVC,
-      ADMIN_TOKEN: this.env.ADMIN_TOKEN,
+      API_TOKEN: await componentToken(this.env, "gc"),
     }, this.env.APISERVER);
     const resp = await worker.fetch("https://gc.internal/collect", { method: "POST" });
     const text = await resp.text();

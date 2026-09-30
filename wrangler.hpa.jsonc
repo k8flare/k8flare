@@ -12,7 +12,7 @@
   "worker_loaders": [{ "binding": "LOADER" }],
   "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"] }],
   "services": [
-    { "binding": "APISERVER", "service": "k8flare", "entrypoint": "APIServer" },
+    { "binding": "APISERVER", "service": "k8flare", "entrypoint": "HPAAPIServer" },
   ],
   "queues": {
     "consumers": [

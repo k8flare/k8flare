@@ -30,8 +30,8 @@ func init() {
 var nodeClusterRoles = []string{"system:node-proxier"}
 
 var (
-	bootstrapClusterRoles        = bootstrappolicy.ClusterRoles()
-	bootstrapClusterRoleBindings = bootstrappolicy.ClusterRoleBindings()
+	bootstrapClusterRoles        = append(bootstrappolicy.ClusterRoles(), bootstrappolicy.ControllerRoles()...)
+	bootstrapClusterRoleBindings = append(bootstrappolicy.ClusterRoleBindings(), bootstrappolicy.ControllerRoleBindings()...)
 	bootstrapNamespaceRoles      = bootstrappolicy.NamespaceRoles()
 	bootstrapNamespaceBindings   = bootstrappolicy.NamespaceRoleBindings()
 )

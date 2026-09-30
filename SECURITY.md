@@ -30,6 +30,16 @@ and `JOIN_TOKEN` are Worker-wide (`wrangler secret put`). A valid
 RBAC. `READONLY_TOKEN` is an authenticated user with no privileged group;
 it only sees what RBAC grants. There is no per-tenant vault.
 
+**Inner Workers do not hold `ADMIN_TOKEN`.** The front derives one token per
+component (`component:<name>:<HMAC-SHA256 of the name keyed by ADMIN_TOKEN>`)
+and loads each component with only its own. The scheduler authenticates as
+`system:kube-scheduler`; the garbage collector, HPA and attach/detach
+controllers as their upstream `kube-system` ServiceAccounts, so RBAC gives them
+the upstream `system:controller:*` roles and nothing more. Workloads, addons,
+admission and the webhook echo worker still run in `system:masters` under their
+own identities. Requests without credentials are `system:anonymous`, and RBAC
+decides what they see.
+
 **`JOIN_TOKEN` is nearly as powerful as admin for join.** It unlocks
 `/v1-k3s/*` (except `/v1-k3s/connect`). Kubelet CSRs require a registered
 node password. `client-kube-proxy.crt` and `client-k3s-controller.crt` are

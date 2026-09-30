@@ -10,5 +10,5 @@ import (
 )
 
 func main() {
-	bridge.Serve(hookecho.Handler(&http.Client{Transport: bridge.BindingTransport{Name: "APISERVER"}}, bridge.Getenv("ADMIN_TOKEN")))
+	bridge.Serve(hookecho.Handler(&http.Client{Transport: bridge.BindingTransport{Name: "APISERVER"}}, bridge.Getenv("API_TOKEN")))
 }
