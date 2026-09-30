@@ -107,7 +107,7 @@ sample_procs() {
 
 join_node() {
   local admin=$1 token join
-  if [ "${AGENT:-k3s}" = k8flare ]; then
+  if [ "${AGENT:-k8flare}" = k8flare ]; then
     join=$(sed -n 's/^JOIN_TOKEN=//p' .dev.vars)
     sudo install -m 0644 .build/devtls/server-ca.crt /usr/local/share/ca-certificates/k8flare-dev-ca.crt
     sudo update-ca-certificates >/dev/null
