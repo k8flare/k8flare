@@ -39,6 +39,7 @@ const serviceStoragePrefix = "/registry/services/"
 
 func init() {
 	registry.Customizers["services"] = func(store *registry.Store, deps registry.Deps) {
+		store.CreateStrategy = serviceCreateStrategy{store.CreateStrategy}
 		store.UpdateStrategy = serviceUpdateStrategy{store.UpdateStrategy}
 		assign := func(ctx context.Context, obj runtime.Object) error {
 			svc, ok := obj.(*corev1.Service)
@@ -184,6 +185,17 @@ func init() {
 		store.AfterDelete = func(obj runtime.Object, _ *metav1.DeleteOptions) {
 			releaseServiceIPs(context.Background(), deps, serviceOf(obj))
 		}
+	}
+}
+
+type serviceCreateStrategy struct{ rest.RESTCreateStrategy }
+
+func (s serviceCreateStrategy) PrepareForCreate(ctx context.Context, obj runtime.Object) {
+	if svc, ok := obj.(*corev1.Service); ok && svc.Spec.ClusterIP != "" && len(svc.Spec.ClusterIPs) == 0 {
+		svc.Spec.ClusterIPs = []string{svc.Spec.ClusterIP}
+	}
+	if s.RESTCreateStrategy != nil {
+		s.RESTCreateStrategy.PrepareForCreate(ctx, obj)
 	}
 }
 
