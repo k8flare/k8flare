@@ -203,7 +203,7 @@ export class Cluster extends DurableObject<Env> {
           .exec(
             `SELECT kv.id, kv.name, kv.deleted, kv.value FROM kine AS kv
              JOIN (SELECT MAX(id) AS id FROM kine GROUP BY name) AS latest ON latest.id = kv.id
-             WHERE kv.deleted = 0 ORDER BY kv.name ASC`,
+             WHERE kv.deleted = 0 AND substr(kv.name, 1, 7) <> '/vault/' ORDER BY kv.name ASC`,
           )
           .toArray()
           .map(rowToKV);
