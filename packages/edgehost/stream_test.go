@@ -44,6 +44,9 @@ func TestStreamProtocol(t *testing.T) {
 	if got := StreamProtocol("binary.k8s.io"); got != "binary.k8s.io" {
 		t.Fatal(got)
 	}
+	if got := StreamProtocol("SPDY/3.1+portforward.k8s.io"); got != "SPDY/3.1+portforward.k8s.io" {
+		t.Fatal(got)
+	}
 	if got := StreamProtocol(""); got != "" {
 		t.Fatal(got)
 	}
