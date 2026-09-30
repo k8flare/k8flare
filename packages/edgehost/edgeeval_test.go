@@ -215,11 +215,48 @@ func TestIngressOwnershipStatusAndTable(t *testing.T) {
 	}
 }
 
-func TestIngressWithoutHostPointsAtTheEdgeApex(t *testing.T) {
+func TestIngressWithoutHostAdvertisesNoAddress(t *testing.T) {
 	ing := ingressIn("bare", "k8flare")
 	ing.Spec.Rules[0].Host = ""
-	if got := ingressHostnames(ing); len(got) != 1 || got[0] != edgeApexHost {
+	if got := ingressHostnames(ing); len(got) != 0 {
 		t.Fatal(got)
+	}
+}
+
+func TestSecondPassWritesNothing(t *testing.T) {
+	st := edgeFixture()
+	st.Gateways[0].Spec.Listeners[0].AllowedRoutes.Namespaces.From = "All"
+	st.Routes = []gwRoute{routeIn("apps", "r", []string{"a.example.com"}, "infra", 80)}
+	own := ingClass{Meta: gwMeta{Name: "k8flare"}}
+	own.Spec.Controller = gatewayController
+	st.IngClasses = []ingClass{own}
+	st.Ingresses = []ingObject{ingressIn("web", "k8flare")}
+	first := evaluateEdge(st, "t1")
+	for _, u := range first.Statuses {
+		raw, _ := json.Marshal(u.Status)
+		switch {
+		case u.Key == "c":
+			_ = json.Unmarshal(raw, &st.Classes[0].Status)
+			st.Classes[0].Obj = map[string]json.RawMessage{"status": raw}
+		case u.Key == "gw":
+			_ = json.Unmarshal(raw, &st.Gateways[0].Status)
+			st.Gateways[0].Obj = map[string]json.RawMessage{"status": raw}
+		case u.Key == st.Routes[0].Key:
+			_ = json.Unmarshal(raw, &st.Routes[0].Status)
+			st.Routes[0].Obj = map[string]json.RawMessage{"status": raw}
+		case u.Key == st.Ingresses[0].Key:
+			st.Ingresses[0].Obj = map[string]json.RawMessage{"status": raw}
+		}
+	}
+	second := evaluateEdge(st, "t2")
+	if len(second.Statuses) != len(first.Statuses) || len(first.Statuses) != 4 {
+		t.Fatalf("%d %d", len(first.Statuses), len(second.Statuses))
+	}
+	for _, u := range second.Statuses {
+		raw, _ := json.Marshal(u.Status)
+		if !statusUnchanged(u.Obj["status"], raw) {
+			t.Fatalf("%s rewrites on the second pass:\n%s\n%s", u.Key, u.Obj["status"], raw)
+		}
 	}
 }
 

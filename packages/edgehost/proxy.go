@@ -143,7 +143,7 @@ func resolveDial(r *http.Request, store *kine.Client, ref Ref, ports []corev1.Se
 		}
 		p := slicePort(slice.Ports, sp)
 		for _, endpoint := range slice.Endpoints {
-			if len(endpoint.Addresses) == 0 {
+			if len(endpoint.Addresses) == 0 || (endpoint.Conditions.Ready != nil && !*endpoint.Conditions.Ready) {
 				continue
 			}
 			nodeName := ""

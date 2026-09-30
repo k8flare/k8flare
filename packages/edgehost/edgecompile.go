@@ -11,7 +11,6 @@ import (
 
 const (
 	gatewayGroup   = "gateway.networking.k8s.io"
-	edgeApexHost   = "k8flare.com"
 	ingressKindTag = "Ingress"
 	routeKindTag   = "HTTPRoute"
 )
@@ -164,9 +163,6 @@ func ingressHostnames(ing ingObject) []string {
 		}
 		seen[h] = true
 		hosts = append(hosts, h)
-	}
-	if len(hosts) == 0 {
-		return []string{edgeApexHost}
 	}
 	return hosts
 }
@@ -396,9 +392,16 @@ func compileRoute(route gwRoute, hosts []string, grants []gwGrant, services map[
 		}
 		for _, host := range hosts {
 			for _, m := range matches {
-				path := m.Path
-				if path == nil {
-					path = &pathMatch{Type: "PathPrefix", Value: "/"}
+				path := &pathMatch{Type: "PathPrefix", Value: "/"}
+				if m.Path != nil {
+					copied := *m.Path
+					if copied.Type == "" || copied.Type == "PathPrefix" {
+						copied.Value = strings.TrimSuffix(copied.Value, "/")
+						if copied.Value == "" {
+							copied.Value = "/"
+						}
+					}
+					path = &copied
 				}
 				out = append(out, Rule{
 					Source: source, Created: route.Meta.CreationTimestamp, Host: host,

@@ -82,6 +82,9 @@ type Table struct {
 
 func (t *Table) Prepare() {
 	for i := range t.Rules {
+		if p := t.Rules[i].Path; p != nil && p.Type == "RegularExpression" {
+			p.re, _ = regexp.Compile(p.Value)
+		}
 		prepareMatches(t.Rules[i].Headers)
 		prepareMatches(t.Rules[i].Query)
 	}

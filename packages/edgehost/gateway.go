@@ -19,6 +19,7 @@ var gatewayAPIHosts = map[string]bool{
 type pathMatch struct {
 	Type  string `json:"type"`
 	Value string `json:"value"`
+	re    *regexp.Regexp
 }
 
 func IsGatewayHost(host string) bool {
@@ -45,9 +46,12 @@ func MatchPath(pathname string, match *pathMatch) bool {
 	case "Exact":
 		return pathname == value
 	case "RegularExpression":
-		re, err := regexp.Compile(value)
-		if err != nil {
-			return false
+		re := match.re
+		if re == nil {
+			var err error
+			if re, err = regexp.Compile(value); err != nil {
+				return false
+			}
 		}
 		return re.MatchString(pathname)
 	default:

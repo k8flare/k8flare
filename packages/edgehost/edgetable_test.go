@@ -220,3 +220,21 @@ func TestUnsupportedFilterInvalidatesRule(t *testing.T) {
 		t.Fatal(reason)
 	}
 }
+
+func TestGatewayPrefixIgnoresTrailingSlash(t *testing.T) {
+	route := routeIn("default", "r", nil, "", 80)
+	route.Spec.Rules[0].Matches = []gwMatch{{Path: &pathMatch{Type: "PathPrefix", Value: "/abc/"}}}
+	table := &Table{Rules: compileRoute(route, nil, nil, map[string][]svcPort{"default/web": {{Port: 80}}})}
+	table.Prepare()
+	if lookup(table, "h", "GET", "/abc", http.Header{}, "") == nil || lookup(table, "h", "GET", "/abc/d", http.Header{}, "") == nil || lookup(table, "h", "GET", "/abcd", http.Header{}, "") != nil {
+		t.Fatalf("%+v", table.Rules[0].Path)
+	}
+}
+
+func TestPreparedRegexPathIsNotRecompiled(t *testing.T) {
+	table := &Table{Rules: []Rule{{Path: &pathMatch{Type: "RegularExpression", Value: "^/v[0-9]+/"}}}}
+	table.Prepare()
+	if table.Rules[0].Path.re == nil || lookup(table, "h", "GET", "/v2/x", http.Header{}, "") == nil || lookup(table, "h", "GET", "/x", http.Header{}, "") != nil {
+		t.Fatal("regex path")
+	}
+}

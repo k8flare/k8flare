@@ -13,6 +13,7 @@ import (
 
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
@@ -239,6 +240,38 @@ func TestProxyIgnoresClientPortHeaderOnLoadBalancer(t *testing.T) {
 	}
 	if tun.host != "web--default.k8flare.com" {
 		t.Fatal(tun.host)
+	}
+}
+
+func TestSvcPathOnlyAppliesToControlPlaneHosts(t *testing.T) {
+	r := httptest.NewRequest("GET", "https://shop.example.com/svc/a/b", nil)
+	if _, ok := ParseServiceRoute(r); ok {
+		t.Fatal("app host")
+	}
+	r = httptest.NewRequest("GET", "https://api.k8flare.com/svc/a/b", nil)
+	if ref, ok := ParseServiceRoute(r); !ok || ref.Namespace != "a" || ref.Name != "b" {
+		t.Fatal(ref, ok)
+	}
+}
+
+func TestResolveDialSkipsNotReadySliceEndpoints(t *testing.T) {
+	useClock(t)
+	notReady, ready := false, true
+	nodeA, nodeB := "node-a", "node-b"
+	port, name := int32(8080), "http"
+	slice := discoveryv1.EndpointSlice{
+		Endpoints: []discoveryv1.Endpoint{
+			{Addresses: []string{"10.0.0.1"}, NodeName: &nodeA, Conditions: discoveryv1.EndpointConditions{Ready: &notReady}},
+			{Addresses: []string{"10.0.0.2"}, NodeName: &nodeB, Conditions: discoveryv1.EndpointConditions{Ready: &ready}},
+		},
+		Ports: []discoveryv1.EndpointPort{{Name: &name, Port: &port}},
+	}
+	slice.Labels = map[string]string{"kubernetes.io/service-name": "web"}
+	store := &countingStore{values: map[string][]byte{"/registry/endpointslices/default/web-abc": mustJSON(slice)}}
+	r := httptest.NewRequest("GET", "https://x/", nil)
+	node, host, p := resolveDial(r, store.client(), Ref{Namespace: "default", Name: "web"}, []corev1.ServicePort{{Name: "http", Port: 80}}, portSel{Number: 80})
+	if node != "node-b" || host != "10.0.0.2" || p != "8080" {
+		t.Fatal(node, host, p)
 	}
 }
 

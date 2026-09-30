@@ -96,6 +96,10 @@ type gwObject struct {
 	}
 	Status struct {
 		Conditions []gwCondition `json:"conditions"`
+		Listeners  []struct {
+			Name       string        `json:"name"`
+			Conditions []gwCondition `json:"conditions"`
+		} `json:"listeners"`
 	}
 }
 
@@ -287,6 +291,12 @@ func gatewayStatus(gw *gwObject, attached map[string]int, hosts map[string]bool,
 	listeners := []any{}
 	for _, l := range gw.Spec.Listeners {
 		kinds := []any{}
+		var prev []gwCondition
+		for _, old := range gw.Status.Listeners {
+			if old.Name == l.Name {
+				prev = old.Conditions
+			}
+		}
 		acceptedStatus, acceptedReason, acceptedMessage := "True", "Accepted", "Listener accepted"
 		programmedStatus, programmedReason, programmedMessage := "True", "Programmed", "Listener programmed"
 		if l.Protocol == "HTTP" || l.Protocol == "HTTPS" {
@@ -299,9 +309,9 @@ func gatewayStatus(gw *gwObject, attached map[string]int, hosts map[string]bool,
 			"name": l.Name, "attachedRoutes": attached[l.Name],
 			"supportedKinds": kinds,
 			"conditions": []gwCondition{
-				condition("Accepted", acceptedStatus, acceptedReason, acceptedMessage, gw.Meta.Generation, now, nil),
-				condition("Programmed", programmedStatus, programmedReason, programmedMessage, gw.Meta.Generation, now, nil),
-				condition("ResolvedRefs", "True", "ResolvedRefs", "Listener refs resolved; TLS is terminated by Cloudflare", gw.Meta.Generation, now, nil),
+				condition("Accepted", acceptedStatus, acceptedReason, acceptedMessage, gw.Meta.Generation, now, prev),
+				condition("Programmed", programmedStatus, programmedReason, programmedMessage, gw.Meta.Generation, now, prev),
+				condition("ResolvedRefs", "True", "ResolvedRefs", "Listener refs resolved; TLS is terminated by Cloudflare", gw.Meta.Generation, now, prev),
 			},
 		})
 	}

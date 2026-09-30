@@ -59,8 +59,8 @@ it. Remove an entry when the behaviour exists and CI covers it.
     or number. `resource` backends answer 500. `tls` entries are ignored:
     Cloudflare terminates TLS with its own certificate for the zone, and a
     `tls.secretName` is never read. `status.loadBalancer.ingress` lists the
-    rule hosts, or `k8flare.com` when there are none (unchecked against a
-    real zone).
+    rule hosts and stays empty for hostless rules: no CNAME target for
+    custom hosts is documented or configured anywhere yet.
   - Gateway API: GatewayClass, Gateway (HTTP and HTTPS listeners,
     `allowedRoutes` `Same`/`All`, `sectionName`, listener hostname
     intersection), HTTPRoute matches (path, headers, query, method),
@@ -80,7 +80,8 @@ it. Remove an entry when the behaviour exists and CI covers it.
   - Requests that match no rule fall through to the API, so a
     hostless catch-all Ingress does not shadow `k8flare.com`,
     `api.k8flare.com`, `*.workers.dev` or `{name}--{namespace}` hosts.
-    A custom cluster domain is not excluded.
+    A custom cluster domain is not excluded, and the `/svc/{ns}/{name}`
+    path form now applies only to those control-plane hosts.
   - Changes to any Service also run the edge pass (ResolvedRefs depends on
     Services); backends are looked up per ref rather than listed.
 - local-path runs as a resident Deployment, not helper pods only.
