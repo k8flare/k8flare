@@ -77,6 +77,26 @@ function streamUpgrade(client: WebSocket, protocol: string): Response {
   return new Response(null, { status: 101, webSocket: client, headers });
 }
 
+function isNonWebSocketUpgrade(request: Request): boolean {
+  const upgrade = (request.headers.get("Upgrade") || "").toLowerCase();
+  return upgrade !== "" && upgrade !== "websocket" && isStreamPath(new URL(request.url).pathname);
+}
+
+function refuseUpgrade(): Response {
+  return Response.json(
+    {
+      kind: "Status",
+      apiVersion: "v1",
+      metadata: {},
+      status: "Failure",
+      message: "only WebSocket upgrades are served; retry with a WebSocket client (v5.channel.k8s.io)",
+      reason: "Invalid",
+      code: 426,
+    },
+    { status: 426, headers: { Upgrade: "websocket", Connection: "Upgrade" } },
+  );
+}
+
 function asAPIRequest(request: Request): Request {
   if ((request.headers.get("Upgrade") || "").toLowerCase() !== "websocket") {
     return request;
@@ -118,6 +138,7 @@ export default {
       } catch {}
       return prepared;
     }
+    if (isNonWebSocketUpgrade(request)) return refuseUpgrade();
     if ((request.headers.get("Upgrade") || "").toLowerCase() === "websocket" && isStreamPath(path)) {
       const headers = new Headers(request.headers);
       headers.set("X-K8flare-Stream-Locate", "1");
