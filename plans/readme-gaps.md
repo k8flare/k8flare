@@ -529,3 +529,59 @@ it. Remove an entry when the behaviour exists and CI covers it.
   workers), so it is neither the trace store nor isolates piling up; the
   Go heaps inside the wasm workers, which never shrink, are the next
   suspect and there is no memstats endpoint to read them.
+- Run 36743032029 (c860062, 43 specs focused, 10 failed): the slow
+  convergence behind EndpointSliceMirroring, Service endpoints latency,
+  the Deployment lifecycle and the StatefulSet scale subresource has one
+  shape, read from `dev.log`, `procs.log` and the audit events.
+  - workerd's main thread ran at 100 % (`main_ms` 1030-1040 per 1 s
+    sample) for every minute of the run. Every isolate shares it, so a
+    controller write cost 1-5 s under the endpoints latency spec (audit
+    p50 0.13 s, p90 1.8 s, max 12 s) and a pass's lists and build+fill
+    took 1-6 s each.
+  - A pass listed its sources once and its snapshot then froze: a write
+    landing after the lists waited for the pass (30 s to 2m43s under
+    load, drain held open by in-flight handlers doing sequential slow
+    writes, `endpoint_slice=154/5` queued at one give-up), then the
+    follow-up pass, then the next pass's lists. The mirroring spec's
+    Endpoints update (16:30:13.5) fell in a pass listed at 16:30:11; the
+    next lists ran at 16:30:44, 31 s later, against a 12 s window. The
+    Deployment patch (16:34:12) reached the ReplicaSet controller at
+    16:37:25, and each rollout step needed a pass of its own. The
+    StatefulSet's status write with `replicas=1` was still in flight when
+    the spec read `/scale` 11 s after the pod became Ready, and after the
+    spec's own update the controller's status writes conflicted five
+    times because its snapshot never saw the external write.
+  - Every busy consume waited 10 s for the lock and was turned away; the
+    yield could not help because a handler was always in flight.
+  - The garbage collector ran 533 collects in 24 minutes, one every 2.7 s,
+    each relisting the whole registry, because every modification of an
+    object with ownerReferences (pod status patches, ReplicaSet status,
+    EndpointSlice rewrites) routed to its queue.
+  - 44 of the 200 endpoints latency trials failed with `ipaddress X is
+    already allocated`: parallel Service creates all picked the lowest
+    free address and the losers returned the conflict (error ratio 0.22,
+    the spec allows 0.05).
+  - Fixed: the pass now follows the Cluster DO's watch from the list
+    revision and notes every decoded registry write into the snapshot
+    informer of its type (`live.go`), so a controller sees a write within
+    the pass it lands in; with the feed live the follow-up pass and the
+    yield are skipped, since the running pass sees what a new one would
+    list. The gc queue hears about creates, deletes, owner changes and
+    finalized deletions only. A Service whose ClusterIP was picked here
+    retries from a fresh pick after a collision, and the pick starts at a
+    random offset. Unit tests cover each; the local dev stack measured
+    the write-to-result latencies below.
+  - Measured on the local dev stack (this Mac, no node, the front and
+    the workloads and core group workers rebuilt): a custom Endpoints is
+    mirrored 1.5 s after the create and 1.4 s after the update, a
+    selector Service has its Endpoints 1.2-1.6 s after the create, and
+    with 40 Services being created in parallel the Endpoints update is
+    mirrored 0.6 s after the patch while the running pass applied 117
+    and 125 feed events instead of waiting for the next lists; no busy
+    answer and no drain give-up in 23 passes. Not measured here: the
+    CI runner, where the same passes ran on a saturated thread. Still
+    open there: the write cost itself (1-5 s per controller write at
+    100 % main-thread CPU), the `abortingBody.Close` hop that every
+    completed fetch pays through `window.Run`, and a pass that ends with
+    rate-limited requeues pending still relists on the retry instead of
+    waiting for them.
