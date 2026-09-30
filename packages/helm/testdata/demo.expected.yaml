@@ -1,0 +1,74 @@
+---
+# Source: demo/charts/cache/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-cache
+data:
+  size: "5Gi"
+  port: "6379"
+  region: "eu"
+  parent: cache
+---
+# Source: demo/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-demo
+  labels:
+    app.kubernetes.io/name: demo
+    app.kubernetes.io/instance: demo
+    app.kubernetes.io/version: "1.16.0"
+    tier: web
+data:
+  message: "hello demo"
+  motd: "welcome to the demo"
+  region: eu
+  kube: v1.36.0
+  install: true
+  upper: TkdJTlg=
+  settings: |
+    list:
+    - 1
+    - 2
+    - 3
+    port: 80
+  parsed: b
+---
+# Source: demo/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-demo
+  namespace: apps
+spec:
+  ports:
+    - port: 80
+  selector:
+    app.kubernetes.io/instance: demo
+---
+# Source: demo/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-demo
+  labels:
+    app.kubernetes.io/name: demo
+    app.kubernetes.io/instance: demo
+    app.kubernetes.io/version: "1.16.0"
+    tier: web
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: demo
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: demo
+    spec:
+      containers:
+        - name: web
+          image: "nginx:1.2"
+          ports:
+            - containerPort: 80

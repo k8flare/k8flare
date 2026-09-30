@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "demo.fullname" . }}
+  labels:
+    {{- include "demo.labels" . | nindent 4 }}
+data:
+  message: {{ tpl .Values.message . | quote }}
+  motd: {{ .Files.Get "files/motd.txt" | trim | quote }}
+  region: {{ .Values.global.region }}
+  kube: {{ .Capabilities.KubeVersion.Version }}
+  install: {{ .Release.IsInstall }}
+  upper: {{ .Values.image.repository | upper | b64enc }}
+  settings: |
+    {{- dict "port" .Values.service.port "list" (list 1 2 3) | toYaml | nindent 4 }}
+  parsed: {{ (fromYaml "a: b").a }}

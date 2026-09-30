@@ -1,0 +1,14 @@
+replicaCount: 1
+image:
+  repository: nginx
+  tag: ""
+service:
+  port: 80
+labels:
+  tier: web
+message: "hello {{ .Release.Name }}"
+cache:
+  enabled: true
+  size: 1Gi
+global:
+  region: eu
