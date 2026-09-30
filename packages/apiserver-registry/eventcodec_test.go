@@ -3,10 +3,13 @@ package registry
 import (
 	"bytes"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	eventsv1 "k8s.io/api/events/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -18,6 +21,22 @@ import (
 func init() {
 	utilruntime.Must(eventsinternal.AddToScheme(scheme.Scheme))
 	storageconv.Install()
+}
+
+func TestEventsV1FieldSelectorUsesConvertedLabels(t *testing.T) {
+	event := &eventsv1.Event{
+		ObjectMeta:          metav1.ObjectMeta{Name: "web.1", Namespace: "default"},
+		Regarding:           corev1.ObjectReference{Kind: "Pod", Name: "web"},
+		ReportingController: "test-controller",
+	}
+	selector := fields.SelectorFromSet(fields.Set{"reportingComponent": "test-controller", "involvedObject.name": "web"})
+	_, set, err := attrsFor(selector)(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !selector.Matches(set) {
+		t.Fatalf("selector %q does not match %v", selector, set)
+	}
 }
 
 func TestEventStorageCodecRoundTrip(t *testing.T) {
@@ -54,6 +73,37 @@ func TestEventStorageCodecRoundTrip(t *testing.T) {
 	ev := got.(*eventsv1.Event)
 	if ev.Note != "started" || ev.Regarding.Name != "web" || ev.Name != "web.1" || ev.ReportingController != "test-controller" {
 		t.Fatalf("events %+v", ev)
+	}
+}
+
+func TestEventStorageCodecKeepsConformanceEventThroughSeriesUpdate(t *testing.T) {
+	when := metav1.NewMicroTime(time.Unix(1505828956, 0))
+	in := &eventsv1.Event{
+		ObjectMeta:          metav1.ObjectMeta{Name: "event-test", Namespace: "ns", Labels: map[string]string{"testevent-constant": "true"}},
+		Regarding:           corev1.ObjectReference{Namespace: "ns"},
+		EventTime:           when,
+		Note:                "This is event-test",
+		Action:              "Do",
+		Reason:              "Test",
+		Type:                "Normal",
+		ReportingController: "test-controller",
+		ReportingInstance:   "test-node",
+		Series:              &eventsv1.EventSeries{Count: 2, LastObservedTime: metav1.NewMicroTime(time.Unix(1505828951, 0))},
+		DeprecatedSource:    corev1.EventSource{Component: "test-controller", Host: "test-node"},
+	}
+	codec := eventStorageCodec{}
+	var buf bytes.Buffer
+	if err := codec.Encode(in, &buf); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := codec.Decode(buf.Bytes(), nil, &eventsv1.Event{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := got.(*eventsv1.Event)
+	out.TypeMeta = in.TypeMeta
+	if !apiequality.Semantic.DeepEqual(in, out) {
+		t.Fatalf("round trip changed the event:\n%+v\n%+v", in, out)
 	}
 }
 

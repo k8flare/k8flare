@@ -707,6 +707,39 @@ func namespaceContentGone(ctx context.Context, client kubernetes.Interface, ns s
 	return true, nil
 }
 
+var namespaceDeletionConditions = []v1.NamespaceCondition{
+	{Type: v1.NamespaceDeletionDiscoveryFailure, Reason: "ResourcesDiscovered", Message: "All resources successfully discovered"},
+	{Type: v1.NamespaceDeletionGVParsingFailure, Reason: "ParsedGroupVersions", Message: "All legacy kube types successfully parsed"},
+	{Type: v1.NamespaceDeletionContentFailure, Reason: "ContentDeleted", Message: "All content successfully deleted, may be waiting on finalization"},
+	{Type: v1.NamespaceContentRemaining, Reason: "ContentRemoved", Message: "All content successfully removed"},
+	{Type: v1.NamespaceFinalizersRemaining, Reason: "ContentHasNoFinalizers", Message: "All content-preserving finalizers finished"},
+}
+
+func reportDeletionConditions(ctx context.Context, client kubernetes.Interface, ns *v1.Namespace) error {
+	fresh := ns.DeepCopy()
+	changed := false
+	for _, want := range namespaceDeletionConditions {
+		present := false
+		for _, have := range fresh.Status.Conditions {
+			if have.Type == want.Type {
+				present = true
+			}
+		}
+		if present {
+			continue
+		}
+		want.Status = v1.ConditionFalse
+		want.LastTransitionTime = metav1.Now()
+		fresh.Status.Conditions = append(fresh.Status.Conditions, want)
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	_, err := client.CoreV1().Namespaces().UpdateStatus(ctx, fresh, metav1.UpdateOptions{})
+	return err
+}
+
 func namespacePodsGone(ctx context.Context, client kubernetes.Interface, ns string) (bool, error) {
 	pods, err := client.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{Limit: 1})
 	if err != nil {
@@ -769,6 +802,11 @@ func (d *Deleter) DeleteTerminating(ctx context.Context, client kubernetes.Inter
 			result.Remaining++
 			result.NextMs = soonest(result.NextMs, namespaceRetry)
 			continue
+		}
+		if podsGone, _ := namespacePodsGone(ctx, client, ns.Name); !podsGone {
+			if err := reportDeletionConditions(ctx, client, ns); err != nil {
+				println("namespaces: conditions", ns.Name, "failed:", err.Error())
+			}
 		}
 		if gone, _ := namespaceContentGone(ctx, client, ns.Name); !gone {
 			result.Remaining++

@@ -263,3 +263,45 @@ it. Remove an entry when the behaviour exists and CI covers it.
     Aggregator sample API server, ServiceAccountIssuerDiscovery.
   - Storage: CSI PV/PVC lifecycle, VolumeAttributesClass lifecycle.
   - "at least two untainted nodes" needs a second node in CI.
+- Fixed from that run, each with a unit test but not yet re-run in CI (start
+  with the workflow_dispatch `focus` input):
+  - StatefulSet (5 specs): a headless Service created with only
+    `clusterIP: None` failed upstream validation with `spec.clusterIPs:
+    Required value`; the create strategy now fills `clusterIPs` first.
+  - Events API: `reportingController=` on events.k8s.io was converted to
+    `reportingComponent` and looked up in events.k8s.io JSON, which has no
+    such key; the selector now maps back to the events.k8s.io names.
+    The patch, update and delete steps of that spec never ran in CI.
+  - OrderedNamespaceDeletion: the deleter never called upstream's
+    condition update while a pod with a finalizer remained, so
+    `NamespaceDeletionContentFailure` never appeared; the conditions are
+    now published while pods remain.
+  - Pod generation: DefaultTolerationSeconds skipped UPDATE, so replacing
+    `spec.tolerations` dropped the defaulted ones and validation refused it.
+    The later steps of that spec (generation bumps, observedGeneration)
+    were not reached in CI.
+- Not fixed:
+  - Job backoffLimitPerIndex: the run made 10 pods where 6 are correct
+    (indexes 0 and 2 ran twice, index 1 four times, Failed=6). The job
+    controller counts an index as done from `status.completedIndexes` or a
+    pod that still has the tracking finalizer, so it acted on a Job status
+    older than its pods. A passing fake-client test over repeated Sync
+    passes shows the controller logic is right when the state is
+    consistent. Suspects: the Job snapshot is not updated by the
+    controller's own status writes while the pod snapshot is re-listed live
+    after a failed pod create (`catchUp`), and an overlapping pass on
+    another isolate. Needs the workloads log of a rerun with `focus`.
+  - EndpointSliceMirroring: one `Sync(["endpoints"])` creates the slice in
+    a unit test, and the queue plan maps the Endpoints key to `endpoints`,
+    so the controller is fine. The spec allows 12 seconds; a pass lists
+    every source the selected controllers need and the batch waits behind
+    any running pass. Treat it as the same latency problem as the Services
+    endpoints-latency spec.
+  - The interruption at 76 minutes: GitHub reports the step as cancelled
+    with only "The operation was canceled." (no runner shutdown, timeout
+    or out-of-memory message), the job's later `always()` steps were
+    skipped, and the run's actor was the dispatching user. Disk had 106 GB
+    free at the start. The logs artifact was never uploaded, so nothing
+    more is known; `scripts/ci/e2e.sh test` now prints memory, disk and
+    workerd RSS every minute so the next occurrence leaves evidence in the
+    step log.

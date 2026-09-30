@@ -166,8 +166,20 @@ up() {
   kubectl --kubeconfig "$KUBECONFIG_PATH" get nodes -o wide
 }
 
+sample_resources() {
+  while true; do
+    echo "resources $(date -u +%H:%M:%S) $(free -m | awk '/^Mem:/ { print "mem_used_mb=" $3 " mem_available_mb=" $7 }') $(df -m / /dev/shm | awk 'NR > 1 { printf "%s_used_mb=%s ", $6, $3 }') workerd_rss_mb=$(ps -C workerd -o rss= | awk '{ s += $1 } END { print int(s / 1024) }')"
+    sleep 60
+  done
+}
+
 run_e2e() {
-  (cd scripts && go run ./e2e -set "${SET:-required}" -procs "${PROCS:-4}" -shard "${SHARD:-0}" -shards "${SHARDS:-1}" -kubeconfig "$KUBECONFIG_PATH")
+  local status=0
+  sample_resources &
+  local sampler=$!
+  (cd scripts && go run ./e2e -set "${SET:-required}" -focus "${FOCUS:-}" -procs "${PROCS:-4}" -shard "${SHARD:-0}" -shards "${SHARDS:-1}" -kubeconfig "$KUBECONFIG_PATH") || status=$?
+  kill "$sampler" 2>/dev/null || true
+  return "$status"
 }
 
 case "${1:-all}" in

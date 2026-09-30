@@ -23,7 +23,7 @@ func TestDefaultTolerationSecondsAddsBoth(t *testing.T) {
 	}
 }
 
-func TestDefaultTolerationSecondsSkipsUpdate(t *testing.T) {
+func TestDefaultTolerationSecondsRestoresDefaultsOnUpdate(t *testing.T) {
 	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
@@ -33,8 +33,9 @@ func TestDefaultTolerationSecondsSkipsUpdate(t *testing.T) {
 	if !out.Allowed {
 		t.Fatalf("expected allow: %+v", out)
 	}
-	if len(podTolerations(out.Object)) != 0 {
-		t.Fatalf("update should not default tolerations: %v", podTolerations(out.Object))
+	got := podTolerations(out.Object)
+	if !hasDefaultToleration(got, corev1.TaintNodeNotReady) || !hasDefaultToleration(got, corev1.TaintNodeUnreachable) {
+		t.Fatalf("update should restore the default tolerations: %v", got)
 	}
 }
 
