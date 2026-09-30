@@ -20,6 +20,7 @@ const usage = `usage: k8flare <command>
 
 commands:
   token create|list|delete|rotate
+  edge-certificate --hosts <name,...> [--out-dir <dir>] [--ttl <duration>]
   secrets-encrypt status|reencrypt
   snapshot save|list|restore
   restore --to <time>
@@ -77,11 +78,19 @@ func (c *connection) dial() (*client, error) {
 }
 
 func (c *client) call(method, path string, query url.Values, body, out any) error {
+	data, err := c.do(method, path, query, body)
+	if err != nil || out == nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
+}
+
+func (c *client) do(method, path string, query url.Values, body any) ([]byte, error) {
 	var payload io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		payload = bytes.NewReader(data)
 	}
@@ -91,27 +100,24 @@ func (c *client) call(method, path string, query url.Values, body, out any) erro
 	}
 	req, err := http.NewRequest(method, target, payload)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, serverMessage(data))
+		return nil, fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, serverMessage(data))
 	}
-	if out == nil {
-		return nil
-	}
-	return json.Unmarshal(data, out)
+	return data, nil
 }
 
 func serverMessage(data []byte) string {
@@ -161,6 +167,8 @@ func run(args []string, out io.Writer) error {
 	switch args[0] {
 	case "token":
 		return runToken(args[1:], out)
+	case "edge-certificate":
+		return runEdgeCertificate(args[1:], out)
 	case "secrets-encrypt":
 		return runSecretsEncrypt(args[1:], out)
 	case "snapshot":

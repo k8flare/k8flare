@@ -15,6 +15,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"flag"
 	"log"
 	"math/big"
@@ -33,7 +34,14 @@ func main() {
 	upstream := flag.String("upstream", "http://127.0.0.1:18787", "wrangler dev URL")
 	dir := flag.String("dir", ".build/devtls", "where ca.crt, ca.key, server.crt, server.key live")
 	hosts := flag.String("hosts", "localhost,host.orb.internal", "extra DNS SANs (127.0.0.1 is always included)")
+	adminToken := flag.String("admin-token", "", "when set, serve a certificate issued by the cluster's server CA, verify client certificates against its client CA and pass them the way Cloudflare mTLS does")
 	flag.Parse()
+	if *adminToken != "" {
+		if err := runEdge(*listen, *upstream, *dir, *adminToken, strings.Split(*hosts, ",")); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if err := run(*listen, *upstream, *dir, strings.Split(*hosts, ",")); err != nil {
 		log.Fatal(err)
 	}
@@ -64,6 +72,47 @@ func run(listen, upstream, dir string, hosts []string) error {
 		TLSConfig: &tls.Config{Certificates: []tls.Certificate{serverCert}, MinVersion: tls.VersionTLS12},
 	}
 	log.Printf("devtls: https://%s -> %s (CA %s)", listen, upstream, filepath.Join(dir, "ca.crt"))
+	return srv.ListenAndServeTLS("", "")
+}
+
+func runEdge(listen, upstream, dir, adminToken string, hosts []string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	issued, err := awaitEdgeCertificate(upstream, adminToken, append([]string{"127.0.0.1", "::1"}, hosts...), 120)
+	if err != nil {
+		return err
+	}
+	serverCert, err := tls.X509KeyPair([]byte(issued.Cert), []byte(issued.Key))
+	if err != nil {
+		return err
+	}
+	clientCAs := x509.NewCertPool()
+	if !clientCAs.AppendCertsFromPEM([]byte(issued.ClientCA)) {
+		return errors.New("the client CA is not a certificate")
+	}
+	serverCAPath := filepath.Join(dir, "server-ca.crt")
+	if err := os.WriteFile(serverCAPath, []byte(issued.ServerCA), 0o644); err != nil {
+		return err
+	}
+	target, err := url.Parse(upstream)
+	if err != nil {
+		return err
+	}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.Transport = retryDropped{base: http.DefaultTransport}
+	proxy.FlushInterval = -1
+	srv := &http.Server{
+		Addr:    listen,
+		Handler: mtlsEdge(accessLog(proxy, 5*time.Second), clientCAs),
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{serverCert},
+			ClientAuth:   tls.RequestClientCert,
+			ClientCAs:    clientCAs,
+			MinVersion:   tls.VersionTLS12,
+		},
+	}
+	log.Printf("devtls: https://%s -> %s (server CA %s, client certificates verified against the cluster client CA)", listen, upstream, serverCAPath)
 	return srv.ListenAndServeTLS("", "")
 }
 

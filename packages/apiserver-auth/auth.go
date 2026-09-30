@@ -233,6 +233,7 @@ func ForwardRemoteUser(ctx context.Context, h http.Header) {
 	h.Del("Authorization")
 	h.Del("X-Remote-User")
 	h.Del("X-Remote-Group")
+	h.Del(ClientCertHeader)
 	if u, ok := genericapirequest.UserFrom(ctx); ok {
 		h.Set("X-Remote-User", u.GetName())
 		for _, g := range u.GetGroups() {

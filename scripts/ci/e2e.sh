@@ -32,6 +32,7 @@ build() {
   make mirrors
   make wasm
   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$WORK/k8flare-agent" ./packages/agent
+  CGO_ENABLED=0 go build -o "$WORK/k8flare" ./packages/cli
   (cd scripts && CGO_ENABLED=0 go build -o "../$WORK/devtls" ./devtls)
 }
 
@@ -104,6 +105,21 @@ sample_procs() {
   done
 }
 
+join_node() {
+  local admin=$1 token join
+  if [ "${AGENT:-k8flare}" = k8flare ]; then
+    join=$(sed -n 's/^JOIN_TOKEN=//p' .dev.vars)
+    sudo install -m 0644 .build/devtls/server-ca.crt /usr/local/share/ca-certificates/k8flare-dev-ca.crt
+    sudo update-ca-certificates >/dev/null
+    sudo nohup "$WORK/k8flare-agent" --server "https://$API" --token "$join" --node-name "$(hostname)" \
+      > "$LOGS/agent.log" 2>&1 < /dev/null &
+    return 0
+  fi
+  token=$("$WORK/k8flare" token create --kubeconfig "$KUBECONFIG_PATH" --ttl 1h --description ci)
+  sudo nohup /usr/local/bin/k3s agent --server "https://$API" --token "$token" --node-name "$(hostname)" --disable-apiserver-lb \
+    > "$LOGS/agent.log" 2>&1 < /dev/null &
+}
+
 up() {
   if [ ! -x /usr/local/bin/k3s ]; then
     curl -sfL -o "$WORK/k3s" "https://github.com/k3s-io/k3s/releases/download/${K3S_VERSION/+/%2B}/k3s"
@@ -114,9 +130,8 @@ up() {
 
   dev_vars
   make wrangler.dev.jsonc
-  local admin join worker
+  local admin worker
   admin=$(sed -n 's/^ADMIN_TOKEN=//p' .dev.vars)
-  join=$(sed -n 's/^JOIN_TOKEN=//p' .dev.vars)
   nohup pnpm exec wrangler dev -c wrangler.dev.jsonc --local --enable-containers=false --persist-to "$STATE" --port 18787 \
     < /dev/null 2>&1 | stamped "$LOGS/dev.log" &
   wait_for "the control plane" 360 5 curl -sf -o /dev/null -H "Authorization: Bearer $admin" http://127.0.0.1:18787/livez
@@ -126,18 +141,15 @@ up() {
   runtime=$(ss -ltnpH "sport = :$worker" | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
   nohup bash -c "$(declare -f thread_ms sample_procs); sample_procs $runtime $(ps -o ppid= -p "$runtime")" \
     < /dev/null 2>&1 | stamped "$LOGS/procs.log" &
-  nohup "$WORK/devtls" -listen "$API" -upstream "http://127.0.0.1:$worker" -dir .build/devtls -hosts localhost \
+  nohup "$WORK/devtls" -listen "$API" -upstream "http://127.0.0.1:$worker" -dir .build/devtls -hosts localhost -admin-token "$admin" \
     < /dev/null 2>&1 | stamped "$LOGS/devtls.log" &
-  wait_for "devtls" 60 1 curl -skf -o /dev/null -H "Authorization: Bearer $admin" "https://$API/livez"
+  wait_for "devtls" 180 1 curl -sf --cacert .build/devtls/server-ca.crt -o /dev/null -H "Authorization: Bearer $admin" "https://$API/livez"
 
-  sudo install -m 0644 .build/devtls/ca.crt /usr/local/share/ca-certificates/k8flare-dev-ca.crt
-  sudo update-ca-certificates >/dev/null
-  printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: k8flare-ci\n  cluster:\n    server: https://%s\n    certificate-authority: %s/.build/devtls/ca.crt\nusers:\n- name: admin\n  user:\n    token: %s\ncontexts:\n- name: k8flare-ci\n  context:\n    cluster: k8flare-ci\n    user: admin\ncurrent-context: k8flare-ci\n' \
+  printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: k8flare-ci\n  cluster:\n    server: https://%s\n    certificate-authority: %s/.build/devtls/server-ca.crt\nusers:\n- name: admin\n  user:\n    token: %s\ncontexts:\n- name: k8flare-ci\n  context:\n    cluster: k8flare-ci\n    user: admin\ncurrent-context: k8flare-ci\n' \
     "$API" "$PWD" "$admin" > "$KUBECONFIG_PATH"
   chmod 600 "$KUBECONFIG_PATH"
 
-  sudo nohup "$WORK/k8flare-agent" --server "https://$API" --token "$join" --node-name "$(hostname)" \
-    > "$LOGS/agent.log" 2>&1 < /dev/null &
+  join_node "$admin"
   wait_for "a Ready node" 120 5 node_ready
   wait_for "the API to accept a write" 60 5 write_accepted
   kubectl --kubeconfig "$KUBECONFIG_PATH" get nodes -o wide

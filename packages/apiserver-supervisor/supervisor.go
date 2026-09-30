@@ -13,9 +13,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
+	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/user"
 	utilnet "k8s.io/utils/net"
 )
@@ -23,8 +25,9 @@ import (
 // supervisor serves the k3s supervisor protocol a k3s agent joins through
 // (/cacerts and /v1-k3s/*). It is what a k3s server would answer.
 type Supervisor struct {
-	vault     *Vault
-	joinToken string
+	vault       *Vault
+	joinToken   string
+	ClientCerts authenticator.Request
 }
 
 // k3sControlConfig is the subset of k3s's config.Control the agent reads
@@ -115,7 +118,27 @@ type nodeIdentity struct {
 
 // nodeAuth checks the k3s-Node-* headers the agent sends when it asks for
 // its certificates.
+func (s *Supervisor) certificateNode(r *http.Request) (string, bool) {
+	if s.ClientCerts == nil {
+		return "", false
+	}
+	resp, ok, err := s.ClientCerts.AuthenticateRequest(r)
+	if err != nil || !ok {
+		return "", false
+	}
+	name, ok := strings.CutPrefix(resp.User.GetName(), "system:node:")
+	if !ok || name == "" || !slices.Contains(resp.User.GetGroups(), user.NodesGroup) {
+		return "", false
+	}
+	return name, true
+}
+
 func (s *Supervisor) tunnelNode(w http.ResponseWriter, r *http.Request) {
+	if name, ok := s.certificateNode(r); ok {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"node": name})
+		return
+	}
 	token := r.Header.Get("X-K8flare-Node-Token")
 	ok := token != ""
 	if !ok {

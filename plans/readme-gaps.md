@@ -19,9 +19,23 @@ it. Remove an entry when the behaviour exists and CI covers it.
 
 ## Joining a node
 
-- Nodes run `k8flare-agent` (a patched k3s agent with bearer-token
-  kubeconfigs), not stock `k3s agent`. No client-certificate
-  authentication and no K10 CA pinning. CI joins k8flare-agent.
+- Done and checked locally through devtls: the Worker forwards a
+  Cloudflare-verified client certificate (`request.cf.tlsClientAuth`) and
+  the apiserver re-verifies it against the client CA; the edge serves a
+  server-CA certificate (`k8flare edge-certificate`); `k8flare token
+  create` prints `K10` tokens. A stock `k3s agent` joined, pinned the CA
+  hash, and its node went Ready with certificate identities.
+- Not usable yet: the stock agent needs a listener on every node at
+  `:6443`. The `kubernetes` EndpointSlice publishes node IPs on 6443 (the
+  k8flare-agent's local API proxy), so the stock agent rewrites its tunnel
+  targets to them and drops its tunnel about a minute after joining, and
+  the in-cluster `kubernetes` Service has no backend. CI still joins
+  k8flare-agent by default; `AGENT=k3s scripts/ci/e2e.sh up` joins the
+  stock agent.
+- The agent must run with `--disable-apiserver-lb`.
+- Unchecked against Cloudflare: BYO-CA mTLS is Enterprise only, a
+  `user_defined` custom certificate from a private CA, and that
+  `certRFC9440` is populated for BYO-CA certificates.
 
 ## Packaged components
 

@@ -2,6 +2,7 @@ import { apiserverFetch } from "./loader.ts";
 import { isolateId } from "@k8flare/loader-kit";
 import type { QueueMessage } from "@k8flare/cluster-store";
 import { consume } from "./queues.ts";
+import { withClientCert } from "./clientcert.ts";
 import { clusterStub, tunnelName } from "./clusterid.ts";
 import { Metrics } from "./metrics.ts";
 import { bytesOf, sendBinary, sendLog } from "./podstream.ts";
@@ -115,7 +116,8 @@ function asAPIRequest(request: Request): Request {
 }
 
 export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(incoming: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const request = withClientCert(incoming);
     const path = new URL(request.url).pathname;
     console.log(`front iso=${isolateId()} ${request.method} ${path}`);
     if (path === "/v1-k3s/connect") return acceptTunnel(request, env);
