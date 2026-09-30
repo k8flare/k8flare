@@ -64,9 +64,12 @@ func (remote) Handles(op admission.Operation) bool {
 	return op == admission.Create || op == admission.Update || op == admission.Delete || op == admission.Connect
 }
 
-func (r *remote) Admit(ctx context.Context, a admission.Attributes, _ admission.ObjectInterfaces) error {
+func (r *remote) Admit(ctx context.Context, a admission.Attributes, o admission.ObjectInterfaces) error {
 	if err := r.call(ctx, a, "admit"); err != nil {
 		return err
+	}
+	if o != nil && a.GetObject() != nil {
+		o.GetObjectDefaulter().Default(a.GetObject())
 	}
 	return r.call(ctx, a, "validate")
 }
