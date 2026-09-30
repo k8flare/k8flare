@@ -136,6 +136,69 @@ cloudflare-containers-ca.crt`); `snapshotDirectory` and
 `directorySnapshots` do not work yet; raw TCP into a container works
 through `getTcpPort().connect()`.
 
+## Progress: steps 3 and 4 (PodKubelet, 2026-10-01)
+
+Code: `packages/control-plane-worker/src/podkubelet/` (`spec.ts` pure
+rules, `kubelet.ts` the DO, `ledger.ts`, `api.ts`, `egress.ts`, `wake.ts`,
+`images.generated.ts`), tests in `packages/control-plane-worker/test/`.
+
+- **Wake path.** The Cluster DO already routes Pod writes to the
+  `k8flare-containers` queue when the Pod opts in; it now also does so
+  for `spec.nodeName: cloudflare` and `schedulerName: k8flare-containers`.
+  `consumeContainers` then calls `wakePodKubelets`, which resolves each
+  changed `/registry/pods/<ns>/<name>` to Pod UIDs (the live Pod if bound
+  to `cloudflare`, plus the `PodLedger` entries for that name so a
+  force-deleted Pod still reaches its DO) and calls `reconcile()` on the
+  `PodKubelet` DO named by UID. The DO talks to the API as component
+  `podkubelet` (`system:k8flare:podkubelet`, privileged), never
+  `ADMIN_TOKEN`.
+- **Contract consumed.** `containers.k8flare.com/image` (`images/<name>`
+  → `ctx.container.images[name]`, otherwise a literal reference) and
+  `containers.k8flare.com/instance` (named type or compact JSON). Images
+  declared under `containers[].images` are exported to the apiserver
+  worker as the `CONTAINERS_IMAGES` env var (JSON list of names) from
+  `loader.ts`, derived from `images.generated.ts`; `make images` (part of
+  `make gen`) runs `scripts/genimages.mjs`, which builds each declared
+  Dockerfile and records ENTRYPOINT/CMD/WorkingDir/User/Env. A Pod on an
+  image with no recorded metadata must set `command`
+  (`CreateContainerConfigError` otherwise).
+- **Pod IPs** come from the virtual Node's `spec.podCIDR`, falling back
+  to `10.42.255.0/24` when the Node has none; `.0`, `.1` (host IP when the
+  Node has no InternalIP) and `.255` are skipped. `PodLedger` (one per
+  cluster) allocates them and records which DOs hold a container, since
+  the platform's instance counts read 0 for `durable_object` containers.
+- **Keep-alive.** Round 4 of the spike showed a container with
+  `setInactivityTimeout(6 h)` stopped after about 25 minutes without a
+  request reaching its DO, so the DO does not rely on the 6 h figure:
+  `KEEPALIVE_INTERVAL_MS` (60 s) is a DO alarm that checks `running` and
+  re-arms the inactivity timeout. **The safe interval still needs
+  measuring**; 60 s is a starting point, not a measured value.
+- **Egress.** `interceptAllOutboundHttp` and
+  `interceptOutboundHttps("kubernetes.default.svc:443")` are given the
+  Pod's own DO stub as the Fetcher, so the DO's `fetch()` knows which Pod
+  is calling. `routeEgress` sends API traffic to the apiserver with a
+  TokenRequest-minted token bound to the Pod (1 h, refreshed 5 min before
+  expiry) and passes everything else to `fetch`; `clusterTarget` is the
+  seam for ClusterIP / Pod IP routing to other Pod DOs. **Unverified on
+  the platform:** whether a DO stub is accepted where the docs say
+  "Worker entrypoint or service binding"; if not, swap in a
+  `WorkerEntrypoint` and carry the Pod UID another way.
+- **Not runnable locally.** `wrangler dev` does not run
+  `scheduling_policy: durable_object` containers, so the DO is tested with
+  the container API, storage, alarms, ledger and apiserver faked
+  (`test/kubelet.test.ts`); the platform-facing calls remain to be
+  exercised on a real deployment (step 3's check column).
+- **Deviations from the design text above:** exit-code parsing of
+  `monitor()` rejections is by regex over the message (the exact text is
+  not recorded in FINDINGS); kubelet `monitor()` errors matching the
+  platform's validation/capacity phrases are treated as start failures
+  (terminal or transient) rather than exits.
+
+Remaining after this step: ClusterIP / Pod IP routing between Pod DOs,
+`exec` / `attach` / `port-forward` / `logs` routing to the DO, Service
+environment variables, a reconciler over the ledger for leaked
+containers, README.
+
 ## Steps and how each is checked
 
 | # | Step | Check |
