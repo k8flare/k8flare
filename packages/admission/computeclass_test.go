@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -23,26 +22,25 @@ func TestPodWantsContainers(t *testing.T) {
 	}
 }
 
-func TestAssignContainersNode(t *testing.T) {
+func TestMutatePodForComputeClass(t *testing.T) {
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "web"}}
 	mutatePodForComputeClass(pod)
-	if err := assignContainersNode(pod); err != nil {
-		t.Fatal(err)
+	if pod.Spec.SchedulerName != containersSchedulerName {
+		t.Fatalf("schedulerName = %q", pod.Spec.SchedulerName)
 	}
-	if pod.Spec.NodeSelector[containersBackendLabel] != computeClassContainers {
-		t.Fatalf("backend: %v", pod.Spec.NodeSelector)
+	if pod.Spec.AutomountServiceAccountToken == nil || *pod.Spec.AutomountServiceAccountToken {
+		t.Fatal("automountServiceAccountToken must default to false")
 	}
-	if pod.Spec.NodeSelector[corev1.LabelHostname] == "" || pod.Annotations[nodeVMTierAnnotation] != "small" {
-		t.Fatalf("pin: %v %v", pod.Spec.NodeSelector, pod.Annotations)
+	if len(pod.Spec.Tolerations) != 1 || pod.Spec.Tolerations[0].Key != containersTaintKey || pod.Spec.Tolerations[0].Effect != corev1.TaintEffectNoSchedule {
+		t.Fatalf("tolerations = %v", pod.Spec.Tolerations)
 	}
-	if !pod.Spec.HostNetwork {
-		t.Fatal("hostNetwork")
+	if pod.Spec.HostNetwork || len(pod.Spec.NodeSelector) != 0 || len(pod.Annotations) != 0 {
+		t.Fatalf("NodeVM routing leaked: hostNetwork=%v nodeSelector=%v annotations=%v", pod.Spec.HostNetwork, pod.Spec.NodeSelector, pod.Annotations)
 	}
-	pod.Spec.Containers = []corev1.Container{{
-		Resources: corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("8Gi")}},
-	}}
-	pod.Spec.NodeSelector[corev1.LabelHostname] = ""
-	if err := assignContainersNode(pod); err == nil {
-		t.Fatal("expected oversized reject")
+	automount := true
+	explicit := &corev1.Pod{Spec: corev1.PodSpec{AutomountServiceAccountToken: &automount, Tolerations: pod.Spec.Tolerations}}
+	mutatePodForComputeClass(explicit)
+	if !*explicit.Spec.AutomountServiceAccountToken || len(explicit.Spec.Tolerations) != 1 {
+		t.Fatalf("explicit fields overwritten: %+v", explicit.Spec)
 	}
 }

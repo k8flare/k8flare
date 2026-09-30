@@ -17,6 +17,9 @@ const (
 	unknownMessage = "Kubelet stopped posting node status."
 	evictionRetry  = 30 * time.Second
 	leaseExtra     = 20 * time.Second
+
+	virtualKubeletLabel = "type"
+	virtualKubeletType  = "virtual-kubelet"
 )
 
 var unreachableConditions = []v1.NodeConditionType{v1.NodeReady, v1.NodeMemoryPressure, v1.NodeDiskPressure, v1.NodePIDPressure}
@@ -35,6 +38,9 @@ func NodeHealth(ctx context.Context, client kubernetes.Interface, name string) (
 	}
 	if err != nil {
 		return nil, err
+	}
+	if node.Labels[virtualKubeletLabel] == virtualKubeletType {
+		return &NodeHealthResult{}, nil
 	}
 	node = node.DeepCopy()
 	held, known, expiry := nodeLeaseState(ctx, client, name)

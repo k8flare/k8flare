@@ -10,6 +10,9 @@ import (
 
 func (h *Handler) run(ctx context.Context, req admit.Request) (admit.Response, error) {
 	if req.Phase == "admit" {
+		if err := applyComputeClass(ctx, h.store, &req); err != nil {
+			return denyResponse(err), nil
+		}
 		if err := applyServiceAccount(ctx, h.store, &req); err != nil {
 			return denyResponse(err), nil
 		}
@@ -26,9 +29,6 @@ func (h *Handler) run(ctx context.Context, req admit.Request) (admit.Response, e
 			return denyResponse(err), nil
 		}
 		if err := applyDefaultIngressClass(ctx, h.store, &req); err != nil {
-			return denyResponse(err), nil
-		}
-		if err := applyComputeClass(ctx, h.store, &req); err != nil {
 			return denyResponse(err), nil
 		}
 		if err := applyRuntimeClass(ctx, h.store, &req); err != nil {

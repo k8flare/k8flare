@@ -15,6 +15,7 @@ export class Scheduler extends WorkerEntrypoint<Env> {
     const worker = await loadWasmWorker(this.env.LOADER, this.env.ASSETS, "scheduler", {
       APISERVER: this.env.APISERVER,
       API_TOKEN: await componentToken(this.env, "scheduler"),
+      CONTAINERS_IMAGES: (this.env as Env & { CONTAINERS_IMAGES?: string }).CONTAINERS_IMAGES ?? "[]",
     }, this.env.APISERVER);
     const resp = await worker.fetch("https://scheduler.internal/schedule", {
       method: "POST",

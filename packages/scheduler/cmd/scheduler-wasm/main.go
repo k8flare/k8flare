@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/k8flare/k8flare/packages/containers"
 	"github.com/k8flare/k8flare/packages/scheduler"
 	bridge "github.com/k8flare/k8flare/packages/worker-bridge"
 	"k8s.io/client-go/kubernetes"
@@ -42,6 +43,12 @@ func main() {
 			println("scheduler: schedule failed:", err.Error())
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		placed, err := containers.Place(r.Context(), client, containers.ParseDeclaredImages(bridge.Getenv(containers.DeclaredImagesEnv)))
+		if err != nil {
+			println("scheduler: containers placement failed:", err.Error())
+		} else if placed.Bound+placed.Rejected > 0 {
+			println("scheduler: containers bound=", placed.Bound, "rejected=", placed.Rejected)
 		}
 		result.Attempt = attempt
 		result.RetryAfterS = scheduler.RetryDelaySeconds(attempt, len(result.Unschedulable))

@@ -1,0 +1,7 @@
+{
+  "name": "@k8flare/containers",
+  "private": true,
+  "type": "module",
+  "description": "Pod on Containers placement: instance shape and image resolution for opted-in Pods, bound to the virtual Node cloudflare by the scheduler worker.",
+  "scripts": { "build": "cd ../.. && make wasm" }
+}

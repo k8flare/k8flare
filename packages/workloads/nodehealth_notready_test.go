@@ -82,3 +82,32 @@ func TestNodeHealthMarksPodsNotReadyOnAnUnreachableNode(t *testing.T) {
 		t.Fatalf("Ready = %s", fresh.Status.Conditions[0].Status)
 	}
 }
+
+func TestNodeHealthLeavesVirtualKubeletNodesAlone(t *testing.T) {
+	node := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "cloudflare", Labels: map[string]string{"type": "virtual-kubelet"}},
+		Status:     v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}},
+	}
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "p1", Namespace: "default"},
+		Spec:       v1.PodSpec{NodeName: "cloudflare"},
+	}
+	client := fake.NewSimpleClientset(node, leaseRenewedAt("cloudflare", time.Now().Add(-time.Hour)), pod)
+	got, err := NodeHealth(context.Background(), client, "cloudflare")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Evicted != 0 || got.NextMs != 0 {
+		t.Fatalf("result = %+v", got)
+	}
+	fresh, err := client.CoreV1().Nodes().Get(context.Background(), "cloudflare", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fresh.Spec.Taints) != 0 || fresh.Status.Conditions[0].Status != v1.ConditionTrue {
+		t.Fatalf("virtual node was touched: %+v", fresh)
+	}
+	if _, err := client.CoreV1().Pods("default").Get(context.Background(), "p1", metav1.GetOptions{}); err != nil {
+		t.Fatalf("pod evicted: %v", err)
+	}
+}

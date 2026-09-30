@@ -30,6 +30,7 @@
     "MAX_REQUESTS_INFLIGHT": "400",
     "MAX_MUTATING_REQUESTS_INFLIGHT": "200",
     "CLUSTER_UID": "",
+    "CONTAINERS_IMAGES": "[]",
     "AUDIT_POLICY": "",
     "DISABLE": "",
     "GATEWAY_URL": "https://api.k8flare.com",
