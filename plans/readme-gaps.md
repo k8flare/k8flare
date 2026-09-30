@@ -598,3 +598,39 @@ it. Remove an entry when the behaviour exists and CI covers it.
     completed fetch pays through `window.Run`, and a pass that ends with
     rate-limited requeues pending still relists on the retry instead of
     waiting for them.
+- Run 36754088851 (c7fef11, focused): two specs left, both root-caused
+  and fixed with unit tests; the aggregator one was reproduced on the
+  dev stack (OrbStack node, sample-apiserver 1.29.2, `-v=6`).
+  - Job podFailurePolicy ignoring DisruptionTarget: the eviction
+    subresource added the condition through the `pods` store, whose
+    update strategy (upstream `pod.Strategy` and `podUpdateStrategy`)
+    keeps the old status, so nothing was persisted; the kubelet later
+    reported the pod Failed without the condition, the policy did not
+    match, three counted failures exceeded `backoffLimit: 2` and the Job
+    failed (`SuccessfulDelete` of the replacement pod at 18:25:18). The
+    condition is now written through a status-strategy copy of the
+    store, as upstream's `EvictionREST` does with its `statusStore`.
+  - Aggregator: every proxied `flunders` request got 403 from the
+    sample apiserver (audit: `decision: allow` at the front, `code: 403`
+    from the extension; the `Available: True` in the dump is computed at
+    read time and means only that endpoints existed). The extension's
+    log showed the proxied user as `admin` with groups
+    `["system:masters, system:authenticated", "system:authenticated"]`:
+    the apiregistration worker adds one `X-Remote-Group` line per group,
+    the Workers fetch hop into the node-tunnel binding merges repeated
+    lines into one comma-joined value, and the tunnel wrote that line to
+    the extension, whose request-header authenticator takes each line as
+    one group. Its SubjectAccessReview for that group was denied. The
+    tunnel now splits the joined value into one line per group before
+    writing the request (the front already splits it when reading). The
+    request-header CA, the `system:auth-proxy` client certificate and the
+    ConfigMap were all correct in the run (the extension started without
+    restarts and read the ConfigMap). After the fix the same request on
+    the dev stack returns a `FlunderList`. Not changed: `X-Remote-Extra-*`
+    values travel the same hop and would merge the same way if a user had
+    a multi-valued extra.
+  - Seen on the way, not part of the failure: an existing dev cluster
+    keeps the pre-request-header `extension-apiserver-authentication`
+    (server CA, bare-string allowed names) until the ConfigMap is deleted
+    and kube-system re-provisioned, which nothing does automatically; the
+    sample apiserver crash-loops on the bare string.
