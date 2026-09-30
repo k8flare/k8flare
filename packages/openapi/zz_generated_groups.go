@@ -6,6 +6,7 @@ package openapi
 
 import (
 	_ "github.com/k8flare/k8flare/packages/apiserver-admissionregistration"
+	_ "github.com/k8flare/k8flare/packages/apiserver-apiregistration"
 	_ "github.com/k8flare/k8flare/packages/apiserver-apps"
 	_ "github.com/k8flare/k8flare/packages/apiserver-authentication"
 	_ "github.com/k8flare/k8flare/packages/apiserver-authorization"
@@ -20,6 +21,7 @@ import (
 	_ "github.com/k8flare/k8flare/packages/apiserver-node"
 	_ "github.com/k8flare/k8flare/packages/apiserver-policy"
 	_ "github.com/k8flare/k8flare/packages/apiserver-rbac"
+	_ "github.com/k8flare/k8flare/packages/apiserver-resource"
 	_ "github.com/k8flare/k8flare/packages/apiserver-scheduling"
 	_ "github.com/k8flare/k8flare/packages/apiserver-storage"
 )

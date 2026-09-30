@@ -131,9 +131,6 @@ func rootModels(d *definitions, dir string) ([]string, error) {
 		}
 	}
 	for _, s := range upstream.Served {
-		if strings.HasPrefix(s.GV, "apiregistration.k8s.io/") || strings.HasPrefix(s.GV, "resource.k8s.io/") {
-			continue
-		}
 		alias, ok := d.aliases[upstream.SchemeExternal(s.GV)]
 		if !ok {
 			return nil, fmt.Errorf("%s: no import for %s", s.GV, upstream.SchemeExternal(s.GV))

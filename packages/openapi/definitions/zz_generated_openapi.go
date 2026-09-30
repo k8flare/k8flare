@@ -20,18 +20,26 @@ import (
 	nodev1 "k8s.io/api/node/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	resource "k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	intstr "k8s.io/apimachinery/pkg/util/intstr"
+	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	common "k8s.io/kube-openapi/pkg/common"
 	spec "k8s.io/kube-openapi/pkg/validation/spec"
 )
 
 func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenAPIDefinition {
 	return map[string]common.OpenAPIDefinition{
+		apiregistrationv1.APIService{}.OpenAPIModelName():                           schema_pkg_apis_apiregistration_v1_APIService(ref),
+		apiregistrationv1.APIServiceCondition{}.OpenAPIModelName():                  schema_pkg_apis_apiregistration_v1_APIServiceCondition(ref),
+		apiregistrationv1.APIServiceList{}.OpenAPIModelName():                       schema_pkg_apis_apiregistration_v1_APIServiceList(ref),
+		apiregistrationv1.APIServiceSpec{}.OpenAPIModelName():                       schema_pkg_apis_apiregistration_v1_APIServiceSpec(ref),
+		apiregistrationv1.APIServiceStatus{}.OpenAPIModelName():                     schema_pkg_apis_apiregistration_v1_APIServiceStatus(ref),
+		apiregistrationv1.ServiceReference{}.OpenAPIModelName():                     schema_pkg_apis_apiregistration_v1_ServiceReference(ref),
 		appsv1.ControllerRevision{}.OpenAPIModelName():                              schema_k8sio_api_apps_v1_ControllerRevision(ref),
 		appsv1.ControllerRevisionList{}.OpenAPIModelName():                          schema_k8sio_api_apps_v1_ControllerRevisionList(ref),
 		appsv1.DaemonSet{}.OpenAPIModelName():                                       schema_k8sio_api_apps_v1_DaemonSet(ref),
@@ -513,6 +521,49 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		rbacv1.RoleRef{}.OpenAPIModelName():                                         schema_k8sio_api_rbac_v1_RoleRef(ref),
 		rbacv1.Subject{}.OpenAPIModelName():                                         schema_k8sio_api_rbac_v1_Subject(ref),
 		resource.Quantity{}.OpenAPIModelName():                                      schema_apimachinery_pkg_api_resource_Quantity(ref),
+		resourcev1.AllocatedDeviceStatus{}.OpenAPIModelName():                       schema_k8sio_api_resource_v1_AllocatedDeviceStatus(ref),
+		resourcev1.AllocationResult{}.OpenAPIModelName():                            schema_k8sio_api_resource_v1_AllocationResult(ref),
+		resourcev1.CELDeviceSelector{}.OpenAPIModelName():                           schema_k8sio_api_resource_v1_CELDeviceSelector(ref),
+		resourcev1.CapacityRequestPolicy{}.OpenAPIModelName():                       schema_k8sio_api_resource_v1_CapacityRequestPolicy(ref),
+		resourcev1.CapacityRequestPolicyRange{}.OpenAPIModelName():                  schema_k8sio_api_resource_v1_CapacityRequestPolicyRange(ref),
+		resourcev1.CapacityRequirements{}.OpenAPIModelName():                        schema_k8sio_api_resource_v1_CapacityRequirements(ref),
+		resourcev1.Counter{}.OpenAPIModelName():                                     schema_k8sio_api_resource_v1_Counter(ref),
+		resourcev1.CounterSet{}.OpenAPIModelName():                                  schema_k8sio_api_resource_v1_CounterSet(ref),
+		resourcev1.Device{}.OpenAPIModelName():                                      schema_k8sio_api_resource_v1_Device(ref),
+		resourcev1.DeviceAllocationConfiguration{}.OpenAPIModelName():               schema_k8sio_api_resource_v1_DeviceAllocationConfiguration(ref),
+		resourcev1.DeviceAllocationResult{}.OpenAPIModelName():                      schema_k8sio_api_resource_v1_DeviceAllocationResult(ref),
+		resourcev1.DeviceAttribute{}.OpenAPIModelName():                             schema_k8sio_api_resource_v1_DeviceAttribute(ref),
+		resourcev1.DeviceCapacity{}.OpenAPIModelName():                              schema_k8sio_api_resource_v1_DeviceCapacity(ref),
+		resourcev1.DeviceClaim{}.OpenAPIModelName():                                 schema_k8sio_api_resource_v1_DeviceClaim(ref),
+		resourcev1.DeviceClaimConfiguration{}.OpenAPIModelName():                    schema_k8sio_api_resource_v1_DeviceClaimConfiguration(ref),
+		resourcev1.DeviceClass{}.OpenAPIModelName():                                 schema_k8sio_api_resource_v1_DeviceClass(ref),
+		resourcev1.DeviceClassConfiguration{}.OpenAPIModelName():                    schema_k8sio_api_resource_v1_DeviceClassConfiguration(ref),
+		resourcev1.DeviceClassList{}.OpenAPIModelName():                             schema_k8sio_api_resource_v1_DeviceClassList(ref),
+		resourcev1.DeviceClassSpec{}.OpenAPIModelName():                             schema_k8sio_api_resource_v1_DeviceClassSpec(ref),
+		resourcev1.DeviceConstraint{}.OpenAPIModelName():                            schema_k8sio_api_resource_v1_DeviceConstraint(ref),
+		resourcev1.DeviceCounterConsumption{}.OpenAPIModelName():                    schema_k8sio_api_resource_v1_DeviceCounterConsumption(ref),
+		resourcev1.DeviceRequest{}.OpenAPIModelName():                               schema_k8sio_api_resource_v1_DeviceRequest(ref),
+		resourcev1.DeviceRequestAllocationResult{}.OpenAPIModelName():               schema_k8sio_api_resource_v1_DeviceRequestAllocationResult(ref),
+		resourcev1.DeviceSelector{}.OpenAPIModelName():                              schema_k8sio_api_resource_v1_DeviceSelector(ref),
+		resourcev1.DeviceSubRequest{}.OpenAPIModelName():                            schema_k8sio_api_resource_v1_DeviceSubRequest(ref),
+		resourcev1.DeviceTaint{}.OpenAPIModelName():                                 schema_k8sio_api_resource_v1_DeviceTaint(ref),
+		resourcev1.DeviceToleration{}.OpenAPIModelName():                            schema_k8sio_api_resource_v1_DeviceToleration(ref),
+		resourcev1.ExactDeviceRequest{}.OpenAPIModelName():                          schema_k8sio_api_resource_v1_ExactDeviceRequest(ref),
+		resourcev1.NetworkDeviceData{}.OpenAPIModelName():                           schema_k8sio_api_resource_v1_NetworkDeviceData(ref),
+		resourcev1.NodeAllocatableResourceMapping{}.OpenAPIModelName():              schema_k8sio_api_resource_v1_NodeAllocatableResourceMapping(ref),
+		resourcev1.OpaqueDeviceConfiguration{}.OpenAPIModelName():                   schema_k8sio_api_resource_v1_OpaqueDeviceConfiguration(ref),
+		resourcev1.ResourceClaim{}.OpenAPIModelName():                               schema_k8sio_api_resource_v1_ResourceClaim(ref),
+		resourcev1.ResourceClaimConsumerReference{}.OpenAPIModelName():              schema_k8sio_api_resource_v1_ResourceClaimConsumerReference(ref),
+		resourcev1.ResourceClaimList{}.OpenAPIModelName():                           schema_k8sio_api_resource_v1_ResourceClaimList(ref),
+		resourcev1.ResourceClaimSpec{}.OpenAPIModelName():                           schema_k8sio_api_resource_v1_ResourceClaimSpec(ref),
+		resourcev1.ResourceClaimStatus{}.OpenAPIModelName():                         schema_k8sio_api_resource_v1_ResourceClaimStatus(ref),
+		resourcev1.ResourceClaimTemplate{}.OpenAPIModelName():                       schema_k8sio_api_resource_v1_ResourceClaimTemplate(ref),
+		resourcev1.ResourceClaimTemplateList{}.OpenAPIModelName():                   schema_k8sio_api_resource_v1_ResourceClaimTemplateList(ref),
+		resourcev1.ResourceClaimTemplateSpec{}.OpenAPIModelName():                   schema_k8sio_api_resource_v1_ResourceClaimTemplateSpec(ref),
+		resourcev1.ResourcePool{}.OpenAPIModelName():                                schema_k8sio_api_resource_v1_ResourcePool(ref),
+		resourcev1.ResourceSlice{}.OpenAPIModelName():                               schema_k8sio_api_resource_v1_ResourceSlice(ref),
+		resourcev1.ResourceSliceList{}.OpenAPIModelName():                           schema_k8sio_api_resource_v1_ResourceSliceList(ref),
+		resourcev1.ResourceSliceSpec{}.OpenAPIModelName():                           schema_k8sio_api_resource_v1_ResourceSliceSpec(ref),
 		runtime.RawExtension{}.OpenAPIModelName():                                   schema_k8sio_apimachinery_pkg_runtime_RawExtension(ref),
 		schedulingv1.PriorityClass{}.OpenAPIModelName():                             schema_k8sio_api_scheduling_v1_PriorityClass(ref),
 		schedulingv1.PriorityClassList{}.OpenAPIModelName():                         schema_k8sio_api_scheduling_v1_PriorityClassList(ref),
@@ -572,6 +623,303 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v1.Validation{}.OpenAPIModelName():                                          schema_k8sio_api_admissionregistration_v1_Validation(ref),
 		v1.Variable{}.OpenAPIModelName():                                            schema_k8sio_api_admissionregistration_v1_Variable(ref),
 		v1.WebhookClientConfig{}.OpenAPIModelName():                                 schema_k8sio_api_admissionregistration_v1_WebhookClientConfig(ref),
+	}
+}
+
+func schema_pkg_apis_apiregistration_v1_APIService(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     map[string]interface{}{},
+							Ref:         ref(apiregistrationv1.APIServiceSpec{}.OpenAPIModelName()),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     map[string]interface{}{},
+							Ref:         ref(apiregistrationv1.APIServiceStatus{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			metav1.ObjectMeta{}.OpenAPIModelName(), apiregistrationv1.APIServiceSpec{}.OpenAPIModelName(), apiregistrationv1.APIServiceStatus{}.OpenAPIModelName()},
+	}
+}
+
+func schema_pkg_apis_apiregistration_v1_APIServiceCondition(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"type": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"lastTransitionTime": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(metav1.Time{}.OpenAPIModelName()),
+						},
+					},
+					"reason": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"message": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"type", "status"},
+			},
+		},
+		Dependencies: []string{
+			metav1.Time{}.OpenAPIModelName()},
+	}
+}
+
+func schema_pkg_apis_apiregistration_v1_APIServiceList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(apiregistrationv1.APIService{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			metav1.ListMeta{}.OpenAPIModelName(), apiregistrationv1.APIService{}.OpenAPIModelName()},
+	}
+}
+
+func schema_pkg_apis_apiregistration_v1_APIServiceSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"service": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(apiregistrationv1.ServiceReference{}.OpenAPIModelName()),
+						},
+					},
+					"group": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"version": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"insecureSkipTLSVerify": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"caBundle": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "byte",
+						},
+					},
+					"groupPriorityMinimum": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"versionPriority": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+				Required: []string{"groupPriorityMinimum", "versionPriority"},
+			},
+		},
+		Dependencies: []string{
+			apiregistrationv1.ServiceReference{}.OpenAPIModelName()},
+	}
+}
+
+func schema_pkg_apis_apiregistration_v1_APIServiceStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type":       "map",
+								"x-kubernetes-patch-merge-key": "type",
+								"x-kubernetes-patch-strategy":  "merge",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(apiregistrationv1.APIServiceCondition{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			apiregistrationv1.APIServiceCondition{}.OpenAPIModelName()},
+	}
+}
+
+func schema_pkg_apis_apiregistration_v1_ServiceReference(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"namespace": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"port": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+			},
+		},
 	}
 }
 
@@ -25876,6 +26224,2302 @@ func schema_apimachinery_pkg_api_resource_Quantity(ref common.ReferenceCallback)
 			},
 		},
 	})
+}
+
+func schema_k8sio_api_resource_v1_AllocatedDeviceStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"driver": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"pool": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"device": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"shareID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(metav1.Condition{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"data": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(runtime.RawExtension{}.OpenAPIModelName()),
+						},
+					},
+					"networkData": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(resourcev1.NetworkDeviceData{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"driver", "pool", "device"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.NetworkDeviceData{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), runtime.RawExtension{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_AllocationResult(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"devices": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     map[string]interface{}{},
+							Ref:         ref(resourcev1.DeviceAllocationResult{}.OpenAPIModelName()),
+						},
+					},
+					"nodeSelector": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(corev1.NodeSelector{}.OpenAPIModelName()),
+						},
+					},
+					"allocationTimestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(metav1.Time{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			corev1.NodeSelector{}.OpenAPIModelName(), resourcev1.DeviceAllocationResult{}.OpenAPIModelName(), metav1.Time{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_CELDeviceSelector(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"expression": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"expression"},
+			},
+		},
+	}
+}
+
+func schema_k8sio_api_resource_v1_CapacityRequestPolicy(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"default": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(resource.Quantity{}.OpenAPIModelName()),
+						},
+					},
+					"validValues": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(resource.Quantity{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"validRange": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(resourcev1.CapacityRequestPolicyRange{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.CapacityRequestPolicyRange{}.OpenAPIModelName(), resource.Quantity{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_CapacityRequestPolicyRange(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"min": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(resource.Quantity{}.OpenAPIModelName()),
+						},
+					},
+					"max": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(resource.Quantity{}.OpenAPIModelName()),
+						},
+					},
+					"step": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(resource.Quantity{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"min"},
+			},
+		},
+		Dependencies: []string{
+			resource.Quantity{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_CapacityRequirements(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"requests": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(resource.Quantity{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			resource.Quantity{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_Counter(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"value": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(resource.Quantity{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"value"},
+			},
+		},
+		Dependencies: []string{
+			resource.Quantity{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_CounterSet(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"counters": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.Counter{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"name", "counters"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.Counter{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_Device(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"attributes": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceAttribute{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"capacity": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceCapacity{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"consumesCounters": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceCounterConsumption{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"nodeName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"nodeSelector": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(corev1.NodeSelector{}.OpenAPIModelName()),
+						},
+					},
+					"allNodes": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"taints": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceTaint{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"bindsToNode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"bindingConditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"bindingFailureConditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"allowMultipleAllocations": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"nodeAllocatableResourceMappings": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.NodeAllocatableResourceMapping{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
+		Dependencies: []string{
+			corev1.NodeSelector{}.OpenAPIModelName(), resourcev1.DeviceAttribute{}.OpenAPIModelName(), resourcev1.DeviceCapacity{}.OpenAPIModelName(), resourcev1.DeviceCounterConsumption{}.OpenAPIModelName(), resourcev1.DeviceTaint{}.OpenAPIModelName(), resourcev1.NodeAllocatableResourceMapping{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceAllocationConfiguration(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"source": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+							Enum:        []interface{}{"FromClaim", "FromClass"},
+						},
+					},
+					"requests": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"opaque": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(resourcev1.OpaqueDeviceConfiguration{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"source"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.OpaqueDeviceConfiguration{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceAllocationResult(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"results": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceRequestAllocationResult{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"config": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceAllocationConfiguration{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.DeviceAllocationConfiguration{}.OpenAPIModelName(), resourcev1.DeviceRequestAllocationResult{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceAttribute(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"int": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"bool": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"string": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"version": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"ints": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: 0,
+										Type:    []string{"integer"},
+										Format:  "int64",
+									},
+								},
+							},
+						},
+					},
+					"bools": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: false,
+										Type:    []string{"boolean"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"strings": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"versions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceCapacity(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"value": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(resource.Quantity{}.OpenAPIModelName()),
+						},
+					},
+					"requestPolicy": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(resourcev1.CapacityRequestPolicy{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"value"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.CapacityRequestPolicy{}.OpenAPIModelName(), resource.Quantity{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceClaim(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"requests": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceRequest{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"constraints": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceConstraint{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"config": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceClaimConfiguration{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.DeviceClaimConfiguration{}.OpenAPIModelName(), resourcev1.DeviceConstraint{}.OpenAPIModelName(), resourcev1.DeviceRequest{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceClaimConfiguration(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"requests": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"opaque": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(resourcev1.OpaqueDeviceConfiguration{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.OpaqueDeviceConfiguration{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceClass(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     map[string]interface{}{},
+							Ref:         ref(resourcev1.DeviceClassSpec{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"spec"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.DeviceClassSpec{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceClassConfiguration(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"opaque": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(resourcev1.OpaqueDeviceConfiguration{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.OpaqueDeviceConfiguration{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceClassList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceClass{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.DeviceClass{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceClassSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"selectors": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceSelector{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"config": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceClassConfiguration{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"extendedResourceName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.DeviceClassConfiguration{}.OpenAPIModelName(), resourcev1.DeviceSelector{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceConstraint(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"requests": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"matchAttribute": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"distinctAttribute": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceCounterConsumption(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"counterSet": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"counters": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.Counter{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"counterSet", "counters"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.Counter{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceRequest(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"exactly": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(resourcev1.ExactDeviceRequest{}.OpenAPIModelName()),
+						},
+					},
+					"firstAvailable": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceSubRequest{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.DeviceSubRequest{}.OpenAPIModelName(), resourcev1.ExactDeviceRequest{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceRequestAllocationResult(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"request": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"driver": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"pool": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"device": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"adminAccess": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"tolerations": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceToleration{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"bindingConditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"bindingFailureConditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"shareID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"consumedCapacity": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(resource.Quantity{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"request", "driver", "pool", "device"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.DeviceToleration{}.OpenAPIModelName(), resource.Quantity{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceSelector(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"cel": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(resourcev1.CELDeviceSelector{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.CELDeviceSelector{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceSubRequest(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"deviceClassName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"selectors": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceSelector{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"allocationMode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+							Enum:        []interface{}{"All", "ExactCount"},
+						},
+					},
+					"count": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"tolerations": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceToleration{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"capacity": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(resourcev1.CapacityRequirements{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"name", "deviceClassName"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.CapacityRequirements{}.OpenAPIModelName(), resourcev1.DeviceSelector{}.OpenAPIModelName(), resourcev1.DeviceToleration{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceTaint(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"key": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"value": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"effect": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+							Enum:        []interface{}{"NoExecute", "NoSchedule", "None"},
+						},
+					},
+					"timeAdded": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(metav1.Time{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"key", "effect"},
+			},
+		},
+		Dependencies: []string{
+			metav1.Time{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_DeviceToleration(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"key": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"operator": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "Equal",
+							Type:        []string{"string"},
+							Format:      "",
+							Enum:        []interface{}{"Equal", "Exists"},
+						},
+					},
+					"value": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"effect": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+							Enum:        []interface{}{"NoExecute", "NoSchedule", "None"},
+						},
+					},
+					"tolerationSeconds": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_k8sio_api_resource_v1_ExactDeviceRequest(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"deviceClassName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"selectors": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceSelector{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"allocationMode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+							Enum:        []interface{}{"All", "ExactCount"},
+						},
+					},
+					"count": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"adminAccess": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"tolerations": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.DeviceToleration{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"capacity": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(resourcev1.CapacityRequirements{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"deviceClassName"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.CapacityRequirements{}.OpenAPIModelName(), resourcev1.DeviceSelector{}.OpenAPIModelName(), resourcev1.DeviceToleration{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_NetworkDeviceData(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"interfaceName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"ips": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"hardwareAddress": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_k8sio_api_resource_v1_NodeAllocatableResourceMapping(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"capacityKey": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"allocationMultiplier": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(resource.Quantity{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			resource.Quantity{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_OpaqueDeviceConfiguration(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"driver": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"parameters": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(runtime.RawExtension{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"driver", "parameters"},
+			},
+		},
+		Dependencies: []string{
+			runtime.RawExtension{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_ResourceClaim(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     map[string]interface{}{},
+							Ref:         ref(resourcev1.ResourceClaimSpec{}.OpenAPIModelName()),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     map[string]interface{}{},
+							Ref:         ref(resourcev1.ResourceClaimStatus{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"spec"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.ResourceClaimSpec{}.OpenAPIModelName(), resourcev1.ResourceClaimStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_ResourceClaimConsumerReference(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"apiGroup": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"resource": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"uid": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"resource", "name", "uid"},
+			},
+		},
+	}
+}
+
+func schema_k8sio_api_resource_v1_ResourceClaimList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.ResourceClaim{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.ResourceClaim{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_ResourceClaimSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"devices": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     map[string]interface{}{},
+							Ref:         ref(resourcev1.DeviceClaim{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.DeviceClaim{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_ResourceClaimStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"allocation": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(resourcev1.AllocationResult{}.OpenAPIModelName()),
+						},
+					},
+					"reservedFor": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"uid",
+								},
+								"x-kubernetes-list-type":       "map",
+								"x-kubernetes-patch-merge-key": "uid",
+								"x-kubernetes-patch-strategy":  "merge",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.ResourceClaimConsumerReference{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"devices": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"driver",
+									"device",
+									"pool",
+									"shareID",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.AllocatedDeviceStatus{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.AllocatedDeviceStatus{}.OpenAPIModelName(), resourcev1.AllocationResult{}.OpenAPIModelName(), resourcev1.ResourceClaimConsumerReference{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_ResourceClaimTemplate(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     map[string]interface{}{},
+							Ref:         ref(resourcev1.ResourceClaimTemplateSpec{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"spec"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.ResourceClaimTemplateSpec{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_ResourceClaimTemplateList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.ResourceClaimTemplate{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.ResourceClaimTemplate{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_ResourceClaimTemplateSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     map[string]interface{}{},
+							Ref:         ref(resourcev1.ResourceClaimSpec{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"spec"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.ResourceClaimSpec{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_ResourcePool(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"generation": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"resourceSliceCount": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+				},
+				Required: []string{"name", "generation", "resourceSliceCount"},
+			},
+		},
+	}
+}
+
+func schema_k8sio_api_resource_v1_ResourceSlice(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     map[string]interface{}{},
+							Ref:         ref(resourcev1.ResourceSliceSpec{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"spec"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.ResourceSliceSpec{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_ResourceSliceList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     map[string]interface{}{},
+							Ref:         ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.ResourceSlice{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			resourcev1.ResourceSlice{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_resource_v1_ResourceSliceSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"driver": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"pool": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Default:     map[string]interface{}{},
+							Ref:         ref(resourcev1.ResourcePool{}.OpenAPIModelName()),
+						},
+					},
+					"nodeName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"nodeSelector": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Ref:         ref(corev1.NodeSelector{}.OpenAPIModelName()),
+						},
+					},
+					"allNodes": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"devices": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.Device{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"perDeviceNodeSelection": {
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"sharedCounters": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(resourcev1.CounterSet{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"driver", "pool"},
+			},
+		},
+		Dependencies: []string{
+			corev1.NodeSelector{}.OpenAPIModelName(), resourcev1.CounterSet{}.OpenAPIModelName(), resourcev1.Device{}.OpenAPIModelName(), resourcev1.ResourcePool{}.OpenAPIModelName()},
+	}
 }
 
 func schema_k8sio_apimachinery_pkg_runtime_RawExtension(ref common.ReferenceCallback) common.OpenAPIDefinition {

@@ -70,9 +70,6 @@ func Install(mux *http.ServeMux, deps registry.Deps, only ...schema.GroupVersion
 		if len(only) > 0 && !contains(only, sgv.GV) {
 			continue
 		}
-		if deps.Kine == nil && sgv.GV.Group == "resource.k8s.io" {
-			continue
-		}
 		storage := map[string]rest.Storage{}
 		for _, res := range sgv.Resources {
 			if strings.Contains(res.Name, "/") {

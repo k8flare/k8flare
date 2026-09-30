@@ -109,7 +109,7 @@ func writeGroups(root string) error {
 		// a baked document, so linking them there would cost it 30 MB.
 		"//go:build !js\n\npackage openapi\n\nimport (\n")
 	for _, name := range names {
-		if name == "apiregistration" || name == "events" || name == "resource" {
+		if name == "events" {
 			continue
 		}
 		fmt.Fprintf(&all, "\t_ \"github.com/k8flare/k8flare/packages/apiserver-%s\"\n", name)
