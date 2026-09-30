@@ -412,3 +412,20 @@ func TestParseDisable(t *testing.T) {
 		t.Fatal("empty list should disable nothing")
 	}
 }
+
+func TestIngressClassIsTheEdgeDefault(t *testing.T) {
+	var file File
+	for _, f := range Packaged() {
+		if f.Name == "ingressclass.yaml" {
+			file = f
+		}
+	}
+	objs, err := Decode(Render([]File{file}, Vars())[0].Content)
+	if err != nil || len(objs) != 1 {
+		t.Fatal(err, len(objs))
+	}
+	controller, _, _ := unstructured.NestedString(objs[0].Object, "spec", "controller")
+	if objs[0].GetKind() != "IngressClass" || objs[0].GetName() != "k8flare" || controller != "k8flare.com/edge" || objs[0].GetAnnotations()["ingressclass.kubernetes.io/is-default-class"] != "true" {
+		t.Fatalf("ingress class = %v", objs[0].Object)
+	}
+}
