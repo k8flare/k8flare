@@ -11,8 +11,10 @@ import (
 	"k8s.io/kubernetes/pkg/registry/core/event"
 	"k8s.io/kubernetes/pkg/registry/core/limitrange"
 	"k8s.io/kubernetes/pkg/registry/core/namespace"
+	"k8s.io/kubernetes/pkg/registry/core/node"
 	"k8s.io/kubernetes/pkg/registry/core/persistentvolume"
 	"k8s.io/kubernetes/pkg/registry/core/persistentvolumeclaim"
+	"k8s.io/kubernetes/pkg/registry/core/pod"
 	"k8s.io/kubernetes/pkg/registry/core/podtemplate"
 	"k8s.io/kubernetes/pkg/registry/core/replicationcontroller"
 	"k8s.io/kubernetes/pkg/registry/core/resourcequota"
@@ -30,10 +32,10 @@ func init() {
 	registry.Upstreams[group("events")] = registry.Upstream{Strategy: event.Strategy}
 	registry.Upstreams[group("limitranges")] = registry.Upstream{Strategy: limitrange.Strategy}
 	registry.Upstreams[group("namespaces")] = registry.Upstream{Strategy: namespace.Strategy, Status: namespace.StatusStrategy}
-	registry.Upstreams[group("nodes")] = registry.Upstream{Strategy: nodeInternal, Status: nodeStatusInternal}
+	registry.Upstreams[group("nodes")] = registry.Upstream{Strategy: node.Strategy, Status: node.StatusStrategy}
 	registry.Upstreams[group("persistentvolumeclaims")] = registry.Upstream{Strategy: persistentvolumeclaim.Strategy, Status: persistentvolumeclaim.StatusStrategy}
 	registry.Upstreams[group("persistentvolumes")] = registry.Upstream{Strategy: persistentvolume.Strategy, Status: persistentvolume.StatusStrategy}
-	registry.Upstreams[group("pods")] = registry.Upstream{Strategy: podInternal, Status: podStatusInternal}
+	registry.Upstreams[group("pods")] = registry.Upstream{Strategy: pod.Strategy, Status: pod.StatusStrategy}
 	registry.Upstreams[group("podtemplates")] = registry.Upstream{Strategy: podtemplate.Strategy}
 	registry.Upstreams[group("replicationcontrollers")] = registry.Upstream{Strategy: replicationcontroller.Strategy, Status: replicationcontroller.StatusStrategy}
 	registry.Upstreams[group("resourcequotas")] = registry.Upstream{Strategy: resourcequota.Strategy, Status: resourcequota.StatusStrategy}
