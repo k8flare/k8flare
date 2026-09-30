@@ -4,11 +4,24 @@ package main
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/k8flare/k8flare/packages/apiserver"
 	auth "github.com/k8flare/k8flare/packages/apiserver-auth"
 	bridge "github.com/k8flare/k8flare/packages/worker-bridge"
 )
+
+func inflightLimit(name string, fallback int) int {
+	raw := bridge.Getenv(name)
+	if raw == "" {
+		return fallback
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit < 0 {
+		panic(name + " must be a non-negative integer")
+	}
+	return limit
+}
 
 func main() {
 	requiredClaims, err := auth.ParseRequiredClaims(bridge.Getenv("OIDC_REQUIRED_CLAIMS"))
@@ -40,7 +53,9 @@ func main() {
 			GroupsPrefix:   bridge.Getenv("OIDC_GROUPS_PREFIX"),
 			RequiredClaims: requiredClaims,
 		},
-		ClusterUID: bridge.Getenv("CLUSTER_UID"),
+		MaxRequestsInflight:         inflightLimit("MAX_REQUESTS_INFLIGHT", apiserver.DefaultMaxRequestsInflight),
+		MaxMutatingRequestsInflight: inflightLimit("MAX_MUTATING_REQUESTS_INFLIGHT", apiserver.DefaultMaxMutatingRequestsInflight),
+		ClusterUID:                  bridge.Getenv("CLUSTER_UID"),
 
 		SecretsEncryptionKeys: bridge.Getenv("SECRETS_ENCRYPTION_KEYS"),
 	})
