@@ -317,7 +317,7 @@ func TestDrainWaitsForInFlightPastDeadline(t *testing.T) {
 		c.inFlight.Store(0)
 	}()
 	started := time.Now()
-	drained := drain(func(string) bool { return true }, 50*time.Millisecond, 2*time.Second, time.Time{})
+	drained := drain(func(string) bool { return true }, 50*time.Millisecond, 2*time.Second, time.Time{}, never)
 	elapsed := time.Since(started)
 	if elapsed < 400*time.Millisecond {
 		t.Fatalf("returned after %s while a create was in flight", elapsed)
@@ -331,7 +331,7 @@ func TestDrainStopsQueuedWorkAtDeadline(t *testing.T) {
 	work.reset(func(string) bool { return true })
 	work.of("replicationmanager").depth.Store(1)
 	started := time.Now()
-	if drain(func(string) bool { return true }, 50*time.Millisecond, 2*time.Second, time.Time{}) {
+	if drain(func(string) bool { return true }, 50*time.Millisecond, 2*time.Second, time.Time{}, never) {
 		t.Fatal("queued work reported drained")
 	}
 	if time.Since(started) > time.Second {
@@ -345,7 +345,7 @@ func TestDrainYieldsToAWaitingSync(t *testing.T) {
 	yieldRequested.Store(true)
 	defer yieldRequested.Store(false)
 	started := time.Now()
-	if drain(func(string) bool { return true }, time.Minute, time.Minute, time.Time{}) {
+	if drain(func(string) bool { return true }, time.Minute, time.Minute, time.Time{}, never) {
 		t.Fatal("queued work reported drained")
 	}
 	if time.Since(started) > 2*time.Second {
@@ -443,7 +443,7 @@ func TestDrainStopsWithinTheCallerBudget(t *testing.T) {
 
 	started := time.Now()
 	budget := 600 * time.Millisecond
-	if drain(workloadQueue, 100*time.Millisecond, time.Hour, started.Add(budget)) {
+	if drain(workloadQueue, 100*time.Millisecond, time.Hour, started.Add(budget), never) {
 		t.Fatal("drain reported a drained queue while an item was in flight")
 	}
 	if waited := time.Since(started); waited > budget+2*time.Second {
@@ -455,7 +455,7 @@ func TestDrainWithoutBudgetKeepsItsOwnWindow(t *testing.T) {
 	work.reset(workloadQueue)
 	defer work.reset(workloadQueue)
 
-	if !drain(workloadQueue, time.Second, time.Second, time.Time{}) {
+	if !drain(workloadQueue, time.Second, time.Second, time.Time{}, never) {
 		t.Fatal("drain on an idle queue should report drained")
 	}
 }

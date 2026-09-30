@@ -72,6 +72,7 @@ type Result struct {
 	Objects map[string]int `json:"objects"`
 	Drained bool           `json:"drained"`
 	NextMs  int64          `json:"nextMs"`
+	Live    bool           `json:"live"`
 }
 
 type pageFunc func(context.Context, metav1.ListOptions) (runtime.Object, error)
@@ -396,7 +397,7 @@ func SyncWithin(ctx context.Context, client kubernetes.Interface, rootCA, signin
 	if err != nil {
 		return result, err
 	}
-	if needsFollowUp(controllers) {
+	if needsFollowUp(controllers) && !result.Live {
 		follow, err := syncPass(ctx, client, rootCA, signingCA, servingCA, followUpChanged(controllers), followDrain, followGrace, deadline)
 		if err != nil {
 			return result, err
@@ -532,6 +533,7 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 		src = kept
 	}
 	loaded := make([][]runtime.Object, len(src))
+	revisions := make([]int64, len(src))
 	var listErr error
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -541,7 +543,7 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			objs, err := list(listCtx, s.page)
+			objs, revision, err := list(listCtx, s.page)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -549,6 +551,7 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 				return
 			}
 			loaded[i] = objs
+			revisions[i] = revision
 		}()
 	}
 	wg.Wait()
@@ -595,6 +598,7 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 		l.informer.replay(l.objs)
 	}
 	took("build+fill")
+	feed := followWrites(ctx, all, revisions)
 	done := make(chan struct{}, len(runs))
 	for _, run := range runs {
 		go func() { run(ctx); done <- struct{}{} }()
@@ -603,8 +607,10 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 	if err := clearRecoveredNodes(ctx, client, nodesOf(all)); err != nil {
 		println("workloads: clearing node taints failed:", err.Error())
 	}
-	result.Drained = drain(workloadQueue, drainFor, grace, deadline)
+	result.Drained = drain(workloadQueue, drainFor, grace, deadline, feed.live)
+	result.Live = feed.live()
 	took("drain")
+	println("workloads: live feed", strconv.FormatBool(result.Live), "applied", strconv.FormatInt(feed.count(), 10))
 	if next, ok := pending.next(); ok {
 		result.NextMs = soonest(result.NextMs, next)
 	}
@@ -672,25 +678,29 @@ func validatingAdmissionPolicySnapshot(factory informers.SharedInformerFactory) 
 	})}
 }
 
-func list(ctx context.Context, page pageFunc) ([]runtime.Object, error) {
+func list(ctx context.Context, page pageFunc) ([]runtime.Object, int64, error) {
 	var out []runtime.Object
+	var revision int64
 	opts := metav1.ListOptions{Limit: listPage}
 	for {
 		l, err := page(ctx, opts)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		items, err := meta.ExtractList(l)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		out = append(out, items...)
 		lm, err := meta.ListAccessor(l)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
+		}
+		if revision == 0 {
+			revision, _ = strconv.ParseInt(lm.GetResourceVersion(), 10, 64)
 		}
 		if lm.GetContinue() == "" {
-			return out, nil
+			return out, revision, nil
 		}
 		opts.Continue = lm.GetContinue()
 	}
@@ -745,7 +755,7 @@ func anyUnfinished(objs []runtime.Object) bool {
 	return false
 }
 
-func drain(owned func(string) bool, limit, grace time.Duration, budgetBy time.Time) bool {
+func drain(owned func(string) bool, limit, grace time.Duration, budgetBy time.Time, live func() bool) bool {
 	started := time.Now()
 	deadline := started.Add(limit)
 	finishBy := deadline.Add(grace)
@@ -778,7 +788,7 @@ func drain(owned func(string) bool, limit, grace time.Duration, budgetBy time.Ti
 		if now.After(finishBy) {
 			return false
 		}
-		yielding := yieldRequested.Load() && now.Sub(started) > yieldGrace
+		yielding := !live() && yieldRequested.Load() && now.Sub(started) > yieldGrace
 		if (now.After(deadline) || yielding) && !work.inFlight(owned) && !work.idle(owned) {
 			return false
 		}

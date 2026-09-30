@@ -32,6 +32,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	workloads.WatchDialer = dialStorageWatch
 	metadataClient, err := metadata.NewForConfig(rest.AddUserAgent(cfg, "kube-controller-manager"))
 	if err != nil {
 		panic(err)
@@ -122,4 +123,12 @@ func syncBudget(r *http.Request) time.Duration {
 func holdWindow(ctx context.Context) func() {
 	bridge.OpenWindow(ctx)
 	return func() { bridge.CloseWindow(ctx) }
+}
+
+func dialStorageWatch(ctx context.Context, rawURL string) (<-chan []byte, func(), error) {
+	ws, err := bridge.DialWebSocket(ctx, "STORAGE", rawURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	return ws.Messages, ws.Close, nil
 }
