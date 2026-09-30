@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "17 2 * * *"
   workflow_dispatch:
+    inputs:
+      focus:
+        description: Ginkgo focus regex that replaces the Conformance set, to run single specs
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -144,6 +149,7 @@ jobs:
         run: scripts/ci/e2e.sh test
         env:
           SET: conformance
+          FOCUS: ${{ inputs.focus }}
 
       - name: Summarize the Conformance results
         if: always()
