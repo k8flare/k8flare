@@ -392,14 +392,7 @@ func dialProxy() http.Handler {
 			}
 			conn = tconn
 		}
-		outReq := r.Clone(r.Context())
-		outReq.URL.Scheme = "http"
-		outReq.URL.Host = net.JoinHostPort(host, port)
-		outReq.URL.Path = path
-		outReq.RequestURI = ""
-		outReq.Header.Del("X-Dial-TLS")
-		outReq.Header.Del("X-Dial-ServerName")
-		outReq.Header.Del("X-Dial-CA")
+		outReq := dialRequest(r, host, port, path)
 		if err := outReq.Write(conn); err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
@@ -416,6 +409,33 @@ func dialProxy() http.Handler {
 		w.WriteHeader(resp.StatusCode)
 		_, _ = io.Copy(w, resp.Body)
 	})
+}
+
+func dialRequest(r *http.Request, host, port, path string) *http.Request {
+	outReq := r.Clone(r.Context())
+	outReq.URL.Scheme = "http"
+	outReq.URL.Host = net.JoinHostPort(host, port)
+	outReq.URL.Path = path
+	outReq.RequestURI = ""
+	outReq.Header.Del("X-Dial-TLS")
+	outReq.Header.Del("X-Dial-ServerName")
+	outReq.Header.Del("X-Dial-CA")
+	if groups := outReq.Header.Values("X-Remote-Group"); len(groups) > 0 {
+		outReq.Header["X-Remote-Group"] = splitJoinedHeaderValues(groups)
+	}
+	return outReq
+}
+
+func splitJoinedHeaderValues(values []string) []string {
+	var out []string
+	for _, v := range values {
+		for _, part := range strings.Split(v, ",") {
+			if part = strings.TrimSpace(part); part != "" {
+				out = append(out, part)
+			}
+		}
+	}
+	return out
 }
 
 func dialTLSConfig(serverName, caHeader, clientCertPEM, clientKeyPEM string) (*tls.Config, error) {
