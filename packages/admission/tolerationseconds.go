@@ -10,7 +10,7 @@ import (
 const defaultTolerationSeconds = int64(300)
 
 func applyDefaultTolerationSeconds(_ context.Context, _ *store, req *admit.Request) error {
-	if req.Operation != "" && req.Operation != "CREATE" {
+	if req.Operation != "" && req.Operation != "CREATE" && req.Operation != "UPDATE" {
 		return nil
 	}
 	if req.Resource.Resource != "pods" || req.Subresource != "" || req.Object == nil {
