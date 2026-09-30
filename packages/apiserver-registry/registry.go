@@ -151,6 +151,7 @@ var (
 	Resources    = map[string]func(gv schema.GroupVersion, res metav1.APIResource, deps Deps) rest.Storage{}
 	Customizers  = map[string]func(store *Store, deps Deps){}
 	Deleters     = map[string]func(store *Store) rest.GracefulDeleter{}
+	Wrappers     = map[string]func(storage rest.Storage, deps Deps) rest.Storage{}
 	Subresources = map[string]func(stores map[string]*Store, deps Deps) rest.Storage{}
 	Middleware   []func(stores map[string]*Store) func(http.Handler) http.Handler
 )

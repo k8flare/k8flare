@@ -91,6 +91,9 @@ func Install(mux *http.ServeMux, deps registry.Deps, only ...schema.GroupVersion
 			}
 			stores[res.Name] = store
 			storage[res.Name] = registry.WithNames(store, res)
+			if wrap, ok := registry.Wrappers[res.Name]; ok {
+				storage[res.Name] = wrap(storage[res.Name], deps)
+			}
 		}
 		for _, res := range sgv.Resources {
 			parent, sub, ok := strings.Cut(res.Name, "/")
