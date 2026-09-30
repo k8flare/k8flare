@@ -96,6 +96,9 @@ func (s *Supervisor) authorized(r *http.Request) bool {
 	if s.vault.CheckToken(r.Context(), "join", token) == nil {
 		return true
 	}
+	if s.vault.CheckJoinToken(r.Context(), token) == nil {
+		return true
+	}
 	if s.joinToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.joinToken)) == 1 {
 		_, _ = s.vault.EnsureToken(r.Context(), "join", s.joinToken)
 		return true

@@ -29,6 +29,7 @@ type Vault struct {
 	mu       sync.Mutex
 	cas      map[string]*ca
 	verified map[string]string
+	now      func() time.Time
 }
 
 type ca struct {
@@ -45,7 +46,7 @@ type caRecord struct {
 var errNodePasswordMismatch = errors.New("node password does not match the stored one")
 
 func NewVault(kine *kine.Client) *Vault {
-	return &Vault{kine: kine, cas: map[string]*ca{}, verified: map[string]string{}}
+	return &Vault{kine: kine, cas: map[string]*ca{}, verified: map[string]string{}, now: time.Now}
 }
 
 func (v *Vault) CAPEM(ctx context.Context, name string) ([]byte, error) {
