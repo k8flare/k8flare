@@ -124,6 +124,10 @@ func followUp(in followIn) followResult {
 		if !in.OK {
 			out.Sends = append(out.Sends, retry("ext", nil, nil, nil, "", refusedRetryS))
 		}
+	case "addons":
+		if !in.OK {
+			out.Sends = append(out.Sends, retry("addons", nil, nil, nil, "", refusedRetryS))
+		}
 	case "leases":
 		delayMs := in.NextMs
 		if !in.HasResult {

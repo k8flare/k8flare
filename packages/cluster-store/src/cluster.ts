@@ -14,12 +14,14 @@ const LEASE_CHECK_EVERY_MS = 50_000;
 const OUTBOX_BATCH = 100;
 const MAX_DELAY_S = 86_400;
 
-type Target = "scheduler" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "metrics" | "containers";
-const targets: Target[] = ["scheduler", "workloads", "crds", "gc", "accounts", "extensions", "metrics", "containers"];
+type Target = "scheduler" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "metrics" | "containers" | "addons";
+const targets: Target[] = ["scheduler", "workloads", "crds", "gc", "accounts", "extensions", "metrics", "containers", "addons"];
 const SCHEMA_VERSION = 1;
 const controllerAnnot = "k8flare.io/controller";
 const NAMESPACE_PREFIX = "/registry/namespaces/";
 const ACCOUNT_PREFIXES = [NAMESPACE_PREFIX, "/registry/serviceaccounts/", "/registry/configmaps/"];
+const ADDON_PREFIX = "/registry/k3s.cattle.io/addons/";
+const KUBE_SYSTEM_KEY = NAMESPACE_PREFIX + "kube-system";
 const CRD_PREFIX = "/registry/apiextensions.k8s.io/customresourcedefinitions/";
 const WORKLOAD_PREFIXES = ["/registry/replicasets/", "/registry/deployments/", "/registry/replicationcontrollers/", "/registry/services/", "/registry/endpoints/", "/registry/endpointslices/", "/registry/jobs/", "/registry/statefulsets/", "/registry/daemonsets/", "/registry/controllerrevisions/", "/registry/persistentvolumeclaims/", "/registry/persistentvolumes/", "/registry/storage.k8s.io/", "/registry/storageclasses/", "/registry/certificatesigningrequests/", "/registry/certificates.k8s.io/", "/registry/clusterroles/", "/registry/rbac.authorization.k8s.io/", "/registry/cronjobs/", "/registry/horizontalpodautoscalers/", "/registry/gateway.networking.k8s.io/", "/registry/resourcequotas/", "/registry/secrets/", "/registry/configmaps/", "/registry/poddisruptionbudgets/"];
 
@@ -429,6 +431,7 @@ export class Cluster extends DurableObject<Env> {
     if (target === "extensions") return this.env.EXT_Q;
     if (target === "metrics") return this.env.METRICS_Q;
     if (target === "containers") return this.env.CONTAINERS_Q;
+    if (target === "addons") return this.env.ADDON_Q;
     return this.env.CTRL_Q;
   }
 
@@ -449,6 +452,7 @@ export class Cluster extends DurableObject<Env> {
     } else if (WORKLOAD_PREFIXES.some((p) => name.startsWith(p))) routes.push("workloads");
     if (ACCOUNT_PREFIXES.some((p) => name.startsWith(p))) routes.push("accounts");
     if (name.startsWith(CRD_PREFIX)) routes.push("crds");
+    if ((name.startsWith(ADDON_PREFIX) && type === "deleted") || (name === KUBE_SYSTEM_KEY && type === "created")) routes.push("addons");
     if (isExtensionKey(name, value, type)) routes.push("extensions");
     if (type === "deleted" || collectable(value)) routes.push("gc");
     if (name.startsWith("/registry/pods/")) {
@@ -456,7 +460,7 @@ export class Cluster extends DurableObject<Env> {
       if (type === "deleted" || !podBound(value)) routes.push("scheduler");
       if (wantsContainers(value) || (prev && wantsContainers(prev.value))) routes.push("containers");
     } else if (name.startsWith("/registry/minions/") || name.startsWith("/registry/nodes/")) {
-      if (type !== "modified" || !prev || nodeChanged(prev.value, value)) routes.push("scheduler", "workloads", "metrics");
+      if (type !== "modified" || !prev || nodeChanged(prev.value, value)) routes.push("scheduler", "workloads", "metrics", "addons");
     }
     for (const target of routes) {
       this.ctx.storage.sql.exec("INSERT INTO outbox (target, rev, key, type) VALUES (?, ?, ?, ?)", target, rev, name, type);

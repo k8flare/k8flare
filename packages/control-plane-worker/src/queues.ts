@@ -2,8 +2,9 @@ import type { QueueMessage } from "@k8flare/cluster-store";
 import { Trace } from "./otel";
 import { apiserverFetch } from "./loader.ts";
 import { clusterStub } from "./clusterid.ts";
+import { deployAddons } from "./addons.ts";
 
-type Target = "scheduler" | "leases" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "metrics" | "containers";
+type Target = "scheduler" | "leases" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "metrics" | "containers" | "addons";
 
 type FollowSend = {
   queue: string;
@@ -25,6 +26,7 @@ function targetOf(queueName: string): Target | null {
   if (queueName.endsWith("-extensions")) return "extensions";
   if (queueName.endsWith("-metrics")) return "metrics";
   if (queueName.endsWith("-containers")) return "containers";
+  if (queueName.endsWith("-addons")) return "addons";
   return null;
 }
 
@@ -49,6 +51,7 @@ function queueOf(env: Env, name: string): Queue | null {
     case "metrics": return env.METRICS_Q;
     case "hpa": return env.HPA_Q;
     case "containers": return env.CONTAINERS_Q;
+    case "addons": return env.ADDON_Q;
     case "ctrl": return env.CTRL_Q;
     default: return null;
   }
@@ -263,7 +266,16 @@ async function dispatch(batch: MessageBatch<QueueMessage>, env: Env, target: Tar
       return consumeMetrics(batch, env);
     case "containers":
       return consumeContainers(batch, env);
+    case "addons":
+      return consumeAddons(batch, env);
   }
+  batch.ackAll();
+}
+
+async function consumeAddons(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
+  const ok = await deployAddons(env);
+  console.log(`addons: ok=${ok} msgs=${batch.messages.length}`);
+  await applySends(env, (await followUp(env, { target: "addons", ok })).sends);
   batch.ackAll();
 }
 

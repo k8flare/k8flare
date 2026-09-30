@@ -18,6 +18,7 @@
     "ACCESS_TEAM_DOMAIN": "kooffice",
     "ACCESS_AUD": "f5b5bb1f97c02d095ecd20352a1e2282ddef9fca76a977800783a80172cc511e",
     "CLUSTER_UID": "",
+    "DISABLE": "",
     "GATEWAY_URL": "https://api.k8flare.com",
     "R2_ACCOUNT_ID": "ed17c5c18eb6052e70234ec181709fba",
     "R2_BUCKET": "k8flare-pods",
@@ -74,6 +75,7 @@
       { "binding": "EXT_Q", "queue": "k8flare-extensions" },
       { "binding": "METRICS_Q", "queue": "k8flare-metrics" },
       { "binding": "CONTAINERS_Q", "queue": "k8flare-containers" },
+      { "binding": "ADDON_Q", "queue": "k8flare-addons" },
 
       { "binding": "HPA_Q", "queue": "k8flare-hpa" },
     ],
@@ -87,6 +89,7 @@
       { "queue": "k8flare-extensions", "max_batch_size": 100, "max_batch_timeout": 1, "max_retries": 10, "max_concurrency": 1, "dead_letter_queue": "k8flare-dlq" },
       { "queue": "k8flare-metrics", "max_batch_size": 100, "max_batch_timeout": 1, "max_retries": 10, "max_concurrency": 1, "dead_letter_queue": "k8flare-dlq" },
       { "queue": "k8flare-containers", "max_batch_size": 100, "max_batch_timeout": 1, "max_retries": 10, "max_concurrency": 1, "dead_letter_queue": "k8flare-dlq" },
+      { "queue": "k8flare-addons", "max_batch_size": 100, "max_batch_timeout": 1, "max_retries": 10, "max_concurrency": 1, "dead_letter_queue": "k8flare-dlq" },
     ],
   },
   "observability": { "enabled": true },

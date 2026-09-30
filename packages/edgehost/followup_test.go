@@ -27,6 +27,17 @@ func TestFollowUpAccountsStopsWhileTerminating(t *testing.T) {
 	}
 }
 
+func TestFollowUpAddonsRetriesUntilDeployed(t *testing.T) {
+	failed := followUp(followIn{Target: "addons"})
+	if len(failed.Sends) != 1 || failed.Sends[0].Queue != "addons" || failed.Sends[0].DelaySeconds != 5 {
+		t.Fatal(failed)
+	}
+	done := followUp(followIn{Target: "addons", OK: true})
+	if len(done.Sends) != 0 {
+		t.Fatal(done)
+	}
+}
+
 func TestFollowUpMetrics(t *testing.T) {
 	got := followUp(followIn{Target: "metrics"})
 	if len(got.Sends) != 2 || got.Sends[0].Queue != "hpa" || got.Sends[0].DelaySeconds != 0 || got.Sends[1].Queue != "metrics" || got.Sends[1].DelaySeconds != 15 {

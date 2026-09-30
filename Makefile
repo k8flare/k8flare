@@ -16,7 +16,7 @@ WASM_OPT := wasm-opt -Oz --strip-debug --strip-producers --enable-bulk-memory --
 mirrors:
 	cd scripts && go run ./mirror
 
-GO_SRC := $(shell find packages -name '*.go' -not -name '*_test.go') go.mod scripts/mirror/main.go $(shell find scripts/mirror/_overlays -type f)
+GO_SRC := $(shell find packages -name '*.go' -not -name '*_test.go') $(shell find packages/addons -name '*.yaml') go.mod scripts/mirror/main.go $(shell find scripts/mirror/_overlays -type f)
 
 $(ASSETS)/wasm_exec.js: scripts/wasmpack/main.go
 	cd scripts && go run ./wasmpack exec ../$@
@@ -122,6 +122,16 @@ $(BUILD)/workloads-vap.opt.wasm: $(BUILD)/workloads-vap.raw.wasm
 $(ASSETS)/workloads-vap.manifest.json: $(BUILD)/workloads-vap.opt.wasm
 	cd scripts && go run ./wasmpack chunk ../$< ../$(ASSETS) workloads-vap
 
+$(BUILD)/addons.raw.wasm: $(GO_SRC) | mirrors
+	mkdir -p $(BUILD)
+	GOOS=js GOARCH=wasm go build -buildvcs=false -ldflags="-s -w" -trimpath -o $@ ./packages/addons/cmd/addons-wasm
+
+$(BUILD)/addons.opt.wasm: $(BUILD)/addons.raw.wasm
+	$(OPTIMIZE)
+
+$(ASSETS)/addons.manifest.json: $(BUILD)/addons.opt.wasm
+	cd scripts && go run ./wasmpack chunk ../$< ../$(ASSETS) addons
+
 $(BUILD)/admission.raw.wasm: $(GO_SRC) | mirrors
 	mkdir -p $(BUILD)
 	GOOS=js GOARCH=wasm go build -buildvcs=false -ldflags="-s -w" -trimpath -o $@ ./packages/admission/cmd/admission-wasm
@@ -171,12 +181,12 @@ $(NODE_TUNNEL_WASM): $(BUILD)/node-tunnel.opt.wasm
 	mkdir -p $(dir $@)
 	cp $< $@
 
-OPT_WASM := $(BUILD)/apiserver.opt.wasm $(foreach g,$(API_GROUPS),$(BUILD)/apiserver-$(g).opt.wasm) $(foreach w,openapi customresources scheduler workloads workloads-vap hpa gc admission hookecho node-tunnel,$(BUILD)/$(w).opt.wasm) $(foreach g,$(GROUPS),$(BUILD)/printers-$(g).opt.wasm)
+OPT_WASM := $(BUILD)/apiserver.opt.wasm $(foreach g,$(API_GROUPS),$(BUILD)/apiserver-$(g).opt.wasm) $(foreach w,openapi customresources scheduler workloads workloads-vap addons hpa gc admission hookecho node-tunnel,$(BUILD)/$(w).opt.wasm) $(foreach g,$(GROUPS),$(BUILD)/printers-$(g).opt.wasm)
 
 opt-wasm-list:
 	@echo $(OPT_WASM)
 
-wasm: $(ASSETS)/wasm_exec.js $(ASSETS)/apiserver.manifest.json $(foreach g,$(API_GROUPS),$(ASSETS)/apiserver-$(g).manifest.json) $(ASSETS)/openapi.manifest.json $(ASSETS)/customresources.manifest.json $(ASSETS)/scheduler.manifest.json $(ASSETS)/workloads.manifest.json $(ASSETS)/workloads-vap.manifest.json $(ASSETS)/hpa.manifest.json $(ASSETS)/gc.manifest.json $(ASSETS)/admission.manifest.json $(ASSETS)/hookecho.manifest.json $(foreach g,$(GROUPS),$(ASSETS)/printers-$(g).manifest.json) $(NODE_TUNNEL_WASM)
+wasm: $(ASSETS)/wasm_exec.js $(ASSETS)/apiserver.manifest.json $(foreach g,$(API_GROUPS),$(ASSETS)/apiserver-$(g).manifest.json) $(ASSETS)/openapi.manifest.json $(ASSETS)/customresources.manifest.json $(ASSETS)/scheduler.manifest.json $(ASSETS)/workloads.manifest.json $(ASSETS)/workloads-vap.manifest.json $(ASSETS)/addons.manifest.json $(ASSETS)/hpa.manifest.json $(ASSETS)/gc.manifest.json $(ASSETS)/admission.manifest.json $(ASSETS)/hookecho.manifest.json $(foreach g,$(GROUPS),$(ASSETS)/printers-$(g).manifest.json) $(NODE_TUNNEL_WASM)
 
 gen:
 	cd scripts && go run ./genresources && go run ./genprinters && go run ./genopenapi
