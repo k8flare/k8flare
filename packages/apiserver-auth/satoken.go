@@ -2,8 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	mrand "math/rand/v2"
 	"net/http"
 	"sync"
 	"time"
@@ -334,7 +333,7 @@ func InstallServiceAccountKey(ctx context.Context, store *kine.Client, secret []
 		if err != kine.ErrNotFound {
 			return err
 		}
-		key, err := NewServiceAccountKey(secret)
+		key, err := NewServiceAccountKey()
 		if err != nil {
 			return err
 		}
@@ -352,12 +351,8 @@ func UseServiceAccountKey(secret []byte, key *rsa.PrivateKey) {
 	saKeys.Store(string(secret), key)
 }
 
-func NewServiceAccountKey(secret []byte) (*rsa.PrivateKey, error) {
-	if len(secret) == 0 {
-		return nil, errors.New("service account key is empty")
-	}
-	sum := sha256.Sum256(secret)
-	return rsa.GenerateKey(mrand.NewChaCha8(sum), 2048)
+func NewServiceAccountKey() (*rsa.PrivateKey, error) {
+	return rsa.GenerateKey(rand.Reader, 2048)
 }
 
 func saPrivateKey(secret []byte) (*rsa.PrivateKey, error) {
@@ -367,12 +362,7 @@ func saPrivateKey(secret []byte) (*rsa.PrivateKey, error) {
 	if v, ok := saKeys.Load(string(secret)); ok {
 		return v.(*rsa.PrivateKey), nil
 	}
-	key, err := NewServiceAccountKey(secret)
-	if err != nil {
-		return nil, err
-	}
-	actual, _ := saKeys.LoadOrStore(string(secret), key)
-	return actual.(*rsa.PrivateKey), nil
+	return nil, errors.New("service account key is not installed")
 }
 
 func rsaJWK(pub *rsa.PublicKey) map[string]string {

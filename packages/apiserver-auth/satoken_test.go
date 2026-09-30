@@ -54,6 +54,14 @@ func (f fakeObjects) Node(_ context.Context, name string) (*corev1.Node, error) 
 
 var testHMAC = []byte("test-hmac")
 
+func init() {
+	key, err := NewServiceAccountKey()
+	if err != nil {
+		panic(err)
+	}
+	UseServiceAccountKey(testHMAC, key)
+}
+
 func objectsWithSA(ns, name, uid string) fakeObjects {
 	return fakeObjects{
 		serviceAccounts: map[string]*corev1.ServiceAccount{ns + "/" + name: {ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name, UID: types.UID(uid)}}},
@@ -138,7 +146,38 @@ func TestServiceAccountTokenClaims(t *testing.T) {
 	}
 }
 
+func installRandomKey(t *testing.T, secret []byte) {
+	t.Helper()
+	key, err := NewServiceAccountKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	UseServiceAccountKey(secret, key)
+}
+
+func TestNewServiceAccountKeyIsRandom(t *testing.T) {
+	a, err := NewServiceAccountKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := NewServiceAccountKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Equal(b) {
+		t.Fatal("keys are deterministic")
+	}
+}
+
+func TestServiceAccountKeyIsNotDerivedFromSecret(t *testing.T) {
+	if _, err := saPrivateKey([]byte("never-installed")); err == nil {
+		t.Fatal("key derived without installation")
+	}
+}
+
 func TestServiceAccountTokenRejectsBadHMAC(t *testing.T) {
+	installRandomKey(t, []byte("a"))
+	installRandomKey(t, []byte("b"))
 	tok, err := IssueServiceAccountToken([]byte("a"), "default", "sa", "u", time.Now().Add(time.Hour), nil, BoundObjects{})
 	if err != nil {
 		t.Fatal(err)

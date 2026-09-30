@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	auth "github.com/k8flare/k8flare/packages/apiserver-auth"
@@ -79,7 +80,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	client := &kine.Client{HTTP: cfg.Kine}
 	v := supervisor.NewVault(client)
 	access := auth.Access{Team: cfg.AccessTeam, Audience: cfg.AccessAUD, HTTP: cfg.Outbound}
-	sa := auth.ServiceAccountToken{HMAC: []byte(cfg.AdminToken), Objects: auth.KineObjects{Client: client}}
+	sa := auth.ServiceAccountToken{HMAC: []byte(cfg.AdminToken), Objects: auth.NewServiceAccountObjects(auth.KineObjects{Client: client})}
 	tokens := union.New(auth.AdminToken(cfg.AdminToken), auth.ReadonlyToken(cfg.ReadonlyToken), auth.VaultToken{Vault: v}, auth.NodeToken{Vault: v}, sa, access)
 	authn := requnion.New(bearertoken.New(tokens), access)
 	authorizer := authz.New(client)
@@ -133,11 +134,14 @@ func NewHandler(cfg Config) (http.Handler, error) {
 		mux.ServeHTTP(w, r)
 	}), authorizer)), authn))
 	var once sync.Once
+	var keyReady atomic.Bool
 	return recoverPanics(redirectBareProxy(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		once.Do(func() {
-			_ = auth.InstallServiceAccountKey(r.Context(), client, []byte(cfg.AdminToken))
 			seedVaultTokens(r.Context(), v, cfg)
 		})
+		if !keyReady.Load() && auth.InstallServiceAccountKey(r.Context(), client, []byte(cfg.AdminToken)) == nil {
+			keyReady.Store(true)
+		}
 		if edgehost.Proxy(w, r, client, cfg.Tunnel) {
 			return
 		}

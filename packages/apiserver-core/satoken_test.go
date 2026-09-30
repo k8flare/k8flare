@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	auth "github.com/k8flare/k8flare/packages/apiserver-auth"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -15,6 +16,14 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 )
+
+func init() {
+	key, err := auth.NewServiceAccountKey()
+	if err != nil {
+		panic(err)
+	}
+	auth.UseServiceAccountKey([]byte("test-hmac"), key)
+}
 
 type getterFunc func(ctx context.Context, name string, opts *metav1.GetOptions) (runtime.Object, error)
 
