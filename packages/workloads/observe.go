@@ -4,7 +4,10 @@ import (
 	"context"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -31,10 +34,29 @@ func observeWrites(client kubernetes.Interface, all []loadedSource) kubernetes.I
 			observed.rcs = l.informer
 		case *appsv1.StatefulSet:
 			observed.sets = l.informer
+		case *appsv1.ReplicaSet:
+			observed.replicaSets = l.informer
+		case *appsv1.Deployment:
+			observed.deployments = l.informer
+		case *appsv1.DaemonSet:
+			observed.daemonSets = l.informer
+		case *appsv1.ControllerRevision:
+			observed.revisions = l.informer
+		case *batchv1.Job:
+			observed.jobs = l.informer
+		case *batchv1.CronJob:
+			observed.cronJobs = l.informer
+		case *corev1.Endpoints:
+			observed.endpoints = l.informer
+		case *discoveryv1.EndpointSlice:
+			observed.slices = l.informer
+		case *corev1.ResourceQuota:
+			observed.quotas = l.informer
+		case *corev1.Namespace:
+			observed.namespaces = l.informer
+		case *policyv1.PodDisruptionBudget:
+			observed.budgets = l.informer
 		}
-	}
-	if observed.volumes == nil && observed.claims == nil && observed.pods == nil && observed.rcs == nil && observed.sets == nil {
-		return client
 	}
 	return observed
 }
@@ -73,19 +95,31 @@ type observeClient struct {
 	pods    *snapshotInformer
 	rcs     *snapshotInformer
 	sets    *snapshotInformer
+
+	replicaSets *snapshotInformer
+	deployments *snapshotInformer
+	daemonSets  *snapshotInformer
+	revisions   *snapshotInformer
+	jobs        *snapshotInformer
+	cronJobs    *snapshotInformer
+	endpoints   *snapshotInformer
+	slices      *snapshotInformer
+	quotas      *snapshotInformer
+	namespaces  *snapshotInformer
+	budgets     *snapshotInformer
 }
 
 func (c *observeClient) AppsV1() appsv1client.AppsV1Interface {
-	return observeApps{AppsV1Interface: c.Interface.AppsV1(), sets: c.sets}
+	return observeApps{AppsV1Interface: c.Interface.AppsV1(), c: c}
 }
 
 type observeApps struct {
 	appsv1client.AppsV1Interface
-	sets *snapshotInformer
+	c *observeClient
 }
 
 func (a observeApps) StatefulSets(namespace string) appsv1client.StatefulSetInterface {
-	return observeStatefulSets{StatefulSetInterface: a.AppsV1Interface.StatefulSets(namespace), sets: a.sets}
+	return observeStatefulSets{StatefulSetInterface: a.AppsV1Interface.StatefulSets(namespace), sets: a.c.sets}
 }
 
 type observeStatefulSets struct {
@@ -101,6 +135,11 @@ func (s observeStatefulSets) Update(ctx context.Context, set *appsv1.StatefulSet
 	return got, err
 }
 
+func (s observeStatefulSets) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (*appsv1.StatefulSet, error) {
+	got, err := s.StatefulSetInterface.Patch(ctx, name, pt, data, opts, subresources...)
+	return observed(s.sets, got, err)
+}
+
 func (s observeStatefulSets) UpdateStatus(ctx context.Context, set *appsv1.StatefulSet, opts metav1.UpdateOptions) (*appsv1.StatefulSet, error) {
 	got, err := s.StatefulSetInterface.UpdateStatus(ctx, set, opts)
 	if err == nil {
@@ -110,11 +149,12 @@ func (s observeStatefulSets) UpdateStatus(ctx context.Context, set *appsv1.State
 }
 
 func (c *observeClient) CoreV1() corev1client.CoreV1Interface {
-	return observeCore{CoreV1Interface: c.Interface.CoreV1(), volumes: c.volumes, claims: c.claims, pods: c.pods, rcs: c.rcs}
+	return observeCore{CoreV1Interface: c.Interface.CoreV1(), c: c, volumes: c.volumes, claims: c.claims, pods: c.pods, rcs: c.rcs}
 }
 
 type observeCore struct {
 	corev1client.CoreV1Interface
+	c       *observeClient
 	volumes cache.Indexer
 	claims  cache.Indexer
 	pods    *snapshotInformer
@@ -221,6 +261,11 @@ func (p observePods) UpdateStatus(ctx context.Context, pod *corev1.Pod, opts met
 		p.pods.note(got)
 	}
 	return got, err
+}
+
+func (p observePods) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (*corev1.Pod, error) {
+	got, err := p.PodInterface.Patch(ctx, name, pt, data, opts, subresources...)
+	return observed(p.pods, got, err)
 }
 
 func (p observePods) Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error {

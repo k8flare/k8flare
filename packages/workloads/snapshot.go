@@ -110,7 +110,11 @@ func (s *snapshotInformer) forget(namespace, name string) {
 	if s == nil {
 		return
 	}
-	previous, exists, _ := s.GetIndexer().GetByKey(namespace + "/" + name)
+	key := name
+	if namespace != "" {
+		key = namespace + "/" + name
+	}
+	previous, exists, _ := s.GetIndexer().GetByKey(key)
 	if !exists {
 		return
 	}
