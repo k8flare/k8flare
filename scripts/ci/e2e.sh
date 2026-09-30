@@ -72,6 +72,10 @@ node_ready() {
   kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s get nodes --no-headers | awk '$2=="Ready"' | grep -q .
 }
 
+node_proxy_ready() {
+  kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s -n kube-system get ds k8flare-node-proxy -o jsonpath='{.status.numberReady}' | grep -qx '[1-9][0-9]*'
+}
+
 write_accepted() {
   kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s create namespace ci-writecheck &&
     kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s delete namespace ci-writecheck --wait=false
@@ -127,6 +131,9 @@ join_node() {
     return 0
   fi
   token=$("$WORK/k8flare" token create --kubeconfig "$KUBECONFIG_PATH" --ttl 1h --description ci)
+  docker build -t ghcr.io/k8flare/node-proxy:latest packages/node-proxy
+  sudo mkdir -p /var/lib/rancher/k3s/agent/images
+  docker save ghcr.io/k8flare/node-proxy:latest | sudo tee /var/lib/rancher/k3s/agent/images/node-proxy.tar >/dev/null
   sudo nohup /usr/local/bin/k3s agent --server "https://$API" --token "$token" --node-name "$(hostname)" --disable-apiserver-lb \
     > "$LOGS/agent.log" 2>&1 < /dev/null &
 }
@@ -163,6 +170,9 @@ up() {
   join_node "$admin"
   wait_for "a Ready node" 120 5 node_ready
   wait_for "the API to accept a write" 60 5 write_accepted
+  if [ "${AGENT:-k8flare}" = k3s ]; then
+    wait_for "the node proxy" 60 5 node_proxy_ready
+  fi
   kubectl --kubeconfig "$KUBECONFIG_PATH" get nodes -o wide
 }
 

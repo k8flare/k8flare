@@ -2,6 +2,7 @@ package addons
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -401,6 +402,40 @@ func TestLocalStorageIsTheDefaultWaitForFirstConsumerClass(t *testing.T) {
 		return
 	}
 	t.Fatal("no StorageClass")
+}
+
+func TestNodeProxyDaemonSetRunsOnHostNetworkAwayFromK8flareAgentNodes(t *testing.T) {
+	var file File
+	for _, f := range Packaged() {
+		if f.Name == "node-proxy.yaml" {
+			file = f
+		}
+	}
+	objs, err := Decode(Render([]File{file}, Vars())[0].Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]bool{}
+	for _, o := range objs {
+		kinds[o.GetKind()] = true
+		if o.GetKind() != "DaemonSet" {
+			continue
+		}
+		hostNetwork, _, _ := unstructured.NestedBool(o.Object, "spec", "template", "spec", "hostNetwork")
+		sa, _, _ := unstructured.NestedString(o.Object, "spec", "template", "spec", "serviceAccountName")
+		containers, _, _ := unstructured.NestedSlice(o.Object, "spec", "template", "spec", "containers")
+		image, _, _ := unstructured.NestedString(containers[0].(map[string]any), "image")
+		if !hostNetwork || sa != "k8flare-node-proxy" || image != "ghcr.io/k8flare/node-proxy:latest" {
+			t.Fatalf("daemonset = %v", o.Object)
+		}
+		affinity, _, _ := unstructured.NestedMap(o.Object, "spec", "template", "spec", "affinity", "nodeAffinity")
+		if !strings.Contains(fmt.Sprint(affinity), "k8flare.com/agent") {
+			t.Fatalf("affinity = %v", affinity)
+		}
+	}
+	if !kinds["ServiceAccount"] || !kinds["DaemonSet"] {
+		t.Fatalf("kinds = %v", kinds)
+	}
 }
 
 func TestParseDisable(t *testing.T) {

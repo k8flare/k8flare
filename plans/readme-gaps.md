@@ -30,13 +30,44 @@ it. Remove an entry when the behaviour exists and CI covers it.
   server-CA certificate (`k8flare edge-certificate`); `k8flare token
   create` prints `K10` tokens. A stock `k3s agent` joined, pinned the CA
   hash, and its node went Ready with certificate identities.
-- Not usable yet: the stock agent needs a listener on every node at
-  `:6443`. The `kubernetes` EndpointSlice publishes node IPs on 6443 (the
-  k8flare-agent's local API proxy), so the stock agent rewrites its tunnel
-  targets to them and drops its tunnel about a minute after joining, and
-  the in-cluster `kubernetes` Service has no backend. CI still joins
-  k8flare-agent by default; `AGENT=k3s scripts/ci/e2e.sh up` joins the
-  stock agent.
+- The stock agent and the node API proxy: the `kubernetes` EndpointSlice
+  publishes each Ready node's IP on 6443 as `ready=false, serving=true,
+  terminating=true`. The k3s tunnel watch skips endpoints that are not
+  ready and ignores an empty list, so a stock agent keeps the tunnel it
+  opened to the server URL (the supervisor's `/v1-k3s/apiservers` now
+  returns `host:port`, so the address key matches). kube-proxy falls back
+  to serving-terminating endpoints when none is ready, so `10.43.0.1:443`
+  reaches `nodeIP:6443`. The `node-proxy` add-on (host-network DaemonSet,
+  `packages/node-proxy`, image `ghcr.io/k8flare/node-proxy`) listens there.
+  It reads the server URL and CA path from the agent's
+  `kubeproxy.kubeconfig` (two hostPath files, no keys), asks
+  `/v1-k3s/serving-node-proxy.crt` for a server-CA certificate for
+  `kubernetes.default.svc` and `10.43.0.1` with its own ServiceAccount
+  token (the endpoint accepts only
+  `system:serviceaccount:kube-system:k8flare-node-proxy`), and forwards
+  everything to the edge hostname over HTTP/1.1 with no client
+  certificate, so a request without a bearer token stays anonymous.
+  It skips nodes labelled `k8flare.com/agent` (k8flare-agent binds 6443
+  itself). `DISABLE=node-proxy` turns it off.
+  - Checked in an OrbStack VM (arm64, stock k3s v1.36.2, local wrangler
+    dev + devtls, image preloaded from a local build): the node went
+    Ready, the tunnel stayed on one connection for 8+ minutes with no
+    resync, CoreDNS and local-path started, a pod reached
+    `https://10.43.0.1` and `kubernetes.default.svc` with the SA `ca.crt`
+    (bearer tokens passed through, no token stayed anonymous), a watch
+    streamed, `kubectl logs` and `exec` worked. Not run: the e2e spec set
+    with `AGENT=k3s`, so CI still defaults to k8flare-agent.
+  - Unverified: the workflow has not run; the package must be public.
+  - A Ready node without a running proxy is still published, so a pod
+    hitting `10.43.0.1` can be sent to it and fail once per attempt.
+  - A stolen node-proxy ServiceAccount token can obtain a certificate for
+    the `kubernetes` names; RBAC on `serviceaccounts/token` in
+    `kube-system` is what protects it.
+  - The image tag is `latest` with `IfNotPresent`; nodes do not pick up a
+    newer image on their own.
+- CI still joins k8flare-agent by default; `AGENT=k3s
+  scripts/ci/e2e.sh up` joins the stock agent with the node-proxy image
+  built and preloaded from `packages/node-proxy`.
 - The agent must run with `--disable-apiserver-lb`.
 - Unchecked against Cloudflare: BYO-CA mTLS is Enterprise only, a
   `user_defined` custom certificate from a private CA, and that
