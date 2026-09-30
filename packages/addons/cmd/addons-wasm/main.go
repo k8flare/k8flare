@@ -5,9 +5,13 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/k8flare/k8flare/packages/addons"
+	"github.com/k8flare/k8flare/packages/helm"
 	bridge "github.com/k8flare/k8flare/packages/worker-bridge"
+	"helm.sh/helm/v3/pkg/chartutil"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
@@ -32,7 +36,35 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	helmController := &helm.Controller{
+		Client: client,
+		Mapper: func() (meta.RESTMapper, error) {
+			groups, err := restmapper.GetAPIGroupResources(disco)
+			if err != nil {
+				return nil, err
+			}
+			return restmapper.NewDiscoveryRESTMapper(groups), nil
+		},
+		HTTP:         http.DefaultClient,
+		Capabilities: func() (*chartutil.Capabilities, error) { return helm.DiscoveredCapabilities(disco) },
+		Lookup:       cfg,
+		Wait:         time.Second,
+	}
 	bridge.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/helm" {
+			if addons.ParseDisable(bridge.Getenv("DISABLE"))["helm-controller"] {
+				w.Write([]byte("{}"))
+				return
+			}
+			if err := helmController.Reconcile(r.Context()); err != nil {
+				println("helm: reconcile failed:", err.Error())
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte("{}"))
+			return
+		}
 		groups, err := restmapper.GetAPIGroupResources(disco)
 		if err != nil {
 			println("addons: discovery failed:", err.Error())
