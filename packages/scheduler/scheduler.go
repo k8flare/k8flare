@@ -8,6 +8,7 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
@@ -20,6 +21,7 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/scheduler"
+	schedconfig "k8s.io/kubernetes/pkg/scheduler/apis/config"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config/latest"
 )
 
@@ -32,7 +34,7 @@ const (
 	reportingActor = "default-scheduler"
 )
 
-var volumePlugins = map[string]bool{"VolumeBinding": true, "VolumeRestrictions": true, "NodeVolumeLimits": true, "VolumeZone": true, "DynamicResources": true}
+var withheldPlugins = map[string]bool{"DynamicResources": true}
 
 func init() {
 	_ = utilfeature.DefaultMutableFeatureGate.SetFromMap(map[string]bool{
@@ -113,11 +115,16 @@ func Schedule(ctx context.Context, client kubernetes.Interface) (*Result, error)
 	}
 	enabled := config.Profiles[0].Plugins.MultiPoint.Enabled[:0]
 	for _, p := range config.Profiles[0].Plugins.MultiPoint.Enabled {
-		if !volumePlugins[p.Name] {
+		if !withheldPlugins[p.Name] {
 			enabled = append(enabled, p)
 		}
 	}
 	config.Profiles[0].Plugins.MultiPoint.Enabled = enabled
+	for _, pc := range config.Profiles[0].PluginConfig {
+		if args, ok := pc.Args.(*schedconfig.VolumeBindingArgs); ok {
+			args.BindTimeoutSeconds = 0
+		}
+	}
 	factory := scheduler.NewInformerFactory(client, 0)
 	var scheduled atomic.Int64
 	sched, err := scheduler.New(ctx, client, factory, nil, syncRecorderFactory(client, &scheduled),
@@ -290,7 +297,7 @@ func fillSupporting(ctx context.Context, client kubernetes.Interface, factory in
 	}); err != nil {
 		return err
 	}
-	return fill(factory.Policy().V1().PodDisruptionBudgets().Informer(), func() ([]runtime.Object, error) {
+	if err := fill(factory.Policy().V1().PodDisruptionBudgets().Informer(), func() ([]runtime.Object, error) {
 		l, err := client.PolicyV1().PodDisruptionBudgets("").List(ctx, all)
 		if err != nil {
 			return nil, err
@@ -300,7 +307,41 @@ func fillSupporting(ctx context.Context, client kubernetes.Interface, factory in
 			out = append(out, &l.Items[i])
 		}
 		return out, nil
-	})
+	}); err != nil {
+		return err
+	}
+	return fillVolumes(ctx, client, factory)
+}
+
+func fillVolumes(ctx context.Context, client kubernetes.Interface, factory informers.SharedInformerFactory) error {
+	all := metav1.ListOptions{}
+	storage := client.StorageV1()
+	lists := []struct {
+		informer cache.SharedIndexInformer
+		list     func() (runtime.Object, error)
+	}{
+		{factory.Core().V1().PersistentVolumes().Informer(), func() (runtime.Object, error) { return client.CoreV1().PersistentVolumes().List(ctx, all) }},
+		{factory.Core().V1().PersistentVolumeClaims().Informer(), func() (runtime.Object, error) { return client.CoreV1().PersistentVolumeClaims("").List(ctx, all) }},
+		{factory.Storage().V1().StorageClasses().Informer(), func() (runtime.Object, error) { return storage.StorageClasses().List(ctx, all) }},
+		{factory.Storage().V1().CSINodes().Informer(), func() (runtime.Object, error) { return storage.CSINodes().List(ctx, all) }},
+		{factory.Storage().V1().CSIDrivers().Informer(), func() (runtime.Object, error) { return storage.CSIDrivers().List(ctx, all) }},
+		{factory.Storage().V1().CSIStorageCapacities().Informer(), func() (runtime.Object, error) { return storage.CSIStorageCapacities("").List(ctx, all) }},
+		{factory.Storage().V1().VolumeAttachments().Informer(), func() (runtime.Object, error) { return storage.VolumeAttachments().List(ctx, all) }},
+	}
+	for _, l := range lists {
+		list, err := l.list()
+		if err != nil {
+			return err
+		}
+		objs, err := meta.ExtractList(list)
+		if err != nil {
+			return err
+		}
+		for _, o := range objs {
+			l.informer.GetIndexer().Add(o)
+		}
+	}
+	return nil
 }
 
 type syncRecorder struct {
