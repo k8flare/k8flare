@@ -252,10 +252,36 @@ it. Remove an entry when the behaviour exists and CI covers it.
 - First full run (run 36698321866, main at 005a405, one node): 290 of 446
   specs ran before the job was interrupted at 76 minutes (cause not yet
   found; the job timeout is 355 minutes): 255 passed, 35 failed.
-  - DNS: the four `[sig-network] DNS` specs.
+  - DNS: the four `[sig-network] DNS` specs. Two causes. No CoreDNS pod
+    ever existed (`kube-system` had no pods for the whole run): its
+    Deployment asks for `system-cluster-critical`, the pod was refused
+    with "no PriorityClass ... was found", because the system priority
+    classes are only created on the first request that reaches the
+    scheduling group's Worker. The Priority admission now resolves the
+    two system classes itself. Separately, creating a headless Service
+    failed with `spec.clusterIPs: Required value` (`ClusterIPs` was never
+    set to `[None]`), which broke "for services" and "for pods for
+    Subdomain" before DNS mattered; fixed in `clusterip.go`.
   - Services and proxying: NodePort, session affinity (3), multiport,
-    ClusterIP/NodePort to ExternalName, proxy through a service and a
-    pod, endpoints latency, the kubectl guestbook.
+    ClusterIP/NodePort to ExternalName and the kubectl guestbook all reach
+    the Service by name from an exec pod (`nc ... getaddrinfo: Try
+    again`), so they follow CoreDNS. Not yet re-run with CoreDNS up;
+    whether the node's CoreDNS can list Services through kube-proxy to
+    `10.43.0.1:443` is unverified.
+  - Proxy through a service and a pod: 1 of 320 requests returned 502
+    "sync from client". The remotedialer client lists its live connection
+    IDs every 60 s and the server closes any it does not list, so a
+    connection dialed while the list is in flight is killed. The mirror
+    now closes a connection only when two consecutive syncs miss it. No
+    unit test: the state is unexported in the mirror.
+  - Endpoints latency: 8 s to 60 s per Service under 200 creations (median
+    28 s against a 20 s limit) with the same cluster taking 30 s to turn a
+    Deployment into a pod. Load-dependent on `wrangler dev --local` with
+    four spec processes (see `plans/remaining.md`); not addressed.
+  - Addon deploy still fails on the Helm CRD: server-side apply of
+    `helmcharts.helm.cattle.io` returns "no authorizer provided, unable to
+    authorize a create on update", so `addons: ok=false` and the queue
+    retries. CoreDNS and local-path are applied on the way.
   - StatefulSet: five specs fail in BeforeEach.
   - EndpointSliceMirroring, Events API lifecycle, Job
     backoffLimitPerIndex, OrderedNamespaceDeletion, pod generation.
