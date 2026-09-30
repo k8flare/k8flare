@@ -55,3 +55,16 @@ func TestKubernetesSlicePortsAndAddresses(t *testing.T) {
 		t.Fatal("slice is missing identity")
 	}
 }
+
+func TestKubernetesSliceEndpointsAreServingTerminatingSoAgentsKeepTheirTunnelTargets(t *testing.T) {
+	slice := kubernetesSlice([]string{"192.168.1.1", "192.168.1.2"})
+	for _, ep := range slice.Endpoints {
+		c := ep.Conditions
+		if c.Ready == nil || *c.Ready {
+			t.Fatalf("endpoint %v must not be ready: %#v", ep.Addresses, c)
+		}
+		if c.Serving == nil || !*c.Serving || c.Terminating == nil || !*c.Terminating {
+			t.Fatalf("endpoint %v must be serving and terminating: %#v", ep.Addresses, c)
+		}
+	}
+}

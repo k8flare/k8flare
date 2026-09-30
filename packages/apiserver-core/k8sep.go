@@ -167,14 +167,14 @@ func ensureSliceIdentity(slice *discoveryv1.EndpointSlice) {
 }
 
 func kubernetesSlice(ips []string) *discoveryv1.EndpointSlice {
-	ready := true
+	ready, serving, terminating := false, true, true
 	port := kubernetesAPIProxyPort
 	proto := corev1.ProtocolTCP
 	name := "https"
 	eps := make([]discoveryv1.Endpoint, 0, len(ips))
 	for _, ip := range ips {
 		addr := ip
-		eps = append(eps, discoveryv1.Endpoint{Addresses: []string{addr}, Conditions: discoveryv1.EndpointConditions{Ready: &ready}})
+		eps = append(eps, discoveryv1.Endpoint{Addresses: []string{addr}, Conditions: discoveryv1.EndpointConditions{Ready: &ready, Serving: &serving, Terminating: &terminating}})
 	}
 	return &discoveryv1.EndpointSlice{
 		TypeMeta: metav1.TypeMeta{APIVersion: discoveryv1.SchemeGroupVersion.String(), Kind: "EndpointSlice"},
