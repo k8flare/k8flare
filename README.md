@@ -184,8 +184,9 @@ CoreDNS, and nothing else from the platform.
   delivered to that Worker, which reconciles through the Kubernetes
   API. No pod, no node.
 - **Workers as webhooks and API servers.** An admission webhook,
-  conversion webhook, or `APIService` can point at a Worker
-  (`https://k8flare.com/worker/<name>`) instead of a Service.
+  conversion webhook, or `APIService` can point at a Worker instead of a
+  Service: webhooks with the URL `https://k8flare.com/worker/<name>`, and
+  any of them with the `k8flare.com/worker: <name>` annotation.
 - **LoadBalancer Services on the edge.** `type: LoadBalancer` is
   published as `{name}--{namespace}.<cluster domain>` and routed to
   ready endpoints through the node tunnel, with TLS from Cloudflare.
