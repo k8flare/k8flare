@@ -18,6 +18,8 @@
   "vars": {
     "ACCESS_TEAM_DOMAIN": "kooffice",
     "ACCESS_AUD": "f5b5bb1f97c02d095ecd20352a1e2282ddef9fca76a977800783a80172cc511e",
+    "ACCESS_GROUPS_CLAIM": "groups",
+    "ACCESS_GROUPS_PREFIX": "access:",
     "CLUSTER_UID": "",
     "DISABLE": "",
     "GATEWAY_URL": "https://api.k8flare.com",

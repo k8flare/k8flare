@@ -36,20 +36,22 @@ import (
 )
 
 type Config struct {
-	Kine            *http.Client
-	AdminToken      string
-	ReadonlyToken   string
-	JoinToken       string
-	Groups          *http.Client
-	OpenAPI         *http.Client
-	CustomResources *http.Client
-	Outbound        *http.Client
-	Tunnel          *http.Client
-	Admission       *http.Client
-	Hooks           *http.Client
-	AccessTeam      string
-	AccessAUD       string
-	ClusterUID      string
+	Kine               *http.Client
+	AdminToken         string
+	ReadonlyToken      string
+	JoinToken          string
+	Groups             *http.Client
+	OpenAPI            *http.Client
+	CustomResources    *http.Client
+	Outbound           *http.Client
+	Tunnel             *http.Client
+	Admission          *http.Client
+	Hooks              *http.Client
+	AccessTeam         string
+	AccessAUD          string
+	AccessGroupsClaim  string
+	AccessGroupsPrefix string
+	ClusterUID         string
 
 	SecretsEncryptionKeys string
 }
@@ -85,7 +87,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	}
 	client := &kine.Client{HTTP: cfg.Kine, Secrets: secrets}
 	v := supervisor.NewVault(client)
-	access := auth.Access{Team: cfg.AccessTeam, Audience: cfg.AccessAUD, HTTP: cfg.Outbound}
+	access := auth.Access{Team: cfg.AccessTeam, Audience: cfg.AccessAUD, HTTP: cfg.Outbound, GroupsClaim: cfg.AccessGroupsClaim, GroupsPrefix: cfg.AccessGroupsPrefix}
 	sa := auth.ServiceAccountToken{HMAC: []byte(cfg.AdminToken), Objects: auth.NewServiceAccountObjects(auth.KineObjects{Client: client})}
 	tokens := union.New(auth.AdminToken(cfg.AdminToken), auth.ReadonlyToken(cfg.ReadonlyToken), auth.VaultToken{Vault: v}, auth.NodeToken{Vault: v}, sa, access)
 	authn := requnion.New(bearertoken.New(tokens), access)

@@ -21,14 +21,17 @@ import (
 const accessAssertion = "Cf-Access-Jwt-Assertion"
 
 type Access struct {
-	Team     string
-	Audience string
-	HTTP     *http.Client
+	Team         string
+	Audience     string
+	HTTP         *http.Client
+	GroupsClaim  string
+	GroupsPrefix string
 }
 
 type accessClaims struct {
-	Email      string `json:"email"`
-	CommonName string `json:"common_name"`
+	Email      string         `json:"email"`
+	CommonName string         `json:"common_name"`
+	Custom     map[string]any `json:"custom,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -60,7 +63,34 @@ func (a Access) authenticate(raw string) (*authenticator.Response, bool, error) 
 	if name == "" {
 		return nil, false, nil
 	}
-	return &authenticator.Response{User: &user.DefaultInfo{Name: name, Groups: []string{user.AllAuthenticated}}}, true, nil
+	groups := append(a.groups(claims.Custom), user.AllAuthenticated)
+	return &authenticator.Response{User: &user.DefaultInfo{Name: name, Groups: groups}}, true, nil
+}
+
+func (a Access) groups(custom map[string]any) []string {
+	claim := a.GroupsClaim
+	if claim == "" {
+		claim = "groups"
+	}
+	var names []string
+	switch v := custom[claim].(type) {
+	case string:
+		names = []string{v}
+	case []any:
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				names = append(names, s)
+			}
+		}
+	}
+	var groups []string
+	for _, name := range names {
+		if name == "" || strings.HasPrefix(name, "system:") {
+			continue
+		}
+		groups = append(groups, a.GroupsPrefix+name)
+	}
+	return groups
 }
 
 func (a Access) key(tok *jwt.Token) (any, error) {
