@@ -95,3 +95,17 @@ lost, and a hard dependency on `/bin/sh` in the image outweigh the
 benefit. ConfigMap and Secret values go through environment variables,
 and API access through the HTTPS interceptor, which attaches the Pod's
 identity (plans/pod-on-containers.md).
+
+## Round 4: idle survival with the 6 h inactivity timeout
+
+`app` was started at 23:48 JST with `setInactivityTimeout(21600000)`
+(accepted), then touched last at 23:59 (running, uptime 687 s). The Worker
+was redeployed once in between (23:55) and the container survived it. At
+00:24, after 25 minutes with no request to its DO, it was stopped
+(`running: false`). Containers without the timeout stopped after about
+4 minutes. So the timeout extends idle life but does not keep a container
+for 6 h when its DO receives nothing; whether the DO's eviction or the
+redeploy reset the setting is not isolated. The PodKubelet DO must keep
+itself active with an alarm at a short interval (minutes) rather than
+relying on the 6 h figure, and the interval should be measured before
+settling on it.
