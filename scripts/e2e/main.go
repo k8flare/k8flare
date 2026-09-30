@@ -61,8 +61,8 @@ func main() {
 		check(os.MkdirAll(reportDir, 0o755))
 		fmt.Printf("=== e2e set %q nodes=%d ===\n", s, nodes)
 		err := runE2E(e2eTest, kubeconfig, regex, skips[s], reportDir, *procs, nodes)
-		if err != nil && s == "required" {
-			log.Fatalf("required e2e set failed: %v", err)
+		if err != nil && (s == "required" || s == *set) {
+			log.Fatalf("%s e2e set failed: %v", s, err)
 		}
 		if err != nil {
 			fmt.Printf("e2e set %q failed: %v\n", s, err)
