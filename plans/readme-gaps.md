@@ -45,10 +45,38 @@ it. Remove an entry when the behaviour exists and CI covers it.
 
 ## Security
 
-- No anonymous auth, no OIDC authenticator, Access groups are not mapped
-  to Kubernetes groups.
-- Internal Workers still authenticate with the shared ADMIN_TOKEN.
-- No API Priority and Fairness or rate limiting.
+- Anonymous auth, the OIDC authenticator and Access group mapping have
+  unit tests only; CI does not exercise them against a running cluster.
+  - Anonymous requests get `system:anonymous` and RBAC decides. A bad
+    bearer token is still 401.
+  - OIDC is a request-scoped JWT verifier in `apiserver-auth`, not
+    upstream's `token/oidc` (that adds 26 MB and takes the front to
+    71 MB, past the 64 MiB cap). It accepts RS/PS/ES algorithms, drops
+    `system:` groups from claims, has no CEL claim rules or
+    `--oidc-signing-algs`, and does not refetch keys on an unknown `kid`
+    until the 10 minute cache expires.
+  - Access groups come from the token's `custom.<ACCESS_GROUPS_CLAIM>`;
+    the IdP must send them, and Access trims `custom` above about 1 KB.
+    `get-identity` is not used.
+- Internal Workers no longer hold `ADMIN_TOKEN`; the front derives a
+  token per component. The scheduler, GC, HPA and attach/detach run as
+  their upstream identities. Still open:
+  - Workloads, addons, admission and hookecho run in `system:masters`
+    under their own identities, because workloads runs many controllers
+    and addons applies arbitrary manifests.
+  - Workers that hold the `STORAGE` binding (GC, workloads, admission)
+    read and write the datastore without RBAC.
+  - Group workers, CustomResources and the queue consumers still use
+    `ADMIN_TOKEN` or trust `X-Remote-User` from the front.
+  - `hpa-worker` and `attachdetach-worker` need the front deployed first
+    (new `HPAAPIServer` and `AttachDetachAPIServer` entrypoints).
+- Rate limiting is max-in-flight only (`MAX_REQUESTS_INFLIGHT`,
+  `MAX_MUTATING_REQUESTS_INFLIGHT`, 400 and 200, watches and streams
+  exempt, `system:masters` served when full). The count is per isolate,
+  not cluster-wide. API Priority and Fairness does not build against the
+  lean client-go (no FlowControl informers) and its controller needs
+  goroutines and informers the Workers do not keep; no Workers Rate
+  Limiting binding is wired.
 - Admission: OwnerReferencesPermissionEnforcement,
   ClusterTrustBundleAttest and DenyServiceExternalIPs are missing.
 

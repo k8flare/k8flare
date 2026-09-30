@@ -16,7 +16,8 @@ import (
 	"k8s.io/apiserver/pkg/authentication/user"
 )
 
-func TestAccessAuthenticateRequest(t *testing.T) {
+func newAccessTeam(t *testing.T) (*httptest.Server, *rsa.PrivateKey) {
+	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
@@ -37,7 +38,58 @@ func TestAccessAuthenticateRequest(t *testing.T) {
 	jwksMu.Lock()
 	jwksCache = map[string]jwksEntry{}
 	jwksMu.Unlock()
+	return team, key
+}
 
+func TestAccessMapsGroupsClaim(t *testing.T) {
+	team, key := newAccessTeam(t)
+	sign := func(custom map[string]any) string {
+		tok := jwt.NewWithClaims(jwt.SigningMethodRS256, accessClaims{
+			Email:  "ada@kooffice.jp",
+			Custom: custom,
+			RegisteredClaims: jwt.RegisteredClaims{
+				Issuer:    team.URL,
+				Audience:  jwt.ClaimStrings{"app-aud"},
+				ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+			},
+		})
+		tok.Header["kid"] = "k1"
+		raw, err := tok.SignedString(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	host := strings.TrimPrefix(team.URL, "https://")
+	cases := []struct {
+		name   string
+		access Access
+		custom map[string]any
+		want   []string
+	}{
+		{"default claim", Access{}, map[string]any{"groups": []any{"eng", "ops"}}, []string{"eng", "ops"}},
+		{"prefix", Access{GroupsPrefix: "access:"}, map[string]any{"groups": []any{"eng"}}, []string{"access:eng"}},
+		{"custom claim", Access{GroupsClaim: "roles"}, map[string]any{"roles": []any{"admin"}, "groups": []any{"eng"}}, []string{"admin"}},
+		{"single string", Access{}, map[string]any{"groups": "eng"}, []string{"eng"}},
+		{"system groups dropped", Access{}, map[string]any{"groups": []any{"system:masters", "eng"}}, []string{"eng"}},
+		{"no claim", Access{}, nil, nil},
+	}
+	for _, c := range cases {
+		a := c.access
+		a.Team, a.Audience, a.HTTP = host, "app-aud", team.Client()
+		resp, ok, err := a.AuthenticateToken(t.Context(), sign(c.custom))
+		if err != nil || !ok {
+			t.Fatalf("%s: ok=%v err=%v", c.name, ok, err)
+		}
+		want := append(append([]string{}, c.want...), user.AllAuthenticated)
+		if got := resp.User.GetGroups(); strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("%s: groups=%v want %v", c.name, got, want)
+		}
+	}
+}
+
+func TestAccessAuthenticateRequest(t *testing.T) {
+	team, key := newAccessTeam(t)
 	a := Access{Team: strings.TrimPrefix(strings.TrimPrefix(team.URL, "https://"), "http://"), Audience: "app-aud", HTTP: team.Client()}
 	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, accessClaims{
 		Email: "ada@kooffice.jp",

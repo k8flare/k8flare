@@ -36,20 +36,25 @@ import (
 )
 
 type Config struct {
-	Kine            *http.Client
-	AdminToken      string
-	ReadonlyToken   string
-	JoinToken       string
-	Groups          *http.Client
-	OpenAPI         *http.Client
-	CustomResources *http.Client
-	Outbound        *http.Client
-	Tunnel          *http.Client
-	Admission       *http.Client
-	Hooks           *http.Client
-	AccessTeam      string
-	AccessAUD       string
-	ClusterUID      string
+	Kine                        *http.Client
+	AdminToken                  string
+	ReadonlyToken               string
+	JoinToken                   string
+	Groups                      *http.Client
+	OpenAPI                     *http.Client
+	CustomResources             *http.Client
+	Outbound                    *http.Client
+	Tunnel                      *http.Client
+	Admission                   *http.Client
+	Hooks                       *http.Client
+	AccessTeam                  string
+	AccessAUD                   string
+	AccessGroupsClaim           string
+	AccessGroupsPrefix          string
+	OIDC                        auth.OIDC
+	MaxRequestsInflight         int
+	MaxMutatingRequestsInflight int
+	ClusterUID                  string
 
 	SecretsEncryptionKeys string
 }
@@ -85,9 +90,11 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	}
 	client := &kine.Client{HTTP: cfg.Kine, Secrets: secrets}
 	v := supervisor.NewVault(client)
-	access := auth.Access{Team: cfg.AccessTeam, Audience: cfg.AccessAUD, HTTP: cfg.Outbound}
+	access := auth.Access{Team: cfg.AccessTeam, Audience: cfg.AccessAUD, HTTP: cfg.Outbound, GroupsClaim: cfg.AccessGroupsClaim, GroupsPrefix: cfg.AccessGroupsPrefix}
+	oidc := cfg.OIDC
+	oidc.HTTP = cfg.Outbound
 	sa := auth.ServiceAccountToken{HMAC: []byte(cfg.AdminToken), Objects: auth.NewServiceAccountObjects(auth.KineObjects{Client: client})}
-	tokens := union.New(auth.AdminToken(cfg.AdminToken), auth.ReadonlyToken(cfg.ReadonlyToken), auth.VaultToken{Vault: v}, auth.NodeToken{Vault: v}, sa, access)
+	tokens := union.New(auth.AdminToken(cfg.AdminToken), auth.ReadonlyToken(cfg.ReadonlyToken), auth.ComponentTokens{Key: []byte(cfg.AdminToken)}, auth.VaultToken{Vault: v}, auth.NodeToken{Vault: v}, sa, oidc, access)
 	authn := requnion.New(bearertoken.New(tokens), access)
 	authorizer := authz.New(client)
 	mux := http.NewServeMux()
@@ -135,13 +142,13 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	installTokens(mux, v)
 	installSnapshots(mux, client)
 	kubeletSupervisor.Register(root)
-	root.Handle("/", auth.WithAuth(auth.WithRequestInfo(auth.WithAuthorization(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	root.Handle("/", auth.WithAuth(auth.WithRequestInfo(withInflightLimit(auth.WithAuthorization(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-K8flare-Stream-Locate") == "1" {
 			edgehost.LocateStream(w, r, client, cfg.Admission)
 			return
 		}
 		mux.ServeHTTP(w, r)
-	}), authorizer)), authn))
+	}), authorizer), cfg.MaxRequestsInflight, cfg.MaxMutatingRequestsInflight)), authn))
 	var once sync.Once
 	var keyReady atomic.Bool
 	return recoverPanics(redirectBareProxy(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

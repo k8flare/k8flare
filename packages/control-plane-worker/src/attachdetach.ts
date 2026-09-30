@@ -1,4 +1,5 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { componentToken } from "./componenttoken.ts";
 import { loadWasmWorker } from "@k8flare/loader-kit";
 
 export interface SyncResult {
@@ -12,7 +13,7 @@ export class AttachDetach extends WorkerEntrypoint<Env> {
     try {
       const worker = await loadWasmWorker(this.env.LOADER, this.env.ASSETS, "attachdetach", {
         APISERVER: this.env.APISERVER,
-        ADMIN_TOKEN: this.env.ADMIN_TOKEN,
+        API_TOKEN: await componentToken(this.env, "attachdetach"),
       }, this.env.APISERVER);
       const resp = await worker.fetch("https://attachdetach.internal/sync", { method: "POST", signal: AbortSignal.timeout(60_000) });
       const text = await resp.text();

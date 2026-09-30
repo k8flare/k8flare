@@ -1,4 +1,5 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { componentToken } from "./componenttoken.ts";
 import { loadWasmWorker } from "@k8flare/loader-kit";
 
 export interface ScheduleResult {
@@ -13,7 +14,7 @@ export class Scheduler extends WorkerEntrypoint<Env> {
   async schedule(messages: readonly { kind: string; attempt?: number }[]): Promise<ScheduleResult | null> {
     const worker = await loadWasmWorker(this.env.LOADER, this.env.ASSETS, "scheduler", {
       APISERVER: this.env.APISERVER,
-      ADMIN_TOKEN: this.env.ADMIN_TOKEN,
+      API_TOKEN: await componentToken(this.env, "scheduler"),
     }, this.env.APISERVER);
     const resp = await worker.fetch("https://scheduler.internal/schedule", {
       method: "POST",

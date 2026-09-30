@@ -21,7 +21,7 @@ func main() {
 		Hooks:    &http.Client{Transport: bridge.BindingTransport{Name: "HOOKS"}},
 		Outbound: &http.Client{Transport: bridge.BindingTransport{Name: "OUTBOUND"}},
 		API:      &http.Client{Transport: bridge.BindingTransport{Name: "APISERVER"}},
-		Token:    bridge.Getenv("ADMIN_TOKEN"),
+		Token:    bridge.Getenv("API_TOKEN"),
 		Secrets:  secrets,
 	})
 	bridge.Serve(handler)

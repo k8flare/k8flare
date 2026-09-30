@@ -75,9 +75,12 @@ func (n NodeToken) AuthenticateToken(ctx context.Context, token string) (*authen
 func WithAuth(next http.Handler, requests authenticator.Request) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp, ok, err := requests.AuthenticateRequest(r)
-		if err != nil || !ok {
+		if err != nil {
 			responsewriters.ErrorNegotiated(apierrors.NewUnauthorized("Unauthorized"), scheme.Codecs, schema.GroupVersion{}, w, r)
 			return
+		}
+		if !ok {
+			resp = &authenticator.Response{User: &user.DefaultInfo{Name: user.Anonymous, Groups: []string{user.AllUnauthenticated}}}
 		}
 		u, err := impersonate(resp.User, r)
 		if err != nil {
