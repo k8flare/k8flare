@@ -45,7 +45,7 @@ func main() {
 			}
 			return restmapper.NewDiscoveryRESTMapper(groups), nil
 		},
-		HTTP:         http.DefaultClient,
+		HTTP:         &http.Client{Transport: bridge.BindingTransport{Name: "OUTBOUND"}},
 		Capabilities: func() (*chartutil.Capabilities, error) { return helm.DiscoveredCapabilities(disco) },
 		Lookup:       cfg,
 		Wait:         time.Second,

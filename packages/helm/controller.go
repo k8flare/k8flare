@@ -272,7 +272,7 @@ func (c *Controller) install(ctx context.Context, chart *helmv1.HelmChart, confi
 		ReleaseName:  name,
 		Namespace:    namespace,
 		Revision:     revision,
-		IsUpgrade:    latest != nil,
+		IsUpgrade:    latestDeployed(history) != nil,
 		Values:       values,
 		Capabilities: caps,
 		Lookup:       c.Lookup,
@@ -388,6 +388,9 @@ func (c *Controller) saveDeployed(ctx context.Context, rel *release.Release, his
 				return err
 			}
 		}
+	}
+	if !retry {
+		history = append(history[:len(history):len(history)], &record{release: rel})
 	}
 	return releases.trim(ctx, history)
 }

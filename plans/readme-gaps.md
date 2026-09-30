@@ -51,7 +51,8 @@ it. Remove an entry when the behaviour exists and CI covers it.
   subcharts, `condition`/`tags`, `global`, `.Files`, `.helmignore`,
   `values.schema.json` and `crds/` behave as in `helm install`. The 70 MB
   figure belonged to `pkg/action`, `pkg/kube` and `cli-runtime`, which are
-  not linked; the addons Worker is 50.1 MB after wasm-opt (24.9 MB before).
+  not linked; the addons Worker is 50.1 MB after wasm-opt with `-tags grpcnotrace` (24.9 MB before), 14 MB
+  under the cap; chart and index downloads go through the `OUTBOUND` binding.
   Releases are stored as `sh.helm.release.v1.<name>.v<N>` Secrets in the
   release namespace in Helm's own encoding, so `helm list` and `helm
   history` on a workstation see them; objects carry the
@@ -60,7 +61,8 @@ it. Remove an entry when the behaviour exists and CI covers it.
   supported:
   - Hooks are recorded in the release but never run (no pre/post-install
     Jobs, no `helm test`).
-  - `spec.failurePolicy` (`reinstall`, `retry`), `timeout`, `backOffLimit`,
+  - `spec.failurePolicy` (a retry after a failed first install re-renders as
+    an install, but nothing is uninstalled first), `timeout`, `backOffLimit`,
     `jobImage`, `repoCA`, `insecureSkipTLSVerify` and `dockerRegistrySecret`
     are ignored; there is no Job. Objects are always server-side applied
     with force; `serverSide` and `forceConflicts` are ignored.

@@ -22,6 +22,7 @@ async function addonsWorker(env: ManifestsEnv): Promise<Fetcher> {
     APISERVER: env.APISERVER,
     API_TOKEN: await componentToken(env, "addons"),
     DISABLE: env.DISABLE ?? "",
+    OUTBOUND: env.OUTBOUND,
   }, env.APISERVER);
 }
 

@@ -215,7 +215,7 @@ func (s *Source) pullOCI(ctx context.Context, spec helmv1.HelmChartSpec, creds c
 	repository := strings.TrimPrefix(ref.Path, "/")
 	registry := &registryClient{source: s, base: scheme + "://" + ref.Host + "/v2/" + repository, creds: creds}
 	tag := strings.ReplaceAll(spec.Version, "+", "_")
-	if tag == "" || strings.ContainsAny(spec.Version, "<>=~^*|, ") {
+	if _, err := semver.StrictNewVersion(spec.Version); err != nil {
 		tags, err := registry.tags(ctx)
 		if err != nil {
 			return nil, err

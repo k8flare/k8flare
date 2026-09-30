@@ -359,6 +359,9 @@ func TestInstallRefusesToAdoptForeignObjects(t *testing.T) {
 	if last := history[len(history)-1].release; last.Info.Status != release.StatusDeployed {
 		t.Fatalf("status = %v after takeOwnership", last.Info.Status)
 	}
+	if getObject(t, client, configMapsGVR, "apps", "demo-demo").Object["data"].(map[string]any)["install"] != true {
+		t.Fatal("a retry of a failed first install rendered as an upgrade")
+	}
 }
 
 func TestFailedInstallRetriesInPlaceInsteadOfPilingUpRevisions(t *testing.T) {

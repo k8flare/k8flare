@@ -139,7 +139,7 @@ func TestFetchFromOCIRegistryWithBearerToken(t *testing.T) {
 		return map[string][]byte{"username": []byte("puller"), "password": []byte("pw")}, nil
 	}
 	host := strings.TrimPrefix(registry.URL, "http://")
-	for _, version := range []string{"", "0.1.0"} {
+	for _, version := range []string{"", "0.1.0", "0.1.x"} {
 		chart := &helmv1.HelmChart{Spec: helmv1.HelmChartSpec{
 			Chart:      "oci://" + host + "/charts/demo",
 			Version:    version,
