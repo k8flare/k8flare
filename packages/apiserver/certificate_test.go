@@ -39,7 +39,7 @@ func TestRotateCAThenCheckListsBothGenerations(t *testing.T) {
 	var out struct {
 		Items []supervisor.CAStatus `json:"items"`
 	}
-	if err := json.Unmarshal([]byte(body), &out); err != nil || len(out.Items) != 4 {
+	if err := json.Unmarshal([]byte(body), &out); err != nil || len(out.Items) != 6 {
 		t.Fatalf("%v %s", err, body)
 	}
 }
