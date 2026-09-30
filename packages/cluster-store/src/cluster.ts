@@ -824,7 +824,7 @@ function ownerMeta(value: Uint8Array): { ownerReferences?: unknown[]; finalizers
 
 function wantsContainers(value: Uint8Array): boolean {
   const pod = decodeJSON(value);
-  return pod?.metadata?.annotations?.["k8flare.com/compute"] === "containers" || pod?.spec?.nodeSelector?.["k8flare.com/backend"] === "containers";
+  return pod?.metadata?.annotations?.["k8flare.com/compute"] === "containers" || pod?.spec?.nodeSelector?.["k8flare.com/backend"] === "containers" || pod?.spec?.nodeName === "cloudflare" || pod?.spec?.schedulerName === "k8flare-containers";
 }
 
 function podBound(value: Uint8Array): boolean {

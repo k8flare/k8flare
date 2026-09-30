@@ -46,6 +46,10 @@ jobs:
         run: node --import ./test/register.mjs --test test/*.test.ts
         working-directory: packages/cluster-store
 
+      - name: Test the PodKubelet Durable Object
+        run: node --test test/*.test.ts
+        working-directory: packages/control-plane-worker
+
       - name: Fetch the Kubernetes mirrors
         run: make mirrors
 

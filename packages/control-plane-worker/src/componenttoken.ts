@@ -1,4 +1,4 @@
-export type Component = "scheduler" | "gc" | "hpa" | "attachdetach" | "admission" | "workloads" | "addons" | "hookecho";
+export type Component = "scheduler" | "gc" | "hpa" | "attachdetach" | "admission" | "workloads" | "addons" | "hookecho" | "podkubelet";
 
 const encoder = new TextEncoder();
 

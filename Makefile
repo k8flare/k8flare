@@ -199,9 +199,14 @@ opt-wasm-list:
 
 wasm: $(ASSETS)/wasm_exec.js $(ASSETS)/apiserver.manifest.json $(foreach g,$(API_GROUPS),$(ASSETS)/apiserver-$(g).manifest.json) $(ASSETS)/openapi.manifest.json $(ASSETS)/customresources.manifest.json $(ASSETS)/scheduler.manifest.json $(ASSETS)/workloads.manifest.json $(ASSETS)/workloads-vap.manifest.json $(ASSETS)/attachdetach.manifest.json $(ASSETS)/addons.manifest.json $(ASSETS)/hpa.manifest.json $(ASSETS)/gc.manifest.json $(ASSETS)/admission.manifest.json $(ASSETS)/hookecho.manifest.json $(foreach g,$(GROUPS),$(ASSETS)/printers-$(g).manifest.json) $(NODE_TUNNEL_WASM)
 
-gen:
+gen: images
 	cd scripts && go run ./genresources && go run ./genprinters && go run ./genopenapi
 	go run ./packages/openapi/cmd/bakeopenapi
+
+## images: record ENTRYPOINT/CMD/WorkingDir/User/Env of every image declared under
+## containers[].images in wrangler.jsonc, for the PodKubelet Durable Object.
+images:
+	pnpm exec node scripts/genimages.mjs
 
 agent: mirrors
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o .build/bin/k8flare-agent-linux-arm64 ./packages/agent

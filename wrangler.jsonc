@@ -47,6 +47,8 @@
       { "name": "NODE_VM_SMALL", "class_name": "NodeVMSmall" },
       { "name": "NODE_VM_MEDIUM", "class_name": "NodeVMMedium" },
       { "name": "NODE_VM_LARGE", "class_name": "NodeVMLarge" },
+      { "name": "POD_KUBELET", "class_name": "PodKubelet" },
+      { "name": "POD_LEDGER", "class_name": "PodLedger" },
     ],
   },
   "migrations": [
@@ -56,11 +58,19 @@
     { "tag": "v4", "deleted_classes": ["Wake"] },
     { "tag": "v5", "new_sqlite_classes": ["CFContainersScheduler"] },
     { "tag": "v6", "new_sqlite_classes": ["NodeVMSmall", "NodeVMMedium", "NodeVMLarge"] },
+    { "tag": "v7", "new_sqlite_classes": ["PodKubelet", "PodLedger"] },
   ],
   "containers": [
     { "class_name": "NodeVMSmall", "image": "./packages/control-plane-worker/images/node/Dockerfile", "instance_type": "standard-2", "max_instances": 3 },
     { "class_name": "NodeVMMedium", "image": "./packages/control-plane-worker/images/node/Dockerfile", "instance_type": "standard-3", "max_instances": 2 },
     { "class_name": "NodeVMLarge", "image": "./packages/control-plane-worker/images/node/Dockerfile", "instance_type": "standard-4", "max_instances": 1 },
+    {
+      "class_name": "PodKubelet",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "httpd": { "dockerfile": "./packages/control-plane-worker/images/httpd/Dockerfile" },
+      },
+    },
   ],
   "services": [
     { "binding": "PRINTERS", "service": "k8flare", "entrypoint": "Printers" },

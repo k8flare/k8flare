@@ -39,6 +39,7 @@ var componentIdentities = map[string]func() user.Info{
 	"workloads":    privileged(user.KubeControllerManager),
 	"addons":       privileged("system:k8flare:addons"),
 	"hookecho":     privileged("system:k8flare:hookecho"),
+	"podkubelet":   privileged("system:k8flare:podkubelet"),
 }
 
 func MintComponentToken(key []byte, component string) string {

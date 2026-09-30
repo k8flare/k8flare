@@ -3,6 +3,7 @@ import { Trace } from "./otel";
 import { apiserverFetch } from "./loader.ts";
 import { clusterStub } from "./clusterid.ts";
 import { deployAddons, reconcileHelm } from "./addons.ts";
+import { wakePodKubelets } from "./podkubelet/wake.ts";
 
 type Target = "scheduler" | "leases" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "metrics" | "containers" | "attachdetach" | "addons";
 
@@ -318,7 +319,8 @@ async function consumeContainers(batch: MessageBatch<QueueMessage>, env: Env): P
   const stub = env.NODE_SCHED.get(env.NODE_SCHED.idFromName(clusterName(env)));
   const resp = await stub.fetch("https://nodesched.internal/reconcile");
   const body = resp.ok ? ((await resp.json()) as { hasWork?: boolean }) : {};
-  console.log(`containers: keys=${keys.size} status=${resp.status} hasWork=${Boolean(body.hasWork)}`);
+  const woken = await wakePodKubelets(env, [...keys]);
+  console.log(`containers: keys=${keys.size} status=${resp.status} hasWork=${Boolean(body.hasWork)} kubelets=${woken}`);
   await applySends(env, (await followUp(env, { target: "containers", hasWork: Boolean(body.hasWork) })).sends);
   batch.ackAll();
 }

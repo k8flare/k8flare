@@ -28,6 +28,8 @@ export { Outbound } from "./outbound.ts";
 export { Metrics };
 export { CFContainersScheduler } from "./nodes/scheduler.ts";
 export { NodeVMSmall, NodeVMMedium, NodeVMLarge } from "./nodes/nodevm.ts";
+export { PodKubelet } from "./podkubelet/kubelet.ts";
+export { PodLedger } from "./podkubelet/ledger.ts";
 
 async function digest(value: string): Promise<ArrayBuffer> {
   return crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));

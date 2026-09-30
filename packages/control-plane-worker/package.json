@@ -10,6 +10,7 @@
   },
   "scripts": {
     "dev": "cd ../.. && make dev",
-    "check": "cd ../.. && pnpm exec tsc --noEmit"
+    "check": "cd ../.. && pnpm exec tsc --noEmit",
+    "test": "node --test test/*.test.ts"
   }
 }
