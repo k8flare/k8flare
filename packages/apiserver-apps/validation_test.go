@@ -2,6 +2,7 @@ package apps
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
@@ -49,6 +50,29 @@ func validDeployment() *appsv1.Deployment {
 	return d
 }
 
+func invalidFields(t *testing.T, err error) []string {
+	t.Helper()
+	status, ok := err.(apierrors.APIStatus)
+	if !ok || !apierrors.IsInvalid(err) {
+		t.Fatalf("want Invalid, got %v", err)
+	}
+	var fields []string
+	for _, cause := range status.Status().Details.Causes {
+		fields = append(fields, cause.Field+": "+cause.Message)
+	}
+	return fields
+}
+
+func requireFieldError(t *testing.T, err error, field, contains string) {
+	t.Helper()
+	for _, f := range invalidFields(t, err) {
+		if strings.HasPrefix(f, field+":") && strings.Contains(f, contains) {
+			return
+		}
+	}
+	t.Fatalf("want %s error containing %q, got %v", field, contains, err)
+}
+
 func TestDeploymentCreateRejectsNegativeReplicas(t *testing.T) {
 	store := deploymentStore(t)
 	ctx := genericapirequest.WithNamespace(context.Background(), "default")
@@ -56,9 +80,7 @@ func TestDeploymentCreateRejectsNegativeReplicas(t *testing.T) {
 	d.Spec.Replicas = ptr.To[int32](-1)
 	rest.FillObjectMetaSystemFields(d)
 	err := rest.BeforeCreate(store.CreateStrategy, ctx, d)
-	if !apierrors.IsInvalid(err) {
-		t.Fatalf("want Invalid, got %v", err)
-	}
+	requireFieldError(t, err, "spec.replicas", "must be greater than or equal to 0")
 }
 
 func TestDeploymentCreateAcceptsValid(t *testing.T) {
@@ -84,7 +106,5 @@ func TestDeploymentUpdateRejectsSelectorChange(t *testing.T) {
 	next.Spec.Template.Labels = map[string]string{"app": "other"}
 	store.UpdateStrategy.PrepareForUpdate(ctx, next, old)
 	err := rest.BeforeUpdate(store.UpdateStrategy, ctx, next, old)
-	if !apierrors.IsInvalid(err) {
-		t.Fatalf("want Invalid, got %v", err)
-	}
+	requireFieldError(t, err, "spec.selector", "field is immutable")
 }

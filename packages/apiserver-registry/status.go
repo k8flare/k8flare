@@ -9,6 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
 	"k8s.io/apiserver/pkg/registry/rest"
+	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 )
 
 // statusREST serves /status the way upstream does: a second rest.Storage
@@ -21,7 +22,9 @@ type statusREST struct {
 // NewStatusREST serves /status over parent.
 func NewStatusREST(parent *genericregistry.Store) *statusREST {
 	if up, ok := Upstreams[parent.DefaultQualifiedResource]; ok && up.Status != nil {
-		return NewUpdateOnlyREST(parent, upstreamStatusStrategy{RESTUpdateStrategy: parent.UpdateStrategy, up: up.Status})
+		status := NewUpdateOnlyREST(parent, upstreamStatusStrategy{RESTUpdateStrategy: parent.UpdateStrategy, up: up.Status})
+		status.store.ResetFieldsStrategy, _ = up.Status.(rest.ResetFieldsStrategy)
+		return status
 	}
 	return NewUpdateOnlyREST(parent, statusOnlyStrategy{parent.UpdateStrategy})
 }
@@ -38,6 +41,10 @@ func NewUpdateOnlyREST(parent *genericregistry.Store, strategy rest.RESTUpdateSt
 
 func (r *statusREST) New() runtime.Object { return r.store.New() }
 func (r *statusREST) Destroy()            {}
+
+func (r *statusREST) GetResetFields() map[fieldpath.APIVersion]*fieldpath.Set {
+	return r.store.GetResetFields()
+}
 
 func (r *statusREST) Get(ctx context.Context, name string, options *metav1.GetOptions) (runtime.Object, error) {
 	return r.store.Get(ctx, name, options)

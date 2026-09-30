@@ -215,6 +215,9 @@ func NewStore(client *kine.Client, gv schema.GroupVersion, res metav1.APIResourc
 		},
 		Storage: genericregistry.DryRunnableStorage{Storage: kineStorage, Codec: persist},
 	}
+	if up, ok := Upstreams[gr]; ok {
+		store.ResetFieldsStrategy, _ = up.Strategy.(rest.ResetFieldsStrategy)
+	}
 	return store, nil
 }
 

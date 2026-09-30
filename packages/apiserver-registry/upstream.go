@@ -7,7 +7,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apiserver/pkg/registry/rest"
-	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 )
 
 var InternalScheme = runtime.NewScheme()
@@ -142,13 +141,6 @@ func (s upstreamStrategy) WarningsOnUpdate(ctx context.Context, obj, old runtime
 	})
 }
 
-func (s upstreamStrategy) GetResetFields() map[fieldpath.APIVersion]*fieldpath.Set {
-	if reset, ok := s.up.(rest.ResetFieldsStrategy); ok {
-		return reset.GetResetFields()
-	}
-	return nil
-}
-
 type upstreamStatusStrategy struct {
 	rest.RESTUpdateStrategy
 	up rest.RESTUpdateStrategy
@@ -168,11 +160,4 @@ func (s upstreamStatusStrategy) WarningsOnUpdate(ctx context.Context, obj, old r
 	return warnInternalUpdate(obj, old, func(internal, previous runtime.Object) []string {
 		return s.up.WarningsOnUpdate(ctx, internal, previous)
 	})
-}
-
-func (s upstreamStatusStrategy) GetResetFields() map[fieldpath.APIVersion]*fieldpath.Set {
-	if reset, ok := s.up.(rest.ResetFieldsStrategy); ok {
-		return reset.GetResetFields()
-	}
-	return nil
 }

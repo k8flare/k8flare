@@ -16,7 +16,9 @@ import (
 func init() {
 	utilruntime.Must(apps.AddToScheme(registry.InternalScheme))
 	utilruntime.Must(appsv1.AddToScheme(registry.InternalScheme))
-	group := func(resource string) schema.GroupResource { return schema.GroupResource{Group: "apps", Resource: resource} }
+	group := func(resource string) schema.GroupResource {
+		return schema.GroupResource{Group: "apps", Resource: resource}
+	}
 	registry.Upstreams[group("controllerrevisions")] = registry.Upstream{Strategy: controllerrevision.Strategy}
 	registry.Upstreams[group("daemonsets")] = registry.Upstream{Strategy: daemonset.Strategy, Status: daemonset.StatusStrategy}
 	registry.Upstreams[group("deployments")] = registry.Upstream{Strategy: deployment.Strategy, Status: deployment.StatusStrategy}
