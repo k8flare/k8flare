@@ -32,23 +32,37 @@ type envKey struct{}
 // ends the Go program.
 var (
 	callbacksMu sync.Mutex
-	callbacks   = map[int]any{}
+	callbacks   = map[int]callback{}
 	nextID      int
 	shared      = map[string]js.Func{}
 )
 
-func register(v any) int {
+type callback struct {
+	value any
+	owner *Window
+}
+
+func register(v any, owner *Window) int {
 	callbacksMu.Lock()
 	defer callbacksMu.Unlock()
 	nextID++
-	callbacks[nextID] = v
+	callbacks[nextID] = callback{value: v, owner: owner}
 	return nextID
 }
 
 func lookup(id int) any {
 	callbacksMu.Lock()
 	defer callbacksMu.Unlock()
-	return callbacks[id]
+	return callbacks[id].value
+}
+
+func enterOwnerTurn(id int) {
+	callbacksMu.Lock()
+	cb, ok := callbacks[id]
+	callbacksMu.Unlock()
+	if ok {
+		EnterTurn(cb.owner)
+	}
 }
 
 func unregister(id int) {
@@ -64,7 +78,9 @@ func bound(name string, id int, fn func(id int, args []js.Value)) js.Value {
 	f, ok := shared[name]
 	if !ok {
 		f = js.FuncOf(func(_ js.Value, args []js.Value) any {
-			fn(args[0].Int(), args[1:])
+			id := args[0].Int()
+			enterOwnerTurn(id)
+			fn(id, args[1:])
 			return nil
 		})
 		shared[name] = f
@@ -136,8 +152,7 @@ func Serve(handler http.Handler) {
 		if w == nil {
 			return nil
 		}
-		leave := EnterTurn(w)
-		defer leave()
+		EnterTurn(w)
 		w.pump()
 		return nil
 	}))
@@ -152,6 +167,8 @@ func Serve(handler http.Handler) {
 		if len(args) > 3 && args[3].Type() == js.TypeNumber {
 			requestID = args[3].Int()
 		}
+		window := openWindowFor(requestID, env)
+		EnterTurn(window)
 		var executor js.Func
 		executor = js.FuncOf(func(_ js.Value, p []js.Value) any {
 			defer executor.Release()
@@ -164,7 +181,7 @@ func Serve(handler http.Handler) {
 					}
 					yieldToEventLoop()
 				}()
-				if err := dispatch(handler, reqObj, env, execCtx, requestID, func(v js.Value) { resolve.Invoke(v) }); err != nil {
+				if err := dispatch(handler, reqObj, env, execCtx, window, func(v js.Value) { resolve.Invoke(v) }); err != nil {
 					reject.Invoke(js.Global().Get("Error").New(err.Error()))
 				}
 			}()
@@ -199,9 +216,11 @@ func extend(execCtx js.Value) func() {
 
 func yieldToEventLoop() {
 	done := make(chan struct{})
+	owner := turnOwner()
 	var cb js.Func
 	cb = js.FuncOf(func(js.Value, []js.Value) any {
 		defer cb.Release()
+		EnterTurn(owner)
 		close(done)
 		return nil
 	})
@@ -226,6 +245,7 @@ type responseWriter struct {
 	cancel     context.CancelFunc
 	closed     chan bool
 	id         int
+	window     *Window
 }
 
 func (r *responseWriter) Header() http.Header { return r.header }
@@ -270,7 +290,7 @@ func (r *responseWriter) Flush() {
 	})
 	defer start.Release()
 	src.Set("start", start)
-	r.id = register(r)
+	r.id = register(r, r.window)
 	src.Set("cancel", bound("stream-cancel", r.id, func(id int, _ []js.Value) {
 		if w, ok := lookup(id).(*responseWriter); ok {
 			select {
@@ -330,7 +350,8 @@ func fromUint8Array(v js.Value) []byte {
 	return b
 }
 
-func dispatch(handler http.Handler, reqObj, env, execCtx js.Value, requestID int, started func(js.Value)) (err error) {
+func dispatch(handler http.Handler, reqObj, env, execCtx js.Value, window *Window, started func(js.Value)) (err error) {
+	defer forgetWindow(window.id)
 	u, err := url.Parse(reqObj.Get("url").String())
 	if err != nil {
 		return err
@@ -351,10 +372,6 @@ func dispatch(handler http.Handler, reqObj, env, execCtx js.Value, requestID int
 		Host:          u.Host,
 		RequestURI:    u.RequestURI(),
 	}
-	window := openWindowFor(requestID, env)
-	defer forgetWindow(requestID)
-	leaveTurn := EnterTurn(window)
-	defer leaveTurn()
 	finished := extend(execCtx)
 	defer func() {
 		window.drain()
@@ -364,9 +381,9 @@ func dispatch(handler http.Handler, reqObj, env, execCtx js.Value, requestID int
 	ctx, cancel := context.WithCancel(context.WithValue(context.WithValue(context.Background(), envKey{}, env), windowKey{}, window))
 	defer cancel()
 	req = req.WithContext(ctx)
-	rw := &responseWriter{header: http.Header{}, cancel: cancel, closed: make(chan bool, 1), started: started}
+	rw := &responseWriter{header: http.Header{}, cancel: cancel, closed: make(chan bool, 1), started: started, window: window}
 	if signal := reqObj.Get("signal"); !signal.IsUndefined() && !signal.IsNull() {
-		id := register(rw)
+		id := register(rw, window)
 		defer unregister(id)
 		signal.Call("addEventListener", "abort", bound("request-abort", id, func(id int, _ []js.Value) {
 			if w, ok := lookup(id).(*responseWriter); ok {
@@ -606,10 +623,12 @@ type settled struct {
 
 func settle(promise js.Value) <-chan settled {
 	ch := make(chan settled, 1)
+	owner := turnOwner()
 	var onOK, onErr js.Func
 	onOK = js.FuncOf(func(_ js.Value, args []js.Value) any {
 		onOK.Release()
 		onErr.Release()
+		EnterTurn(owner)
 		var v js.Value
 		if len(args) > 0 {
 			v = args[0]
@@ -620,6 +639,7 @@ func settle(promise js.Value) <-chan settled {
 	onErr = js.FuncOf(func(_ js.Value, args []js.Value) any {
 		onOK.Release()
 		onErr.Release()
+		EnterTurn(owner)
 		msg := "rejected"
 		if len(args) > 0 {
 			if m := args[0].Get("message"); m.Type() == js.TypeString {
@@ -742,7 +762,7 @@ func DialWebSocket(ctx context.Context, bindingName, rawURL string) (*WebSocket,
 	println("bridge: ws dial ok in "+time.Since(started).Round(time.Millisecond).String()+":", rawURL)
 	msgs := make(chan []byte)
 	c := &WebSocket{ws: ws, Messages: msgs, msgs: msgs, closed: make(chan struct{}), notify: make(chan struct{}, 1)}
-	c.id = register(c)
+	c.id = register(c, window)
 	go c.drain()
 	if ownedBy(ctx, window) {
 		_, c.untrack = trackStream(window, c.Close)

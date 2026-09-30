@@ -778,3 +778,46 @@ it. Remove an entry when the behaviour exists and CI covers it.
   - Open: the 7-20 s (CI) and 4-5 s (local) stalls inside an isolate
     between consecutive requests; the scheduler's per-pass retry of pods
     whose bind is refused; the memory the mem lines will attribute.
+- Fetches that a prompt callee answered but the Go side never saw (run
+  36784977844 attempt 1: `bridge: fetch timed out ... binding=CUSTOMRESOURCES
+  inflight=1 pending=0 turn=true: GET /apis` 30 s after `crd-diag` answered
+  in 134 ms, with a `STORAGE GET /kv` in the same second; the unary DELETE
+  in run 36759859775 that was applied but got no `ResponseComplete`; the
+  "30 s stall of every fetch in one dispatch window" above). Root cause in
+  the bridge, not the pump or the callee.
+  - Mechanism: `currentTurn` was set by the dispatch goroutine for its whole
+    life and *restored* when a later dispatch returned, so it named the
+    request whose goroutine last entered, not the JS entry actually on the
+    stack. On js/wasm every `resume()` runs all goroutines that became
+    runnable until they block, so a goroutine of request A woken during
+    request B's entry (a channel or mutex handoff, B's setTimeout(0), a
+    pump) runs on B's JS stack; once B's dispatch had returned and put
+    `currentTurn` back to A, `Owns()` said true and `Run` issued A's fetch
+    inline, in B's I/O context. workerd ties a subrequest to the I/O context
+    that issued it and cancels it when that request finishes, so the promise
+    never settles (the callee may not even receive the request) and A waits
+    out the 30 s header timeout. Timers of a finished request are dropped
+    the same way (checked with a `setTimeout` in a request that returns at
+    once: it never fires).
+  - Reproduced under workerd 2026-09-08 with the loader bootstrap and a tiny
+    Go handler: `/wait` blocks on a channel and then fetches a binding that
+    answers after 500 ms; `/kick` closes the channel. `/direct` completed in
+    511 ms, `/wait` printed exactly the CI line (`inflight=1 pending=0
+    turn=true`) after 30 s and the echo service never logged the request.
+    After the fix `/wait` completes in 502 ms.
+  - Fixed: the turn follows the JS entry. `handleRequest` and `pump` tag
+    their window on entry and nothing restores a previous one; promise
+    callbacks (`settle`), the post-dispatch `setTimeout` and the bound
+    stream/abort/websocket callbacks tag the window whose I/O context created
+    them. A goroutine that runs on another request's stack now sees
+    `Owns()` false and queues its fetch for its own pump (at most 25 ms
+    later). `TestRunWokenOnAnotherRequestsEntryWaitsForItsOwnPump` drives
+    `binding.handleRequest` and `binding.pump` the way the bootstrap does
+    and failed before the fix.
+  - Not proven the same cause: the 7-20 s and 4-5 s pauses between a
+    controller's consecutive requests; a fetch orphaned this way costs 15 s
+    (apiserver body) or 30 s (headers) plus the client's retry, which fits
+    the shape but was not observed directly there. Go runtime timers
+    scheduled at the end of a request's entry die with that request too;
+    the pumps of other in-flight requests cover it, an idle isolate has no
+    timers until its next request.

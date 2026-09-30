@@ -339,10 +339,11 @@ var liveSockets atomic.Int64
 // fetch issued for another window can be reported instead of hanging.
 var currentTurn atomic.Pointer[Window]
 
-func EnterTurn(w *Window) func() {
-	previous := currentTurn.Swap(w)
-	return func() { currentTurn.Store(previous) }
+func EnterTurn(w *Window) {
+	currentTurn.Store(w)
 }
+
+func turnOwner() *Window { return currentTurn.Load() }
 
 func (w *Window) Owns() bool { return currentTurn.Load() == w }
 
