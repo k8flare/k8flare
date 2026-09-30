@@ -56,6 +56,7 @@ func main() {
 		MaxRequestsInflight:         inflightLimit("MAX_REQUESTS_INFLIGHT", apiserver.DefaultMaxRequestsInflight),
 		MaxMutatingRequestsInflight: inflightLimit("MAX_MUTATING_REQUESTS_INFLIGHT", apiserver.DefaultMaxMutatingRequestsInflight),
 		ClusterUID:                  bridge.Getenv("CLUSTER_UID"),
+		AuditPolicy:                 bridge.Getenv("AUDIT_POLICY"),
 
 		SecretsEncryptionKeys: bridge.Getenv("SECRETS_ENCRYPTION_KEYS"),
 	})

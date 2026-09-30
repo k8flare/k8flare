@@ -73,19 +73,39 @@ func (n NodeToken) AuthenticateToken(ctx context.Context, token string) (*authen
 }
 
 func WithAuth(next http.Handler, requests authenticator.Request) http.Handler {
+	return WithAuthentication(WithImpersonation(next), requests, nil)
+}
+
+func WithAuthentication(next http.Handler, requests authenticator.Request, decorateFailed func(http.Handler) http.Handler) http.Handler {
+	failed := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		responsewriters.ErrorNegotiated(apierrors.NewUnauthorized("Unauthorized"), scheme.Codecs, schema.GroupVersion{}, w, r)
+	}))
+	if decorateFailed != nil {
+		failed = decorateFailed(failed)
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp, ok, err := requests.AuthenticateRequest(r)
 		if err != nil {
-			responsewriters.ErrorNegotiated(apierrors.NewUnauthorized("Unauthorized"), scheme.Codecs, schema.GroupVersion{}, w, r)
+			failed.ServeHTTP(w, r)
 			return
 		}
 		if !ok {
 			resp = &authenticator.Response{User: &user.DefaultInfo{Name: user.Anonymous, Groups: []string{user.AllUnauthenticated}}}
 		}
-		u, err := impersonate(resp.User, r)
+		next.ServeHTTP(w, r.WithContext(genericapirequest.WithUser(r.Context(), resp.User)))
+	})
+}
+
+func WithImpersonation(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current, _ := genericapirequest.UserFrom(r.Context())
+		u, err := impersonate(current, r)
 		if err != nil {
 			responsewriters.ErrorNegotiated(apierrors.NewForbidden(schema.GroupResource{Resource: "users"}, "", err), scheme.Codecs, schema.GroupVersion{}, w, r)
 			return
+		}
+		if u != current {
+			audit.LogImpersonatedUser(r.Context(), u, "")
 		}
 		next.ServeHTTP(w, r.WithContext(genericapirequest.WithUser(r.Context(), u)))
 	})
@@ -153,9 +173,11 @@ func WithAuthorization(next http.Handler, a authorizer.Authorizer) http.Handler 
 			if err != nil {
 				reason = err.Error()
 			}
+			audit.AddAuditAnnotations(ctx, "authorization.k8s.io/decision", "forbid", "authorization.k8s.io/reason", reason)
 			responsewriters.Forbidden(attrs, w, r, reason, scheme.Codecs)
 			return
 		}
+		audit.AddAuditAnnotations(ctx, "authorization.k8s.io/decision", "allow", "authorization.k8s.io/reason", reason)
 		next.ServeHTTP(w, r)
 	})
 }
