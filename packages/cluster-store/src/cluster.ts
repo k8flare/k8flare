@@ -50,6 +50,7 @@ export class Cluster extends DurableObject<Env> {
       ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS kine_name_id ON kine (name, id)`);
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)`);
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, target TEXT NOT NULL, rev INTEGER NOT NULL, key TEXT NOT NULL, type TEXT NOT NULL)`);
+      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS passes (target TEXT PRIMARY KEY, triggered INTEGER NOT NULL, finished INTEGER NOT NULL)`);
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS lease_checks (node TEXT PRIMARY KEY, sent INTEGER NOT NULL)`);
       ctx.storage.sql.exec(
         `INSERT INTO kine (name, deleted, value) SELECT '/k8flare/bootstrap', 0, X'' WHERE NOT EXISTS (SELECT 1 FROM kine)`,
@@ -169,6 +170,28 @@ export class Cluster extends DurableObject<Env> {
           outbox: this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM outbox").one().n as number,
           watchers: this.ctx.getWebSockets().length,
         });
+      case "GET /health": {
+        const now = Date.now();
+        const failing = this.ctx.storage.sql.exec("SELECT value FROM meta WHERE key = 'flush_failed'").toArray();
+        return Response.json({
+          outbox: this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM outbox").one().n as number,
+          flushFailingMs: failing.length === 0 ? 0 : now - (failing[0].value as number),
+          passes: this.ctx.storage.sql
+            .exec("SELECT target, triggered, finished FROM passes ORDER BY target")
+            .toArray()
+            .map((r) => ({ target: r.target as string, pendingMs: (r.triggered as number) > (r.finished as number) ? now - (r.triggered as number) : 0 })),
+        });
+      }
+      case "POST /pass": {
+        const body = (await request.json()) as { target: Target };
+        if (!targets.includes(body.target)) return new Response("unknown target", { status: 400 });
+        this.ctx.storage.sql.exec(
+          "INSERT INTO passes (target, triggered, finished) VALUES (?, 0, ?) ON CONFLICT(target) DO UPDATE SET finished = excluded.finished",
+          body.target,
+          Date.now(),
+        );
+        return Response.json({ ok: true });
+      }
       case "GET /kv": {
         const kv = this.current(url.searchParams.get("key") ?? "");
         return Response.json({ revision: this.revision(), kv: kv && encodeKV(kv) });
@@ -453,6 +476,14 @@ export class Cluster extends DurableObject<Env> {
     await this.env.CTRL_Q.send({ kind: "lease-check", node } satisfies QueueMessage, { delaySeconds: LEASE_CHECK_DELAY_S });
   }
 
+  private markTriggered(target: Target): void {
+    this.ctx.storage.sql.exec(
+      "INSERT INTO passes (target, triggered, finished) VALUES (?, ?, 0) ON CONFLICT(target) DO UPDATE SET triggered = CASE WHEN finished >= triggered THEN excluded.triggered ELSE triggered END",
+      target,
+      Date.now(),
+    );
+  }
+
   private flushing = false;
   private flushAgain = false;
 
@@ -474,11 +505,14 @@ export class Cluster extends DurableObject<Env> {
             await this.queue(target).sendBatch(
               batch.map((r) => ({ body: { kind: "change", key: r.key as string, type: r.type as string, rev: r.rev as number } satisfies QueueMessage })),
             );
+            this.markTriggered(target);
           }
           this.ctx.storage.sql.exec("DELETE FROM outbox WHERE id <= ?", rows[rows.length - 1].id);
+          this.ctx.storage.sql.exec("DELETE FROM meta WHERE key = 'flush_failed'");
         }
       } while (this.flushAgain);
     } catch (err) {
+      this.ctx.storage.sql.exec("INSERT INTO meta (key, value) VALUES ('flush_failed', ?) ON CONFLICT(key) DO NOTHING", Date.now());
       console.error("outbox flush:", err);
     } finally {
       this.flushing = false;

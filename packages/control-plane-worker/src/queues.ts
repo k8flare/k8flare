@@ -1,6 +1,7 @@
 import type { QueueMessage } from "@k8flare/cluster-store";
 import { Trace } from "./otel";
 import { apiserverFetch } from "./loader.ts";
+import { clusterStub } from "./clusterid.ts";
 
 type Target = "scheduler" | "leases" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "metrics" | "containers";
 
@@ -229,7 +230,21 @@ async function consumeLeases(batch: MessageBatch<QueueMessage>, env: Env): Promi
 }
 
 export async function consume(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
-  switch (targetOf(batch.queue)) {
+  const target = targetOf(batch.queue);
+  await dispatch(batch, env, target);
+  if (target && target !== "leases") await recordPass(env, target);
+}
+
+async function recordPass(env: Env, target: Target): Promise<void> {
+  try {
+    await clusterStub(env).fetch("https://cluster.internal/pass", { method: "POST", body: JSON.stringify({ target }) });
+  } catch (err) {
+    console.log(`queues: recording ${target} pass failed: ${String(err)}`);
+  }
+}
+
+async function dispatch(batch: MessageBatch<QueueMessage>, env: Env, target: Target | null): Promise<void> {
+  switch (target) {
     case "scheduler":
       return consumeScheduler(batch, env);
     case "workloads":
