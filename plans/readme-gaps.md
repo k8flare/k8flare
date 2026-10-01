@@ -14,13 +14,71 @@ it. Remove an entry when the behaviour exists and CI covers it.
 - Claim status writes skip the two upstream authorization checks
   (`resourceclaims/binding`, `resourceclaims/driver`): the strategy gets an
   allow-all authorizer, as the group worker has none.
-- Custom resource instances were already schema-aware for SSA (the upstream
-  handler builds the type converter from each CRD's structural schema); the
-  `customresourcedefinitions` resource itself now uses one built from the
-  apiextensions OpenAPI models instead of the deduced converter.
-- Streaming over WebSocket (logs, exec, attach, port-forward) has no CI
-  spec yet. SPDY cannot be served: workerd only accepts `Upgrade:
-  websocket`, so stream paths answer other upgrades with 426.
+- Streaming over WebSocket: logs and exec pass in Conformance (36857951122:
+  `remote command execution over websockets`, `retrieving logs from the
+  container over websockets`). attach has no CI spec. `kubectl
+  port-forward` is unverified: kubectl 1.36 first offers the
+  `SPDY/3.1+portforward.k8s.io` tunnel
+  (`kubectl/pkg/cmd/portforward/portforward.go:145-153`), upstream answers
+  it with `translator.NewTunnelingHandler` unless the kubelet takes it
+  (`pkg/registry/core/pod/rest/subresources.go:296-304`), and nothing here
+  translates; the front relays the offered subprotocol to the kubelet
+  (`edgehost/stream.go`). SPDY cannot be served: workerd only accepts
+  `Upgrade: websocket`, so stream paths answer other upgrades with 426.
+- `apiservices` has no upstream validation either
+  (`apiserver-apiregistration/hooks.go`).
+- ValidatingAdmissionPolicy is evaluated by a local cel-go environment
+  (`admission/vap.go`, `cel.go`): `params` is never bound (no `ParamRef`
+  lookup), `matchConditions` and `auditAnnotations` are not read, an
+  expression error denies whatever `failurePolicy` says, and the `Warn`
+  and `Audit` actions produce nothing. MutatingAdmissionPolicy
+  (`admission/map.go`) passes no params and uses the deduced type
+  converter, so an ApplyConfiguration is not schema-aware.
+- `jobs/scale` is served (`apiserver-registry/zz_generated_resources.go`),
+  which upstream does not serve; it came in with 86c0c1a.
+- Implemented with no CI check: protobuf bodies (the e2e client is pinned
+  to JSON, `scripts/e2e/conformance.go`), Table output, `sendInitialEvents`,
+  CRD `x-kubernetes-validations`, custom resource `/status` and `/scale`.
+  `unit.yml` skips the tests that would cover several of these because they
+  need a running cluster: TestAdmissionExtensions, TestCompaction,
+  TestConfigMapVerbs, TestControllers, TestCustomResources,
+  TestInformerWatchList, TestOpenAPI, TestNodePodCIDRAndPodLifecycle,
+  TestRBAC, TestScheduler, TestSchedulerWakesOnNode, TestSupervisorJoin,
+  TestTables, TestWatch, TestWatchSelectorTransitions,
+  TestNodeFieldSelectorDefaults.
+- Controllers, against `cmd/kube-controller-manager/app/controller_descriptor.go`:
+  - serviceaccount-token-controller is absent: nothing fills a
+    `kubernetes.io/service-account-token` Secret.
+  - service-cidr and validatingadmissionpolicy-status are linked
+    (`workloads/shards/all`, `shards/vap`) but never run: `WORKLOAD_PREFIXES`
+    (`cluster-store/src/cluster.ts`) has no `/registry/servicecidrs/`,
+    `/registry/ipaddresses/` or `/registry/validatingadmissionpolicies/`.
+    device-taint-eviction runs on pod writes only, not on ResourceSlice or
+    DeviceClass writes.
+  - The HPA controller is not loaded in CI: its queue consumer is in
+    `wrangler.hpa.jsonc` and CI starts `wrangler.dev.jsonc` only.
+  - Node health deletes a pod that tolerates the taint without
+    `tolerationSeconds`: `tolerationWait` (`workloads/nodehealth.go`)
+    returns not-tolerated for it. Upstream never evicts such a pod. Read,
+    not run; no test.
+  - Job backoff has no test that a delay is booked; the 10 s recheck of
+    unfinished Jobs (`workloads.go`) would hide a missing one.
+  - Read, not run: the scheduler fills no ReplicationController,
+    ReplicaSet or StatefulSet lister (`scheduler/scheduler.go`), which
+    PodTopologySpread's default selectors read.
+
+## Architecture
+
+- Controller deadlines ride on Queues `delaySeconds`
+  (`control-plane-worker/src/queues.ts`, `edgehost/followup.go`), not on
+  Durable Object alarms; the Cluster DO alarm only does store housekeeping.
+  They do fire with no further write.
+- Things poll: the metrics scrape re-sends itself every 15 s whatever it
+  found (`followup.go`, case `metrics`) and wakes HPA each time; an
+  unfinished Job re-books a workloads pass every 10 s; each node gets a
+  lease check about every 60 s; unschedulable pods are retried within 60 s.
+- node-tunnel imports its wasm statically into the Durable Object instead
+  of loading it through the Worker Loader.
 
 ## Joining a node
 
@@ -69,27 +127,13 @@ it. Remove an entry when the behaviour exists and CI covers it.
   scripts/ci/e2e.sh up` joins the stock agent with the node-proxy image
   built and preloaded from `packages/node-proxy`.
 - The agent must run with `--disable-apiserver-lb`.
-- Conformance run 36737225707 (cda859a) aborted with the node
-  NetworkUnavailable: flannel logged "Starting flannel" and nothing more.
-  Not the podCIDR order, not the `metadata.name` watch: four E2E shards
-  of the same day had the podCIDR assigned before flannel started and
-  saw "Flannel found PodCIDR" within seconds, and in the failing run
-  flannel's SelfSubjectAccessReview and node watch never reached the
-  Worker (`front` and audit logs). What happened: after flannel's
-  `GET /api/v1/nodes/<name>` (9 s, devtls) its `PATCH` of the address
-  annotations got `http: proxy error: EOF` from wrangler dev at
-  15:36:09.364 (a 502 to k3s; the kubelet's lease PUT got the same at
-  15:36:21), `flannel.Run` returned, and k3s's `startNetwork` goroutine
-  called `signals.RequestShutdown(err)`, which k8flare-agent dropped
-  because it never installed k3s's shutdown handler
-  (`signal.NotifyContext` instead of `signals.SetupSignalContext`), so
-  the agent ran on with no CNI and no error line. Now the agent uses
-  `signals.SetupSignalContext`, so such a failure is logged
-  ("Shutdown request received") and ends the agent like the stock one;
-  and devtls replays a request whose backend connection returned EOF
-  before any response (the body is already buffered for the
-  "Network connection lost" retry). k3s itself does not retry the
-  annotation sync; upstream relies on systemd restarting the agent.
+- CI nodes do not authenticate with certificates: `k8flare-agent` sends
+  the bearer `node:<name>:<password>` (`packages/agent/main.go`) and joins
+  with the raw `JOIN_TOKEN`, so CA pinning from a `K10` token and
+  `k8flare token create` are never exercised by a join in CI.
+  `control-plane-worker/src/clientcert_test.ts` (the `tlsClientAuth`
+  forwarding) is outside the `unit.yml` test glob.
+- README's one-line install omits `--disable-apiserver-lb`.
 - Unchecked against Cloudflare: BYO-CA mTLS is Enterprise only, a
   `user_defined` custom certificate from a private CA, and that
   `certRFC9440` is populated for BYO-CA certificates.
@@ -174,26 +218,34 @@ it. Remove an entry when the behaviour exists and CI covers it.
   - Requests that match no rule fall through to the API, so a
     hostless catch-all Ingress does not shadow `k8flare.com`,
     `api.k8flare.com`, `*.workers.dev`, `*.internal`, `localhost`, IP
-    literals or `{name}--{namespace}` hosts. A custom cluster domain
-    (`k8flare.kooffice.jp` in wrangler.jsonc) is still not excluded, and
-    the `/svc/{ns}/{name}` path form applies only to those control-plane
-    hosts. Full Conformance run 36746667748 showed what the gap costs:
+    literals, `{name}--{namespace}` hosts or the hosts in `API_HOSTS`
+    (`wrangler.jsonc`, `TestConfiguredAPIHostIsNeverAGatewayHost`); the
+    `/svc/{ns}/{name}` path form applies only to those control-plane
+    hosts. `API_HOSTS` is set by hand: the edge certificate hosts are not
+    persisted. What a missing entry costs: full Conformance run 36746667748 showed what the gap costs:
     the Ingress API spec creates Ingresses with a `defaultBackend` and no
     class, admission assigns the default `k8flare` class, the edge pass
     compiles a hostless `/` rule, and from 17:15:09 UTC every request on
     the devtls address `127.0.0.1` answered 500 `service not found` ahead
     of audit and the API (3109 watch responses in devtls.log, plus every
     kubectl and kubelet read), including the deletes that would have
-    removed the Ingress; 372 specs then timed out. The edge certificate
-    hosts (`k8flare edge-certificate --hosts`) are the natural source for
-    the cluster domain but are not persisted, so a hostless Ingress on a
-    custom-domain deployment still hijacks the API until it is deleted
-    through an excluded host.
+    removed the Ingress; 372 specs then timed out.
   - Changes to any Service also run the edge pass (ResolvedRefs depends on
     Services); backends are looked up per ref rather than listed.
 - local-path runs as a resident Deployment, not helper pods only.
 - CoreDNS NodeHosts is never written.
-- attach/detach runs from a separate Worker config that CI does not load.
+- Network policy is off: the supervisor config answers `DisableNPC: true`
+  (`apiserver-supervisor/supervisor.go`), so the agent skips `netpol.Run`
+  (`k3s/pkg/executor/embed/embed.go`). It has been so since fb37662, with
+  no reason recorded.
+- The manifests bucket is not bound: `addons.ts` reads `MANIFESTS_R2` and
+  no wrangler config declares it. An edit to the bucket does not start a
+  pass, and `bucket.list()` reads one page.
+- `DISABLE` covers manifest names and `helm-controller` only; metrics,
+  the Service load balancer and edge routing cannot be turned off.
+- The LoadBalancer hostname suffix is the constant `.k8flare.com`
+  (`edgehost/host.go`), not the cluster domain.
+- Nothing measures what the platform costs a node.
 
 ## Operations
 
@@ -261,6 +313,15 @@ it. Remove an entry when the behaviour exists and CI covers it.
   the old version during a gradual rollout after the sweep passed their key
   stay at the old encoding until their next write or the next deploy; the
   deploy trigger is exercised against node:sqlite, not workerd.
+- Gradual rollout is not implemented: nothing calls `wrangler versions`,
+  a deploy is one cutover. Nothing tests that nodes keep running across one.
+- `/livez` is ping only (`apiserver/health.go`); `/readyz` and `/healthz`
+  carry the datastore, queue and controller checks.
+- Snapshots: the Durable Object side of `save`, `list`, `restore` and
+  `--force`, and the `/vault/` exclusion, have no test (the CLI and the
+  front's forwarding do). Point-in-time restore rewinds the whole Durable
+  Object, `/vault/` included. Snapshots go to `PODS_R2`, the bucket pods
+  use. No Logpush is configured.
 - Bootstrap-token Secrets now authenticate API bearer requests and k3s agent
   joins through the upstream bootstrap authenticator. Unit tests cover validation
   and supervisor access; a Secret-backed join has not been exercised with a live
@@ -297,6 +358,10 @@ it. Remove an entry when the behaviour exists and CI covers it.
     `ADMIN_TOKEN` or trust `X-Remote-User` from the front.
   - `hpa-worker` and `attachdetach-worker` need the front deployed first
     (new `HPAAPIServer` and `AttachDetachAPIServer` entrypoints).
+  - A component token is an HMAC of `ADMIN_TOKEN`
+    (`control-plane-worker/src/componenttoken.ts`), so the identities share
+    one secret. node-tunnel, the metrics entrypoint and the nodes client
+    send `ADMIN_TOKEN` itself.
 - Rate limiting is max-in-flight only (`MAX_REQUESTS_INFLIGHT`,
   `MAX_MUTATING_REQUESTS_INFLIGHT`, 400 and 200, watches and streams
   exempt, `system:masters` served when full). The count is per isolate,
@@ -304,6 +369,11 @@ it. Remove an entry when the behaviour exists and CI covers it.
   lean client-go (no FlowControl informers) and its controller needs
   goroutines and informers the Workers do not keep; no Workers Rate
   Limiting binding is wired.
+- Admission order: LimitRanger, ServiceAccount, Priority and the other
+  built-ins of the `admit` phase run before the mutating webhooks and are
+  not run again in the validate phase (`admission/chain.go`), so what a
+  webhook changes is not rechecked by them. PodSecurity and NodeRestriction
+  run in the validate phase.
 - Admission: every default-on upstream plugin that acts under upstream's
   default feature gates is present. Default-on but inert here, so not
   added: ClusterTrustBundleAttest (needs the `ClusterTrustBundle` gate, off
@@ -333,9 +403,36 @@ it. Remove an entry when the behaviour exists and CI covers it.
     service), and group/version priorities are not carried over.
   - Availability of a Worker APIService is always `True`; the Worker is not
     probed.
+- The same limit holds for Workers as controllers and as admission or
+  conversion webhooks: `Hooks` (`control-plane-worker/src/hooks.ts`) loads
+  `hookecho` whatever the name, and `hookecho` answers three echo names.
+  A conversion webhook is matched by URL only, not by the annotation.
+  `TestAdmissionExtensions`, which drives the delivery, is skipped in
+  `unit.yml`.
+- No exec credential plugin ships; `k8flare` only accepts the Access token
+  as a bearer.
+- Traces start in the workloads and queue paths only (`otel.ts`), not per
+  API request, and no config sets `OTEL_ENDPOINT`.
+- The LoadBalancer hostname and the edge proxy origin are fixed to
+  `k8flare.com` (see Packaged components).
 
 ## Conformance
 
+- Conformance does not run on every change: `conformance.yml` runs on a
+  daily cron and on dispatch; push and pull request run the 21 required
+  specs.
+- The nightly run is green whatever fails: the cron runs the default
+  branch, and main's `scripts/e2e/main.go` exits non-zero for the
+  `required` set only. Run 36839051306 (65cd7e8) ended success with
+  `101 Passed | 345 Failed`. This branch fails the job for the set it was
+  asked to run.
+- Nothing runs the suite against a Cloudflare deployment; every run is
+  local workerd in GitHub Actions. `make deploycheck` is a manual probe.
+  Issue #4 was filed by `prod-probe.yml`, which exists only at `old-main`.
+- There is no release, no tag but `old-main`, and no branch protection, so
+  nothing gates a release on the suite.
+- The first full pass is 36857951122 (446 of 446, eight shards, two nodes);
+  the same tree gave 445 twice.
 - CI gates on 21 required specs on one node. The Conformance job runs
   `scripts/ci/e2e.sh up` with `NODES=2`: the host agent joins first, then
   each extra node is a privileged `rancher/k3s` container of the same
