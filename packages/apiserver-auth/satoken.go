@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/subtle"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -155,6 +156,9 @@ func (s ServiceAccountToken) AuthenticateToken(ctx context.Context, token string
 	if err != nil || !parsed.Valid {
 		return nil, false, nil
 	}
+	if claims.Issuer == legacyIssuer {
+		return s.authenticateLegacy(ctx, token, &key.PublicKey)
+	}
 	if claims.Issuer != saIssuer {
 		return nil, false, nil
 	}
@@ -186,6 +190,97 @@ func (s ServiceAccountToken) AuthenticateToken(ctx context.Context, token string
 		sa.NodeName, sa.NodeUID = node.Name, node.UID
 	}
 	return &authenticator.Response{User: sa.UserInfo(), Audiences: auds}, true, nil
+}
+
+const legacyIssuer = "kubernetes/serviceaccount"
+const legacyInvalidSinceLabel = "kubernetes.io/legacy-token-invalid-since"
+
+type legacyClaims struct {
+	jwt.RegisteredClaims
+	ServiceAccountName string `json:"kubernetes.io/serviceaccount/service-account.name"`
+	ServiceAccountUID  string `json:"kubernetes.io/serviceaccount/service-account.uid"`
+	SecretName         string `json:"kubernetes.io/serviceaccount/secret.name"`
+	Namespace          string `json:"kubernetes.io/serviceaccount/namespace"`
+}
+
+type liveSecrets interface {
+	LiveSecret(ctx context.Context, namespace, name string) (*corev1.Secret, error)
+}
+
+func (s ServiceAccountToken) authenticateLegacy(ctx context.Context, token string, public *rsa.PublicKey) (*authenticator.Response, bool, error) {
+	claims := &legacyClaims{}
+	parsed, err := jwt.ParseWithClaims(token, claims, func(*jwt.Token) (any, error) {
+		return public, nil
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()}), jwt.WithoutClaimsValidation())
+	if err != nil || !parsed.Valid {
+		return nil, false, nil
+	}
+	auds, err := tokenAudiences(ctx, claims.Audience)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := s.validateLegacy(ctx, token, claims); err != nil {
+		return nil, false, err
+	}
+	sa := &apiserverserviceaccount.ServiceAccountInfo{
+		Namespace: claims.Namespace,
+		Name:      claims.ServiceAccountName,
+		UID:       claims.ServiceAccountUID,
+	}
+	return &authenticator.Response{User: sa.UserInfo(), Audiences: auds}, true, nil
+}
+
+func (s ServiceAccountToken) validateLegacy(ctx context.Context, token string, claims *legacyClaims) error {
+	if claims.Subject == "" {
+		return errors.New("sub claim is missing")
+	}
+	if claims.Namespace == "" {
+		return errors.New("namespace claim is missing")
+	}
+	if claims.SecretName == "" {
+		return errors.New("secretName claim is missing")
+	}
+	if claims.ServiceAccountName == "" {
+		return errors.New("serviceAccountName claim is missing")
+	}
+	if claims.ServiceAccountUID == "" {
+		return errors.New("serviceAccountUID claim is missing")
+	}
+	ns, name, err := apiserverserviceaccount.SplitUsername(claims.Subject)
+	if err != nil || ns != claims.Namespace || name != claims.ServiceAccountName {
+		return errors.New("sub claim is invalid")
+	}
+	if s.Objects == nil {
+		return errors.New("service account lookups are not configured")
+	}
+	secret, err := s.tokenSecret(ctx, ns, claims.SecretName)
+	if err != nil || secret.DeletionTimestamp != nil {
+		return errSATokenInvalidated
+	}
+	if subtle.ConstantTimeCompare(secret.Data[corev1.ServiceAccountTokenKey], []byte(token)) == 0 {
+		return errors.New("service account token does not match server's copy")
+	}
+	sa, err := s.Objects.ServiceAccount(ctx, ns, name)
+	if err != nil {
+		return err
+	}
+	if sa.DeletionTimestamp != nil {
+		return fmt.Errorf("service account %s/%s has been deleted", ns, name)
+	}
+	if string(sa.UID) != claims.ServiceAccountUID {
+		return fmt.Errorf("service account UID (%s) does not match claim (%s)", sa.UID, claims.ServiceAccountUID)
+	}
+	if secret.Labels[legacyInvalidSinceLabel] != "" {
+		return fmt.Errorf("the token in secret %s/%s for service account %s/%s has been marked invalid", ns, claims.SecretName, ns, name)
+	}
+	return nil
+}
+
+func (s ServiceAccountToken) tokenSecret(ctx context.Context, namespace, name string) (*corev1.Secret, error) {
+	if live, ok := s.Objects.(liveSecrets); ok {
+		return live.LiveSecret(ctx, namespace, name)
+	}
+	return s.Objects.Secret(ctx, namespace, name)
 }
 
 func validateSATimes(claims *saClaims, now time.Time) error {

@@ -102,6 +102,10 @@ func (c *CachedObjects) Secret(ctx context.Context, namespace, name string) (*co
 	return &corev1.Secret{ObjectMeta: meta}, nil
 }
 
+func (c *CachedObjects) LiveSecret(ctx context.Context, namespace, name string) (*corev1.Secret, error) {
+	return c.Objects.Secret(ctx, namespace, name)
+}
+
 func (c *CachedObjects) Node(ctx context.Context, name string) (*corev1.Node, error) {
 	meta, err := c.lookup("nodes/"+name, func() (metav1.ObjectMeta, error) {
 		o, err := c.Objects.Node(ctx, name)
