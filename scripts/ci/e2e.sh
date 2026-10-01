@@ -265,6 +265,7 @@ up() {
   wait_for "a Ready node" 120 5 nodes_ready 1
   if [ "$NODES" -gt 1 ]; then
     docker pull -q "$K3S_IMAGE"
+    sudo iptables -C DOCKER-USER -o docker0 -j ACCEPT 2>/dev/null || sudo iptables -I DOCKER-USER -o docker0 -j ACCEPT
     for index in $(seq 2 "$NODES"); do
       join_container_node "$token" "$index"
     done
