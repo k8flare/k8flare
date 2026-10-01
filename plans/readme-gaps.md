@@ -1148,10 +1148,55 @@ it. Remove an entry when the behaviour exists and CI covers it.
   the upstream way: the resourcequota controller recomputes `status.used`
   on the pass a pod delete or a quota write triggers, and the admission's
   live list is only a floor, so a stale-high `status.used` lasts until
-  that pass. Also in that run: CustomResourceFieldSelectors missed the
-  DELETED event for a v2 custom resource updated out of `host=host1`
-  while the DeleteCollection'd one was delivered; `watchEvent` in
-  `apiserver-kine` does turn a modification whose previous value matched
-  into DELETED and the store sends `prev` on modifications, so the gap is
-  above that (the CR predicate against the previous object, or a cache
-  layer) and needs the shard's dev.log; not fixed.
+  that pass. CustomResourceFieldSelectors also failed in that run; see the
+  next entry, which corrects the first reading of it.
+- Run 36837666083 (9cc3bd1): 444 of 446. Both failures have a unit test
+  and a fix; neither has been re-run in CI yet.
+  - CustomResourceFieldSelectors (also in 36814963545). The event the
+    `host=host1` watch missed is the DELETED of the object removed by
+    DeleteCollection, not of the one updated to `host2`: in both runs the
+    name in the received `deleted` set is the one the webhook converted as
+    `host2:8080` at generation 2. `v1` is the storage version, so the four
+    `v2` watchers (two watches, two informers) convert every store event
+    through the webhook, and upstream's converter calls it with
+    `context.TODO()`. The bridge gave a fetch without a window to the
+    newest request, here the DeleteCollection that caused the event. That
+    request answered before its next pump, the loader stops pumping a
+    request once its response resolves, and the four queued calls sat until
+    the window closed: `bridge: drain timeout kind=dispatch age=5s
+    in-flight: 4` and again at `age=11s`/`12s`, both runs. The decode then
+    failed, `decodeValue` in `apiserver-kine` turns a failed decode into
+    "no object", and `watchEvent` dropped the event. The watchers were
+    stuck for those ten seconds, which is why the update's conversions
+    reach the webhook 13.5s after the PUT. Fixed in `worker-bridge`: a
+    fetch without a window goes to the request whose event woke the
+    goroutine when that request is still open (a held window still comes
+    first), so a watch issues its conversions on its own streaming request
+    (`TestFetchWithoutAWindowUsesTheRequestWhoseEventWokeIt`, js/wasm).
+    Left as they are: a window that has answered and is only draining is
+    still handed out as the newest one, and nothing pumps it; and a watch
+    event whose decode fails is dropped silently, where upstream's etcd3
+    watcher ends the watch with an error event so the client relists.
+    The webhook pod log in the report is cut to its last 42 lines, so it
+    cannot show which conversions never arrived.
+  - Endpoints lifecycle (the earlier variant, `unable to find Endpoint
+    Service in list of Endpoints`, is the same cause). The audit log has
+    `system:kube-controller-manager` deleting `endpoints/testservice`
+    50ms after a pass finished building its controllers. Upstream's
+    endpoints controller deletes
+    the Endpoints of a key whose Service is missing, and the only thing
+    that queues a key without a Service is `checkLeftoverEndpoints`, which
+    upstream runs once when the controller manager starts. A pass builds
+    and runs the controller afresh, and the spec's own Endpoints writes
+    trigger a pass, so the startup sweep ran within seconds of the create.
+    Fixed in two parts. The sweep only sees Endpoints carrying the
+    controller's `endpoints.kubernetes.io/managed-by` label, the ones it
+    can have left behind (`TestSyncKeepsEndpointsWrittenByHandWithoutAService`,
+    `TestSyncRemovesEndpointsTheControllerLeftBehindADeletedService`); a
+    once-per-isolate gate was not used because an isolate restart would
+    bring the sweep back at an arbitrary moment. And because that sweep
+    was also the only thing removing a deleted Service's Endpoints between
+    passes, the Service store now deletes them in `AfterDelete` as
+    upstream's `afterDelete` does (`TestDeletingAServiceDeletesItsEndpoints`).
+    Not changed: that hook still releases the Service's IPs on a dry-run
+    delete, which upstream skips.
