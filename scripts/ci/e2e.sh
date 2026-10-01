@@ -93,12 +93,15 @@ write_accepted() {
 
 user_worker_port() {
   local admin=$1 port
-  for port in $(ss -ltnpH | awk '/"workerd"/ { n = split($4, a, ":"); print a[n] }' | sort -u); do
-    [ "$port" = 18787 ] && continue
-    if curl -sf -m 5 -o /dev/null -H "Authorization: Bearer $admin" "http://127.0.0.1:$port/livez"; then
-      echo "$port"
-      return 0
-    fi
+  for _ in $(seq 1 30); do
+    for port in $(ss -ltnpH | awk '/"workerd"/ { n = split($4, a, ":"); print a[n] }' | sort -u); do
+      [ "$port" = 18787 ] && continue
+      if curl -sf -m 5 -o /dev/null -H "Authorization: Bearer $admin" "http://127.0.0.1:$port/livez"; then
+        echo "$port"
+        return 0
+      fi
+    done
+    sleep 2
   done
   echo "no workerd port answers /livez" >&2
   return 1
