@@ -1262,11 +1262,26 @@ it. Remove an entry when the behaviour exists and CI covers it.
     creates pods at the same 20 a second (the controller manager's
     client QPS), but its apiserver has room left, so the delete and the
     collector get through within a second and a few dozen pods exist.
-    Here 20 pod creates a second is the whole capacity. The lever is to
-    keep one pass from filling the event loop, for example a cap on the
-    requests the workloads client has in flight, so that the delete and
-    the collector are served while a ReplicaSet scales; it needs a
-    cluster to measure and is not done.
+    Here 20 pod creates a second is the whole capacity. Limiting every
+    call of the workloads client to 20/30 was tried on a throwaway branch
+    and made three runs worse (439, 444, 441): it throttles the namespace
+    deleter. Done instead, not yet run in CI: the pod client the
+    controllers create through takes one token per create from a bucket
+    of 20 a second, burst 30, shared by the isolate (the controller
+    manager's client defaults, `pkg/controller/apis/config/v1alpha1/defaults.go`),
+    and gives up when the pass is cancelled; every other call keeps its
+    rate. The limiter alone does not bound the count, a host test with
+    it still made 1337 pods in one 65s pass, so the same wrapper refuses
+    a create whose controller, or that controller's own controller, has
+    left the pass's snapshot: the live feed removes a deleted Deployment
+    or ReplicaSet mid-pass, the slow start stops at the first refused
+    batch and the pass drains
+    (`TestSyncStopsCreatingPodsOnceTheDeploymentBehindTheReplicaSetIsDeleted`,
+    `TestSyncStopsCreatingPodsForAReplicaSetDeletedDuringThePass`,
+    `TestPodCreatesAreSpacedOnceTheBurstIsSpent`). Upstream's apiserver
+    would accept such a pod and the collector would delete it. What
+    still depends on the cluster: the spec's Deployment delete has to
+    reach the store while the pass creates at 20 a second.
   - CustomResourceFieldSelectors, once (36844659450 shard 5), now at
     line 305 instead of 293: both plain v2 watches received both DELETED
     events. The spec gives its informers a 30s context from registration.
