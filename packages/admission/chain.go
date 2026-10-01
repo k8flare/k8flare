@@ -55,6 +55,15 @@ func (h *Handler) run(ctx context.Context, req admit.Request) (admit.Response, e
 	if err := h.runVAP(ctx, req); err != nil {
 		return denyResponse(err), nil
 	}
+	if err := validateLimitRanger(ctx, h.store, &req); err != nil {
+		return denyResponse(err), nil
+	}
+	if err := validateServiceAccount(ctx, h.store, &req); err != nil {
+		return denyResponse(err), nil
+	}
+	if err := validatePriorityClass(ctx, h.store, &req); err != nil {
+		return denyResponse(err), nil
+	}
 	if err := applyCertificateSubjectRestriction(ctx, h.store, &req); err != nil {
 		return denyResponse(err), nil
 	}

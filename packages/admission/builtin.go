@@ -28,12 +28,9 @@ func applyServiceAccount(ctx context.Context, s *store, req *admit.Request) erro
 	var sa corev1.ServiceAccount
 	var saOK bool
 	if s != nil && req.Namespace != "" {
-		got, ok, err := s.serviceAccount(ctx, req.Namespace, name)
+		got, ok, err := podServiceAccount(ctx, s, req.Namespace, name)
 		if err != nil {
-			return fmt.Errorf("error looking up service account %s/%s: %w", req.Namespace, name, err)
-		}
-		if !ok && name != "default" {
-			return fmt.Errorf("error looking up service account %s/%s: serviceaccount %q not found", req.Namespace, name, name)
+			return err
 		}
 		if ok {
 			sa, saOK = got, true
@@ -77,6 +74,45 @@ func applyServiceAccount(ctx context.Context, s *store, req *admit.Request) erro
 	return nil
 }
 
+func validateServiceAccount(ctx context.Context, s *store, req *admit.Request) error {
+	if req.Resource.Resource != "pods" || req.Subresource != "" || req.Object == nil {
+		return nil
+	}
+	if req.Operation != "" && req.Operation != "CREATE" {
+		return nil
+	}
+	spec, _ := req.Object["spec"].(map[string]any)
+	if spec == nil {
+		return nil
+	}
+	meta, _ := req.Object["metadata"].(map[string]any)
+	annotations, _ := meta["annotations"].(map[string]any)
+	if _, mirror := annotations[mirrorPodAnnotationKey]; mirror {
+		return nil
+	}
+	name, _ := spec["serviceAccountName"].(string)
+	if name == "" {
+		podName, _ := meta["name"].(string)
+		return fmt.Errorf("no service account specified for pod %s/%s", req.Namespace, podName)
+	}
+	if s == nil || req.Namespace == "" {
+		return nil
+	}
+	_, _, err := podServiceAccount(ctx, s, req.Namespace, name)
+	return err
+}
+
+func podServiceAccount(ctx context.Context, s *store, namespace, name string) (corev1.ServiceAccount, bool, error) {
+	sa, ok, err := s.serviceAccount(ctx, namespace, name)
+	if err != nil {
+		return corev1.ServiceAccount{}, false, fmt.Errorf("error looking up service account %s/%s: %w", namespace, name, err)
+	}
+	if !ok && name != "default" {
+		return corev1.ServiceAccount{}, false, fmt.Errorf("error looking up service account %s/%s: serviceaccount %q not found", namespace, name, name)
+	}
+	return sa, ok, nil
+}
+
 func mountSAToken(spec map[string]any, field, volName, mountPath string) {
 	list, _ := spec[field].([]any)
 	for _, raw := range list {
@@ -101,21 +137,38 @@ func mountSAToken(spec map[string]any, field, volName, mountPath string) {
 }
 
 func applyLimitRanger(ctx context.Context, s *store, req *admit.Request) error {
-	if req.Subresource != "" || req.Object == nil || req.Namespace == "" {
-		return nil
-	}
-	if req.Resource.Resource == "persistentvolumeclaims" {
-		return applyPVCLimitRange(ctx, s, req)
-	}
-	if req.Resource.Resource != "pods" {
+	if !limitRangerSupports(req) || req.Resource.Resource != "pods" {
 		return nil
 	}
 	ranges, err := s.limitRanges(ctx, req.Namespace)
 	if err != nil {
 		return err
 	}
-	if len(ranges) == 0 {
+	spec, _ := req.Object["spec"].(map[string]any)
+	if spec == nil {
 		return nil
+	}
+	for _, lr := range ranges {
+		for _, item := range lr.Spec.Limits {
+			if item.Type == corev1.LimitTypeContainer {
+				applyContainerDefaults(spec, "containers", item)
+				applyContainerDefaults(spec, "initContainers", item)
+			}
+		}
+	}
+	return nil
+}
+
+func validateLimitRanger(ctx context.Context, s *store, req *admit.Request) error {
+	if !limitRangerSupports(req) {
+		return nil
+	}
+	ranges, err := s.limitRanges(ctx, req.Namespace)
+	if err != nil {
+		return err
+	}
+	if req.Resource.Resource == "persistentvolumeclaims" {
+		return validatePVCLimitRange(ranges, req)
 	}
 	spec, _ := req.Object["spec"].(map[string]any)
 	if spec == nil {
@@ -125,8 +178,6 @@ func applyLimitRanger(ctx context.Context, s *store, req *admit.Request) error {
 		for _, item := range lr.Spec.Limits {
 			switch item.Type {
 			case corev1.LimitTypeContainer:
-				applyContainerDefaults(spec, "containers", item)
-				applyContainerDefaults(spec, "initContainers", item)
 				if err := checkContainerLimits(spec, item); err != nil {
 					return err
 				}
@@ -140,11 +191,31 @@ func applyLimitRanger(ctx context.Context, s *store, req *admit.Request) error {
 	return nil
 }
 
-func applyPVCLimitRange(ctx context.Context, s *store, req *admit.Request) error {
-	ranges, err := s.limitRanges(ctx, req.Namespace)
-	if err != nil {
-		return err
+func limitRangerSupports(req *admit.Request) bool {
+	if req.Object == nil || req.Namespace == "" {
+		return false
 	}
+	if req.Operation != "" && req.Operation != "CREATE" && req.Operation != "UPDATE" {
+		return false
+	}
+	oldMeta, _ := req.OldObject["metadata"].(map[string]any)
+	if oldMeta["deletionTimestamp"] != nil {
+		return false
+	}
+	pod := req.Resource.Resource == "pods"
+	if pod && req.Subresource == "resize" && req.Operation == "UPDATE" {
+		return true
+	}
+	if req.Subresource != "" {
+		return false
+	}
+	if pod && req.Operation == "UPDATE" {
+		return false
+	}
+	return pod || req.Resource.Resource == "persistentvolumeclaims"
+}
+
+func validatePVCLimitRange(ranges []corev1.LimitRange, req *admit.Request) error {
 	for _, lr := range ranges {
 		for _, item := range lr.Spec.Limits {
 			if item.Type != corev1.LimitTypePersistentVolumeClaim {

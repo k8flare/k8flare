@@ -91,7 +91,7 @@ func newPVCLimitHandler(t *testing.T, min, max string) http.Handler {
 
 func pvcLimitReq(size string) admit.Request {
 	return admit.Request{
-		Phase:     "admit",
+		Phase:     "validate",
 		Name:      "claim",
 		Namespace: "default",
 		Resource:  schema.GroupVersionResource{Version: "v1", Resource: "persistentvolumeclaims"},
@@ -122,7 +122,7 @@ func TestLimitRangerDeniesContainerBelowMin(t *testing.T) {
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, admit.Request{
-		Phase:     "admit",
+		Phase:     "validate",
 		Name:      "p",
 		Namespace: "default",
 		Resource:  schema.GroupVersionResource{Version: "v1", Resource: "pods"},
@@ -158,7 +158,7 @@ func TestLimitRangerDeniesPodAboveMax(t *testing.T) {
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, admit.Request{
-		Phase:     "admit",
+		Phase:     "validate",
 		Name:      "p",
 		Namespace: "default",
 		Resource:  schema.GroupVersionResource{Version: "v1", Resource: "pods"},
@@ -194,7 +194,7 @@ func TestLimitRangerDeniesContainerMissingLimit(t *testing.T) {
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, admit.Request{
-		Phase:     "admit",
+		Phase:     "validate",
 		Name:      "p",
 		Namespace: "default",
 		Resource:  schema.GroupVersionResource{Version: "v1", Resource: "pods"},
@@ -237,7 +237,7 @@ func TestLimitRangerDeniesUnstructuredBarePod(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := postAdmit(t, h, admit.Request{
-		Phase:     "admit",
+		Phase:     "validate",
 		Name:      "p",
 		Namespace: "default",
 		Resource:  schema.GroupVersionResource{Version: "v1", Resource: "pods"},
@@ -266,7 +266,7 @@ func TestLimitRangerDeniesLimitRequestRatio(t *testing.T) {
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, admit.Request{
-		Phase:     "admit",
+		Phase:     "validate",
 		Name:      "p",
 		Namespace: "default",
 		Resource:  schema.GroupVersionResource{Version: "v1", Resource: "pods"},
@@ -305,7 +305,7 @@ func TestLimitRangerDeniesPodMissingLimit(t *testing.T) {
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, admit.Request{
-		Phase:     "admit",
+		Phase:     "validate",
 		Name:      "p",
 		Namespace: "default",
 		Resource:  schema.GroupVersionResource{Version: "v1", Resource: "pods"},

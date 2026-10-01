@@ -74,7 +74,7 @@ func psaPodReq(ns string, privileged bool) admit.Request {
 		Object: map[string]any{
 			"apiVersion": "v1", "kind": "Pod",
 			"metadata": map[string]any{"name": "p", "namespace": ns},
-			"spec":     map[string]any{"containers": []any{container}},
+			"spec":     map[string]any{"serviceAccountName": "default", "containers": []any{container}},
 		},
 	}
 }

@@ -87,9 +87,20 @@ func defaultPriority(ctx context.Context, s *store) (string, int32, *corev1.Pree
 	if s == nil {
 		return "", 0, &preempt, nil
 	}
-	list, err := s.priorityClasses(ctx)
+	def, err := globalDefaultPriorityClass(ctx, s)
 	if err != nil {
 		return "", 0, nil, err
+	}
+	if def != nil {
+		return def.Name, def.Value, def.PreemptionPolicy, nil
+	}
+	return "", 0, &preempt, nil
+}
+
+func globalDefaultPriorityClass(ctx context.Context, s *store) (*schedulingv1.PriorityClass, error) {
+	list, err := s.priorityClasses(ctx)
+	if err != nil {
+		return nil, err
 	}
 	var def *schedulingv1.PriorityClass
 	for i := range list {
@@ -101,10 +112,31 @@ func defaultPriority(ctx context.Context, s *store) (string, int32, *corev1.Pree
 			def = pc
 		}
 	}
-	if def != nil {
-		return def.Name, def.Value, def.PreemptionPolicy, nil
+	return def, nil
+}
+
+func validatePriorityClass(ctx context.Context, s *store, req *admit.Request) error {
+	if req.Resource.Resource != "priorityclasses" || req.Subresource != "" || req.Object == nil {
+		return nil
 	}
-	return "", 0, &preempt, nil
+	if req.Operation != "CREATE" && req.Operation != "UPDATE" {
+		return nil
+	}
+	if globalDefault, _ := req.Object["globalDefault"].(bool); !globalDefault || s == nil {
+		return nil
+	}
+	def, err := globalDefaultPriorityClass(ctx, s)
+	if err != nil {
+		return fmt.Errorf("failed to get default priority class: %v", err)
+	}
+	if def == nil {
+		return nil
+	}
+	meta, _ := req.Object["metadata"].(map[string]any)
+	if name, _ := meta["name"].(string); req.Operation == "CREATE" || def.Name != name {
+		return fmt.Errorf("PriorityClass %v is already marked as default. Only one default can exist", def.Name)
+	}
+	return nil
 }
 
 func decodePod(obj map[string]any) (*corev1.Pod, error) {

@@ -534,7 +534,7 @@ func nodePodReq(node, nodeName string, mirror bool) admit.Request {
 	if mirror {
 		meta["annotations"] = map[string]any{mirrorPodAnnotationKey: "1"}
 	}
-	spec := map[string]any{"containers": []any{map[string]any{"name": "c", "image": "img"}}}
+	spec := map[string]any{"serviceAccountName": "default", "containers": []any{map[string]any{"name": "c", "image": "img"}}}
 	if nodeName != "" {
 		spec["nodeName"] = nodeName
 	}

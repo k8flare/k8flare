@@ -264,6 +264,7 @@ func TestResourceQuotaDeniesPodOverCPU(t *testing.T) {
 			"apiVersion": "v1", "kind": "Pod",
 			"metadata": map[string]any{"name": "fail-pod", "namespace": "default"},
 			"spec": map[string]any{
+				"serviceAccountName": "default",
 				"containers": []any{map[string]any{
 					"name":  "pause",
 					"image": "registry.k8s.io/pause:3.10",
@@ -313,7 +314,8 @@ func TestResourceQuotaReservesUsageBeforeTheObjectIsStored(t *testing.T) {
 				"apiVersion": "v1", "kind": "Pod",
 				"metadata": map[string]any{"name": name, "namespace": "default"},
 				"spec": map[string]any{
-					"containers": []any{map[string]any{"name": "agnhost", "image": "agnhost"}},
+					"serviceAccountName": "default",
+					"containers":         []any{map[string]any{"name": "agnhost", "image": "agnhost"}},
 				},
 			},
 		})
@@ -347,6 +349,7 @@ func quotaPodRequest(phase, name string, requests, limits map[string]any) admit.
 			"apiVersion": "v1", "kind": "Pod",
 			"metadata": map[string]any{"name": name, "namespace": "default"},
 			"spec": map[string]any{
+				"serviceAccountName": "default",
 				"containers": []any{map[string]any{
 					"name": "pause", "image": "registry.k8s.io/pause:3.10",
 					"resources": map[string]any{"requests": requests, "limits": limits},

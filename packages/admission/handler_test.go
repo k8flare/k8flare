@@ -143,6 +143,7 @@ func TestHandlerLimitRangeAndVAPAndWebhook(t *testing.T) {
 	defer minKine.Close()
 	minH := NewHandler(Config{Kine: rewriteClient(minKine)})
 	belowMin := podReq
+	belowMin.Phase = "validate"
 	belowMin.Object = map[string]any{
 		"apiVersion": "v1", "kind": "Pod",
 		"metadata": map[string]any{"name": "p", "namespace": "default"},
