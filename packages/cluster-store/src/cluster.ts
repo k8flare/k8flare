@@ -90,7 +90,12 @@ export class Cluster extends DurableObject<Env> {
     });
   }
 
+  private metricsServerDisabled(): boolean {
+    return (this.env.DISABLE ?? "").split(",").some((name) => name.trim() === "metrics-server");
+  }
+
   private seedMetrics(): void {
+    if (this.metricsServerDisabled()) return;
     const now = Date.now();
     const rows = this.ctx.storage.sql.exec("SELECT value FROM meta WHERE key = 'metrics_seed'").toArray();
     const last = rows.length === 0 ? 0 : (rows[0].value as number);
@@ -634,7 +639,10 @@ export class Cluster extends DurableObject<Env> {
       if (type === "deleted" || !podBound(value)) routes.push("scheduler");
       if (wantsContainers(value) || (prev && wantsContainers(prev.value))) routes.push("containers");
     } else if (name.startsWith("/registry/minions/") || name.startsWith("/registry/nodes/")) {
-      if (type !== "modified" || !prev || nodeChanged(prev.value, value)) routes.push("scheduler", "workloads", "metrics");
+      if (type !== "modified" || !prev || nodeChanged(prev.value, value)) {
+        routes.push("scheduler", "workloads");
+        if (!this.metricsServerDisabled()) routes.push("metrics");
+      }
     }
     for (const target of routes) {
       this.ctx.storage.sql.exec("INSERT INTO outbox (target, rev, key, type) VALUES (?, ?, ?, ?)", target, rev, name, type);

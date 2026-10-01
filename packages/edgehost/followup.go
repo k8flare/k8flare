@@ -141,7 +141,9 @@ func followUp(in followIn) followResult {
 			out.Sends = append(out.Sends, retry("ctrl", nil, nil, nil, in.Node, ceilSeconds(delayMs)))
 		}
 	case "metrics":
-		out.Sends = append(out.Sends, retry("hpa", nil, nil, nil, "", 0), retry("metrics", nil, nil, nil, "", metricsDelayS))
+		if !disabled[MetricsServer] {
+			out.Sends = append(out.Sends, retry("hpa", nil, nil, nil, "", 0), retry("metrics", nil, nil, nil, "", metricsDelayS))
+		}
 	case "containers":
 		if in.HasWork {
 			out.Sends = append(out.Sends, retry("containers", nil, nil, nil, "", refusedRetryS))

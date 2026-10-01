@@ -199,6 +199,37 @@ test("HelmChart and HelmChartConfig writes of every kind reach the addons queue"
   ]);
 });
 
+function metricsQueue() {
+  const sent: string[] = [];
+  const queue = {
+    send: async (body: { kind: string }) => void sent.push(body.kind),
+    sendBatch: async (batch: { body: { key: string } }[]) => void sent.push(...batch.map((m) => m.body.key)),
+  };
+  return { sent, queue };
+}
+
+test("the metrics scrape is seeded on start and by node changes", async () => {
+  const { sent, queue } = metricsQueue();
+  const r = rig({ METRICS_Q: queue, DISABLE: "servicelb,edge-routing" } as any);
+  await r.settle();
+  await r.put("/registry/minions/node-a", "v1");
+  await r.settle();
+  assert.deepEqual(sent, ["retry", "/registry/minions/node-a"]);
+});
+
+test("nothing reaches the metrics queue when metrics-server is disabled", async () => {
+  const { sent, queue } = metricsQueue();
+  const scheduled: string[] = [];
+  const scheduler = { send: async () => {}, sendBatch: async (batch: { body: { key: string } }[]) => void scheduled.push(...batch.map((m) => m.body.key)) };
+  const r = rig({ METRICS_Q: queue, SCHED_Q: scheduler, DISABLE: "coredns, metrics-server" } as any);
+  await r.settle();
+  await r.put("/registry/minions/node-a", "v1");
+  await r.remove("/registry/minions/node-a");
+  await r.settle();
+  assert.deepEqual(sent, []);
+  assert.deepEqual(scheduled, ["/registry/minions/node-a", "/registry/minions/node-a"]);
+});
+
 test("the garbage collector hears about ownership and deletion, not every status write of an owned object", async () => {
   const sent: string[] = [];
   const gc = { send: async () => {}, sendBatch: async (batch: { body: { key: string; type: string } }[]) => void sent.push(...batch.map((m) => `${m.body.type} ${m.body.key}`)) };

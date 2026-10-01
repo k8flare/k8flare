@@ -528,6 +528,34 @@ func TestParseDisable(t *testing.T) {
 	}
 }
 
+func TestParseDisableEdgeRoutingAlsoDisablesItsIngressClass(t *testing.T) {
+	if got := ParseDisable("edge-routing"); !got["edge-routing"] || !got["ingressclass"] {
+		t.Fatalf("got %v", got)
+	}
+	if got := ParseDisable("servicelb,metrics-server"); got["ingressclass"] {
+		t.Fatalf("got %v", got)
+	}
+	c := newClient()
+	d := newDeployer(c)
+	var file File
+	for _, f := range Packaged() {
+		if f.Name == "ingressclass.yaml" {
+			file = f
+		}
+	}
+	m := meta.NewDefaultRESTMapper(nil)
+	m.Add(schema.GroupVersionKind{Group: "apiextensions.k8s.io", Version: "v1", Kind: "CustomResourceDefinition"}, meta.RESTScopeRoot)
+	m.Add(schema.GroupVersionKind{Group: "k3s.cattle.io", Version: "v1", Kind: "Addon"}, meta.RESTScopeNamespace)
+	m.Add(schema.GroupVersionKind{Group: "networking.k8s.io", Version: "v1", Kind: "IngressClass"}, meta.RESTScopeRoot)
+	d.Mapper = m
+	if err := d.Deploy(context.Background(), []File{file}, ParseDisable("edge-routing")); err != nil {
+		t.Fatal(err)
+	}
+	if got := writes(c); count(got, "patch ingressclasses") != 0 || count(got, "create addons") != 0 {
+		t.Fatalf("ingress class deployed with edge routing disabled: %v", got)
+	}
+}
+
 func TestIngressClassIsTheEdgeDefault(t *testing.T) {
 	var file File
 	for _, f := range Packaged() {

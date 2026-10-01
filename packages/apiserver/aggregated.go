@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
+	"github.com/k8flare/k8flare/packages/edgehost"
 	"github.com/k8flare/k8flare/packages/metricsapi"
 	apidiscoveryv2 "k8s.io/api/apidiscovery/v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -45,7 +46,9 @@ func builtinResourceManager(path string, core bool) aggregated.ResourceManager {
 	}
 	if !core {
 		addApiextensionsDiscovery(manager)
-		addMetricsDiscovery(manager)
+		if !edgehost.Disabled(edgehost.MetricsServer) {
+			addMetricsDiscovery(manager)
+		}
 	}
 	return manager
 }

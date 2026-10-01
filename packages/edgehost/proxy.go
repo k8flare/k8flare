@@ -31,7 +31,7 @@ func ProxyHandler(r *http.Request, store *kine.Client, tunnel *http.Client) http
 	if store == nil || tunnel == nil {
 		return nil
 	}
-	if ref, ok := ParseServiceRoute(r); ok {
+	if ref, ok := ParseServiceRoute(r); ok && !disabled[ServiceLB] {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			proxyLoadBalancer(w, r, store, tunnel, ref)
 		})

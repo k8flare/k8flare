@@ -109,7 +109,7 @@ func proxyGateway(w http.ResponseWriter, r *http.Request, store *kine.Client, tu
 
 func gatewayHandler(r *http.Request, store *kine.Client, tunnel *http.Client) http.Handler {
 	host := RequestHost(r)
-	if !IsGatewayHost(host) {
+	if disabled[EdgeRouting] || !IsGatewayHost(host) {
 		return nil
 	}
 	table := edge.loadTable(r.Context(), store)

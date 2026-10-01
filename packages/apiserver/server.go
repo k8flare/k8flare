@@ -120,10 +120,12 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	mux.Handle("/api/", serveAPIRoot(legacyAPI, forwardTo(cfg.Groups, groupsBase, "apiserver-core")))
 	apisRoot := wrapAggregated(rootAPIs(addresses, cfg), false, addDynamicAggregated(cfg))
 	mux.Handle("/apis", apisRoot)
-	metrics := metricsapi.Handler{Store: client, Tunnel: cfg.Tunnel}
-	mux.Handle("/apis/metrics.k8s.io", metrics)
-	mux.Handle("/apis/metrics.k8s.io/", metrics)
-	mux.HandleFunc("/internal/metrics/scrape", metrics.Scrape)
+	if !edgehost.Disabled(edgehost.MetricsServer) {
+		metrics := metricsapi.Handler{Store: client, Tunnel: cfg.Tunnel}
+		mux.Handle("/apis/metrics.k8s.io", metrics)
+		mux.Handle("/apis/metrics.k8s.io/", metrics)
+		mux.HandleFunc("/internal/metrics/scrape", metrics.Scrape)
+	}
 	mux.HandleFunc("/internal/loadbalancer/provision", func(w http.ResponseWriter, r *http.Request) {
 		edgehost.ProvisionServices(w, r, client)
 	})
@@ -401,7 +403,9 @@ func rootAPIs(addresses discovery.Addresses, cfg Config) http.Handler {
 			}
 		}
 		groups = append(groups, remoteAPIServiceGroups(r.Context(), kineStore(cfg.Kine))...)
-		groups = append(groups, metricsapi.APIGroup())
+		if !edgehost.Disabled(edgehost.MetricsServer) {
+			groups = append(groups, metricsapi.APIGroup())
+		}
 		responsewriters.WriteObjectNegotiated(scheme.Codecs, negotiation.DefaultEndpointRestrictions, schema.GroupVersion{}, w, r, http.StatusOK, &metav1.APIGroupList{Groups: groups}, false)
 	})
 }

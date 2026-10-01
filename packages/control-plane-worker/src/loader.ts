@@ -40,6 +40,7 @@ export async function apiserverFetch(env: Env, request: Request): Promise<Respon
     CLUSTER_UID: env.CLUSTER_UID,
     AUDIT_POLICY: env.AUDIT_POLICY,
     API_HOSTS: env.API_HOSTS,
+    DISABLE: env.DISABLE,
     OUTBOUND: env.OUTBOUND,
     TUNNEL: env.TUNNEL,
     ADMISSION: env.ADMISSION,

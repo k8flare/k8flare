@@ -50,10 +50,10 @@ func planQueue(msgs []queueMessage) QueuePlan {
 					add(parts[3])
 				}
 			}
-			if strings.HasPrefix(msg.Key, "/registry/services/") {
+			if !disabled[ServiceLB] && strings.HasPrefix(msg.Key, "/registry/services/") {
 				plan.ServiceKeys = append(plan.ServiceKeys, msg.Key)
 			}
-			if strings.HasPrefix(msg.Key, gatewayAPIPrefix) || strings.HasPrefix(msg.Key, ingressPrefix) || strings.HasPrefix(msg.Key, ingressClassPrefix) || strings.HasPrefix(msg.Key, servicePrefix) {
+			if !disabled[EdgeRouting] && (strings.HasPrefix(msg.Key, gatewayAPIPrefix) || strings.HasPrefix(msg.Key, ingressPrefix) || strings.HasPrefix(msg.Key, ingressClassPrefix) || strings.HasPrefix(msg.Key, servicePrefix)) {
 				plan.GatewayKeys = append(plan.GatewayKeys, msg.Key)
 			}
 		} else if msg.Kind == "retry" {
