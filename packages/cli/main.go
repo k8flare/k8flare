@@ -25,6 +25,7 @@ commands:
   secrets-encrypt status|reencrypt
   snapshot save|list|restore
   restore --to <time>
+  access-credential [--server <url>]
 
 every command reads the cluster and admin credential from --kubeconfig
 (default: $KUBECONFIG or ~/.kube/config), or from --server and --token.`
@@ -178,6 +179,8 @@ func run(args []string, out io.Writer) error {
 		return runSnapshot(args[1:], out)
 	case "restore":
 		return runRestore(args[1:], out)
+	case "access-credential":
+		return runAccessCredential(args[1:], out)
 	}
 	return fmt.Errorf("unknown command %q\n\n%s", args[0], usage)
 }
