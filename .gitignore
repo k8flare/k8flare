@@ -17,3 +17,4 @@ packages/control-plane-worker/assets/wasm/
 packages/hpa-worker/assets/wasm/
 packages/control-plane-worker/images/node/k8flare-agent
 wrangler.dev.jsonc
+.cloudflare/
