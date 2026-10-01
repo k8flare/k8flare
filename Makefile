@@ -12,7 +12,7 @@ GROUPS := core coordination discovery node storage apps policy resource rbac bat
 API_GROUPS := core coordination discovery events node storage authentication authorization apps policy resource rbac batch admissionregistration autoscaling scheduling networking certificates flowcontrol apiregistration
 WASM_OPT := wasm-opt -Oz --strip-debug --strip-producers --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals
 
-.PHONY: mirrors wasm opt-wasm-list gen agent cli dev devtls kubeconfig check vet test test-packages clean e2e deploycheck sizes
+.PHONY: mirrors wasm opt-wasm-list gen agent cli dev devtls kubeconfig check vet test test-packages clean e2e deploycheck sizes manifests-notify
 
 mirrors:
 	cd scripts && go run ./mirror
@@ -249,6 +249,9 @@ vet: mirrors
 
 deploycheck:
 	cd scripts && go run ./deploycheck -server $(SERVER) -token $(TOKEN) -node $(NODE)
+
+manifests-notify:
+	pnpm exec wrangler r2 bucket notification create k8flare-manifests --event-type object-create object-delete --queue k8flare-addons
 
 e2e:
 	cd scripts && go run ./e2e -set $(or $(SET),required) -procs $(or $(PROCS),4)
