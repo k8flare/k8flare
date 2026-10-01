@@ -2,6 +2,7 @@ package scheduling
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync"
 
@@ -45,12 +46,11 @@ func schedulingBootstrapHash() string {
 }
 
 func ensureSystemPriorityClasses(ctx context.Context, store *genericregistry.Store) error {
+	var failed error
 	for _, pc := range schedhelpers.SystemPriorityClasses() {
-		if err := ensurePriorityClass(ctx, store, pc); err != nil {
-			return err
-		}
+		failed = errors.Join(failed, ensurePriorityClass(ctx, store, pc))
 	}
-	return nil
+	return failed
 }
 
 func ensurePriorityClass(ctx context.Context, store *genericregistry.Store, pc *schedulingv1.PriorityClass) error {

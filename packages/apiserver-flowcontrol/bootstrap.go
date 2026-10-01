@@ -2,6 +2,7 @@ package flowcontrol
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync"
 
@@ -50,17 +51,14 @@ func flowcontrolBootstrapHash() string {
 }
 
 func ensureAPF(ctx context.Context, plcs, schemas *genericregistry.Store) error {
+	var failed error
 	for _, plc := range append(append([]*flowcontrolv1.PriorityLevelConfiguration{}, flowcontrolbootstrap.MandatoryPriorityLevelConfigurations...), flowcontrolbootstrap.SuggestedPriorityLevelConfigurations...) {
-		if err := ensurePLC(ctx, plcs, plc); err != nil {
-			return err
-		}
+		failed = errors.Join(failed, ensurePLC(ctx, plcs, plc))
 	}
 	for _, fs := range append(append([]*flowcontrolv1.FlowSchema{}, flowcontrolbootstrap.MandatoryFlowSchemas...), flowcontrolbootstrap.SuggestedFlowSchemas...) {
-		if err := ensureFlowSchema(ctx, schemas, fs); err != nil {
-			return err
-		}
+		failed = errors.Join(failed, ensureFlowSchema(ctx, schemas, fs))
 	}
-	return nil
+	return failed
 }
 
 func ensurePLC(ctx context.Context, store *genericregistry.Store, plc *flowcontrolv1.PriorityLevelConfiguration) error {

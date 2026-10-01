@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync"
 
@@ -28,19 +29,16 @@ func bootstrapCluster(namespaces, services *genericregistry.Store, next http.Han
 		once.Do(func() {
 			ctx := context.WithoutCancel(r.Context())
 			_ = registry.RunBootstrap(ctx, namespaces, "core", hash, func(ctx context.Context) error {
+				var failed error
 				nsCtx := genericapirequest.WithNamespace(ctx, metav1.NamespaceNone)
 				for _, name := range systemNamespaces {
-					if err := create(nsCtx, namespaces, systemNamespace(name)); err != nil {
-						return err
-					}
+					failed = errors.Join(failed, create(nsCtx, namespaces, systemNamespace(name)))
 				}
-				if err := create(genericapirequest.WithNamespace(ctx, metav1.NamespaceDefault), services, kubernetesService()); err != nil {
-					return err
-				}
-				reconcileKubernetesEndpoints(ctx)
-				ensureExtensionAuth(ctx)
-				return nil
+				failed = errors.Join(failed, create(genericapirequest.WithNamespace(ctx, metav1.NamespaceDefault), services, kubernetesService()))
+				return failed
 			})
+			reconcileKubernetesEndpoints(ctx)
+			ensureExtensionAuth(ctx)
 		})
 		next.ServeHTTP(w, r)
 	})

@@ -24,7 +24,6 @@ func TestRunBootstrap(t *testing.T) {
 	hash1 := registry.HashObjects("version-1")
 	ctx := context.Background()
 
-	// 1. First run executes ensure and writes marker
 	if err := registry.RunBootstrap(ctx, store, "testgroup", hash1, ensure); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
@@ -36,7 +35,6 @@ func TestRunBootstrap(t *testing.T) {
 		t.Fatalf("marker = %q, want %q", marker, hash1)
 	}
 
-	// 2. Second run with same hash skips ensure (0 ensure calls, 1 marker read)
 	cs.MarkerGets.Store(0)
 	ensureCalls = 0
 	if err := registry.RunBootstrap(ctx, store, "testgroup", hash1, ensure); err != nil {
@@ -49,7 +47,6 @@ func TestRunBootstrap(t *testing.T) {
 		t.Fatalf("second run marker gets = %d, want 1", gets)
 	}
 
-	// 3. Third run with changed hash executes ensure and updates marker
 	hash2 := registry.HashObjects("version-2")
 	ensureCalls = 0
 	if err := registry.RunBootstrap(ctx, store, "testgroup", hash2, ensure); err != nil {
@@ -63,7 +60,6 @@ func TestRunBootstrap(t *testing.T) {
 		t.Fatalf("marker = %q, want %q", marker, hash2)
 	}
 
-	// 4. Failing ensure returns error and does NOT overwrite marker
 	failingEnsure := func(ctx context.Context) error {
 		return errors.New("boom")
 	}

@@ -42,7 +42,6 @@ func TestUpstreamRBACBootstrapContainsDefaults(t *testing.T) {
 	}
 }
 
-
 func TestBootstrapRBAC_Lifecycle(t *testing.T) {
 	cs := registrytest.NewCountingStore(t)
 	gv := rbacv1.SchemeGroupVersion
@@ -53,7 +52,6 @@ func TestBootstrapRBAC_Lifecycle(t *testing.T) {
 
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 
-	// (1) First load creates the bootstrap objects and writes the marker
 	handler1 := bootstrapRBAC(cr, crb, r, rb, next)
 	req1 := httptest.NewRequest("GET", "/apis/rbac.authorization.k8s.io/v1/clusterroles", nil)
 	rec1 := httptest.NewRecorder()
@@ -71,7 +69,6 @@ func TestBootstrapRBAC_Lifecycle(t *testing.T) {
 		t.Fatal("first load did not write rbac marker")
 	}
 
-	// (2) Second load against the same store performs NO create calls and exactly one marker read
 	cs.RegistryPuts.Store(0)
 	cs.MarkerGets.Store(0)
 	handler2 := bootstrapRBAC(cr, crb, r, rb, next)
@@ -89,7 +86,6 @@ func TestBootstrapRBAC_Lifecycle(t *testing.T) {
 		t.Fatalf("second load performed %d marker reads, want 1", gets)
 	}
 
-	// (3) A marker with a different hash triggers ensure again
 	cs.SetMarker("rbac", "outdated-hash")
 	cs.RegistryPuts.Store(0)
 	handler3 := bootstrapRBAC(cr, crb, r, rb, next)

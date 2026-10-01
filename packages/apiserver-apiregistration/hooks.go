@@ -2,6 +2,7 @@ package apiregistration
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync"
 
@@ -61,13 +62,12 @@ func bootstrapLocalAPIServices(store *genericregistry.Store) func(http.Handler) 
 			once.Do(func() {
 				ctx := context.WithoutCancel(r.Context())
 				_ = registry.RunBootstrap(ctx, store, "apiregistration", hash, func(ctx context.Context) error {
+					var failed error
 					reqCtx := genericapirequest.WithNamespace(ctx, metav1.NamespaceNone)
 					for _, sgv := range registry.Served {
-						if err := createLocal(reqCtx, store, sgv.GV.Group, sgv.GV.Version); err != nil {
-							return err
-						}
+						failed = errors.Join(failed, createLocal(reqCtx, store, sgv.GV.Group, sgv.GV.Version))
 					}
-					return nil
+					return failed
 				})
 			})
 			next.ServeHTTP(w, r)

@@ -2,6 +2,7 @@ package rbac
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync"
 
@@ -52,35 +53,28 @@ func rbacBootstrapHash() string {
 }
 
 func ensureRBAC(ctx context.Context, clusterRoles, clusterRoleBindings, roles, roleBindings *genericregistry.Store) error {
+	var failed error
 	for _, cr := range append(bootstrappolicy.ClusterRoles(), bootstrappolicy.ControllerRoles()...) {
-		if err := ensureClusterRole(ctx, clusterRoles, &cr); err != nil {
-			return err
-		}
+		failed = errors.Join(failed, ensureClusterRole(ctx, clusterRoles, &cr))
 	}
 	for _, crb := range append(bootstrappolicy.ClusterRoleBindings(), bootstrappolicy.ControllerRoleBindings()...) {
-		if err := ensureClusterRoleBinding(ctx, clusterRoleBindings, &crb); err != nil {
-			return err
-		}
+		failed = errors.Join(failed, ensureClusterRoleBinding(ctx, clusterRoleBindings, &crb))
 	}
 	if roles != nil {
 		for ns, list := range bootstrappolicy.NamespaceRoles() {
 			for i := range list {
-				if err := ensureRole(ctx, roles, ns, &list[i]); err != nil {
-					return err
-				}
+				failed = errors.Join(failed, ensureRole(ctx, roles, ns, &list[i]))
 			}
 		}
 	}
 	if roleBindings != nil {
 		for ns, list := range bootstrappolicy.NamespaceRoleBindings() {
 			for i := range list {
-				if err := ensureRoleBinding(ctx, roleBindings, ns, &list[i]); err != nil {
-					return err
-				}
+				failed = errors.Join(failed, ensureRoleBinding(ctx, roleBindings, ns, &list[i]))
 			}
 		}
 	}
-	return nil
+	return failed
 }
 
 func ensureClusterRole(ctx context.Context, store *genericregistry.Store, cr *rbacv1.ClusterRole) error {
