@@ -3,6 +3,17 @@
 README.md describes the target. This file tracks what still differs from
 it. Remove an entry when the behaviour exists and CI covers it.
 
+Decided on 2026-10-01, with the owner:
+
+- Where README and the code differ, the code changes: deadlines move onto
+  Durable Object alarms, nothing runs on an unconditional timer, and the
+  stock agent joins with README's one line, without
+  `--disable-apiserver-lb`.
+- Network policy is turned on.
+- main follows this branch whenever Unit and E2E pass on it.
+- The Cloudflare account may be deployed to, but it is over its free
+  allowance: light checks only, no full Conformance run there.
+
 ## What you get
 
 - Upstream validation is not used for admissionregistration. Every
