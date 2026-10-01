@@ -295,11 +295,6 @@ it. Remove an entry when the behaviour exists and CI covers it.
   `NodeRestriction`, so they are intentionally not
   enabled. Serving ClusterTrustBundles would need the attest check added.
 
-- `kube-system/extension-apiserver-authentication` publishes the server CA as
-  `client-ca-file`; kube-apiserver publishes the client CA there. Existing
-  clusters also keep an old copy of the ConfigMap, which is only created
-  when missing.
-
 ## Cloudflare features
 
 - Unit tests only (the `Hooks` entrypoint serves only `hookecho`, so no
@@ -494,7 +489,7 @@ it. Remove an entry when the behaviour exists and CI covers it.
       request-header lists as bare strings; kube-apiserver stores JSON
       arrays and every extension apiserver `json.Unmarshal`s them in
       `RunOnce` at start, so the sample apiserver exited (restart count 5).
-      Existing clusters keep the old ConfigMap because it is only created
+      Existing clusters kept the old ConfigMap because it was only created
       when missing. The aggregator dialed the extension over the node
       tunnel without a client certificate, so request-header
       authentication of the proxied user could not work. Now the vault has
@@ -503,11 +498,12 @@ it. Remove an entry when the behaviour exists and CI covers it.
       node-tunnel fetches it next to the kubelet client certificate and
       presents it on every `X-Dial-TLS` dial, and the ConfigMap publishes
       the request-header CA and `requestheader-allowed-names`
-      `["system:auth-proxy"]`. Open: the ConfigMap is only created when
-      missing, so an existing cluster keeps the server CA and empty allowed
-      names until the ConfigMap is deleted and re-provisioned (and
-      `client-ca-file` still holds the server CA rather than the client CA);
-      the sample-apiserver spec was not re-run.
+      `["system:auth-proxy"]`. The ConfigMap now reconciles at core-worker
+      startup and kube-system provisioning, publishes the client CA bundle
+      as `client-ca-file`, and repairs stale server-CA and bare-string
+      entries. It merges other writers' CA bundles and header lists and
+      skips unchanged writes; unit tests cover migration and CA rotation.
+      Open: the sample-apiserver spec was not re-run.
     - Create on update (server-side apply or PATCH of a missing object): the
       CRD group in `customresources` had no `Authorizer` in its
       `APIGroupVersion`, and the custom-resource handler was given an
@@ -665,10 +661,10 @@ it. Remove an entry when the behaviour exists and CI covers it.
     values travel the same hop and would merge the same way if a user had
     a multi-valued extra.
   - Seen on the way, not part of the failure: an existing dev cluster
-    keeps the pre-request-header `extension-apiserver-authentication`
-    (server CA, bare-string allowed names) until the ConfigMap is deleted
-    and kube-system re-provisioned, which nothing does automatically; the
-    sample apiserver crash-loops on the bare string.
+    kept the pre-request-header `extension-apiserver-authentication`
+    (server CA, bare-string allowed names), making the sample apiserver
+    crash-loop. Now repaired by reconciliation at core-worker startup and
+    kube-system provisioning, without deleting the ConfigMap; unit tested.
 - Run 36759859775 (c5ec39f, full): two deterministic failures.
   - DRA CRUD `resource.k8s.io/v1 ResourceClaim`: the apply patch of an
     existing claim got `no corresponding type for resource.k8s.io/v1,

@@ -2,15 +2,23 @@ package core
 
 import (
 	"context"
+	"encoding/json"
+	"encoding/pem"
+	"maps"
+	"slices"
+	"time"
 
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
 	supervisor "github.com/k8flare/k8flare/packages/apiserver-supervisor"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
+	"k8s.io/apiserver/pkg/registry/rest"
+	"k8s.io/client-go/util/cert"
 )
 
 var nsAccounts = struct {
@@ -61,29 +69,113 @@ func provisionNamespaceAccounts(ctx context.Context, name string) {
 }
 
 func ensureExtensionAuth(ctx context.Context) {
-	if nsAccounts.cms == nil {
-		return
+	if err := reconcileExtensionAuth(ctx); err != nil {
+		println("apiserver: extension authentication:", err.Error())
 	}
-	ca := ""
-	requestHeaderCA := ""
-	if nsAccounts.kine != nil {
-		vault := supervisor.NewVault(nsAccounts.kine)
-		if pem, err := vault.CAPEM(ctx, "server-ca"); err == nil {
-			ca = string(pem)
-		}
-		if pem, err := vault.CAPEM(ctx, supervisor.RequestHeaderCAName); err == nil {
-			requestHeaderCA = string(pem)
-		}
+}
+
+func reconcileExtensionAuth(ctx context.Context) error {
+	if nsAccounts.cms == nil || nsAccounts.kine == nil {
+		return nil
 	}
-	create(genericapirequest.WithNamespace(ctx, metav1.NamespaceSystem), nsAccounts.cms, &corev1.ConfigMap{
+	vault := supervisor.NewVault(nsAccounts.kine)
+	clientCA, err := vault.CAPEM(ctx, "client-ca")
+	if err != nil {
+		return err
+	}
+	requestHeaderCA, err := vault.CAPEM(ctx, supervisor.RequestHeaderCAName)
+	if err != nil {
+		return err
+	}
+	serverCA, err := vault.CAPEM(ctx, "server-ca")
+	if err != nil {
+		return err
+	}
+	desired := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "extension-apiserver-authentication", Namespace: metav1.NamespaceSystem},
 		Data: map[string]string{
-			"client-ca-file":                     ca,
-			"requestheader-client-ca-file":       requestHeaderCA,
+			"client-ca-file":                     string(clientCA),
+			"requestheader-client-ca-file":       string(requestHeaderCA),
 			"requestheader-username-headers":     `["X-Remote-User"]`,
 			"requestheader-group-headers":        `["X-Remote-Group"]`,
 			"requestheader-extra-headers-prefix": `["X-Remote-Extra-"]`,
 			"requestheader-allowed-names":        `["` + supervisor.RequestHeaderCN + `"]`,
 		},
-	})
+	}
+	ctx = genericapirequest.WithNamespace(ctx, metav1.NamespaceSystem)
+	got, err := nsAccounts.cms.Get(ctx, desired.Name, &metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		_, err = nsAccounts.cms.Create(ctx, desired, rest.ValidateAllObjectFunc, &metav1.CreateOptions{})
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	current := got.(*corev1.ConfigMap)
+	updated := current.DeepCopy()
+	if updated.Data == nil {
+		updated.Data = map[string]string{}
+	}
+	for key, value := range desired.Data {
+		if key == "client-ca-file" || key == "requestheader-client-ca-file" {
+			value, err = mergeExtensionAuthCAs(current.Data[key], value, string(serverCA))
+		} else {
+			var existing, required []string
+			_ = json.Unmarshal([]byte(value), &required)
+			if old := current.Data[key]; old != "" {
+				err = json.Unmarshal([]byte(old), &existing)
+				if old == required[0] {
+					existing, err = []string{old}, nil
+				}
+			}
+			merged := []string{}
+			for _, entry := range append(existing, required...) {
+				if !slices.Contains(merged, entry) {
+					merged = append(merged, entry)
+				}
+			}
+			encoded, _ := json.Marshal(merged)
+			value = string(encoded)
+		}
+		if err != nil {
+			return err
+		}
+		updated.Data[key] = value
+	}
+	if maps.Equal(current.Data, updated.Data) {
+		return nil
+	}
+	_, _, err = nsAccounts.cms.Update(ctx, updated.Name, rest.DefaultUpdatedObjectInfo(updated), rest.ValidateAllObjectFunc, rest.ValidateAllObjectUpdateFunc, false, &metav1.UpdateOptions{})
+	return err
+}
+
+func mergeExtensionAuthCAs(existing, required, serverCA string) (string, error) {
+	serverCerts, err := cert.ParseCertsPEM([]byte(serverCA))
+	if err != nil {
+		return "", err
+	}
+	excluded := map[string]bool{}
+	for _, ca := range serverCerts {
+		excluded[string(ca.Raw)] = true
+	}
+	seen := map[string]bool{}
+	bundle := []byte{}
+	for _, source := range []string{existing, required} {
+		if source == "" {
+			continue
+		}
+		certs, err := cert.ParseCertsPEM([]byte(source))
+		if err != nil {
+			return "", err
+		}
+		for _, ca := range certs {
+			key := string(ca.Raw)
+			if excluded[key] || seen[key] || !ca.NotAfter.After(time.Now().Add(-5*time.Minute)) {
+				continue
+			}
+			seen[key] = true
+			bundle = append(bundle, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Raw})...)
+		}
+	}
+	return string(bundle), nil
 }
