@@ -351,12 +351,14 @@ it. Remove an entry when the behaviour exists and CI covers it.
   not collide; the host reaches the container's node IP over `docker0`
   and the container reaches the host's over its default route. `up` waits
   until `NODES` nodes are Ready, not NetworkUnavailable, schedulable and
-  untainted before the write check. Unverified until a Conformance run:
-  flannel VXLAN between the host node and the container node (pods on
-  different nodes reaching each other and NodePorts across nodes), and
-  the container node going Ready under `wrangler dev` load. The
-  `[Serial]` specs that behave differently with one node (taint
-  eviction, DaemonSet rollback, pod spreading) have not been run on two.
+  untainted before the write check. Run 36807713386 (4208926) checked the
+  shape: both nodes went Ready, flannel VXLAN carried a pod on the host
+  node to a ClusterIP backed by pods on the container node, and the
+  host's own NodePort answered, but the container node's NodePort
+  (`172.17.0.2:30000`) timed out from a host-node pod: Docker's FORWARD
+  rules drop new connections into `docker0` that no published port
+  accepts. `up` now accepts forwarded traffic to `docker0` from
+  `DOCKER-USER` before the container nodes join; not yet re-run.
 - First full run (run 36698321866, main at 005a405, one node): 290 of 446
   specs ran before the job was interrupted at 76 minutes (cause not yet
   found; the job timeout is 355 minutes): 255 passed, 35 failed.
@@ -990,3 +992,51 @@ it. Remove an entry when the behaviour exists and CI covers it.
     shape as shard 0 and run 36785007337; the sampler now starts as soon
     as the user workerd's pid is known from the registry, so the next one
     leaves a dump.
+- Run 36807713386 (4208926, sharded, two nodes; 5 of 8 shards finished,
+  263 of 279 passed). Of the 16 failures, 10 were `an error on the
+  server ("")` (the transient 502 under investigation elsewhere; DNS
+  Subdomain and ConfigMap binary data also had their pod wait aborted by
+  it after 46 s and 28 s). The other six, read from the junit bodies and
+  `dev.log`:
+  - ReplicationController failure condition: the quota admission listed
+    the stored pods and admitted anything that still fit, with no
+    reservation, so the RC controller's two concurrent pod creates
+    (03:04:26.651 and .652, after the first at .560) both saw one stored
+    pod and three pods ran under `pods: 2`; no ReplicaFailure condition
+    could appear. Fixed: a matching quota's `status.used` is raised with a
+    CAS write before the request is admitted (upstream's plugin does the
+    same through `UpdateStatus`), retried on conflict, dry runs skipped,
+    and the check moved to the end of the validating chain.
+    `TestResourceQuotaReservesUsageBeforeTheObjectIsStored`.
+  - DaemonSet rollback and StatefulSet scaling order share a cause: the
+    controllers' pod `Delete` dropped the pod from the pass snapshot at
+    once, although the graceful delete only stamped `deletionTimestamp`.
+    The DaemonSet controller created `daemon-set-lsljm` at 03:07:59.999
+    while `daemon-set-pkv4s` on the same node was terminating (its
+    kubelet delete came at 03:08:01.110), so the spec's "existing" pod
+    was gone after the rollback; the StatefulSet controller deleted ss-2,
+    ss-1 and ss-0 within a second (03:00:57.7, 58.1, 58.5) instead of one
+    at a time, and the kubelets removed them as ss-0, ss-1, ss-2
+    (03:01:03, 04, 06), which the spec's DELETED-order watch rejected.
+    Fixed: the delete reads the object the apiserver returns and keeps a
+    pod that still has a grace period or finalizers in the snapshot (fake
+    clientsets, which delete at once, keep the old path).
+    `TestGracefulPodDeleteKeepsTheTerminatingPodInTheSnapshot`.
+  - NoExecuteTaintManager minTolerationSeconds: 58 `Cancelling deletion`
+    events in two minutes and no eviction. Upstream's controller keeps
+    its schedule in memory (`CreatedAt`, a timer per pod) and cancels and
+    re-adds a pod processed at the same instant; each pass built a new
+    controller, so the timer restarted from each pass's own start and
+    never fired (the booking of the next pass through the workqueue delay
+    hook was correct, which is why a single pass looked right in
+    `TestSyncBooksTheTolerationSecondsOfAUserNoExecuteTaint`). Fixed:
+    the pass evicts directly, with the toleration start persisted under
+    `/k8flare/tainteviction/<ns>/<pod>` in the store (an in-memory map
+    when the worker has no store) and the next pass booked for when it
+    elapses; intolerant pods are deleted at once, with the
+    DisruptionTarget condition and the TaintManagerEviction event as
+    upstream. The upstream controller is no longer linked.
+    `devicetainteviction` has the same per-pass shape and is not changed.
+  - NodePort session affinity: the CI network, fixed in `e2e.sh` (above).
+  - Not re-run; the `[Serial]` pod spreading specs did not run in this
+    run's finished shards.
