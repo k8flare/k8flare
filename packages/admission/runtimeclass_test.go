@@ -12,7 +12,7 @@ import (
 )
 
 func TestRuntimeClassMissingIsForbidden(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, runtimeClassPodReq("missing-rc"))
@@ -25,7 +25,7 @@ func TestRuntimeClassMissingIsForbidden(t *testing.T) {
 }
 
 func TestRuntimeClassPresentAllowsCreate(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/runtimeclasses/runc": mustJSON(t, nodev1.RuntimeClass{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "node.k8s.io/v1", Kind: "RuntimeClass"},
 			ObjectMeta: metav1.ObjectMeta{Name: "runc"},
@@ -42,7 +42,7 @@ func TestRuntimeClassPresentAllowsCreate(t *testing.T) {
 
 func TestRuntimeClassDeletedIsForbidden(t *testing.T) {
 	deleted := metav1.Now()
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/runtimeclasses/gone": mustJSON(t, nodev1.RuntimeClass{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "node.k8s.io/v1", Kind: "RuntimeClass"},
 			ObjectMeta: metav1.ObjectMeta{Name: "gone", DeletionTimestamp: &deleted},
@@ -64,7 +64,7 @@ func TestRuntimeClassDeletedIsForbidden(t *testing.T) {
 }
 
 func TestRuntimeClassUnsetAllowsCreate(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := runtimeClassPodReq("")

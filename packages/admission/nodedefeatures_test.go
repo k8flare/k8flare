@@ -30,7 +30,7 @@ func TestNodeDeclaredFeaturesAllowsDeclared(t *testing.T) {
 
 func declaredFeatureHandler(t *testing.T, features []string) http.Handler {
 	t.Helper()
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/nodes/n1": mustJSON(t, corev1.Node{
 			ObjectMeta: metav1.ObjectMeta{Name: "n1"},
 			Status:     corev1.NodeStatus{DeclaredFeatures: features},

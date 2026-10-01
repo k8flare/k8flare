@@ -10,7 +10,7 @@ import (
 )
 
 func TestDefaultTolerationSecondsAddsBoth(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, tolerationPodReq(nil))
@@ -24,7 +24,7 @@ func TestDefaultTolerationSecondsAddsBoth(t *testing.T) {
 }
 
 func TestDefaultTolerationSecondsRestoresDefaultsOnUpdate(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := tolerationPodReq(nil)
@@ -40,7 +40,7 @@ func TestDefaultTolerationSecondsRestoresDefaultsOnUpdate(t *testing.T) {
 }
 
 func TestDefaultTolerationSecondsKeepsExisting(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	existing := []any{map[string]any{

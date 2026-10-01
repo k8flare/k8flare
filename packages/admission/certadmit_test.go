@@ -53,7 +53,7 @@ func newCertAdmitHandler(t *testing.T, allow bool) http.Handler {
 		_ = json.NewEncoder(w).Encode(review)
 	}))
 	t.Cleanup(sar.Close)
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	t.Cleanup(kineSrv.Close)
 	return NewHandler(Config{Kine: rewriteClient(kineSrv), API: rewriteClient(sar)})
 }

@@ -13,7 +13,7 @@ import (
 )
 
 func TestPodSecurityDeniesPrivilegedOnBaseline(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/namespaces/psa": mustJSON(t, corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:   "psa",
@@ -33,7 +33,7 @@ func TestPodSecurityDeniesPrivilegedOnBaseline(t *testing.T) {
 }
 
 func TestPodSecurityAllowsPrivilegedWhenUnlabeled(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, psaPodReq("default", true))
@@ -43,7 +43,7 @@ func TestPodSecurityAllowsPrivilegedWhenUnlabeled(t *testing.T) {
 }
 
 func TestPodSecurityAllowsBaselinePod(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/namespaces/psa": mustJSON(t, corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:   "psa",

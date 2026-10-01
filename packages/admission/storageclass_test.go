@@ -12,7 +12,7 @@ import (
 )
 
 func TestDefaultStorageClassSetsPVC(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/storageclasses/fast": mustJSON(t, storagev1.StorageClass{
 			TypeMeta: metav1.TypeMeta{APIVersion: "storage.k8s.io/v1", Kind: "StorageClass"},
 			ObjectMeta: metav1.ObjectMeta{
@@ -36,7 +36,7 @@ func TestDefaultStorageClassSetsPVC(t *testing.T) {
 }
 
 func TestDefaultStorageClassLeavesExplicitClass(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/storageclasses/fast": mustJSON(t, storagev1.StorageClass{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:        "fast",
@@ -58,7 +58,7 @@ func TestDefaultStorageClassLeavesExplicitClass(t *testing.T) {
 }
 
 func TestDefaultStorageClassNoDefaultIsNoop(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, pvcReq(nil))

@@ -19,7 +19,7 @@ import (
 )
 
 func TestNodeRestrictionDeniesNonMirrorPodCreate(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, nodePodReq("k8flare-c1", "", false))
@@ -32,7 +32,7 @@ func TestNodeRestrictionDeniesNonMirrorPodCreate(t *testing.T) {
 }
 
 func TestNodeRestrictionAllowsMirrorPodOnSelf(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, nodePodReq("k8flare-c1", "k8flare-c1", true))
@@ -42,7 +42,7 @@ func TestNodeRestrictionAllowsMirrorPodOnSelf(t *testing.T) {
 }
 
 func TestNodeRestrictionDeniesOtherNode(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := nodePodReq("k8flare-c1", "", false)
@@ -62,7 +62,7 @@ func TestNodeRestrictionDeniesOtherNode(t *testing.T) {
 }
 
 func TestNodeRestrictionDeniesForeignPodStatus(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := nodePodReq("k8flare-c1", "k8flare-agent", false)
@@ -79,7 +79,7 @@ func TestNodeRestrictionDeniesForeignPodStatus(t *testing.T) {
 }
 
 func TestNodeRestrictionDeniesOtherNodeLease(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := nodePodReq("k8flare-c1", "", false)
@@ -99,7 +99,7 @@ func TestNodeRestrictionDeniesOtherNodeLease(t *testing.T) {
 }
 
 func TestNodeRestrictionDeniesLeaseOutsideNodeLeaseNS(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := nodePodReq("k8flare-c1", "", false)
@@ -119,7 +119,7 @@ func TestNodeRestrictionDeniesLeaseOutsideNodeLeaseNS(t *testing.T) {
 }
 
 func TestNodeRestrictionDeniesOtherCSINode(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := nodePodReq("k8flare-c1", "", false)
@@ -139,7 +139,7 @@ func TestNodeRestrictionDeniesOtherCSINode(t *testing.T) {
 }
 
 func TestNodeRestrictionDeniesWrongCNCSR(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := csrAdmitReq("wrong-cn", certificatesv1.KubeAPIServerClientKubeletSignerName, pemWithCN("system:node:k8flare-agent"))
@@ -154,7 +154,7 @@ func TestNodeRestrictionDeniesWrongCNCSR(t *testing.T) {
 }
 
 func TestNodeRestrictionAllowsOwnCNCSR(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := csrAdmitReq("own-cn", certificatesv1.KubeletServingSignerName, pemWithCN("system:node:k8flare-c1"))
@@ -166,7 +166,7 @@ func TestNodeRestrictionAllowsOwnCNCSR(t *testing.T) {
 }
 
 func TestNodeRestrictionDeniesPVCNonStatus(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := nodePVCReq("k8flare-c1")
@@ -181,7 +181,7 @@ func TestNodeRestrictionDeniesPVCNonStatus(t *testing.T) {
 }
 
 func TestNodeRestrictionDeniesPVCExtraFields(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := nodePVCReq("k8flare-c1")
@@ -197,7 +197,7 @@ func TestNodeRestrictionDeniesPVCExtraFields(t *testing.T) {
 }
 
 func TestNodeRestrictionAllowsPVCCapacity(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := nodePVCReq("k8flare-c1")
@@ -211,7 +211,7 @@ func TestNodeRestrictionAllowsPVCCapacity(t *testing.T) {
 }
 
 func TestNodeRestrictionDeniesOtherResourceSlice(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := nodePodReq("k8flare-c1", "", false)
@@ -236,7 +236,7 @@ func TestNodeRestrictionDeniesOtherResourceSlice(t *testing.T) {
 }
 
 func TestNodeRestrictionAllowsOwnResourceSlice(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := nodePodReq("k8flare-c1", "", false)
@@ -258,7 +258,7 @@ func TestNodeRestrictionAllowsOwnResourceSlice(t *testing.T) {
 }
 
 func TestNodeRestrictionDeniesResourceSliceUpdate(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := nodePodReq("k8flare-c1", "", false)
@@ -289,7 +289,7 @@ func TestNodeRestrictionDeniesResourceSliceUpdate(t *testing.T) {
 }
 
 func TestNodeRestrictionDeniesUnboundToken(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, nodeTokenReq("k8flare-c1", nil))
@@ -302,7 +302,7 @@ func TestNodeRestrictionDeniesUnboundToken(t *testing.T) {
 }
 
 func TestNodeRestrictionDeniesTokenWithoutUID(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, nodeTokenReq("k8flare-c1", map[string]any{"apiVersion": "v1", "kind": "Pod", "name": "user"}))
@@ -315,7 +315,7 @@ func TestNodeRestrictionDeniesTokenWithoutUID(t *testing.T) {
 }
 
 func TestNodeRestrictionDeniesTokenOnOtherNode(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/pods/default/user": mustJSON(t, corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{Name: "user", Namespace: "default", UID: "uid-1"},
 			Spec:       corev1.PodSpec{NodeName: "k8flare-agent"},
@@ -333,7 +333,7 @@ func TestNodeRestrictionDeniesTokenOnOtherNode(t *testing.T) {
 }
 
 func TestNodeRestrictionDeniesForeignEviction(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/pods/default/user": mustJSON(t, corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{Name: "user", Namespace: "default"},
 			Spec:       corev1.PodSpec{NodeName: "k8flare-agent"},
@@ -357,7 +357,7 @@ func TestNodeRestrictionDeniesForeignEviction(t *testing.T) {
 }
 
 func TestNodeRestrictionAllowsOwnEviction(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/pods/default/user": mustJSON(t, corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{Name: "user", Namespace: "default"},
 			Spec:       corev1.PodSpec{NodeName: "k8flare-c1"},
@@ -378,7 +378,7 @@ func TestNodeRestrictionAllowsOwnEviction(t *testing.T) {
 }
 
 func TestNodeRestrictionDeniesNodeRestrictionLabel(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := nodePodReq("k8flare-c1", "", false)
@@ -399,7 +399,7 @@ func TestNodeRestrictionDeniesNodeRestrictionLabel(t *testing.T) {
 }
 
 func TestNodeRestrictionDeniesUnknownKubernetesLabel(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := nodePodReq("k8flare-c1", "", false)
@@ -420,7 +420,7 @@ func TestNodeRestrictionDeniesUnknownKubernetesLabel(t *testing.T) {
 }
 
 func TestNodeRestrictionDeniesTaintUpdate(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := nodePodReq("k8flare-c1", "", false)
@@ -441,7 +441,7 @@ func TestNodeRestrictionDeniesTaintUpdate(t *testing.T) {
 }
 
 func TestNodeRestrictionDeniesConfigSourceUpdate(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := nodePodReq("k8flare-c1", "", false)
@@ -462,7 +462,7 @@ func TestNodeRestrictionDeniesConfigSourceUpdate(t *testing.T) {
 }
 
 func TestNodeRestrictionDeniesOwnerReferences(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := nodePodReq("k8flare-c1", "", false)
@@ -483,7 +483,7 @@ func TestNodeRestrictionDeniesOwnerReferences(t *testing.T) {
 }
 
 func TestNodeRestrictionDeniesPodUpdate(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := nodePodReq("k8flare-c1", "k8flare-c1", true)
@@ -498,7 +498,7 @@ func TestNodeRestrictionDeniesPodUpdate(t *testing.T) {
 }
 
 func TestNodeRestrictionDeniesForeignPodDelete(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/pods/default/p": mustJSON(t, corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "default"},
 			Spec:       corev1.PodSpec{NodeName: "k8flare-agent"},
@@ -518,7 +518,7 @@ func TestNodeRestrictionDeniesForeignPodDelete(t *testing.T) {
 }
 
 func TestNodeRestrictionIgnoresNonNode(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := nodePodReq("k8flare-c1", "", false)

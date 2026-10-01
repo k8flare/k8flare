@@ -13,7 +13,7 @@ import (
 )
 
 func TestPVCResizeRejectsUnboundExpand(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, pvcResizeReq("1Gi", "2Gi", string(corev1.ClaimPending), "fast"))
@@ -23,7 +23,7 @@ func TestPVCResizeRejectsUnboundExpand(t *testing.T) {
 }
 
 func TestPVCResizeRejectsClassWithoutExpansion(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/storageclasses/fast": mustJSON(t, storagev1.StorageClass{
 			ObjectMeta: metav1.ObjectMeta{Name: "fast"},
 		}),
@@ -37,7 +37,7 @@ func TestPVCResizeRejectsClassWithoutExpansion(t *testing.T) {
 }
 
 func TestPVCResizeAllowsExpandWhenClassPermits(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/storageclasses/fast": mustJSON(t, storagev1.StorageClass{
 			ObjectMeta:           metav1.ObjectMeta{Name: "fast"},
 			AllowVolumeExpansion: ptr.To(true),
@@ -52,7 +52,7 @@ func TestPVCResizeAllowsExpandWhenClassPermits(t *testing.T) {
 }
 
 func TestPVCResizeAllowsSameSize(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, pvcResizeReq("1Gi", "1Gi", string(corev1.ClaimPending), ""))

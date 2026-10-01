@@ -46,7 +46,7 @@ func TestPVCLimitRangeAllowsInRange(t *testing.T) {
 }
 
 func TestPVCLimitRangeNoopWithoutRange(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	t.Cleanup(kineSrv.Close)
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, pvcLimitReq("500Mi"))
@@ -78,7 +78,7 @@ func newPVCLimitHandler(t *testing.T, min, max string) http.Handler {
 	if max != "" {
 		item.Max = corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(max)}
 	}
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/limitranges/default/pvc-limit": mustJSON(t, corev1.LimitRange{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "LimitRange"},
 			ObjectMeta: metav1.ObjectMeta{Name: "pvc-limit", Namespace: "default"},
@@ -109,7 +109,7 @@ func pvcLimitReq(size string) admit.Request {
 }
 
 func TestLimitRangerDeniesContainerBelowMin(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/limitranges/default/lr": mustJSON(t, corev1.LimitRange{
 			ObjectMeta: metav1.ObjectMeta{Name: "lr", Namespace: "default"},
 			Spec: corev1.LimitRangeSpec{Limits: []corev1.LimitRangeItem{{
@@ -146,7 +146,7 @@ func TestLimitRangerDeniesContainerBelowMin(t *testing.T) {
 }
 
 func TestLimitRangerDeniesPodAboveMax(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/limitranges/default/lr": mustJSON(t, corev1.LimitRange{
 			ObjectMeta: metav1.ObjectMeta{Name: "lr", Namespace: "default"},
 			Spec: corev1.LimitRangeSpec{Limits: []corev1.LimitRangeItem{{
@@ -182,7 +182,7 @@ func TestLimitRangerDeniesPodAboveMax(t *testing.T) {
 }
 
 func TestLimitRangerDeniesContainerMissingLimit(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/limitranges/default/lr": mustJSON(t, corev1.LimitRange{
 			ObjectMeta: metav1.ObjectMeta{Name: "lr", Namespace: "default"},
 			Spec: corev1.LimitRangeSpec{Limits: []corev1.LimitRangeItem{{
@@ -215,7 +215,7 @@ func TestLimitRangerDeniesContainerMissingLimit(t *testing.T) {
 }
 
 func TestLimitRangerDeniesUnstructuredBarePod(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/limitranges/default/lr": mustJSON(t, corev1.LimitRange{
 			ObjectMeta: metav1.ObjectMeta{Name: "lr", Namespace: "default"},
 			Spec: corev1.LimitRangeSpec{Limits: []corev1.LimitRangeItem{{
@@ -254,7 +254,7 @@ func TestLimitRangerDeniesUnstructuredBarePod(t *testing.T) {
 }
 
 func TestLimitRangerDeniesLimitRequestRatio(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/limitranges/default/lr": mustJSON(t, corev1.LimitRange{
 			ObjectMeta: metav1.ObjectMeta{Name: "lr", Namespace: "default"},
 			Spec: corev1.LimitRangeSpec{Limits: []corev1.LimitRangeItem{{
@@ -293,7 +293,7 @@ func TestLimitRangerDeniesLimitRequestRatio(t *testing.T) {
 }
 
 func TestLimitRangerDeniesPodMissingLimit(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/limitranges/default/lr": mustJSON(t, corev1.LimitRange{
 			ObjectMeta: metav1.ObjectMeta{Name: "lr", Namespace: "default"},
 			Spec: corev1.LimitRangeSpec{Limits: []corev1.LimitRangeItem{{

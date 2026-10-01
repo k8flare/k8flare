@@ -1,6 +1,7 @@
 package admission
 
 import (
+	"encoding/json"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -13,7 +14,7 @@ import (
 )
 
 func TestResourceQuotaDeniesLoadBalancerOverNodePort(t *testing.T) {
-	store := memStore{data: map[string][]byte{
+	store := &memStore{data: map[string][]byte{
 		"/registry/resourcequotas/default/q": mustJSON(t, corev1.ResourceQuota{
 			ObjectMeta: metav1.ObjectMeta{Name: "q", Namespace: "default"},
 			Spec: corev1.ResourceQuotaSpec{Hard: corev1.ResourceList{
@@ -83,7 +84,7 @@ func TestResourceQuotaDeniesLoadBalancerWhenStatusUsedIsStale(t *testing.T) {
 		corev1.ResourceServicesNodePorts:     resource.MustParse("0"),
 		corev1.ResourceServicesLoadBalancers: resource.MustParse("0"),
 	}
-	store := memStore{data: map[string][]byte{
+	store := &memStore{data: map[string][]byte{
 		"/registry/resourcequotas/default/q": mustJSON(t, corev1.ResourceQuota{
 			ObjectMeta: metav1.ObjectMeta{Name: "q", Namespace: "default"},
 			Spec: corev1.ResourceQuotaSpec{Hard: corev1.ResourceList{
@@ -128,7 +129,7 @@ func TestResourceQuotaDeniesLoadBalancerWhenStatusUsedIsStale(t *testing.T) {
 }
 
 func TestResourceQuotaDeniesReplicaSetOverCount(t *testing.T) {
-	store := memStore{data: map[string][]byte{
+	store := &memStore{data: map[string][]byte{
 		"/registry/resourcequotas/default/q": mustJSON(t, corev1.ResourceQuota{
 			ObjectMeta: metav1.ObjectMeta{Name: "q", Namespace: "default"},
 			Spec: corev1.ResourceQuotaSpec{Hard: corev1.ResourceList{
@@ -161,7 +162,7 @@ func TestResourceQuotaDeniesReplicaSetOverCount(t *testing.T) {
 }
 
 func TestResourceQuotaDeniesIngressOverCount(t *testing.T) {
-	store := memStore{data: map[string][]byte{
+	store := &memStore{data: map[string][]byte{
 		"/registry/resourcequotas/default/q": mustJSON(t, corev1.ResourceQuota{
 			ObjectMeta: metav1.ObjectMeta{Name: "q", Namespace: "default"},
 			Spec: corev1.ResourceQuotaSpec{Hard: corev1.ResourceList{
@@ -194,7 +195,7 @@ func TestResourceQuotaDeniesIngressOverCount(t *testing.T) {
 }
 
 func TestResourceQuotaOfficialExceedMessage(t *testing.T) {
-	store := memStore{data: map[string][]byte{
+	store := &memStore{data: map[string][]byte{
 		"/registry/resourcequotas/default/q": mustJSON(t, corev1.ResourceQuota{
 			ObjectMeta: metav1.ObjectMeta{Name: "q", Namespace: "default"},
 			Spec:       corev1.ResourceQuotaSpec{Hard: corev1.ResourceList{corev1.ResourceConfigMaps: resource.MustParse("1")}},
@@ -227,7 +228,7 @@ func TestResourceQuotaOfficialExceedMessage(t *testing.T) {
 }
 
 func TestResourceQuotaDeniesPodOverCPU(t *testing.T) {
-	store := memStore{data: map[string][]byte{
+	store := &memStore{data: map[string][]byte{
 		"/registry/resourcequotas/default/test-quota": mustJSON(t, corev1.ResourceQuota{
 			ObjectMeta: metav1.ObjectMeta{Name: "test-quota", Namespace: "default"},
 			Spec: corev1.ResourceQuotaSpec{Hard: corev1.ResourceList{
@@ -278,6 +279,58 @@ func TestResourceQuotaDeniesPodOverCPU(t *testing.T) {
 	}
 	want := "exceeded quota: test-quota, requested: cpu=600m, used: cpu=500m, limited: cpu=1"
 	if !strings.Contains(out.Message, want) {
+		t.Fatalf("message = %q", out.Message)
+	}
+}
+
+func TestResourceQuotaReservesUsageBeforeTheObjectIsStored(t *testing.T) {
+	store := &memStore{data: map[string][]byte{
+		"/registry/resourcequotas/default/condition-test": mustJSON(t, corev1.ResourceQuota{
+			ObjectMeta: metav1.ObjectMeta{Name: "condition-test", Namespace: "default"},
+			Spec:       corev1.ResourceQuotaSpec{Hard: corev1.ResourceList{corev1.ResourcePods: resource.MustParse("2")}},
+			Status: corev1.ResourceQuotaStatus{
+				Hard: corev1.ResourceList{corev1.ResourcePods: resource.MustParse("2")},
+				Used: corev1.ResourceList{corev1.ResourcePods: resource.MustParse("1")},
+			},
+		}),
+		"/registry/pods/default/condition-test-1": mustJSON(t, corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "condition-test-1", Namespace: "default"},
+			Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "agnhost", Image: "agnhost"}}},
+		}),
+	}}
+	kine := httptest.NewServer(store)
+	defer kine.Close()
+	h := NewHandler(Config{Kine: rewriteClient(kine)})
+	create := func(name string) admit.Response {
+		return postAdmit(t, h, admit.Request{
+			Phase:     "validate",
+			Name:      name,
+			Namespace: "default",
+			Resource:  schema.GroupVersionResource{Version: "v1", Resource: "pods"},
+			Kind:      schema.GroupVersionKind{Version: "v1", Kind: "Pod"},
+			Operation: "CREATE",
+			Object: map[string]any{
+				"apiVersion": "v1", "kind": "Pod",
+				"metadata": map[string]any{"name": name, "namespace": "default"},
+				"spec": map[string]any{
+					"containers": []any{map[string]any{"name": "agnhost", "image": "agnhost"}},
+				},
+			},
+		})
+	}
+	if out := create("condition-test-2"); !out.Allowed {
+		t.Fatalf("second pod should fit: %+v", out)
+	}
+	var rq corev1.ResourceQuota
+	if err := json.Unmarshal(store.data["/registry/resourcequotas/default/condition-test"], &rq); err != nil {
+		t.Fatal(err)
+	}
+	if used := rq.Status.Used[corev1.ResourcePods]; used.Cmp(resource.MustParse("2")) != 0 {
+		t.Fatalf("status.used.pods = %s after the admitted create, want 2", used.String())
+	}
+	if out := create("condition-test-3"); out.Allowed {
+		t.Fatal("third pod was admitted while the second one was not stored yet")
+	} else if want := "exceeded quota: condition-test, requested: pods=1, used: pods=2, limited: pods=2"; !strings.Contains(out.Message, want) {
 		t.Fatalf("message = %q", out.Message)
 	}
 }

@@ -9,7 +9,7 @@ import (
 )
 
 func TestStorageProtectionAddsPVCFinalizer(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, pvcReq(nil))
@@ -22,7 +22,7 @@ func TestStorageProtectionAddsPVCFinalizer(t *testing.T) {
 }
 
 func TestStorageProtectionKeepsExistingPVCFinalizer(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := pvcReq(nil)
@@ -44,7 +44,7 @@ func TestStorageProtectionKeepsExistingPVCFinalizer(t *testing.T) {
 }
 
 func TestStorageProtectionAddsPVFinalizer(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, admit.Request{

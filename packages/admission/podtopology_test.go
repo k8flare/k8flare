@@ -11,7 +11,7 @@ import (
 )
 
 func TestPodTopologyLabelsCopiedOnBind(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/nodes/n1": mustJSON(t, corev1.Node{
 			ObjectMeta: metav1.ObjectMeta{Name: "n1", Labels: map[string]string{
 				corev1.LabelTopologyZone:   "zone-a",
@@ -48,7 +48,7 @@ func TestPodTopologyLabelsCopiedOnBind(t *testing.T) {
 }
 
 func TestPodTopologyLabelsCopiedWhenNodeNameSet(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/nodes/n1": mustJSON(t, corev1.Node{
 			ObjectMeta: metav1.ObjectMeta{Name: "n1", Labels: map[string]string{
 				corev1.LabelTopologyZone: "zone-a",
@@ -82,7 +82,7 @@ func TestPodTopologyLabelsCopiedWhenNodeNameSet(t *testing.T) {
 }
 
 func TestPodTopologyLabelsSkipUnscheduled(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, admit.Request{

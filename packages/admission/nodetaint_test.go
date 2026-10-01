@@ -10,7 +10,7 @@ import (
 )
 
 func TestTaintNodesByConditionAddsNotReady(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, nodeCreateReq(nil))
@@ -23,7 +23,7 @@ func TestTaintNodesByConditionAddsNotReady(t *testing.T) {
 }
 
 func TestTaintNodesByConditionKeepsExisting(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	existing := []any{map[string]any{
@@ -47,7 +47,7 @@ func TestTaintNodesByConditionKeepsExisting(t *testing.T) {
 }
 
 func TestTaintNodesByConditionSkipsUpdate(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := nodeCreateReq(nil)

@@ -11,7 +11,7 @@ import (
 )
 
 func TestDefaultIngressClassSetsIngress(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/ingressclasses/web": mustJSON(t, networkingv1.IngressClass{
 			TypeMeta: metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "IngressClass"},
 			ObjectMeta: metav1.ObjectMeta{
@@ -35,7 +35,7 @@ func TestDefaultIngressClassSetsIngress(t *testing.T) {
 }
 
 func TestDefaultIngressClassLeavesExplicitClass(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/ingressclasses/web": mustJSON(t, networkingv1.IngressClass{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:        "web",
@@ -57,7 +57,7 @@ func TestDefaultIngressClassLeavesExplicitClass(t *testing.T) {
 }
 
 func TestDefaultIngressClassNoDefaultIsNoop(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, ingressReq(nil))

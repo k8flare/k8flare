@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	admit "github.com/k8flare/k8flare/packages/apiserver-admit"
+	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -17,6 +18,8 @@ import (
 	"k8s.io/kubernetes/pkg/quota/v1/evaluator/core"
 	"k8s.io/utils/clock"
 )
+
+const quotaWriteRetries = 10
 
 func applyResourceQuota(ctx context.Context, s *store, req *admit.Request) error {
 	if req.Operation != "CREATE" && req.Operation != "UPDATE" {
@@ -29,58 +32,86 @@ func applyResourceQuota(ctx context.Context, s *store, req *admit.Request) error
 	if !ok {
 		return nil
 	}
-	quotas, err := listPrefix[corev1.ResourceQuota](ctx, s.client, "/registry/resourcequotas/"+req.Namespace+"/")
-	if err != nil || len(quotas) == 0 {
-		return err
-	}
-	listed, err := quotaUsage(ctx, s, req, ev, item)
-	if err != nil {
-		return err
-	}
-	delta, err := ev.Usage(item)
-	if err != nil {
-		return err
-	}
-	for i := range quotas {
-		rq := &quotas[i]
-		hard := rq.Status.Hard
-		if len(hard) == 0 {
-			hard = rq.Spec.Hard
+	for attempt := 0; ; attempt++ {
+		quotas, err := listStored[corev1.ResourceQuota](ctx, s.client, "/registry/resourcequotas/"+req.Namespace+"/")
+		if err != nil || len(quotas) == 0 {
+			return err
 		}
-		probe := rq.DeepCopy()
-		if len(probe.Status.Hard) == 0 {
-			probe.Status.Hard = hard
-		}
-		match, err := ev.Matches(probe, item)
+		listed, err := quotaUsage(ctx, s, req, ev, item)
 		if err != nil {
 			return err
 		}
-		if !match {
-			continue
+		delta, err := ev.Usage(item)
+		if err != nil {
+			return err
 		}
-		tracked := ev.MatchingResources(quota.ResourceNames(hard))
-		if err := ev.Constraints(tracked, item); err != nil {
-			return fmt.Errorf("failed quota: %s: %v", rq.Name, err)
+		var reserved []stored[corev1.ResourceQuota]
+		for i := range quotas {
+			rq := &quotas[i].object
+			hard := rq.Status.Hard
+			if len(hard) == 0 {
+				hard = rq.Spec.Hard
+			}
+			probe := rq.DeepCopy()
+			if len(probe.Status.Hard) == 0 {
+				probe.Status.Hard = hard
+			}
+			match, err := ev.Matches(probe, item)
+			if err != nil {
+				return err
+			}
+			if !match {
+				continue
+			}
+			tracked := ev.MatchingResources(quota.ResourceNames(hard))
+			if err := ev.Constraints(tracked, item); err != nil {
+				return fmt.Errorf("failed quota: %s: %v", rq.Name, err)
+			}
+			used := quota.Subtract(listed, delta)
+			if len(rq.Status.Used) > 0 {
+				used = quota.Max(rq.Status.Used, used)
+			}
+			requested := quota.RemoveZeros(quota.Mask(delta, tracked))
+			if len(requested) == 0 {
+				continue
+			}
+			newUsage := quota.Add(used, requested)
+			masked := quota.Mask(newUsage, quota.ResourceNames(requested))
+			if allowed, exceeded := quota.LessThanOrEqual(masked, quota.Mask(hard, tracked)); !allowed {
+				return fmt.Errorf("exceeded quota: %s, requested: %s, used: %s, limited: %s",
+					rq.Name,
+					prettyPrint(quota.Mask(requested, exceeded)),
+					prettyPrint(quota.Mask(used, exceeded)),
+					prettyPrint(quota.Mask(hard, exceeded)))
+			}
+			if req.DryRun {
+				continue
+			}
+			reservedUsage := quota.Mask(newUsage, quota.ResourceNames(hard))
+			if quota.Equals(rq.Status.Used, reservedUsage) {
+				continue
+			}
+			rq.Status.Used = reservedUsage
+			reserved = append(reserved, quotas[i])
 		}
-		used := quota.Subtract(listed, delta)
-		if len(rq.Status.Used) > 0 {
-			used = quota.Max(rq.Status.Used, used)
+		conflict := false
+		for _, rq := range reserved {
+			err := putJSON(ctx, s.client, rq.key, &rq.object, rq.revision)
+			if err == kine.ErrConflict {
+				conflict = true
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("quota %s: %w", rq.object.Name, err)
+			}
 		}
-		requested := quota.RemoveZeros(quota.Mask(delta, tracked))
-		if len(requested) == 0 {
-			continue
+		if !conflict {
+			return nil
 		}
-		newUsage := quota.Add(used, requested)
-		masked := quota.Mask(newUsage, quota.ResourceNames(requested))
-		if allowed, exceeded := quota.LessThanOrEqual(masked, quota.Mask(hard, tracked)); !allowed {
-			return fmt.Errorf("exceeded quota: %s, requested: %s, used: %s, limited: %s",
-				rq.Name,
-				prettyPrint(quota.Mask(requested, exceeded)),
-				prettyPrint(quota.Mask(used, exceeded)),
-				prettyPrint(quota.Mask(hard, exceeded)))
+		if attempt+1 >= quotaWriteRetries {
+			return fmt.Errorf("quota %s: %w", req.Namespace, kine.ErrConflict)
 		}
 	}
-	return nil
 }
 
 func prettyPrint(item corev1.ResourceList) string {

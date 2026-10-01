@@ -24,12 +24,30 @@ func decodeJSON[T any](data []byte) (T, error) {
 	return v, json.Unmarshal(data, &v)
 }
 
+type stored[T any] struct {
+	key      string
+	revision int64
+	object   T
+}
+
 func listPrefix[T any](ctx context.Context, client *kine.Client, prefix string) ([]T, error) {
+	items, err := listStored[T](ctx, client, prefix)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]T, 0, len(items))
+	for _, item := range items {
+		out = append(out, item.object)
+	}
+	return out, nil
+}
+
+func listStored[T any](ctx context.Context, client *kine.Client, prefix string) ([]stored[T], error) {
 	kvs, _, _, err := client.List(ctx, prefix, "", 0)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]T, 0, len(kvs))
+	out := make([]stored[T], 0, len(kvs))
 	for _, kv := range kvs {
 		data, err := base64.StdEncoding.DecodeString(kv.Value)
 		if err != nil {
@@ -39,9 +57,18 @@ func listPrefix[T any](ctx context.Context, client *kine.Client, prefix string) 
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, v)
+		out = append(out, stored[T]{key: kv.Key, revision: kv.ModRevision, object: v})
 	}
 	return out, nil
+}
+
+func putJSON(ctx context.Context, client *kine.Client, key string, obj any, revision int64) error {
+	data, err := json.Marshal(obj)
+	if err != nil {
+		return err
+	}
+	_, err = client.Put(ctx, key, data, revision)
+	return err
 }
 
 func getJSON[T any](ctx context.Context, client *kine.Client, key string) (T, bool, error) {

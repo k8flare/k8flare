@@ -17,7 +17,7 @@ import (
 )
 
 func TestCertificateSubjectRestrictionDeniesMastersClientCSR(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	t.Cleanup(kineSrv.Close)
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, csrAdmitReq("pooh", certificatesv1.KubeAPIServerClientSignerName, pemWithOrg("system:masters")))
@@ -31,7 +31,7 @@ func TestCertificateSubjectRestrictionDeniesMastersClientCSR(t *testing.T) {
 }
 
 func TestCertificateSubjectRestrictionAllowsOtherGroup(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	t.Cleanup(kineSrv.Close)
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, csrAdmitReq("ok", certificatesv1.KubeAPIServerClientSignerName, pemWithOrg("system:admin")))
@@ -41,7 +41,7 @@ func TestCertificateSubjectRestrictionAllowsOtherGroup(t *testing.T) {
 }
 
 func TestCertificateSubjectRestrictionIgnoresOtherSigner(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	t.Cleanup(kineSrv.Close)
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, csrAdmitReq("kubelet", certificatesv1.KubeAPIServerClientKubeletSignerName, pemWithOrg("system:masters")))
@@ -51,7 +51,7 @@ func TestCertificateSubjectRestrictionIgnoresOtherSigner(t *testing.T) {
 }
 
 func TestCertificateSubjectRestrictionDeniesMastersFromBase64(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	t.Cleanup(kineSrv.Close)
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	pemReq := pemWithOrg("system:masters")
@@ -65,7 +65,7 @@ func TestCertificateSubjectRestrictionDeniesMastersFromBase64(t *testing.T) {
 }
 
 func TestCertificateSubjectRestrictionRejectsInvalidPEM(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	t.Cleanup(kineSrv.Close)
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, csrAdmitReq("bear", certificatesv1.KubeAPIServerClientSignerName, "this is not a CSR"))

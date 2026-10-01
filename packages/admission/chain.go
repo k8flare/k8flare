@@ -67,9 +67,6 @@ func (h *Handler) run(ctx context.Context, req admit.Request) (admit.Response, e
 	if err := applyPersistentVolumeClaimResize(ctx, h.store, &req); err != nil {
 		return denyResponse(err), nil
 	}
-	if err := applyResourceQuota(ctx, h.store, &req); err != nil {
-		return denyResponse(err), nil
-	}
 	if err := validateRuntimeClass(ctx, h.store, &req); err != nil {
 		return denyResponse(err), nil
 	}
@@ -83,6 +80,9 @@ func (h *Handler) run(ctx context.Context, req admit.Request) (admit.Response, e
 		return denyResponse(err), nil
 	}
 	if err := validateNodeDeclaredFeatures(ctx, h.store, &req); err != nil {
+		return denyResponse(err), nil
+	}
+	if err := applyResourceQuota(ctx, h.store, &req); err != nil {
 		return denyResponse(err), nil
 	}
 	return admit.Response{Allowed: true}, nil

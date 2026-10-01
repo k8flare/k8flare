@@ -57,7 +57,7 @@ func TestPodResizeRejectsNonLinux(t *testing.T) {
 
 func resizeHandler(t *testing.T, node corev1.Node) http.Handler {
 	t.Helper()
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/nodes/n1": mustJSON(t, node),
 	}})
 	t.Cleanup(kineSrv.Close)

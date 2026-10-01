@@ -13,7 +13,7 @@ import (
 )
 
 func TestPriorityClassSetsPodPriority(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/priorityclasses/high": mustJSON(t, schedulingv1.PriorityClass{
 			TypeMeta:         metav1.TypeMeta{APIVersion: "scheduling.k8s.io/v1", Kind: "PriorityClass"},
 			ObjectMeta:       metav1.ObjectMeta{Name: "high"},
@@ -40,7 +40,7 @@ func TestPriorityClassSetsPodPriority(t *testing.T) {
 }
 
 func TestPriorityClassMissingIsForbidden(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, priorityPodReq("missing", nil))
@@ -50,7 +50,7 @@ func TestPriorityClassMissingIsForbidden(t *testing.T) {
 }
 
 func TestSystemPriorityClassesResolveBeforeBootstrap(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	for name, want := range map[string]int{"system-cluster-critical": 2000000000, "system-node-critical": 2000001000} {
@@ -66,7 +66,7 @@ func TestSystemPriorityClassesResolveBeforeBootstrap(t *testing.T) {
 }
 
 func TestPriorityDefaultWhenNoClass(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, priorityPodReq("", nil))
@@ -83,7 +83,7 @@ func TestPriorityDefaultWhenNoClass(t *testing.T) {
 }
 
 func TestPriorityRejectsMismatchedInteger(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/priorityclasses/high": mustJSON(t, schedulingv1.PriorityClass{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "scheduling.k8s.io/v1", Kind: "PriorityClass"},
 			ObjectMeta: metav1.ObjectMeta{Name: "high"},
@@ -99,7 +99,7 @@ func TestPriorityRejectsMismatchedInteger(t *testing.T) {
 }
 
 func TestPriorityPreservedOnUpdate(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := priorityPodReq("", nil)

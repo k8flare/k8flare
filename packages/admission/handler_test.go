@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	admit "github.com/k8flare/k8flare/packages/apiserver-admit"
@@ -22,7 +23,7 @@ func TestHandlerLimitRangeAndVAPAndWebhook(t *testing.T) {
 	cpu := "100m"
 	workerURL := workerURLPrefix + "admission-echo"
 	fail := admissionregv1.Fail
-	store := memStore{data: map[string][]byte{
+	store := &memStore{data: map[string][]byte{
 		"/registry/limitranges/default/lr": mustJSON(t, corev1.LimitRange{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "LimitRange"},
 			ObjectMeta: metav1.ObjectMeta{Name: "lr", Namespace: "default"},
@@ -127,7 +128,7 @@ func TestHandlerLimitRangeAndVAPAndWebhook(t *testing.T) {
 		t.Fatalf("limitrange default request: got %v", reqCPU)
 	}
 
-	minStore := memStore{data: map[string][]byte{
+	minStore := &memStore{data: map[string][]byte{
 		"/registry/limitranges/default/lr": mustJSON(t, corev1.LimitRange{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "LimitRange"},
 			ObjectMeta: metav1.ObjectMeta{Name: "lr", Namespace: "default"},
@@ -218,7 +219,7 @@ func TestHandlerDeniesConnectPodAttach(t *testing.T) {
 	}))
 	defer hooks.Close()
 	hookURL = hooks.URL + "/pods/attach"
-	store := memStore{data: map[string][]byte{
+	store := &memStore{data: map[string][]byte{
 		"/registry/namespaces/webhook": mustJSON(t, corev1.Namespace{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
 			ObjectMeta: metav1.ObjectMeta{Name: "webhook", Labels: map[string]string{"unique": "true"}},
@@ -267,7 +268,7 @@ func TestHandlerDeniesConnectPodAttach(t *testing.T) {
 func TestHandlerSkipsWebhooksForAdmissionConfigs(t *testing.T) {
 	workerURL := workerURLPrefix + "admission-echo"
 	fail := admissionregv1.Fail
-	store := memStore{data: map[string][]byte{
+	store := &memStore{data: map[string][]byte{
 		"/registry/mutatingwebhookconfigurations/mutate-configs": mustJSON(t, admissionregv1.MutatingWebhookConfiguration{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "admissionregistration.k8s.io/v1", Kind: "MutatingWebhookConfiguration"},
 			ObjectMeta: metav1.ObjectMeta{Name: "mutate-configs"},
@@ -321,7 +322,7 @@ func TestHandlerSkipsWebhooksForAdmissionConfigs(t *testing.T) {
 func TestMAPApplyConfiguration(t *testing.T) {
 	fail := admissionregv1.Fail
 	never := admissionregv1.NeverReinvocationPolicy
-	store := memStore{data: map[string][]byte{
+	store := &memStore{data: map[string][]byte{
 		"/registry/mutatingadmissionpolicies/label": mustJSON(t, admissionregv1.MutatingAdmissionPolicy{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "admissionregistration.k8s.io/v1", Kind: "MutatingAdmissionPolicy"},
 			ObjectMeta: metav1.ObjectMeta{Name: "label"},
@@ -394,23 +395,68 @@ func postAdmit(t *testing.T, h http.Handler, req admit.Request) admit.Response {
 
 type memStore struct {
 	data map[string][]byte
+	mu   sync.Mutex
+	revs map[string]int64
 }
 
-func (m memStore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (m *memStore) revision(key string) int64 {
+	if rev, ok := m.revs[key]; ok {
+		return rev
+	}
+	return 1
+}
+
+func (m *memStore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.revs == nil {
+		m.revs = map[string]int64{}
+	}
 	switch r.URL.Path {
 	case "/list":
 		prefix := r.URL.Query().Get("prefix")
 		var kvs []map[string]any
 		for k, v := range m.data {
 			if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
-				kvs = append(kvs, map[string]any{"key": k, "value": base64.StdEncoding.EncodeToString(v), "modRevision": 1})
+				kvs = append(kvs, map[string]any{"key": k, "value": base64.StdEncoding.EncodeToString(v), "modRevision": m.revision(k)})
 			}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"revision": 1, "kvs": kvs})
 	case "/kv":
+		switch r.Method {
+		case http.MethodPut, http.MethodDelete:
+			var body struct {
+				Key      string `json:"key"`
+				Value    string `json:"value"`
+				Revision int64  `json:"revision"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			_, exists := m.data[body.Key]
+			if body.Revision != 0 && (!exists || m.revision(body.Key) != body.Revision) {
+				w.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(map[string]any{"revision": 1, "error": "conflict"})
+				return
+			}
+			if r.Method == http.MethodDelete {
+				delete(m.data, body.Key)
+			} else {
+				value, err := base64.StdEncoding.DecodeString(body.Value)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				m.data[body.Key] = value
+			}
+			m.revs[body.Key] = m.revision(body.Key) + 1
+			_ = json.NewEncoder(w).Encode(map[string]any{"revision": m.revs[body.Key]})
+			return
+		}
 		k := r.URL.Query().Get("key")
 		if v, ok := m.data[k]; ok {
-			_ = json.NewEncoder(w).Encode(map[string]any{"revision": 1, "kv": map[string]any{"key": k, "value": base64.StdEncoding.EncodeToString(v), "modRevision": 1}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"revision": 1, "kv": map[string]any{"key": k, "value": base64.StdEncoding.EncodeToString(v), "modRevision": m.revision(k)}})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"revision": 1})
@@ -443,7 +489,7 @@ func (h hostRewrite) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func TestApplyServiceAccountHonorsSAAutomount(t *testing.T) {
-	store := memStore{data: map[string][]byte{
+	store := &memStore{data: map[string][]byte{
 		"/registry/serviceaccounts/default/nomount": mustJSON(t, corev1.ServiceAccount{
 			ObjectMeta:                   metav1.ObjectMeta{Name: "nomount", Namespace: "default"},
 			AutomountServiceAccountToken: ptr.To(false),
@@ -488,7 +534,7 @@ func TestApplyServiceAccountHonorsSAAutomount(t *testing.T) {
 }
 
 func TestApplyServiceAccountDeniesMissing(t *testing.T) {
-	kineSrv := httptest.NewServer(memStore{data: map[string][]byte{}})
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, admit.Request{
