@@ -186,8 +186,9 @@ func init() {
 			}
 			return finishServiceIPs(ctx, deps, serviceOf(old), serviceOf(obj))
 		}
-		store.AfterDelete = func(obj runtime.Object, _ *metav1.DeleteOptions) {
+		store.AfterDelete = func(obj runtime.Object, options *metav1.DeleteOptions) {
 			releaseServiceIPs(context.Background(), deps, serviceOf(obj))
+			deleteServiceEndpoints(serviceOf(obj), options)
 		}
 	}
 }

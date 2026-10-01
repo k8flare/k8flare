@@ -14,6 +14,8 @@ import (
 
 var bindingPods = struct{ store *registry.Store }{}
 
+var serviceEndpoints = struct{ store *registry.Store }{}
+
 func init() {
 	registry.Resources["bindings"] = func(_ schema.GroupVersion, _ metav1.APIResource, _ registry.Deps) rest.Storage {
 		return legacyBindingREST{}
@@ -82,6 +84,7 @@ func init() {
 	registry.Middleware = append(registry.Middleware, func(stores map[string]*registry.Store) func(http.Handler) http.Handler {
 		return func(next http.Handler) http.Handler {
 			bindingPods.store = stores["pods"]
+			serviceEndpoints.store = stores["endpoints"]
 			bindNamespaceAccounts(stores, nsAccounts.kine)
 			bindKubernetesEndpoints(stores)
 			return bootstrapCluster(stores["namespaces"], stores["services"], proxyRootRedirect(next))
