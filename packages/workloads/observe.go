@@ -14,11 +14,12 @@ import (
 	"k8s.io/client-go/kubernetes"
 	appsv1client "k8s.io/client-go/kubernetes/typed/apps/v1"
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 )
 
 func observeWrites(client kubernetes.Interface, all []loadedSource) kubernetes.Interface {
-	observed := &observeClient{Interface: client}
+	observed := &observeClient{Interface: client, podREST: podRESTClient(client)}
 	for _, l := range all {
 		switch l.informer.example.(type) {
 		case *corev1.PersistentVolume:
@@ -61,6 +62,13 @@ func observeWrites(client kubernetes.Interface, all []loadedSource) kubernetes.I
 	return observed
 }
 
+func podRESTClient(client kubernetes.Interface) rest.Interface {
+	if rc, ok := client.CoreV1().RESTClient().(*rest.RESTClient); !ok || rc == nil {
+		return nil
+	}
+	return client.CoreV1().RESTClient()
+}
+
 func listPods(ctx context.Context, pods corev1client.PodInterface) ([]runtime.Object, error) {
 	var out []runtime.Object
 	opts := metav1.ListOptions{Limit: listPage}
@@ -90,6 +98,7 @@ func remember(indexer cache.Indexer, obj runtime.Object) {
 
 type observeClient struct {
 	kubernetes.Interface
+	podREST rest.Interface
 	volumes cache.Indexer
 	claims  cache.Indexer
 	pods    *snapshotInformer
@@ -149,12 +158,13 @@ func (s observeStatefulSets) UpdateStatus(ctx context.Context, set *appsv1.State
 }
 
 func (c *observeClient) CoreV1() corev1client.CoreV1Interface {
-	return observeCore{CoreV1Interface: c.Interface.CoreV1(), c: c, volumes: c.volumes, claims: c.claims, pods: c.pods, rcs: c.rcs}
+	return observeCore{CoreV1Interface: c.Interface.CoreV1(), c: c, podREST: c.podREST, volumes: c.volumes, claims: c.claims, pods: c.pods, rcs: c.rcs}
 }
 
 type observeCore struct {
 	corev1client.CoreV1Interface
 	c       *observeClient
+	podREST rest.Interface
 	volumes cache.Indexer
 	claims  cache.Indexer
 	pods    *snapshotInformer
@@ -172,6 +182,7 @@ func (c observeCore) PersistentVolumeClaims(namespace string) corev1client.Persi
 func (c observeCore) Pods(namespace string) corev1client.PodInterface {
 	return observePods{
 		PodInterface: c.CoreV1Interface.Pods(namespace),
+		rest:         c.podREST,
 		namespace:    namespace,
 		pods:         c.pods,
 		rcs:          c.rcs,
@@ -203,6 +214,7 @@ func (c observeCore) ReplicationControllers(namespace string) corev1client.Repli
 
 type observePods struct {
 	corev1client.PodInterface
+	rest      rest.Interface
 	namespace string
 	pods      *snapshotInformer
 	rcs       *snapshotInformer
@@ -269,11 +281,31 @@ func (p observePods) Patch(ctx context.Context, name string, pt types.PatchType,
 }
 
 func (p observePods) Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error {
-	err := p.PodInterface.Delete(ctx, name, opts)
-	if err == nil {
+	if p.rest == nil {
+		err := p.PodInterface.Delete(ctx, name, opts)
+		if err == nil {
+			p.pods.forget(p.namespace, name)
+		}
+		return err
+	}
+	var pod corev1.Pod
+	err := p.rest.Delete().Namespace(p.namespace).Resource("pods").Name(name).Body(&opts).Do(ctx).Into(&pod)
+	if err != nil {
+		return err
+	}
+	if remainsAfterDelete(&pod) {
+		p.pods.note(&pod)
+	} else {
 		p.pods.forget(p.namespace, name)
 	}
-	return err
+	return nil
+}
+
+func remainsAfterDelete(pod *corev1.Pod) bool {
+	if pod.Name == "" || pod.DeletionTimestamp == nil {
+		return false
+	}
+	return len(pod.Finalizers) > 0 || (pod.DeletionGracePeriodSeconds != nil && *pod.DeletionGracePeriodSeconds > 0)
 }
 
 type observeReplicationControllers struct {
