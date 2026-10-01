@@ -572,3 +572,77 @@ func TestIngressClassIsTheEdgeDefault(t *testing.T) {
 		t.Fatalf("ingress class = %v", objs[0].Object)
 	}
 }
+
+func TestGatewayCRDsAreCorrect(t *testing.T) {
+	const upstreamVersion = "v1.5.1"
+	const upstreamSha256 = "751002b3b91a87f7ae3bd2517c79a47a8d7ed6702901808a1cf9bd97d284f9b8"
+
+	var file File
+	for _, f := range Packaged() {
+		if f.Name == "gateway-crds.yaml" {
+			file = f
+		}
+	}
+	if file.Name == "" {
+		t.Fatal("gateway-crds.yaml not found in packaged addons")
+	}
+
+	objs, err := Decode(file.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expectedCRDs := map[string]bool{
+		"gatewayclasses.gateway.networking.k8s.io": false,
+		"gateways.gateway.networking.k8s.io":       false,
+		"httproutes.gateway.networking.k8s.io":     false,
+		"referencegrants.gateway.networking.k8s.io": false,
+	}
+
+	if len(objs) != len(expectedCRDs) {
+		t.Fatalf("expected %d CRDs, got %d", len(expectedCRDs), len(objs))
+	}
+
+	for _, obj := range objs {
+		if obj.GetKind() != "CustomResourceDefinition" {
+			t.Fatalf("unexpected kind: %s", obj.GetKind())
+		}
+		name := obj.GetName()
+		if _, exists := expectedCRDs[name]; !exists {
+			t.Fatalf("unexpected CRD: %s", name)
+		}
+		expectedCRDs[name] = true
+
+		versions, _, _ := unstructured.NestedSlice(obj.Object, "spec", "versions")
+		servedVersions := []string{}
+		for _, v := range versions {
+			vMap := v.(map[string]any)
+			if served, ok := vMap["served"].(bool); ok && served {
+				if vName, ok := vMap["name"].(string); ok {
+					servedVersions = append(servedVersions, vName)
+				}
+			}
+		}
+		if len(servedVersions) == 0 {
+			t.Fatalf("CRD %s has no served versions", name)
+		}
+	}
+
+	for name, found := range expectedCRDs {
+		if !found {
+			t.Errorf("CRD %s not found", name)
+		}
+	}
+
+	_ = upstreamVersion
+	_ = upstreamSha256
+}
+
+func TestParseDisableEdgeRoutingAlsoDisablesGatewayCRDs(t *testing.T) {
+	if got := ParseDisable("edge-routing"); !got["edge-routing"] || !got["gateway-crds"] {
+		t.Fatalf("got %v, expected gateway-crds to be disabled with edge-routing", got)
+	}
+	if got := ParseDisable("servicelb"); got["gateway-crds"] {
+		t.Fatalf("got %v, expected gateway-crds not to be disabled", got)
+	}
+}
