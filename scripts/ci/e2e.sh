@@ -110,8 +110,20 @@ thread_ms() {
   cat "$@" 2>/dev/null | sed 's/.*) //' | awk -v t="$tick" '{ s += $12 + $13 } END { print int(s * 1000 / t) }'
 }
 
+dump_main_thread() {
+  local pid=$1
+  command -v gdb >/dev/null 2>&1 || sudo apt-get install -y -qq gdb >/dev/null 2>&1 || true
+  if ! command -v gdb >/dev/null 2>&1; then
+    echo "stack pid=$pid gdb unavailable"
+    return 0
+  fi
+  sudo gdb -p "$pid" -batch -ex 'thread 1' -ex 'bt 60' 2>&1 | sed "s/^/stack pid=$pid /"
+}
+
 sample_procs() {
-  local tick pid main other prev_main prev_other stat
+  local devlog=$1 tick pid main other prev_main prev_other stat quiet=0 devlog_size prev_devlog_size=-1 dumped=0
+  shift
+  local runtime=$1
   tick=$(getconf CLK_TCK)
   declare -A last_main last_other
   while true; do
@@ -125,6 +137,20 @@ sample_procs() {
       last_main[$pid]=$main
       last_other[$pid]=$other
       echo "procs pid=$pid comm=$(cat "/proc/$pid/comm") main_ms=$((main - prev_main)) other_ms=$((other - prev_other)) threads=$(ls "/proc/$pid/task" | wc -l) rss_kb=$(awk '/VmRSS/ { print $2 }' "/proc/$pid/status") state=$(cut -d' ' -f1 <<<"$stat") wchan=$(cat "/proc/$pid/wchan" 2>/dev/null)"
+      [ "$pid" = "$runtime" ] || continue
+      devlog_size=$(stat -c %s "$devlog" 2>/dev/null || echo 0)
+      if [ $((main - prev_main)) -ge 900 ] && [ "$devlog_size" = "$prev_devlog_size" ]; then
+        quiet=$((quiet + 1))
+      else
+        quiet=0
+        dumped=0
+      fi
+      prev_devlog_size=$devlog_size
+      if [ "$quiet" -ge 20 ] && [ "$dumped" = 0 ]; then
+        dumped=1
+        echo "stack pid=$pid main thread busy for ${quiet}s with no new line in $devlog"
+        dump_main_thread "$pid"
+      fi
     done
     sleep 1
   done
@@ -197,7 +223,7 @@ up() {
   echo "user worker listens on 127.0.0.1:$worker"
   local runtime
   runtime=$(ss -ltnpH "sport = :$worker" | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
-  nohup bash -c "$(declare -f thread_ms sample_procs); sample_procs $runtime $(ps -o ppid= -p "$runtime")" \
+  nohup bash -c "$(declare -f thread_ms dump_main_thread sample_procs); sample_procs $LOGS/dev.log $runtime $(ps -o ppid= -p "$runtime")" \
     < /dev/null 2>&1 | stamped "$LOGS/procs.log" &
   nohup "$WORK/devtls" -listen ":$API_PORT" -upstream "http://127.0.0.1:$worker" -dir .build/devtls -hosts "localhost,${CONTAINER_API%%:*}" -admin-token "$admin" \
     < /dev/null 2>&1 | stamped "$LOGS/devtls.log" &

@@ -821,3 +821,59 @@ it. Remove an entry when the behaviour exists and CI covers it.
     scheduled at the end of a request's entry die with that request too;
     the pumps of other in-flight requests cover it, an idle isolate has no
     timers until its next request.
+- Run 36785007337 (501e64d, before the turn fix) wedged workerd 15 s after
+  the node registered and never recovered: `dev.log` ends at 23:51:09.225
+  with three concurrent `front iso=ca7429b3 GET /api/v1/nodes/runnervm8df0l`
+  (the kubelet's lease owner lookup, flannel's `?timeout=15m0s` and the
+  agent's label write path, all node-certificate clients), no `apigroups`
+  line followed for them, and `procs.log` shows the main thread at
+  `main_ms` 1020-1040 per 1 s sample, state R, RSS frozen at exactly
+  4 927 100 kB for the next 15 min; devtls only reported 502s as the
+  clients' deadlines passed and no later request was logged by the front.
+  Not seen in any other run. It is a synchronous spin, not a hang: a
+  hung request leaves the event loop free, so the front would still have
+  logged the kubelet's retries and the once-a-minute `mem` lines would have
+  kept coming. The thread was already at 100 % for the 13 s of start-up
+  before it, so the spin began under load, in whichever isolate was
+  running at 23:51:09.225 (the front, the apiserver worker handling the
+  three GETs, or the core group worker).
+  - Not identified. Read for a loop that never blocks (on js/wasm there
+    is no sysmon, so any goroutine that does not block or yield holds the
+    thread, and the JS event loop only runs when every goroutine is
+    blocked): the bridge (`pump` drains a bounded queue, `drain` sleeps,
+    `CurrentWindow` waits on a channel), the apiserver's request path for
+    a node GET (edge-cert authentication, node authorizer, RBAC, the
+    `forwardTo` copy loop, the vault and `InstallServiceAccountKey`
+    Get-then-Put loops, which all block on a fetch per round), the front's
+    TS and the loader bootstrap, and the Cluster DO's synchronous SQL
+    loops (`compactTo` deletes a shrinking set until `rowsWritten` drops
+    below the batch; the outbox and R2 loops await). The only
+    `select`-with-`default` loops in the tree are the pump, the WebSocket
+    enqueue/finish paths and the tunnel push; none spins. The turn fix
+    (5ec6a28) changes where a fetch is issued, not whether anything
+    blocks, so it neither causes nor removes a spin. Not reproduced: the
+    shape needs the CI node joining under a saturated runner.
+  - What the next occurrence will record: `scripts/ci/e2e.sh`'s sampler
+    now takes the dev log path, and when workerd's main thread stays at
+    900 ms or more per sample for 20 consecutive samples while `dev.log`
+    does not grow, it attaches gdb once (installing it if the runner has
+    none) and prints the main thread's backtrace into `procs.log` as
+    `stack pid=... #N ...`, then detaches. Checked in an Ubuntu 24.04
+    container against a shell spin: detection at 20 s, backtrace printed,
+    process left running. Checked on this Mac with `sample` what the two
+    spin kinds look like: a JS `for (;;)` shows
+    `Builtins_InterpreterEntryTrampoline` frames above
+    `ServiceWorkerGlobalScope::request`; a Go `for {}` reached from a
+    `js.FuncOf` callback shows `Builtins_JSToWasmWrapper` followed by
+    unnamed frames above `jsg::Lock::runMicrotasks`. So the dump says
+    JS or wasm, and which entry kind (request, microtask, alarm, SQLite
+    or V8 GC by the named C++ frames beneath) without naming the Go
+    function: the shipped wasm has no name section (`-ldflags=-s` drops
+    it and `wasm-opt --strip-debug` would too) and gdb sees only JIT
+    addresses. The inspector is no help while spinning: a `Debugger.pause`
+    sent through wrangler's inspector port during the JS spin never even
+    opened the socket in 8 s, so nothing on the inspector side runs off the
+    busy thread. Local workerd has no CPU limit, so a spin wedges the
+    whole process until it is killed (the client's disconnect does not
+    stop it); production would end the request at its CPU limit and only
+    that isolate would be lost.
