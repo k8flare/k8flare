@@ -312,6 +312,86 @@ func TestDeployIgnoresDotfilesAndOtherExtensions(t *testing.T) {
 	}
 }
 
+func inDir(name string) File {
+	file := cmManifest("a")
+	file.Name = name
+	return file
+}
+
+func TestDeployAppliesSubdirectoryFilesByBasename(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		files    []File
+		disables map[string]bool
+		deployed bool
+	}{
+		{"nested manifest", []File{inDir("sub/demo.yaml")}, nil, true},
+		{"deeply nested manifest", []File{inDir("a/b/demo.yaml")}, nil, true},
+		{"manifest under a dot directory", []File{inDir(".sub/demo.yaml")}, nil, true},
+		{"nested dotfile", []File{inDir("sub/.demo.yaml")}, nil, false},
+		{"skip marker in the same directory", []File{inDir("sub/demo.yaml"), {Name: "sub/demo.yaml.skip"}}, nil, false},
+		{"skip marker in another directory", []File{inDir("sub/demo.yaml"), {Name: "demo.yaml.skip"}}, nil, false},
+		{"skip marker for another basename", []File{inDir("sub/demo.yaml"), {Name: "sub/other.yaml.skip"}}, nil, true},
+		{"disabled by basename", []File{inDir("sub/demo.yaml")}, map[string]bool{"demo": true}, false},
+		{"disabled by directory", []File{inDir("sub/demo.yaml")}, map[string]bool{"sub": true}, false},
+		{"disabled by nested directory", []File{inDir("a/b/demo.yaml")}, map[string]bool{"a/b": true}, false},
+		{"disabled by parent directory", []File{inDir("a/b/demo.yaml")}, map[string]bool{"a": true}, false},
+		{"directory name is not a basename", []File{inDir("a/b/demo.yaml")}, map[string]bool{"b": true}, true},
+		{"relative path is not a disable name", []File{inDir("sub/demo.yaml")}, map[string]bool{"sub/demo": true}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newClient()
+			if err := newDeployer(c).Deploy(context.Background(), tc.files, tc.disables); err != nil {
+				t.Fatal(err)
+			}
+			_, err := c.Resource(addonsGVR).Namespace("kube-system").Get(context.Background(), "demo", metav1.GetOptions{})
+			if deployed := err == nil; deployed != tc.deployed {
+				t.Fatalf("deployed = %v, want %v (%v)", deployed, tc.deployed, err)
+			}
+		})
+	}
+}
+
+func TestDeployDisabledDirectoryRemovesDeployedAddon(t *testing.T) {
+	c := newClient()
+	d := newDeployer(c)
+	files := []File{inDir("sub/demo.yaml")}
+	if err := d.Deploy(context.Background(), files, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Deploy(context.Background(), files, map[string]bool{"sub": true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Resource(configMaps).Namespace("kube-system").Get(context.Background(), "demo", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("configmap survived disable: %v", err)
+	}
+	if _, err := c.Resource(addonsGVR).Namespace("kube-system").Get(context.Background(), "demo", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("addon survived disable: %v", err)
+	}
+}
+
+func TestDeployLeavesObjectsOfARemovedFileInPlace(t *testing.T) {
+	c := newClient()
+	d := newDeployer(c)
+	if err := d.Deploy(context.Background(), []File{cmManifest("a")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	c.ClearActions()
+	if err := d.Deploy(context.Background(), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := writes(c); len(got) != 0 {
+		t.Fatalf("pass without the file wrote: %v", got)
+	}
+	if _, err := c.Resource(configMaps).Namespace("kube-system").Get(context.Background(), "demo", metav1.GetOptions{}); err != nil {
+		t.Fatalf("configmap of the removed file: %v", err)
+	}
+	if _, err := c.Resource(classes).Get(context.Background(), "demo", metav1.GetOptions{}); err != nil {
+		t.Fatalf("storage class of the removed file: %v", err)
+	}
+	mustGetAddon(t, c, "demo")
+}
+
 func TestDeployNamesAddonAfterFirstDotSegment(t *testing.T) {
 	c := newClient()
 	file := cmManifest("a")

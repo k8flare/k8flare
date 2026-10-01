@@ -53,7 +53,7 @@ func (d *Deployer) Deploy(ctx context.Context, files []File, disables map[string
 	}
 	skips := map[string]bool{}
 	for _, f := range files {
-		if name, ok := strings.CutSuffix(f.Name, ".skip"); ok {
+		if name, ok := strings.CutSuffix(path.Base(f.Name), ".skip"); ok {
 			skips[name] = true
 		}
 	}
@@ -61,16 +61,13 @@ func (d *Deployer) Deploy(ctx context.Context, files []File, disables map[string
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 	var errs []error
 	for _, f := range sorted {
-		if !isManifest(f.Name) {
-			continue
-		}
-		if disables[strings.TrimSuffix(f.Name, path.Ext(f.Name))] {
+		if shouldDisable(f.Name, disables) {
 			if err := d.remove(ctx, f); err != nil {
 				errs = append(errs, fmt.Errorf("delete %s: %w", f.Name, err))
 			}
 			continue
 		}
-		if skips[f.Name] {
+		if shouldSkip(path.Base(f.Name), skips) {
 			continue
 		}
 		if err := d.deploy(ctx, f); err != nil {
@@ -80,10 +77,25 @@ func (d *Deployer) Deploy(ctx context.Context, files []File, disables map[string
 	return errors.Join(errs...)
 }
 
-func isManifest(name string) bool {
-	if strings.HasPrefix(name, ".") {
+func shouldSkip(base string, skips map[string]bool) bool {
+	return strings.HasPrefix(base, ".") || skips[base] || !isManifest(base)
+}
+
+func shouldDisable(name string, disables map[string]bool) bool {
+	dirs := strings.Split(name, "/")
+	for i := 1; i < len(dirs); i++ {
+		if disables[path.Join(dirs[:i]...)] {
+			return true
+		}
+	}
+	if !isManifest(name) {
 		return false
 	}
+	base := path.Base(name)
+	return disables[strings.TrimSuffix(base, path.Ext(base))]
+}
+
+func isManifest(name string) bool {
 	switch strings.ToLower(path.Ext(name)) {
 	case ".yaml", ".yml", ".json":
 		return true
