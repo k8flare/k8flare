@@ -896,3 +896,97 @@ it. Remove an entry when the behaviour exists and CI covers it.
     whole process until it is killed (the client's disconnect does not
     stop it); production would end the request at its CPU limit and only
     that isolate would be lost.
+- Sharded Conformance run 36807713386 (4208926, 8 clusters of 2 nodes): 3
+  shards failed before the tests, 5 ran with about 6 transient failures
+  each, and every shard logged a capnp break 20 s after `Ready`. Read from
+  `dev.log`, `devtls.log`, `procs.log` and the agent logs; reproduced on
+  the dev stack where noted.
+  - `RPC connection broken for non-DISCONNECTED reason ... expected
+    expectedSizeInWords <= options.traversalLimitInWords [46780765050 <=
+    8388608]` is `scripts/ci/e2e.sh`'s own `user_worker_port` probe. It
+    sent `GET /livez` to every port the user workerd listens on; one of
+    them is workerd's `--debug-port`, a Cap'n Proto RPC listener miniflare
+    opens for the dev registry ("exposes a privileged interface that
+    allows access to all services in the process. For use by miniflare and
+    local development only"). capnp read the HTTP request as a segment
+    table: `expectedSizeInWordsFromPrefix` sums the uint32 words of the
+    first read, and `GET /livez HTTP/1.1\r\nHost: 127.0.0.1:<port>\r\n
+    User-Agent: curl/8.5.0\r\nAccept: */*\r\nAuthorization: Bearer <64 hex>`
+    predicts 4.4e10 to 4.7e10 words for random tokens; the five runs
+    reported 4.34e10 to 4.68e10. Each break is logged in the same
+    millisecond as the probe's next `front GET /livez`, and on the dev
+    stack the port that answers curl with an empty reply is the
+    `debugPortAddress` miniflare writes to the registry file. The break
+    only ends curl's own connection; the `dynexc GET /livez Error: Network
+    connection lost.` beside it, and the 771 such lines over the run, are
+    the dynamic worker's exception for a client that went away (every one
+    checked was a `?watch=true` request, the kubelet's per-namespace
+    ConfigMap and ServiceAccount watches). `e2e.sh` now starts wrangler
+    with `WRANGLER_REGISTRY_PATH` under `.build/ci`, takes the debug port
+    from the registry, finds the user workerd as the process listening on
+    it, probes only its other ports and starts the sampler before probing.
+    Not explained: the dev stack on this Mac closes the connection the same
+    way but prints no warning for it.
+  - The transient `an error on the server ("")` failures (post
+    namespaces, pods, resourcequotas, replicationcontrollers, put secrets,
+    patch namespaces, delete validatingadmissionpolicies) are devtls 502s
+    whose `proxy error` is `read tcp ... connection reset by peer` from the
+    user workerd, 14 to 22 per shard. kj's `HttpServer` closes a keep-alive
+    connection idle for 5 s (`pipelineTimeout`, workerd uses the default
+    settings) while Go's transport keeps it for 90 s. When the next request
+    on such a connection and the expired timer reach the same event-loop
+    turn, `exclusiveJoin` takes the timer, the socket is closed with the
+    request unread and the kernel answers RST. In shards 3 and 4 three
+    requests written at the same second were all reset 6 to 10 s later in
+    the same millisecond, with the main thread at 1030 to 1060 ms per
+    second and `dev.log` still flowing, so the loop had not polled the
+    sockets for that long. Go replays only idempotent requests after a
+    reset on a reused connection, so GETs passed and writes failed.
+    Reproduced on the dev stack: a POST on a connection idle 4.5 s, then
+    workerd stopped with SIGSTOP for 1.5 s across its deadline, returns
+    `read: connection reset by peer`; the same GET is replayed by Go and
+    answers; the same POST with `IdleConnTimeout` 2 s answers. devtls now
+    replays a request whose RoundTrip failed with ECONNRESET as it already
+    did for EOF: a reset before any response byte means the server closed
+    with the request still unread, so it was never parsed; a response that
+    started is returned as is (`TestReplaysARequestTheBackendResetWithoutReading`,
+    `TestDoesNotReplayAfterResponseBytesArrived`). Through the fixed devtls
+    the SIGSTOP case logs `lost its connection before wrangler dev
+    answered, retrying` and the POST gets its real answer.
+  - Shard 5 (`timed out waiting for a Ready node`): the agent's own
+    `POST .../selfsubjectaccessreviews` got that reset at 02:56:34.677 (the
+    one `connection reset by peer` in its `devtls.log`), k3s's
+    `startNetwork` called `RequestShutdown("failed to start networking:
+    failed to check if RBAC allows node list: an error on the server
+    (\"\")")`, and the agent exited 20 s after joining, taking the tunnel
+    (`GET /v1-k3s/connect status=0`) and every later `failed to find
+    Session for client` with it. Same cause as above.
+  - Shard 0 (`timed out waiting for devtls`): the first gdb dump. workerd's
+    main thread went to 1020 ms per second at 02:56:04.5, right after
+    `loader ... load=admission loaded=6 ms=926` with the Helm CRD `POST
+    .../customresourcedefinitions` in flight, and never came back (RSS
+    frozen at 2.0 GB for 33 min). The dump taken 20 s in shows the thread
+    inside V8's Oilpan sweeper: `cppgc::internal::MutatorThreadSweeper::
+    FinalizeAndSweepWithDeadline` < `Sweeper::SweeperImpl::
+    PerformSweepOnMutatorThread` < `IncrementalSweepTask::Run` <
+    `v8::platform::DefaultPlatform::PumpMessageLoop` < the `Deferred` at
+    the end of `IoContext::runImpl`, reached from `IoContext::runSingle<
+    awaitIoImpl<HttpClient::Response ... fetchImplNoOutputLockAttempt>>`
+    (a `fetch()` response continuation) under `kj::TaskSet::Task::fire`.
+    So the spin is workerd pumping V8 platform tasks after a JS
+    continuation, and the incremental sweep task never finishing; no JS or
+    wasm frame is on the stack, which rules out a loop in our code for this
+    occurrence. Not identified further: whether the sweep is stuck or
+    re-posting itself forever, and whether the 60 MB `admission` worker
+    that had just been compiled is what it sweeps. One dump; the sampler
+    takes only one per quiet period.
+  - Shard 6 (`no workerd port answers /livez` after 8 min): `dev.log`
+    stopped at 02:54:14.340, 17 s after `Ready`, with the addons pass
+    (`addons: ok=false ... helm=true`), `/internal/loadbalancer/provision`
+    and `POST /api/v1/namespaces/kube-public/configmaps` the last lines and
+    eleven dynamic workers loaded in the previous 9 s. No `procs.log`: the
+    sampler started only after the port probe, which never succeeded
+    against the wedged process (30 rounds of `curl -m 5` per port). Same
+    shape as shard 0 and run 36785007337; the sampler now starts as soon
+    as the user workerd's pid is known from the registry, so the next one
+    leaves a dump.
