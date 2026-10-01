@@ -122,5 +122,5 @@
       { "queue": "k8flare-addons", "max_batch_size": 100, "max_batch_timeout": 1, "max_retries": 10, "max_concurrency": 1, "dead_letter_queue": "k8flare-dlq" },
     ],
   },
-  "observability": { "enabled": true },
+  "observability": { "enabled": true, "logs": { "enabled": true, "head_sampling_rate": 1, "persist": true }, "traces": { "enabled": true, "head_sampling_rate": 0.1, "persist": true } },
 }
