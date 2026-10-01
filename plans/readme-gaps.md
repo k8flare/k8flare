@@ -469,15 +469,48 @@ Decided on 2026-10-01, with the owner:
   `/readyz` passes, the old data reads, a namespace and a Secret write
   work. What a quarter of an hour of `wrangler tail` showed, with no node
   and no client:
-  - The workloads pass never succeeds. Its lists of clusterroles, roles and
-    rolebindings through the `APISERVER` binding end in `bridge: fetch
-    timed out kind=hold age=30s` (inflight 21 to 28) and
-    `kind=dispatch ... binding=APIGROUPS`, the pass answers 500 and is sent
-    again about every 30s; the accounts pass fails the same way. The
-    Cluster Durable Object took about one request a second for it. Local
-    workerd does not do this. Not found yet: why. Each retry loads group
-    workers in fresh isolates (`apiserver-rbac` took 4.3s), and the pass
-    opens some thirty lists at once.
+  - The workloads pass never succeeded: its lists of clusterroles, roles
+    and rolebindings ended in `bridge: fetch timed out kind=hold age=30s`
+    and the pass was sent again about every 30s, a request a second on the
+    Cluster Durable Object. Two causes, neither visible on local workerd
+    where a store call takes a millisecond. Every load of a group worker
+    into a new isolate ran its bootstrap, 149 sequential creates for RBAC
+    (a cold `get roles` took 7.9s, then 5.8s on the next isolate). And the
+    pass opened all 36 lists at once, while Cloudflare lets one invocation
+    wait on six responses and queues the rest. Fixed in 11e92a4..9c798f1:
+    a bootstrap records a marker and costs one read afterwards, and a pass
+    holds six lists open. Deployed 2026-10-01T19:3xZ (version 18c4c0fa):
+    a cold `get roles` is about 3s, and the pass completes
+    (`workloads: clusterroles=73 ...`, no timeout).
+  - With the pass working, it ran again every 6s for ever (27 to 31
+    requests per 30s on the Cluster Durable Object), and every 3s on a
+    local stack with no node. A pass booked its own successor, the
+    follow-up re-sent the same `changed` set, and so on. Two rules did it:
+    a pass that saw `pods` change asked for another in 2s for the
+    StatefulSet controller whether or not a StatefulSet existed; and the
+    EndpointSlice controller, built anew for each pass, takes every
+    existing slice it is handed as a change it did not make
+    (`onEndpointSliceAdd`, `ShouldSync` on an empty tracker) and queues the
+    Service again after `endpointSliceChangeMinSyncDelay`, 1s, which the
+    pass reported as a deadline. One Service with a selector was enough,
+    and kube-dns is always there. Fixed: the 2s re-run needs a StatefulSet
+    that has not settled, and EndpointSlice events delivered by a pass
+    book nothing, since that pass syncs the Service itself.
+    `TestSyncDoesNotRebookAPodChangeWhenNothingIsDue`. On the local stack
+    with no node: 5 passes in the first 100s, none in the next 180s.
+    Not fixed, same shape: the Job controller queues a Job 1s after every
+    pod event of a pod it owns (`enqueueSyncJobBatched`), so a pod of a
+    Job, finished or not, keeps the pass running; `replicaGap` books 5s
+    for as long as a ReplicaSet or Deployment has `status.replicas` short
+    of `spec.replicas`; metrics is sent every 15s.
+  - The live tests failed in CI after the list bound (8 and 11 of 16,
+    `Network connection lost` on an early write). Six lists at a time load
+    the group workers one after another, so the first pass ends about 9s
+    later than it did (`apiserver-rbac` at age 10 to 13s, was 4s), and a
+    request that arrives while a module is instantiated in the single
+    local isolate is dropped. The harness now waits for the first pass
+    (the root CA publisher's annotation on `kube-root-ca.crt`), which also
+    keeps that update out of the tests' watches.
   - The metrics pass runs every 15 to 20s with no node, and sends to
     `k8flare-hpa`, which has no consumer in this deployment.
   - The Cluster alarm re-arms every five minutes for compaction whether or
