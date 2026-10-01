@@ -112,7 +112,7 @@ jobs:
   conformance:
     needs: [plan, workers]
     runs-on: ubuntu-24.04
-    timeout-minutes: 355
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
