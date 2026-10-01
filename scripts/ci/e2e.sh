@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 WORK=.build/ci
 LOGS=$WORK/logs
+REGISTRY=$WORK/registry
 API_PORT=16443
 API=127.0.0.1:$API_PORT
 CONTAINER_API=host.docker.internal:$API_PORT
@@ -91,11 +92,33 @@ write_accepted() {
     kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s delete namespace ci-writecheck --wait=false
 }
 
-user_worker_port() {
-  local admin=$1 port
+debug_port() {
+  sed -n 's/.*"debugPortAddress": *"127\.0\.0\.1:\([0-9]*\)".*/\1/p' "$REGISTRY/k8flare" 2>/dev/null | head -1
+}
+
+user_worker_pid() {
+  local debug pid
   for _ in $(seq 1 30); do
-    for port in $(ss -ltnpH | awk '/"workerd"/ { n = split($4, a, ":"); print a[n] }' | sort -u); do
-      [ "$port" = 18787 ] && continue
+    debug=$(debug_port)
+    if [ -n "$debug" ]; then
+      pid=$(ss -ltnpH "sport = :$debug" | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
+      if [ -n "$pid" ]; then
+        echo "$pid"
+        return 0
+      fi
+    fi
+    sleep 2
+  done
+  echo "wrangler dev did not register the user worker in $REGISTRY" >&2
+  return 1
+}
+
+user_worker_port() {
+  local admin=$1 pid=$2 debug port
+  debug=$(debug_port)
+  for _ in $(seq 1 30); do
+    for port in $(ss -ltnpH | awk -v pid="pid=$pid," '$0 ~ pid { n = split($4, a, ":"); print a[n] }' | sort -u); do
+      [ "$port" = "$debug" ] && continue
       if curl -sf -m 5 -o /dev/null -H "Authorization: Bearer $admin" "http://127.0.0.1:$port/livez"; then
         echo "$port"
         return 0
@@ -103,7 +126,7 @@ user_worker_port() {
     done
     sleep 2
   done
-  echo "no workerd port answers /livez" >&2
+  echo "no port of workerd $pid answers /livez" >&2
   return 1
 }
 
@@ -217,17 +240,17 @@ up() {
 
   dev_vars
   make wrangler.dev.jsonc
-  local admin worker
+  local admin runtime worker
   admin=$(sed -n 's/^ADMIN_TOKEN=//p' .dev.vars)
-  X_LOCAL_OBSERVABILITY=false nohup pnpm exec wrangler dev -c wrangler.dev.jsonc --local --enable-containers=false --persist-to "$STATE" --port 18787 \
+  rm -rf "$REGISTRY"
+  WRANGLER_REGISTRY_PATH=$PWD/$REGISTRY X_LOCAL_OBSERVABILITY=false nohup pnpm exec wrangler dev -c wrangler.dev.jsonc --local --enable-containers=false --persist-to "$STATE" --port 18787 \
     < /dev/null 2>&1 | stamped "$LOGS/dev.log" &
   wait_for "the control plane" 360 5 curl -sf -m 10 -o /dev/null -H "Authorization: Bearer $admin" http://127.0.0.1:18787/livez
-  worker=$(user_worker_port "$admin")
-  echo "user worker listens on 127.0.0.1:$worker"
-  local runtime
-  runtime=$(ss -ltnpH "sport = :$worker" | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
+  runtime=$(user_worker_pid)
   nohup bash -c "$(declare -f thread_ms dump_main_thread sample_procs); sample_procs $LOGS/dev.log $runtime $(ps -o ppid= -p "$runtime")" \
     < /dev/null 2>&1 | stamped "$LOGS/procs.log" &
+  worker=$(user_worker_port "$admin" "$runtime")
+  echo "user worker $runtime listens on 127.0.0.1:$worker"
   nohup "$WORK/devtls" -listen ":$API_PORT" -upstream "http://127.0.0.1:$worker" -dir .build/devtls -hosts "localhost,${CONTAINER_API%%:*}" -admin-token "$admin" \
     < /dev/null 2>&1 | stamped "$LOGS/devtls.log" &
   wait_for "devtls" 180 1 curl -sf -m 10 --cacert .build/devtls/server-ca.crt -o /dev/null -H "Authorization: Bearer $admin" "https://$API/livez"
