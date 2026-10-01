@@ -5,7 +5,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
-	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -39,7 +38,7 @@ func TestScaleFromDeployment(t *testing.T) {
 }
 
 func TestScaleRegisteredOnParentGroupVersions(t *testing.T) {
-	for _, gv := range []schema.GroupVersion{appsv1.SchemeGroupVersion, corev1.SchemeGroupVersion, batchv1.SchemeGroupVersion} {
+	for _, gv := range []schema.GroupVersion{appsv1.SchemeGroupVersion, corev1.SchemeGroupVersion} {
 		gvk := gv.WithKind("Scale")
 		obj, err := scheme.Scheme.New(gvk)
 		if err != nil {
@@ -69,30 +68,5 @@ func TestScaleFromReplicationController(t *testing.T) {
 	}
 	if scale.Spec.Replicas != 1 || scale.Status.Selector != "app=rc" {
 		t.Fatalf("%+v", scale)
-	}
-}
-
-func TestScaleFromJob(t *testing.T) {
-	parallel := int32(4)
-	job := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{Name: "batch", Namespace: "default"},
-		Spec: batchv1.JobSpec{
-			Parallelism: &parallel,
-			Selector:    &metav1.LabelSelector{MatchLabels: map[string]string{"job": "batch"}},
-		},
-		Status: batchv1.JobStatus{Active: 3},
-	}
-	scale, err := scaleFrom(job)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if scale.Spec.Replicas != 4 || scale.Status.Replicas != 3 || scale.Status.Selector != "job=batch" {
-		t.Fatalf("%+v", scale)
-	}
-	if err := applyScale(job, &autoscalingv1.Scale{Spec: autoscalingv1.ScaleSpec{Replicas: 6}}); err != nil {
-		t.Fatal(err)
-	}
-	if job.Spec.Parallelism == nil || *job.Spec.Parallelism != 6 {
-		t.Fatalf("parallelism %v", job.Spec.Parallelism)
 	}
 }

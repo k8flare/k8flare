@@ -19,7 +19,7 @@ func init() {
 	utilruntime.Must(policyv1.AddToScheme(scheme.Scheme))
 	utilruntime.Must(authenticationv1.AddToScheme(scheme.Scheme))
 	scheme.Scheme.AddKnownTypes(corev1.SchemeGroupVersion, &policyv1.Eviction{}, &authenticationv1.TokenRequest{})
-	for _, name := range []string{"deployments", "replicasets", "statefulsets", "replicationcontrollers", "jobs"} {
+	for _, name := range []string{"deployments", "replicasets", "statefulsets", "replicationcontrollers"} {
 		parent := name
 		Subresources[parent+"/scale"] = func(stores map[string]*Store, _ Deps) rest.Storage {
 			return NewScaleREST(stores[parent])

@@ -71,7 +71,6 @@ var Served = []ServedGroupVersion{
 		{Name: "cronjobs", SingularName: "cronjob", Namespaced: true, Kind: "CronJob", Verbs: metav1.Verbs{"create", "delete", "deletecollection", "get", "list", "patch", "update", "watch"}, ShortNames: []string{"cj"}, Categories: []string{"all"}},
 		{Name: "cronjobs/status", SingularName: "", Namespaced: true, Kind: "CronJob", Verbs: metav1.Verbs{"get", "patch", "update"}, ShortNames: nil, Categories: nil},
 		{Name: "jobs", SingularName: "job", Namespaced: true, Kind: "Job", Verbs: metav1.Verbs{"create", "delete", "deletecollection", "get", "list", "patch", "update", "watch"}, ShortNames: nil, Categories: []string{"all"}},
-		{Name: "jobs/scale", SingularName: "", Namespaced: true, Kind: "Scale", Verbs: metav1.Verbs{"get", "patch", "update"}, ShortNames: nil, Categories: nil},
 		{Name: "jobs/status", SingularName: "", Namespaced: true, Kind: "Job", Verbs: metav1.Verbs{"get", "patch", "update"}, ShortNames: nil, Categories: nil},
 	}},
 	{GV: schema.GroupVersion{Group: "autoscaling", Version: "v2"}, Resources: []metav1.APIResource{

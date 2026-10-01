@@ -6,7 +6,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
-	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -23,7 +22,6 @@ func init() {
 	utilruntime.Must(autoscalingv1.AddToScheme(scheme.Scheme))
 	scheme.Scheme.AddKnownTypes(appsv1.SchemeGroupVersion, &autoscalingv1.Scale{})
 	scheme.Scheme.AddKnownTypes(corev1.SchemeGroupVersion, &autoscalingv1.Scale{})
-	scheme.Scheme.AddKnownTypes(batchv1.SchemeGroupVersion, &autoscalingv1.Scale{})
 }
 
 type scaleREST struct {
@@ -128,8 +126,6 @@ func applyScale(obj runtime.Object, scale *autoscalingv1.Scale) error {
 		o.Spec.Replicas = &replicas
 	case *corev1.ReplicationController:
 		o.Spec.Replicas = &replicas
-	case *batchv1.Job:
-		o.Spec.Parallelism = &replicas
 	default:
 		return apierrors.NewBadRequest(fmt.Sprintf("cannot scale %T", obj))
 	}
@@ -146,8 +142,6 @@ func scaleFields(obj runtime.Object) (replicas, statusReplicas int32, selector s
 		return derefReplicas(o.Spec.Replicas), o.Status.Replicas, formatLabelSelector(o.Spec.Selector), nil
 	case *corev1.ReplicationController:
 		return derefReplicas(o.Spec.Replicas), o.Status.Replicas, labels.Set(o.Spec.Selector).String(), nil
-	case *batchv1.Job:
-		return derefReplicas(o.Spec.Parallelism), o.Status.Active, formatLabelSelector(o.Spec.Selector), nil
 	default:
 		return 0, 0, "", apierrors.NewBadRequest(fmt.Sprintf("cannot scale %T", obj))
 	}
