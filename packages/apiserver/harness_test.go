@@ -24,6 +24,8 @@ const (
 	devToken         = "k8flare-dev-token"
 	joinToken        = "k8flare-dev-join"
 	readonlyDevToken = "k8flare-dev-readonly"
+
+	secretsEncryptionKeys = "test:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 )
 
 // startDev runs `wrangler dev` for the worker with a throwaway state
@@ -57,11 +59,12 @@ func startDevURL(t *testing.T) (string, *kubernetes.Clientset) {
 	port := freePort(t)
 	state := t.TempDir()
 	devState = state
-	cmd := exec.Command("pnpm", "exec", "wrangler", "dev", "--local",
+	cmd := exec.Command("pnpm", "exec", "wrangler", "dev", "--local", "--enable-containers=false",
 		"-c", "wrangler.jsonc",
 		"--persist-to", state, "--port", fmt.Sprint(port), "--inspector-port", "0",
 		"--local-upstream", fmt.Sprintf("127.0.0.1:%d", port),
-		"--var", "ADMIN_TOKEN:"+devToken, "--var", "READONLY_TOKEN:"+readonlyDevToken, "--var", "JOIN_TOKEN:"+joinToken)
+		"--var", "ADMIN_TOKEN:"+devToken, "--var", "READONLY_TOKEN:"+readonlyDevToken, "--var", "JOIN_TOKEN:"+joinToken,
+		"--var", "SECRETS_ENCRYPTION_KEYS:"+secretsEncryptionKeys)
 	cmd.Dir = root
 	cmd.Env = devEnv()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
