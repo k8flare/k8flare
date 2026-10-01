@@ -50,6 +50,7 @@ func main() {
 	if err := writeGroupDefinitions(write("/openapi/v2", "v2.json", "application/json")); err != nil {
 		fail(err)
 	}
+	write("/openapi/v2", "v2.pb", protoV2Accept)
 	root := write("/openapi/v3", "v3.json", "application/json")
 	var discovery struct {
 		Paths map[string]json.RawMessage `json:"paths"`
@@ -68,6 +69,7 @@ func main() {
 
 // protoV3Accept is the encoding kubectl prefers for a v3 group document.
 const protoV3Accept = "application/com.github.proto-openapi.spec.v3.v1.0+protobuf"
+const protoV2Accept = "application/com.github.proto-openapi.spec.v2@v1.0+protobuf"
 
 func get(h http.Handler, path, accept string) ([]byte, int, string) {
 	req := httptest.NewRequest(http.MethodGet, path, nil)

@@ -6,6 +6,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	openapiv2 "github.com/google/gnostic-models/openapiv2"
+	"google.golang.org/protobuf/proto"
 )
 
 func get(t *testing.T, h http.Handler, path, accept string) *httptest.ResponseRecorder {
@@ -72,3 +75,29 @@ func TestDocuments(t *testing.T) {
 		t.Errorf("v3 protobuf content type: %q", ct)
 	}
 }
+
+func TestOpenAPIV2Protobuf(t *testing.T) {
+	h, err := Handler()
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := get(t, h, "/openapi/v2", "application/com.github.proto-openapi.spec.v2@v1.0+protobuf")
+	if ct := res.Header().Get("Content-Type"); ct != "application/com.github.proto-openapi.spec.v2.v1.0+protobuf" {
+		t.Errorf("content type: %q", ct)
+	}
+	doc := &openapiv2.Document{}
+	if err := proto.Unmarshal(res.Body.Bytes(), doc); err != nil {
+		t.Fatalf("unmarshal protobuf: %v", err)
+	}
+	found := false
+	for _, def := range doc.GetDefinitions().GetAdditionalProperties() {
+		if def.GetName() == "io.k8s.api.core.v1.Pod" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("v2 protobuf lacks io.k8s.api.core.v1.Pod")
+	}
+}
+

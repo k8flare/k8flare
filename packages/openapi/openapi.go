@@ -17,10 +17,17 @@ var baked embed.FS
 // prefers; v2 was never served that way, so it stays a 406.
 const protoSuffix = "+protobuf"
 const protoContentType = "application/com.github.proto-openapi.spec.v3.v1.0+protobuf"
+const protoV2ContentType = "application/com.github.proto-openapi.spec.v2.v1.0+protobuf"
 
 func Handler() (http.Handler, error) {
 	m := http.NewServeMux()
-	m.HandleFunc("/openapi/v2", serveJSON("baked/v2.json"))
+	m.HandleFunc("/openapi/v2", func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.Header.Get("Accept"), protoSuffix) {
+			write(w, "baked/v2.pb", protoV2ContentType)
+			return
+		}
+		write(w, "baked/v2.json", "application/json")
+	})
 	m.HandleFunc("/openapi/v3", serveJSON("baked/v3.json"))
 	m.HandleFunc("/openapi/v3/", func(w http.ResponseWriter, r *http.Request) {
 		group := strings.TrimPrefix(r.URL.Path, "/openapi/v3/")
