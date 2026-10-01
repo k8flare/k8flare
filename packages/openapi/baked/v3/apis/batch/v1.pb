@@ -1,7 +1,7 @@
 
 3.0.0
 
-Kubernetes2v1.36.4+k8flare"í¸
+Kubernetes2v1.36.4+k8flare"ì 
 ¨
 /apis/batch/v1/ò"ï
 batch_v1get available resources*getBatchV1APIResourcesB◊‘
@@ -1402,156 +1402,6 @@ _
 ∏
 prettyqueryñIf 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).R
 † string
-¸1
-7/apis/batch/v1/namespaces/{namespace}/jobs/{name}/scale¿1"÷
-batch_v1read scale of the specified Job*readBatchV1NamespacedJobScaleBòï
-200ç
-ä
-OKÉ
-N
-application/json:
-86
-4#/components/schemas/io.k8s.api.autoscaling.v1.Scale
-a
-#application/vnd.kubernetes.protobuf:
-86
-4#/components/schemas/io.k8s.api.autoscaling.v1.Scale
-N
-application/yaml:
-86
-4#/components/schemas/io.k8s.api.autoscaling.v1.Scalej
-x-kubernetes-actionget
-jP
-x-kubernetes-group-version-kind-+group: autoscaling
-version: v1
-kind: Scale
-*⁄
-batch_v1"replace scale of the specified Job* replaceBatchV1NamespacedJobScale2ù
-ö
-dryRunquery¯When present, indicates that modifications should not be persisted. An invalid or unrecognized dryRun directive will result in an error response and no further processing of the request. Valid values are: - All: all dry run stages will be processedR
-† string2ï
-í
-fieldManagerqueryÍfieldManager is a name associated with the actor or entity that is making these changes. The value must be less than or 128 characters long, and only contain printable characters, as defined by https://golang.org/pkg/unicode/#IsPrint.R
-† string2€
-ÿ
-fieldValidationquery≠fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default in v1.23+ - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.R
-† string:I
-GC
-A
-*/*:
-86
-4#/components/schemas/io.k8s.api.autoscaling.v1.ScaleBµï
-200ç
-ä
-OKÉ
-N
-application/json:
-86
-4#/components/schemas/io.k8s.api.autoscaling.v1.Scale
-a
-#application/vnd.kubernetes.protobuf:
-86
-4#/components/schemas/io.k8s.api.autoscaling.v1.Scale
-N
-application/yaml:
-86
-4#/components/schemas/io.k8s.api.autoscaling.v1.Scaleö
-201í
-è
-CreatedÉ
-N
-application/json:
-86
-4#/components/schemas/io.k8s.api.autoscaling.v1.Scale
-a
-#application/vnd.kubernetes.protobuf:
-86
-4#/components/schemas/io.k8s.api.autoscaling.v1.Scale
-N
-application/yaml:
-86
-4#/components/schemas/io.k8s.api.autoscaling.v1.Scalej
-x-kubernetes-actionput
-jP
-x-kubernetes-group-version-kind-+group: autoscaling
-version: v1
-kind: Scale
-R±
-batch_v1+partially update scale of the specified Job*patchBatchV1NamespacedJobScale2ù
-ö
-dryRunquery¯When present, indicates that modifications should not be persisted. An invalid or unrecognized dryRun directive will result in an error response and no further processing of the request. Valid values are: - All: all dry run stages will be processedR
-† string2Æ
-´
-fieldManagerqueryÉfieldManager is a name associated with the actor or entity that is making these changes. The value must be less than or 128 characters long, and only contain printable characters, as defined by https://golang.org/pkg/unicode/#IsPrint. This field is required for apply requests (application/apply-patch) but optional for non-apply patch types (JsonPatch, MergePatch, StrategicMergePatch).R
-† string2€
-ÿ
-fieldValidationquery≠fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default in v1.23+ - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.R
-† string2Õ
- 
-forcequery®Force is going to "force" Apply requests. It means user will re-acquire conflicting fields owned by other people. Force flag must be unset for non-apply patch requests.R
-† boolean:≠
-™•
-e
-application/apply-patch+yamlE
-CA
-?#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch
-d
-application/json-patch+jsonE
-CA
-?#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch
-e
-application/merge-patch+jsonE
-CA
-?#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch
-o
-&application/strategic-merge-patch+jsonE
-CA
-?#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.PatchBµï
-200ç
-ä
-OKÉ
-N
-application/json:
-86
-4#/components/schemas/io.k8s.api.autoscaling.v1.Scale
-a
-#application/vnd.kubernetes.protobuf:
-86
-4#/components/schemas/io.k8s.api.autoscaling.v1.Scale
-N
-application/yaml:
-86
-4#/components/schemas/io.k8s.api.autoscaling.v1.Scaleö
-201í
-è
-CreatedÉ
-N
-application/json:
-86
-4#/components/schemas/io.k8s.api.autoscaling.v1.Scale
-a
-#application/vnd.kubernetes.protobuf:
-86
-4#/components/schemas/io.k8s.api.autoscaling.v1.Scale
-N
-application/yaml:
-86
-4#/components/schemas/io.k8s.api.autoscaling.v1.Scalej
-x-kubernetes-actionpatch
-jP
-x-kubernetes-group-version-kind-+group: autoscaling
-version: v1
-kind: Scale
-j3
-1
-namepathname of the Scale R
-† stringja
-_
-	namespacepath:object name and auth scope, such as for teams and projects R
-† stringjª
-∏
-prettyqueryñIf 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).R
-† string
 È0
 8/apis/batch/v1/namespaces/{namespace}/jobs/{name}/status¨0"∏
 batch_v1 read status of the specified Job*readBatchV1NamespacedJobStatusBÄ˝
@@ -2401,58 +2251,8 @@ This is an alpha field and requires enabling the ShardedListAndWatch feature gat
 † integerj∞
 ≠
 watchqueryãWatch for changes to the described resources and return them as a stream of add, update, and remove notifications. Specify resourceVersion.R
-† boolean*ñö
-íö
-ª
-io.k8s.api.autoscaling.v1.Scaleó
-î object˙Æ
-
-
-apiVersion
-	 string
-
-kind
-	 string
-\
-metadataP
-N“HF
-D#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMetaä 
-L
-specD
-B“<:
-8#/components/schemas/io.k8s.api.autoscaling.v1.ScaleSpecä 
-P
-statusF
-D“><
-:#/components/schemas/io.k8s.api.autoscaling.v1.ScaleStatusä ¢’
-x-kubernetes-group-version-kind±Æ- group: ""
-  kind: Scale
-  version: v1
-- group: apps
-  kind: Scale
-  version: v1
-- group: autoscaling
-  kind: Scale
-  version: v1
-- group: batch
-  kind: Scale
-  version: v1
-
-c
-#io.k8s.api.autoscaling.v1.ScaleSpec<
-: object˙.
-,
-replicas 
- integerä		        öint32
-â
-%io.k8s.api.autoscaling.v1.ScaleStatus`
-^∫replicas object˙G
-,
-replicas 
- integerä		        öint32
-
-selector
-	 string
+† boolean*Áì
+„ì
 ≤
 io.k8s.api.batch.v1.CronJobí
 è∫spec object˙¶

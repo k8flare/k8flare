@@ -16940,8 +16940,8 @@ This is an alpha field and requires enabling the ShardedListAndWatch feature gat
 † integerj∞
 ≠
 watchqueryãWatch for changes to the described resources and return them as a stream of add, update, and remove notifications. Specify resourceVersion.R
-† boolean*ë‹
-ç‹
+† boolean*Ê€
+‚€
 ú
 1io.k8s.api.authentication.v1.BoundObjectReferenceg
 e object˙Y
@@ -17012,9 +17012,9 @@ Y
 
 token
  stringä 
-ª
-io.k8s.api.autoscaling.v1.Scaleó
-î object˙Æ
+ê
+io.k8s.api.autoscaling.v1.ScaleÏ
+È object˙Æ
 
 
 apiVersion
@@ -17033,17 +17033,14 @@ B“<:
 P
 statusF
 D“><
-:#/components/schemas/io.k8s.api.autoscaling.v1.ScaleStatusä ¢’
-x-kubernetes-group-version-kind±Æ- group: ""
+:#/components/schemas/io.k8s.api.autoscaling.v1.ScaleStatusä ¢™
+x-kubernetes-group-version-kindÜÉ- group: ""
   kind: Scale
   version: v1
 - group: apps
   kind: Scale
   version: v1
 - group: autoscaling
-  kind: Scale
-  version: v1
-- group: batch
   kind: Scale
   version: v1
 

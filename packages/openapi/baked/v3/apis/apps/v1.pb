@@ -5899,8 +5899,8 @@ This is an alpha field and requires enabling the ShardedListAndWatch feature gat
  Êintegerj°
 ­
 watchquery‹Watch for changes to the described resources and return them as a stream of add, update, and remove notifications. Specify resourceVersion.R
- Êboolean*¤Õ
- Õ
+ Êboolean*ùÔ
+õÔ
 ¯
 %io.k8s.api.apps.v1.ControllerRevision…
 ‚ºrevisionÊobjectú‹
@@ -6581,9 +6581,9 @@ H#/components/schemas/io.k8s.api.apps.v1.RollingUpdateStatefulSetStrategy
 *Â	OnDelete
 ÂRollingUpdate
 Êstring
-»
-io.k8s.api.autoscaling.v1.Scale—
-”Êobjectú®
+
+io.k8s.api.autoscaling.v1.Scaleì
+éÊobjectú®
 
 
 apiVersion
@@ -6602,17 +6602,14 @@ BÒ<:
 P
 statusF
 DÒ><
-:#/components/schemas/io.k8s.api.autoscaling.v1.ScaleStatusŠ ¢Õ
-x-kubernetes-group-version-kind±®- group: ""
+:#/components/schemas/io.k8s.api.autoscaling.v1.ScaleStatusŠ ¢ª
+x-kubernetes-group-version-kind†ƒ- group: ""
   kind: Scale
   version: v1
 - group: apps
   kind: Scale
   version: v1
 - group: autoscaling
-  kind: Scale
-  version: v1
-- group: batch
   kind: Scale
   version: v1
 
