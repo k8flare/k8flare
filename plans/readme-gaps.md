@@ -990,6 +990,91 @@ it. Remove an entry when the behaviour exists and CI covers it.
     queue after a continuation, so the likelier reading is a task that
     re-posts itself, not one sweep that never ends. The shard sat until it
     was cancelled; a Conformance shard is now capped at 90 minutes.
+    Identified and mitigated (sources: workerd v1.20260926.1, the one in
+    wrangler 4.144.0, and its V8 15.4.80.5). The spin is a deadlock between
+    workerd's main thread and every V8 worker thread, closed by a
+    busy-wait:
+    - `IoContext::runImpl`'s `KJ_DEFER` runs `while (!gotTermination &&
+      js.pumpMsgLoop())` after each continuation (`io/io-context.c++`),
+      and `pumpMsgLoop` is `v8::platform::PumpMessageLoop(..., kDoNotWait)`
+      on V8's `DefaultPlatform` (`jsg/setup.c++`). The loop only stops when
+      the foreground queue is empty or `limitEnforcer->getLimitsExceeded()`
+      says so; local workerd has no limits.
+    - cppgc's sweeper (`heap/cppgc-internal/sweeper.cc`) posts a
+      "low priority" `IncrementalSweepTask` through
+      `GetForegroundTaskRunner(kForegroundLowPriority)`, but
+      `DefaultPlatform::GetForegroundTaskRunner` ignores the priority and
+      returns the isolate's one queue (`libplatform/default-platform.cc`),
+      so the pump pops it at once. `SweepForLowPriorityTask` calls
+      `SweepInForegroundTaskImpl`, which, while
+      `IsConcurrentSweepingDone()` is false, runs the mutator in
+      `kOnlyFinalizers` mode; `PerformSweepOnMutatorThread` then returns
+      false by construction (`if (sweeping_mode != kAll) return false`),
+      the result is `kInProgress`, and the task re-posts itself with no
+      delay (`ScheduleLowPriorityIncrementalSweeping()`). That is the loop
+      the six main-thread dumps caught at `~IncrementalSweepTask`,
+      `IncrementalSweepTask::Post`, `PopTaskFromQueue` and
+      `PerformSweepOnMutatorThread`. It ends when the `ConcurrentSweepTask`
+      job becomes inactive (`DefaultJobState::IsActive`:
+      `GetMaxConcurrency != 0 || active_workers != 0`, and
+      `GetMaxConcurrency` is 1 until the job's `Run` completes).
+    - The job never runs. The all-thread dumps (`thread apply all bt`,
+      added to the sampler; four spins in runs 36819201396 and
+      36819206349, identical shape) show all three `V8 DefaultWorker`
+      threads (the runner has 4 vCPUs, `NewDefaultPlatform(0)` makes
+      `NumberOfProcessors - 1` workers) parked in
+      `CollectionBarrier::AwaitCollectionBackground` under
+      `LocalHeap::AllocateRawWith` < `HeapAllocator::
+      CollectGarbageAndRetryAllocation`: two Maglev concurrent compile
+      jobs (`MaglevCodeGenerator::GenerateDeoptimizationData` allocating a
+      `ProtectedFixedArray`) and one Sparkplug batch
+      (`ConcurrentBaselineCompiler::JobDispatcher::Run` allocating a
+      `TrustedByteArray`). A background allocation that fails requests a
+      GC and parks until the main thread performs it
+      (`heap/collection-barrier.cc`), and the main thread is in the loop
+      above waiting for one of them to free up. `procs.log` shows it:
+      `main_ms=1020..1040 other_ms=0 threads=5` for the whole spin. The
+      cycle needs every worker thread blocked at once, so it is a small
+      machine's failure mode (3 workers shared by ~20 isolates compiling
+      JS at startup); it was never reproduced on this Mac, which also has
+      more cores and, more to the point, runs workerd with
+      `--single-threaded-gc` already (`jsg/setup.c++` sets it under
+      `#ifdef __APPLE__`).
+    - Mitigation: `--single-threaded-gc`. `CppHeap::sweeping_support_` is
+      `kIncremental` instead of `kIncrementalAndConcurrent` under that
+      flag (`heap/cppgc-js/cpp-heap.cc`), so no `ConcurrentSweepTask` is
+      posted, the mutator sweeps in `kAll` mode, each 5 ms slice makes
+      progress and the task finishes; it also implies
+      `--no-concurrent-marking`, `--no-parallel-*` and
+      `--no-cppheap-concurrent-marking` (`flags/flag-definitions.h`),
+      which costs main-thread GC time but removes every GC-side wait on
+      the worker pool. It is the only V8 flag that reaches cppgc's
+      sweeping type; `--no-concurrent-sweeping` only affects the V8 heap.
+      The flag reaches the local workerd through miniflare's
+      `MINIFLARE_WORKERD_V8_FLAGS` (space-separated, copied into the
+      config's `v8Flags`; a wrong flag aborts at `jsg/setup.c++:149
+      unrecognized V8 flag`, checked). `make dev` and `scripts/ci/e2e.sh
+      up` set it (`up` only when the variable is unset, so the workflow's
+      `v8_flags` input, for example `--no-single-threaded-gc`, can measure
+      the baseline again). The workflow's `probe_minutes` input stops the
+      suite after that many minutes and passes, so one dispatch is eight
+      startup-plus-load samples in about 20 minutes; a spin is a `main
+      thread busy` dump in `procs.log`.
+    - Measured on ci/spin-probe (this branch plus the inputs), 8 shards per
+      run, 6 min of suite after `up`: baseline runs 36819201396 (3 of 8)
+      and 36819206349 (1 of 8), all four at 30 to 50 s after wrangler
+      started; `--single-threaded-gc` runs 36819203707 (0 of 8) and
+      36819208502 (0 of 8). Unmitigated main-branch runs the same day:
+      36818846178 5 of 8 and 36814575388 4 of 8. So 13 of 32 without the
+      flag against 0 of 16 with it (Fisher one-sided p about 0.002).
+    - Production is not the local `DefaultPlatform`, so this exact cycle
+      cannot be asserted there; the pump loop and cppgc are the same code,
+      but the production runtime enforces CPU limits, and the loop breaks
+      on `getLimitsExceeded()`, so the worst case is the request dying at
+      its CPU limit rather than the process. Open: whether the production
+      platform's task runner honors `kForegroundLowPriority`, and whether
+      workerd would accept the flag on Linux (an upstream issue would
+      carry the dumps).
   - Shard 6 (`no workerd port answers /livez` after 8 min): `dev.log`
     stopped at 02:54:14.340, 17 s after `Ready`, with the addons pass
     (`addons: ok=false ... helm=true`), `/internal/loadbalancer/provision`
