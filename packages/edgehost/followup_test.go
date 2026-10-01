@@ -38,6 +38,13 @@ func TestFollowUpAddonsRetriesUntilDeployed(t *testing.T) {
 	}
 }
 
+func TestFollowUpAddonsResumesAPendingStorageMigrationAlone(t *testing.T) {
+	got := followUp(followIn{Target: "addons", OK: true, Pending: 3})
+	if len(got.Sends) != 1 || got.Sends[0].Queue != "addons" || got.Sends[0].DelaySeconds != 5 || len(got.Sends[0].Names) != 1 || got.Sends[0].Names[0] != "storage-migrate" {
+		t.Fatal(got)
+	}
+}
+
 func TestFollowUpMetrics(t *testing.T) {
 	got := followUp(followIn{Target: "metrics"})
 	if len(got.Sends) != 2 || got.Sends[0].Queue != "hpa" || got.Sends[0].DelaySeconds != 0 || got.Sends[1].Queue != "metrics" || got.Sends[1].DelaySeconds != 15 {

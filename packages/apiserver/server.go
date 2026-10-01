@@ -152,6 +152,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	mux.HandleFunc("/internal/kubelet-client", kubeletSupervisor.KubeletClient)
 	mux.HandleFunc("/internal/proxy-client", adminOnly(kubeletSupervisor.ProxyClient))
 	installSecretsEncrypt(mux, client)
+	installStorageMigrate(mux, client)
 	installTokens(mux, v)
 	installEdgeCertificate(mux, v)
 	installCertificates(mux, v)

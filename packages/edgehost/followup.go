@@ -9,6 +9,8 @@ const (
 	refusedRetryS = 5
 	gcSettleS     = 2
 	metricsDelayS = 15
+
+	storageMigrateOnly = "storage-migrate"
 )
 
 type followIn struct {
@@ -127,6 +129,8 @@ func followUp(in followIn) followResult {
 	case "addons":
 		if !in.OK {
 			out.Sends = append(out.Sends, retry("addons", nil, nil, nil, "", refusedRetryS))
+		} else if in.Pending > 0 {
+			out.Sends = append(out.Sends, retry("addons", nil, nil, []string{storageMigrateOnly}, "", refusedRetryS))
 		}
 	case "leases":
 		delayMs := in.NextMs

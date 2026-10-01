@@ -240,7 +240,25 @@ it. Remove an entry when the behaviour exists and CI covers it.
     401 "attempted: bearer" detail is overwritten by the 401 body.
   - Not run in a deployed Worker: `tail()` must relay the lines to
     Workers Logs.
-- Upgrades: no storage migration mechanism.
+- Upgrades: storage migration follows upstream's default at 1.36 (the
+  `storagemigration.k8s.io` API and its controller are off by default;
+  the deployed binary re-encodes an object the next time it is written),
+  plus an in-place sweep in the shape of the StorageVersionMigrator: the
+  Cluster DO's deploy stamp (`addons_seed`) starts the addons pass, which
+  calls `POST /internal/storage-migrate` on the front; it compares the
+  storage version hash (`discovery.StorageVersionHash`) of each stored
+  resource with the record at `/k8flare/storageversions`, decodes and
+  re-encodes every object of a resource whose hash changed, writes only the
+  objects whose bytes differ (CAS on the revision, conflicts skipped), and
+  resumes across passes from a per-resource cursor at 200 rewrites per
+  pass. `GET /internal/storage-migrate/status` lists pending and failed
+  resources. Not covered: an undecodable object marks its resource failed
+  and the sweep does not retry it until the key is deleted or the hash
+  changes again; a stale Secret encryption key is not rewritten by the
+  sweep (`k8flare secrets-encrypt reencrypt` does that); objects written by
+  the old version during a gradual rollout after the sweep passed their key
+  stay at the old encoding until their next write or the next deploy; the
+  deploy trigger is exercised against node:sqlite, not workerd.
 - Bootstrap-token Secrets now authenticate API bearer requests and k3s agent
   joins through the upstream bootstrap authenticator. Unit tests cover validation
   and supervisor access; a Secret-backed join has not been exercised with a live

@@ -301,12 +301,24 @@ async function dispatch(batch: MessageBatch<QueueMessage>, env: Env, target: Tar
   batch.ackAll();
 }
 
+async function migrateStorage(env: Env): Promise<{ done: boolean; rewritten: number; pending: string[] } | null> {
+  const resp = await apiserverFetch(env, new Request("https://apiserver.internal/internal/storage-migrate", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${env.ADMIN_TOKEN}` },
+  }));
+  if (!resp.ok) return null;
+  return resp.json() as Promise<{ done: boolean; rewritten: number; pending: string[] }>;
+}
+
 async function consumeAddons(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
-  const addonsOK = await deployAddons(env);
-  const helmOK = await reconcileHelm(env);
+  const migrateOnly = batch.messages.every((m) => m.body.kind === "retry" && m.body.names?.includes("storage-migrate"));
+  const addonsOK = migrateOnly || (await deployAddons(env));
+  const helmOK = migrateOnly || (await reconcileHelm(env));
   const ok = addonsOK && helmOK;
-  console.log(`addons: ok=${ok} addons=${addonsOK} helm=${helmOK} msgs=${batch.messages.length}`);
-  await applySends(env, (await followUp(env, { target: "addons", ok })).sends);
+  const migration = await migrateStorage(env);
+  const pending = migration ? migration.pending.length : 1;
+  console.log(`addons: ok=${ok} addons=${addonsOK} helm=${helmOK} storage-migrate rewritten=${migration?.rewritten ?? 0} pending=${pending} msgs=${batch.messages.length}`);
+  await applySends(env, (await followUp(env, { target: "addons", ok, pending })).sends);
   batch.ackAll();
 }
 
