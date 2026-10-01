@@ -165,6 +165,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 		}
 		mux.ServeHTTP(w, r)
 	}), authn, authorizer, audits, cfg.MaxRequestsInflight, cfg.MaxMutatingRequestsInflight))
+	auditedRoot := withBypassAudit(root, audits)
 	var once sync.Once
 	var keyReady atomic.Bool
 	return recoverPanics(redirectBareProxy(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -174,7 +175,12 @@ func NewHandler(cfg Config) (http.Handler, error) {
 		if !keyReady.Load() && auth.InstallServiceAccountKey(r.Context(), client, []byte(cfg.AdminToken)) == nil {
 			keyReady.Store(true)
 		}
-		if edgehost.Proxy(w, r, client, cfg.Tunnel) {
+		if proxy := edgehost.ProxyHandler(r, client, cfg.Tunnel); proxy != nil {
+			withBypassAudit(proxy, audits).ServeHTTP(w, r)
+			return
+		}
+		if _, pattern := root.Handler(r); pattern != "/" {
+			auditedRoot.ServeHTTP(w, r)
 			return
 		}
 		root.ServeHTTP(w, r)
@@ -429,6 +435,7 @@ func forwardTo(client *http.Client, base, worker string) http.Handler {
 		}
 		w.Header().Del("Content-Encoding")
 		w.Header().Del("Content-Length")
+		logForwardedResponseStatus(r, resp)
 		w.WriteHeader(resp.StatusCode)
 		flusher, _ := w.(http.Flusher)
 		if flusher != nil {

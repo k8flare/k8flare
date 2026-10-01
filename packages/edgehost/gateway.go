@@ -99,44 +99,55 @@ func MatchHostname(host string, hostnames []string) bool {
 }
 
 func proxyGateway(w http.ResponseWriter, r *http.Request, store *kine.Client, tunnel *http.Client) bool {
+	handler := gatewayHandler(r, store, tunnel)
+	if handler == nil {
+		return false
+	}
+	handler.ServeHTTP(w, r)
+	return true
+}
+
+func gatewayHandler(r *http.Request, store *kine.Client, tunnel *http.Client) http.Handler {
 	host := RequestHost(r)
 	if !IsGatewayHost(host) {
-		return false
+		return nil
 	}
 	table := edge.loadTable(r.Context(), store)
 	if table == nil {
-		return false
+		return nil
 	}
 	rule := table.Lookup(host, r.Method, r.URL.Path, r.Header, r.URL.Query())
 	if rule == nil {
-		return false
+		return nil
 	}
-	if rule.Invalid != "" {
-		http.Error(w, rule.Invalid, http.StatusInternalServerError)
-		return true
-	}
-	out := applyFilters(rule, r)
-	if out.Redirect != "" {
-		w.Header().Set("Location", out.Redirect)
-		w.WriteHeader(out.Status)
-		return true
-	}
-	total := totalWeight(rule.Backends)
-	if total == 0 {
-		http.Error(w, "no valid backend", http.StatusInternalServerError)
-		return true
-	}
-	backend := pickBackend(rule.Backends, rand.Intn(total))
-	ref := Ref{Namespace: backend.Namespace, Name: backend.Name}
-	svc, ok := edge.service(r, store, ref)
-	if !ok {
-		http.Error(w, "service not found", http.StatusInternalServerError)
-		return true
-	}
-	sel := portSel{Number: backend.Port, Name: backend.PortName}
-	return dialService(w, r, store, tunnel, dialSpec{
-		Ref: ref, Ports: svc.Spec.Ports, Sel: sel,
-		Path: out.Path + queryOf(r.URL), Host: out.Host, ForwardedHost: host,
-		ResponseHeader: out.ResponseHeader,
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rule.Invalid != "" {
+			http.Error(w, rule.Invalid, http.StatusInternalServerError)
+			return
+		}
+		out := applyFilters(rule, r)
+		if out.Redirect != "" {
+			w.Header().Set("Location", out.Redirect)
+			w.WriteHeader(out.Status)
+			return
+		}
+		total := totalWeight(rule.Backends)
+		if total == 0 {
+			http.Error(w, "no valid backend", http.StatusInternalServerError)
+			return
+		}
+		backend := pickBackend(rule.Backends, rand.Intn(total))
+		ref := Ref{Namespace: backend.Namespace, Name: backend.Name}
+		svc, ok := edge.service(r, store, ref)
+		if !ok {
+			http.Error(w, "service not found", http.StatusInternalServerError)
+			return
+		}
+		sel := portSel{Number: backend.Port, Name: backend.PortName}
+		dialService(w, r, store, tunnel, dialSpec{
+			Ref: ref, Ports: svc.Spec.Ports, Sel: sel,
+			Path: out.Path + queryOf(r.URL), Host: out.Host, ForwardedHost: host,
+			ResponseHeader: out.ResponseHeader,
+		})
 	})
 }

@@ -5,17 +5,24 @@ package apiserver
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/serializer/protobuf"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
+	"k8s.io/client-go/kubernetes/scheme"
 )
 
 type lockedBuffer struct {
@@ -249,6 +256,9 @@ func TestAuditAuthenticationFailure(t *testing.T) {
 		t.Fatalf("want one event for the failed request, got %s", rig.out.String())
 	}
 	ev := events[0]
+	if ev.Annotations["k8flare.com/authentication-failure"] != "Authentication failed, attempted: bearer" {
+		t.Fatalf("missing authentication failure annotation: %s", rig.out.String())
+	}
 	if ev.ResponseStatus == nil || ev.ResponseStatus.Code != http.StatusUnauthorized || ev.ResponseStatus.Reason != "Unauthorized" {
 		t.Fatalf("event must record the 401: %s", rig.out.String())
 	}
@@ -280,6 +290,13 @@ func TestAuditForbiddenRequest(t *testing.T) {
 		t.Fatalf("want one event, got %s", rig.out.String())
 	}
 	ev := events[0]
+	var status metav1.Status
+	if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	if ev.ResponseStatus == nil || ev.ResponseStatus.Message != status.Message || ev.ResponseStatus.Reason != status.Reason || ev.ResponseStatus.Status != status.Status {
+		t.Fatalf("missing forbidden status: %s", rig.out.String())
+	}
 	if ev.User.Username != "readonly" || ev.ResponseStatus.Code != http.StatusForbidden {
 		t.Fatalf("event must record the user and the 403: %s", rig.out.String())
 	}
@@ -368,5 +385,132 @@ func TestAuditRejectsInvalidPolicy(t *testing.T) {
 				t.Fatal("expected an error")
 			}
 		})
+	}
+}
+
+func TestAuditForwardedErrorStatus(t *testing.T) {
+	body := `{"kind":"Status","apiVersion":"v1","status":"Failure","code":403,"reason":"Forbidden","message":"pods denied by admission"}`
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 403, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	rig := newAuditRig(t, "", forwardTo(client, "https://group.internal", ""))
+	rec := rig.do(http.MethodPost, "/api/v1/namespaces/default/pods", "admin-token", "")
+	events := rig.events(t)
+	if rec.Code != 403 || rec.Body.String() != body {
+		t.Fatalf("response changed: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(events) != 1 || events[0].ResponseStatus == nil {
+		t.Fatalf("missing event: %s", rig.out.String())
+	}
+	status := events[0].ResponseStatus
+	if status.Code != 403 || status.Status != "Failure" || status.Reason != "Forbidden" || status.Message != "pods denied by admission" {
+		t.Fatalf("incomplete response status: %+v", status)
+	}
+}
+
+func TestAuditBypassRoutes(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, target, body string
+		code                       int
+	}{
+		{"edge", http.MethodGet, "https://web--audit-test.k8flare.com/", "proxied", 200},
+		{"supervisor", http.MethodGet, "/ping", "pong", 200},
+		{"supervisor denied", http.MethodGet, "/v1-k3s/config", "not authorized\n", 401},
+		{"api fallback", http.MethodGet, "/api/v1/namespaces/default/pods", "", 401},
+		{"supervisor method fallback", http.MethodPost, "/ping", "", 401},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := &lockedBuffer{}
+			reader, writer, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			saved := os.Stdout
+			os.Stdout = writer
+			done := make(chan struct{})
+			go func() { _, _ = io.Copy(out, reader); close(done) }()
+			defer func() { os.Stdout = saved; writer.Close(); <-done; reader.Close() }()
+			store := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				values := map[string]string{
+					"/registry/services/audit-test/web":  `{"spec":{"type":"LoadBalancer","ports":[{"port":80}]}}`,
+					"/registry/endpoints/audit-test/web": `{"subsets":[{"addresses":[{"ip":"10.0.0.2","nodeName":"n1"}],"ports":[{"port":80}]}]}`,
+				}
+				code, body := 404, `{}`
+				if value, ok := values[r.URL.Query().Get("key")]; ok {
+					raw, _ := json.Marshal(map[string]any{"kv": map[string]any{"value": base64.StdEncoding.EncodeToString([]byte(value))}, "revision": 1})
+					code, body = 200, string(raw)
+				}
+				return &http.Response{StatusCode: code, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}, nil
+			})}
+			tunnel := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if r.Header.Get("Authorization") != "Bearer invalid-token" {
+					t.Error("edge credential changed")
+				}
+				return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("proxied"))}, nil
+			})}
+			handler, err := NewHandler(Config{Kine: store, Tunnel: tunnel, ClusterUID: "audit-test"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			rig := &auditRig{out: out, handler: handler}
+			rec := rig.do(tc.method, tc.target, "invalid-token", "")
+			writer.Close()
+			<-done
+			if rec.Code != tc.code || (tc.body != "" && rec.Body.String() != tc.body) {
+				t.Fatalf("bypass behavior changed: %d %s", rec.Code, rec.Body.String())
+			}
+			events := rig.events(t)
+			if len(events) != 1 || events[0].RequestURI != httptest.NewRequest(http.MethodGet, tc.target, nil).URL.RequestURI() || events[0].ResponseStatus == nil || events[0].ResponseStatus.Code != int32(tc.code) {
+				t.Fatalf("missing bypass audit: %s", out.String())
+			}
+			if events[0].User.Username != "" {
+				t.Fatalf("unverified identity: %+v", events[0].User)
+			}
+		})
+	}
+}
+
+func TestAuditForwardedProtobufStatus(t *testing.T) {
+	status := &metav1.Status{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Status"},
+		Status:   metav1.StatusFailure, Code: 403, Reason: metav1.StatusReasonForbidden, Message: "admission denied",
+		Details: &metav1.StatusDetails{Name: "p", Kind: "pods"},
+	}
+	body, err := runtime.Encode(protobuf.NewSerializer(scheme.Scheme, scheme.Scheme), status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 403, Header: http.Header{"Content-Type": {runtime.ContentTypeProtobuf}}, Body: io.NopCloser(bytes.NewReader(body))}, nil
+	})}
+	rig := newAuditRig(t, "", forwardTo(client, "https://group.internal", ""))
+	rec := rig.do(http.MethodPost, "/api/v1/namespaces/default/pods", "admin-token", "")
+	if !bytes.Equal(rec.Body.Bytes(), body) {
+		t.Fatal("protobuf response changed")
+	}
+	events := rig.events(t)
+	if len(events) != 1 || events[0].ResponseStatus == nil {
+		t.Fatalf("missing event: %s", rig.out.String())
+	}
+	got := events[0].ResponseStatus
+	if got.Message != status.Message || got.Reason != status.Reason || got.Status != status.Status || got.Details == nil || got.Details.Name != "p" {
+		t.Fatalf("incomplete protobuf status: %+v", got)
+	}
+}
+
+func TestAuditForwardedNonStatusResponse(t *testing.T) {
+	for _, body := range []string{"upstream unavailable", `{"kind":"Secret","apiVersion":"v1","stringData":{"password":"private"}}`, strings.Repeat("x", (1<<20)+1)} {
+		client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 502, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}, nil
+		})}
+		rig := newAuditRig(t, "", forwardTo(client, "https://group.internal", ""))
+		rec := rig.do(http.MethodGet, "/api/v1/namespaces/default/pods", "admin-token", "")
+		if rec.Body.String() != body {
+			t.Fatal("error response changed")
+		}
+		events := rig.events(t)
+		if len(events) != 1 || events[0].ResponseStatus.Code != 502 || events[0].ResponseStatus.Message != "" || strings.Contains(rig.out.String(), "private") {
+			t.Fatalf("unexpected audit: %s", rig.out.String())
+		}
 	}
 }

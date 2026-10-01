@@ -1,10 +1,12 @@
 package apiserver
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 
 	auth "github.com/k8flare/k8flare/packages/apiserver-auth"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 	"k8s.io/apiserver/pkg/audit"
 	"k8s.io/apiserver/pkg/audit/policy"
@@ -12,6 +14,7 @@ import (
 	"k8s.io/apiserver/pkg/authorization/authorizer"
 	"k8s.io/apiserver/pkg/endpoints/filters"
 	auditlog "k8s.io/apiserver/plugin/pkg/audit/log"
+	"k8s.io/client-go/kubernetes/scheme"
 )
 
 const DefaultAuditPolicy = `apiVersion: audit.k8s.io/v1
@@ -83,7 +86,43 @@ func withFrontFilters(inner http.Handler, authn authenticator.Request, authoriza
 	authorized := withInflightLimit(auth.WithAuthorization(inner, authorization), nonMutating, mutating)
 	audited := filters.WithAudit(auth.WithImpersonation(authorized), a.sink, a.policy, longRunningRequest)
 	authenticated := auth.WithAuthentication(audited, authn, func(failed http.Handler) http.Handler {
-		return filters.WithFailedAuthenticationAudit(failed, a.sink, a.policy)
+		preserveFailure := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ac := audit.AuditContextFrom(r.Context())
+			if ac.Enabled() {
+				if status := ac.GetEventResponseStatus(); status != nil {
+					audit.AddAuditAnnotation(r.Context(), "k8flare.com/authentication-failure", status.Message)
+				}
+			}
+			failed.ServeHTTP(w, r)
+		})
+		return filters.WithFailedAuthenticationAudit(preserveFailure, a.sink, a.policy)
 	})
 	return filters.WithAuditInit(auth.WithRequestInfo(authenticated))
+}
+
+func withBypassAudit(inner http.Handler, a *auditor) http.Handler {
+	return filters.WithAuditInit(auth.WithRequestInfo(filters.WithAudit(inner, a.sink, a.policy, longRunningRequest)))
+}
+
+func logForwardedResponseStatus(r *http.Request, resp *http.Response) {
+	ac := audit.AuditContextFrom(r.Context())
+	if !ac.Enabled() || resp.StatusCode < http.StatusBadRequest {
+		return
+	}
+	const maxStatusBytes = 1 << 20
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxStatusBytes+1))
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(body), resp.Body), resp.Body}
+	if err != nil || len(body) > maxStatusBytes {
+		return
+	}
+	obj, _, err := scheme.Codecs.UniversalDeserializer().Decode(body, nil, nil)
+	if err != nil {
+		return
+	}
+	if status, ok := obj.(*metav1.Status); ok {
+		ac.LogResponseObject(status, nil)
+	}
 }

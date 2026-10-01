@@ -230,14 +230,16 @@ it. Remove an entry when the behaviour exists and CI covers it.
 - Cluster store: compaction keeps 5 to 10 minutes of history with a
   100000-revision cap; the cluster-store tests run the Durable Object on
   node:sqlite, not workerd.
-- Audit log: the front records every request it routes as metadata
-  (`AUDIT_POLICY` overrides `DefaultAuditPolicy`), unit tests only. Not yet:
+- Audit log: the front records API, edge proxy and supervisor requests
+  under `AUDIT_POLICY` (default: `DefaultAuditPolicy`), unit tests only.
+  Edge and supervisor routes retain their existing authentication and
+  authorization. Failed API responses include Status fields; forwarded
+  JSON/protobuf Status bodies are decoded up to 1 MiB, with larger or
+  non-Status errors retaining only the HTTP code. Authentication failure
+  details survive in `k8flare.com/authentication-failure`. Not yet:
   - Request and RequestResponse levels behave as Metadata; bodies and
     upstream's `omitManagedFields` need the group workers, which run the
     REST handlers, to log objects.
-  - `edgehost.Proxy` and the supervisor routes bypass the filter chain.
-  - Error `Status` messages (403 reason) are not in the event, and the
-    401 "attempted: bearer" detail is overwritten by the 401 body.
   - Not run in a deployed Worker: `tail()` must relay the lines to
     Workers Logs.
 - Upgrades: storage migration follows upstream's default at 1.36 (the

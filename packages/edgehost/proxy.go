@@ -19,13 +19,24 @@ var hopByHop = map[string]bool{
 }
 
 func Proxy(w http.ResponseWriter, r *http.Request, store *kine.Client, tunnel *http.Client) bool {
-	if store == nil || tunnel == nil {
+	handler := ProxyHandler(r, store, tunnel)
+	if handler == nil {
 		return false
 	}
-	if ref, ok := ParseServiceRoute(r); ok {
-		return proxyLoadBalancer(w, r, store, tunnel, ref)
+	handler.ServeHTTP(w, r)
+	return true
+}
+
+func ProxyHandler(r *http.Request, store *kine.Client, tunnel *http.Client) http.Handler {
+	if store == nil || tunnel == nil {
+		return nil
 	}
-	return proxyGateway(w, r, store, tunnel)
+	if ref, ok := ParseServiceRoute(r); ok {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			proxyLoadBalancer(w, r, store, tunnel, ref)
+		})
+	}
+	return gatewayHandler(r, store, tunnel)
 }
 
 func proxyLoadBalancer(w http.ResponseWriter, r *http.Request, store *kine.Client, tunnel *http.Client, ref Ref) bool {
