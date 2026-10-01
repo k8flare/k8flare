@@ -51,6 +51,7 @@ const (
 	replicaRetry         = 5 * time.Second
 	syncLockWait         = 10 * time.Second
 	listBudget           = 30 * time.Second
+	listConcurrency      = 6
 	syncBusyRetry        = 2 * time.Second
 	yieldGrace           = time.Second
 	shutdownGrace        = 5 * time.Second
@@ -533,29 +534,9 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 		}
 		src = kept
 	}
-	loaded := make([][]runtime.Object, len(src))
-	revisions := make([]int64, len(src))
-	var listErr error
-	var wg sync.WaitGroup
-	var mu sync.Mutex
 	listCtx, listCancel := context.WithTimeout(ctx, listBudget)
 	defer listCancel()
-	for i, s := range src {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			objs, revision, err := list(listCtx, s.page)
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil {
-				listErr = err
-				return
-			}
-			loaded[i] = objs
-			revisions[i] = revision
-		}()
-	}
-	wg.Wait()
+	loaded, revisions, listErr := listSources(listCtx, src)
 	if listErr != nil {
 		return nil, listErr
 	}
@@ -682,6 +663,34 @@ func validatingAdmissionPolicySnapshot(factory informers.SharedInformerFactory) 
 	return vapSnapshot{factory.InformerFor(&admissionregistrationv1.ValidatingAdmissionPolicy{}, func(kubernetes.Interface, time.Duration) cache.SharedIndexInformer {
 		return newSnapshotInformer(&admissionregistrationv1.ValidatingAdmissionPolicy{})
 	})}
+}
+
+func listSources(ctx context.Context, src []source) ([][]runtime.Object, []int64, error) {
+	loaded := make([][]runtime.Object, len(src))
+	revisions := make([]int64, len(src))
+	var listErr error
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	slots := make(chan struct{}, listConcurrency)
+	for i, s := range src {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			objs, revision, err := list(ctx, s.page)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				listErr = err
+				return
+			}
+			loaded[i] = objs
+			revisions[i] = revision
+		}()
+	}
+	wg.Wait()
+	return loaded, revisions, listErr
 }
 
 func list(ctx context.Context, page pageFunc) ([]runtime.Object, int64, error) {
