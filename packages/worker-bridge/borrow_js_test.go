@@ -72,3 +72,76 @@ func TestFetchWithoutAWindowUsesTheRequestWhoseEventWokeIt(t *testing.T) {
 		t.Fatal("the fetch was handed to the newer request, which answered and was never pumped again")
 	}
 }
+
+func TestHandlerFetchWithoutAWindowStaysOnItsOwnRequestWhenANewerOneIsOpen(t *testing.T) {
+	type outcome struct {
+		body string
+		err  error
+	}
+	storing := make(chan struct{})
+	converted := make(chan outcome, 1)
+	arrived := make(chan struct{})
+	finishNewer := make(chan struct{})
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/create", func(w http.ResponseWriter, r *http.Request) {
+		store, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "https://cluster.internal/kv", nil)
+		if err != nil {
+			converted <- outcome{err: err}
+			return
+		}
+		close(storing)
+		stored, err := BindingTransport{Name: "STORE"}.RoundTrip(store)
+		if err != nil {
+			converted <- outcome{err: err}
+			return
+		}
+		stored.Body.Close()
+		convert, err := http.NewRequestWithContext(context.TODO(), http.MethodGet, "https://hooks.internal/crdconvert", nil)
+		if err != nil {
+			converted <- outcome{err: err}
+			return
+		}
+		resp, err := BindingTransport{Name: "HOOK"}.RoundTrip(convert)
+		if err != nil {
+			converted <- outcome{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		converted <- outcome{body: string(body), err: err}
+	})
+	mux.HandleFunc("/discovery", func(w http.ResponseWriter, r *http.Request) {
+		close(arrived)
+		<-finishNewer
+	})
+	binding := serveForTest(t, mux)
+	env := js.Global().Call("eval", `(() => {
+		let answer;
+		const answered = new Promise((resolve) => { answer = resolve; });
+		return {
+			STORE: {fetch: () => answered.then(() => new Response('stored'))},
+			HOOK: {fetch: async () => new Response('converted')},
+			answerStore: () => answer(),
+		};
+	})()`)
+
+	binding.Call("handleRequest", requestObject(1, "/create"), env, js.Undefined(), 1)
+	<-storing
+	time.Sleep(20 * time.Millisecond)
+	binding.Call("handleRequest", requestObject(2, "/discovery"), env, js.Undefined(), 2)
+	<-arrived
+
+	env.Call("answerStore")
+	time.Sleep(20 * time.Millisecond)
+	close(finishNewer)
+
+	select {
+	case got := <-converted:
+		if got.err != nil || got.body != "converted" {
+			t.Fatalf("fetch issued by the handler: body=%q err=%v", got.body, got.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the handler's fetch was handed to the newer request, which answered and was never pumped again")
+	}
+}
