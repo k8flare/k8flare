@@ -144,7 +144,26 @@ Decided on 2026-10-01, with the owner:
   `k8flare token create` are never exercised by a join in CI.
   `control-plane-worker/src/clientcert_test.ts` (the `tlsClientAuth`
   forwarding) is outside the `unit.yml` test glob.
-- README's one-line install omits `--disable-apiserver-lb`.
+- README's one-line install omits `--disable-apiserver-lb`, and no change
+  here can make a stock agent join without it. With the load balancer on,
+  the agent's supervisor URL is the balancer's own `https://127.0.0.1:6444`
+  from the first request (`k3s/pkg/agent/proxy/apiproxy.go`,
+  `NewSupervisorProxy`; `pkg/agent/run.go` validates the token through
+  `proxy.SupervisorURL()`), the balancer is a TCP passthrough to the server
+  address, and Go sends no SNI for an IP literal, so the edge sees a
+  ClientHello without SNI, a `Host: 127.0.0.1:6444`, and is asked for a
+  certificate valid for `127.0.0.1`. No server response arrives, so the
+  supervisor cannot switch it off; the flag has no environment variable
+  (`pkg/cli/cmds/agent.go`, `DisableAgentLBFlag`) and nothing in the
+  control config disables it. What is left is README's line gaining the
+  flag, a k3s change upstream, or an L4 front that is not checked. The
+  owner has to choose.
+  - `devtls` does not stand in for the edge here: it accepts a handshake
+    without SNI, always carries the `127.0.0.1` SAN and passes any Host, so
+    a flagless join passing in CI would prove nothing.
+  - Read, not run: `publicHost` (`apiserver-supervisor/supervisor.go`)
+    echoes the request Host, so through the balancer `/v1-k3s/apiservers`
+    would answer `127.0.0.1:6444`.
 - Unchecked against Cloudflare: BYO-CA mTLS is Enterprise only, a
   `user_defined` custom certificate from a private CA, and that
   `certRFC9440` is populated for BYO-CA certificates.
