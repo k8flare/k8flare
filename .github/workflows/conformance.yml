@@ -13,11 +13,31 @@ on:
 permissions:
   contents: read
 
+env:
+  CONFORMANCE_SHARDS: 8
+
 concurrency:
-  group: conformance
+  group: ${{ github.event_name == 'schedule' && 'conformance-nightly' || format('conformance-{0}', github.run_id) }}
   cancel-in-progress: false
 
 jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - id: plan
+        env:
+          FOCUS: ${{ inputs.focus }}
+        run: |
+          shards=$CONFORMANCE_SHARDS
+          if [ -n "$FOCUS" ]; then
+            shards=1
+          fi
+          echo "shards=$shards" >> "$GITHUB_OUTPUT"
+          echo "matrix=$(seq 0 $((shards - 1)) | paste -sd, - | sed 's/.*/[&]/')" >> "$GITHUB_OUTPUT"
+
   workers:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -90,9 +110,13 @@ jobs:
           if-no-files-found: error
 
   conformance:
-    needs: workers
+    needs: [plan, workers]
     runs-on: ubuntu-24.04
     timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - name: Free disk space
         run: |
@@ -152,28 +176,11 @@ jobs:
         env:
           SET: conformance
           FOCUS: ${{ inputs.focus }}
-
-      - name: Summarize the Conformance results
-        if: always()
-        run: |
-          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
-          import glob
-          import xml.etree.ElementTree as ET
-          for path in glob.glob(".build/e2e/report/conformance/junit.xml"):
-              root = ET.parse(path).getroot()
-              suites = [root] if root.tag == "testsuite" else list(root)
-              total = sum(int(s.get("tests", 0)) for s in suites)
-              failed = sum(int(s.get("failures", 0)) + int(s.get("errors", 0)) for s in suites)
-              skipped = sum(int(s.get("skipped", 0)) + int(s.get("disabled", 0)) for s in suites)
-              print("## Conformance")
-              print(f"passed {total - failed - skipped}, failed {failed}, skipped {skipped}, total {total}")
-              for case in root.iter("testcase"):
-                  if case.find("failure") is not None or case.find("error") is not None:
-                      print(f"- {case.get('name')}")
-          PY
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ needs.plan.outputs.shards }}
 
       - name: Save Go caches
-        if: always() && steps.build.outcome == 'success'
+        if: always() && steps.build.outcome == 'success' && matrix.shard == 0
         uses: actions/cache/save@v6
         with:
           path: |
@@ -185,9 +192,48 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: conformance-logs
+          name: conformance-logs-${{ matrix.shard }}
           path: |
             .build/ci/logs
             .build/e2e/report
           retention-days: 7
           if-no-files-found: ignore
+
+  summary:
+    needs: conformance
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: conformance-logs-*
+          path: shards
+
+      - name: Combine the shards' results
+        env:
+          CONFORMANCE_RESULT: ${{ needs.conformance.result }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import glob
+          import os
+          import xml.etree.ElementTree as ET
+          paths = sorted(glob.glob("shards/*/**/conformance/junit.xml", recursive=True))
+          total = failed = skipped = 0
+          failures = []
+          for path in paths:
+              root = ET.parse(path).getroot()
+              suites = [root] if root.tag == "testsuite" else list(root)
+              total += sum(int(s.get("tests", 0)) for s in suites)
+              failed += sum(int(s.get("failures", 0)) + int(s.get("errors", 0)) for s in suites)
+              skipped += sum(int(s.get("skipped", 0)) + int(s.get("disabled", 0)) for s in suites)
+              for case in root.iter("testcase"):
+                  if case.find("failure") is not None or case.find("error") is not None:
+                      failures.append(case.get("name"))
+          print("## Conformance")
+          print(f"{len(paths)} shard reports: passed {total - failed - skipped}, failed {failed}, skipped {skipped}, total {total}")
+          if os.environ["CONFORMANCE_RESULT"] != "success" and not failures:
+              print("a shard failed without a failed spec in its report")
+          for name in sorted(set(failures)):
+              print(f"- {name}")
+          PY
+          test "$CONFORMANCE_RESULT" = success
