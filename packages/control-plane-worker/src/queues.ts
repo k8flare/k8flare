@@ -5,7 +5,7 @@ import { clusterStub } from "./clusterid.ts";
 import { deployAddons, reconcileHelm } from "./addons.ts";
 import { wakePodKubelets } from "./podkubelet/wake.ts";
 
-type Target = "scheduler" | "leases" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "metrics" | "containers" | "attachdetach" | "addons";
+type Target = "scheduler" | "leases" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "metrics" | "containers" | "attachdetach" | "addons" | "hpa";
 
 type BucketChange = { kind?: undefined; action: string; bucket: string; object: { key: string } };
 
@@ -31,6 +31,7 @@ function targetOf(queueName: string): Target | null {
   if (queueName.endsWith("-containers")) return "containers";
   if (queueName.endsWith("-attachdetach")) return "attachdetach";
   if (queueName.endsWith("-addons")) return "addons";
+  if (queueName.endsWith("-hpa")) return "hpa";
   return null;
 }
 
@@ -189,6 +190,21 @@ async function consumeAttachDetach(batch: MessageBatch<QueueMessage>, env: Env):
   batch.ackAll();
 }
 
+async function consumeHPA(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
+  console.log(`hpa: consume msgs=${batch.messages.length}`);
+  try {
+    const synced = await env.HPA.sync();
+    if (synced) {
+      console.log(`hpa: ${Object.entries(synced.objects).map(([k, v]) => `${k}=${v}`).join(" ")} drained=${synced.drained}`);
+    } else {
+      console.log("hpa: sync returned null");
+    }
+  } catch (err) {
+    console.log(`hpa: sync threw ${err}`);
+  }
+  batch.ackAll();
+}
+
 async function consumeCRDs(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
   const resp = await env.CUSTOMRESOURCES.fetch("https://customresources.internal/apis");
   await resp.text();
@@ -299,6 +315,8 @@ async function dispatch(batch: MessageBatch<QueueMessage>, env: Env, target: Tar
       return consumeAttachDetach(batch, env);
     case "addons":
       return consumeAddons(batch, env);
+    case "hpa":
+      return consumeHPA(batch, env);
   }
   batch.ackAll();
 }
