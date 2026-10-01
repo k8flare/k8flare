@@ -194,6 +194,10 @@ func TestConcurrentWatchesFromEachRevisionSeeTheSameOrderAcrossRedials(t *testin
 	for _, w := range watches {
 		w.Stop()
 	}
+	for _, w := range watches {
+		for range w.ResultChan() {
+		}
+	}
 	if log.dials <= len(watches) {
 		t.Fatalf("no socket was closed and redialed: %d dials for %d watches", log.dials, len(watches))
 	}
