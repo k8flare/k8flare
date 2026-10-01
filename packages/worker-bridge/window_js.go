@@ -305,6 +305,13 @@ func preferred() *Window {
 			return windows[i]
 		}
 	}
+	if owner := turnOwner(); owner != nil {
+		for _, w := range windows {
+			if w == owner {
+				return owner
+			}
+		}
+	}
 	if len(windows) > 0 {
 		return windows[len(windows)-1]
 	}
