@@ -109,3 +109,37 @@ func (r rewrite) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	return r.next.RoundTrip(next)
 }
+
+func TestRemoteRunsTheValidatePhaseOncePerRequest(t *testing.T) {
+	var phases []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req Request
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("decode: %v", err)
+		}
+		phases = append(phases, req.Phase)
+		_ = json.NewEncoder(w).Encode(Response{Allowed: true})
+	}))
+	defer srv.Close()
+	client := srv.Client()
+	client.Transport = rewrite{next: client.Transport, host: srv.URL}
+	plugin := New(client)
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "default"}}
+	attrs := admission.NewAttributesRecord(pod, nil, schema.GroupVersionKind{Version: "v1", Kind: "Pod"}, "default", "p", schema.GroupVersionResource{Version: "v1", Resource: "pods"}, "", admission.Create, nil, false, &user.DefaultInfo{Name: "admin"})
+	if err := plugin.(admission.MutationInterface).Admit(context.Background(), attrs, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := plugin.(admission.ValidationInterface).Validate(context.Background(), attrs, nil); err != nil {
+		t.Fatal(err)
+	}
+	validates := 0
+	for _, phase := range phases {
+		if phase == "validate" {
+			validates++
+		}
+	}
+	if validates != 1 || phases[0] != "admit" || phases[len(phases)-1] != "validate" {
+		t.Fatalf("phases = %v, want admit first, validate last and only once", phases)
+	}
+}

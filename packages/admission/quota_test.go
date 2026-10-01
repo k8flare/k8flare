@@ -334,3 +334,88 @@ func TestResourceQuotaReservesUsageBeforeTheObjectIsStored(t *testing.T) {
 		t.Fatalf("message = %q", out.Message)
 	}
 }
+
+func quotaPodRequest(phase, name string, requests, limits map[string]any) admit.Request {
+	return admit.Request{
+		Phase:     phase,
+		Name:      name,
+		Namespace: "default",
+		Resource:  schema.GroupVersionResource{Version: "v1", Resource: "pods"},
+		Kind:      schema.GroupVersionKind{Version: "v1", Kind: "Pod"},
+		Operation: "CREATE",
+		Object: map[string]any{
+			"apiVersion": "v1", "kind": "Pod",
+			"metadata": map[string]any{"name": name, "namespace": "default"},
+			"spec": map[string]any{
+				"containers": []any{map[string]any{
+					"name": "pause", "image": "registry.k8s.io/pause:3.10",
+					"resources": map[string]any{"requests": requests, "limits": limits},
+				}},
+			},
+		},
+	}
+}
+
+func TestResourceQuotaReservesOnlyInTheValidatePhase(t *testing.T) {
+	hard := corev1.ResourceList{
+		corev1.ResourcePods:                                resource.MustParse("5"),
+		corev1.ResourceCPU:                                 resource.MustParse("1"),
+		corev1.ResourceMemory:                              resource.MustParse("500Mi"),
+		corev1.ResourceEphemeralStorage:                    resource.MustParse("50Gi"),
+		corev1.ResourceName("requests.example.com/dongle"): resource.MustParse("3"),
+		corev1.ResourceConfigMaps:                          resource.MustParse("2"),
+	}
+	store := &memStore{data: map[string][]byte{
+		"/registry/resourcequotas/default/test-quota": mustJSON(t, corev1.ResourceQuota{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-quota", Namespace: "default"},
+			Spec:       corev1.ResourceQuotaSpec{Hard: hard},
+			Status:     corev1.ResourceQuotaStatus{Hard: hard, Used: corev1.ResourceList{corev1.ResourceConfigMaps: resource.MustParse("1")}},
+		}),
+		"/registry/configmaps/default/kube-root-ca.crt": mustJSON(t, corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "kube-root-ca.crt", Namespace: "default"}}),
+	}}
+	kine := httptest.NewServer(store)
+	defer kine.Close()
+	h := NewHandler(Config{Kine: rewriteClient(kine)})
+	requests := map[string]any{"cpu": "500m", "memory": "252Mi", "ephemeral-storage": "30Gi", "example.com/dongle": "2"}
+	limits := map[string]any{"example.com/dongle": "2"}
+	usedPods := func() corev1.ResourceList {
+		var rq corev1.ResourceQuota
+		if err := json.Unmarshal(store.data["/registry/resourcequotas/default/test-quota"], &rq); err != nil {
+			t.Fatal(err)
+		}
+		return rq.Status.Used
+	}
+	if out := postAdmit(t, h, quotaPodRequest("check", "test-pod", requests, limits)); !out.Allowed {
+		t.Fatalf("admit-time check denied the pod: %+v", out)
+	}
+	if used := usedPods(); len(used) != 1 {
+		t.Fatalf("the admit-time check reserved usage: %v", used)
+	}
+	if out := postAdmit(t, h, quotaPodRequest("validate", "test-pod", requests, limits)); !out.Allowed {
+		t.Fatalf("the pod that fits the quota was denied: %+v", out)
+	}
+	used := usedPods()
+	for name, want := range map[corev1.ResourceName]string{corev1.ResourcePods: "1", corev1.ResourceCPU: "500m", corev1.ResourceMemory: "252Mi", corev1.ResourceEphemeralStorage: "30Gi", "requests.example.com/dongle": "2", corev1.ResourceConfigMaps: "1"} {
+		if got := used[name]; got.Cmp(resource.MustParse(want)) != 0 {
+			t.Fatalf("status.used[%s] = %s, want %s", name, got.String(), want)
+		}
+	}
+	configMap := admit.Request{
+		Phase:     "validate",
+		Name:      "test-configmap",
+		Namespace: "default",
+		Resource:  schema.GroupVersionResource{Version: "v1", Resource: "configmaps"},
+		Kind:      schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"},
+		Operation: "CREATE",
+		Object: map[string]any{
+			"apiVersion": "v1", "kind": "ConfigMap",
+			"metadata": map[string]any{"name": "test-configmap", "namespace": "default"},
+		},
+	}
+	if out := postAdmit(t, h, configMap); !out.Allowed {
+		t.Fatalf("the second configmap was denied next to kube-root-ca.crt: %+v", out)
+	}
+	if out := postAdmit(t, h, quotaPodRequest("validate", "fail-pod-for-extended-resource", requests, limits)); out.Allowed {
+		t.Fatal("a second pod asking for 2 more dongles passed a limit of 3")
+	}
+}

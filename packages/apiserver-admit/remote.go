@@ -71,7 +71,7 @@ func (r *remote) Admit(ctx context.Context, a admission.Attributes, o admission.
 	if o != nil && a.GetObject() != nil {
 		o.GetObjectDefaulter().Default(a.GetObject())
 	}
-	return r.call(ctx, a, "validate")
+	return r.call(ctx, a, "check")
 }
 
 func (r *remote) Validate(ctx context.Context, a admission.Attributes, _ admission.ObjectInterfaces) error {

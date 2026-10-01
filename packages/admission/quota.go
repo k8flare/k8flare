@@ -22,7 +22,7 @@ import (
 const quotaWriteRetries = 10
 
 func applyResourceQuota(ctx context.Context, s *store, req *admit.Request) error {
-	if req.Operation != "CREATE" && req.Operation != "UPDATE" {
+	if req.Phase != "validate" || (req.Operation != "CREATE" && req.Operation != "UPDATE") {
 		return nil
 	}
 	if req.Subresource != "" || req.Namespace == "" || req.Object == nil {
