@@ -194,3 +194,119 @@ func TestFetchEdgeCertificate(t *testing.T) {
 		t.Fatalf("%q %+v", gotAuth, gotBody)
 	}
 }
+
+func TestStrictEdgeHandshakeRequiresSNI(t *testing.T) {
+	serverAuth := newAuthority(t, "server-ca")
+	cert := serverAuth.issue(t, "edge", x509.ExtKeyUsageServerAuth, "127.0.0.1")
+
+	strictCfg := edgeTLSConfig([]tls.Certificate{cert}, nil, true)
+	nonStrictCfg := edgeTLSConfig([]tls.Certificate{cert}, nil, false)
+
+	runHandshake := func(srvTLS *tls.Config, serverName string) error {
+		srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		srv.TLS = srvTLS
+		srv.StartTLS()
+		defer srv.Close()
+
+		roots := x509.NewCertPool()
+		roots.AddCert(serverAuth.cert)
+		client := &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					RootCAs:            roots,
+					ServerName:         serverName,
+					InsecureSkipVerify: true,
+				},
+			},
+		}
+		_, err := client.Get(srv.URL)
+		return err
+	}
+
+	if err := runHandshake(nonStrictCfg, ""); err != nil {
+		t.Fatalf("non-strict refused handshake without SNI: %v", err)
+	}
+
+	if err := runHandshake(strictCfg, ""); err == nil {
+		t.Fatal("strict accepted handshake without SNI")
+	}
+
+	if err := runHandshake(strictCfg, "example.com"); err != nil {
+		t.Fatalf("strict refused handshake with SNI: %v", err)
+	}
+}
+
+func TestStrictEdgeHostFiltering(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	allowed := []string{"localhost", "host.orb.internal"}
+	strictHandler := filterHost(inner, allowed, true)
+	nonStrictHandler := filterHost(inner, allowed, false)
+
+	check := func(h http.Handler, hostHeader string) int {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "https://127.0.0.1:6443/livez", nil)
+		req.Host = hostHeader
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	if code := check(nonStrictHandler, "127.0.0.1:6443"); code != http.StatusOK {
+		t.Fatalf("non-strict returned %d for foreign Host, want 200", code)
+	}
+	if code := check(nonStrictHandler, "foreign.example.com"); code != http.StatusOK {
+		t.Fatalf("non-strict returned %d for foreign Host, want 200", code)
+	}
+
+	if code := check(strictHandler, "localhost:6443"); code != http.StatusOK {
+		t.Fatalf("strict returned %d for allowed Host localhost, want 200", code)
+	}
+	if code := check(strictHandler, "localhost"); code != http.StatusOK {
+		t.Fatalf("strict returned %d for allowed Host localhost without port, want 200", code)
+	}
+	if code := check(strictHandler, "host.orb.internal:6443"); code != http.StatusOK {
+		t.Fatalf("strict returned %d for allowed Host host.orb.internal, want 200", code)
+	}
+	if code := check(strictHandler, "127.0.0.1:6443"); code != http.StatusForbidden {
+		t.Fatalf("strict returned %d for foreign Host 127.0.0.1:6443, want 403", code)
+	}
+	if code := check(strictHandler, "foreign.example.com"); code != http.StatusForbidden {
+		t.Fatalf("strict returned %d for foreign Host, want 403", code)
+	}
+}
+
+func TestStrictEdgeCertHasNoIPSAN(t *testing.T) {
+	caCert, caKey, err := loadOrCreateCA(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hosts := []string{"localhost", "host.orb.internal"}
+
+	nonStrictCert, err := issueServerCert(caCert, caKey, hosts, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsedNonStrict, err := x509.ParseCertificate(nonStrictCert.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsedNonStrict.IPAddresses) == 0 {
+		t.Fatal("non-strict cert has no IP SANs")
+	}
+
+	strictCert, err := issueServerCert(caCert, caKey, hosts, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsedStrict, err := x509.ParseCertificate(strictCert.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsedStrict.IPAddresses) != 0 {
+		t.Fatalf("strict cert has IP SANs: %v", parsedStrict.IPAddresses)
+	}
+	if len(parsedStrict.DNSNames) != 2 {
+		t.Fatalf("strict cert DNS names: %v, want 2", parsedStrict.DNSNames)
+	}
+}

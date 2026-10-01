@@ -6,8 +6,10 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -94,3 +96,52 @@ func mtlsEdge(next http.Handler, clientCAs *x509.CertPool) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+func filterHost(next http.Handler, hosts []string, strict bool) http.Handler {
+	if !strict {
+		return next
+	}
+	allowed := make(map[string]bool)
+	for _, h := range hosts {
+		if h = strings.TrimSpace(h); h != "" {
+			if host, _, err := net.SplitHostPort(h); err == nil {
+				allowed[strings.ToLower(host)] = true
+			} else {
+				allowed[strings.ToLower(h)] = true
+			}
+		}
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		host = strings.ToLower(strings.Trim(host, "[]"))
+		if !allowed[host] {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func edgeTLSConfig(certs []tls.Certificate, clientCAs *x509.CertPool, strict bool) *tls.Config {
+	cfg := &tls.Config{
+		Certificates: certs,
+		MinVersion:   tls.VersionTLS12,
+	}
+	if clientCAs != nil {
+		cfg.ClientAuth = tls.RequestClientCert
+		cfg.ClientCAs = clientCAs
+	}
+	if strict {
+		cfg.GetConfigForClient = func(info *tls.ClientHelloInfo) (*tls.Config, error) {
+			if info.ServerName == "" {
+				return nil, errors.New("SNI is required")
+			}
+			return nil, nil
+		}
+	}
+	return cfg
+}
+

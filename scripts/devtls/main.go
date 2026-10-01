@@ -35,19 +35,21 @@ func main() {
 	dir := flag.String("dir", ".build/devtls", "where ca.crt, ca.key, server.crt, server.key live")
 	hosts := flag.String("hosts", "localhost,host.orb.internal", "extra DNS SANs (127.0.0.1 is always included)")
 	adminToken := flag.String("admin-token", "", "when set, serve a certificate issued by the cluster's server CA, verify client certificates against its client CA and pass them the way Cloudflare mTLS does")
+	strict := flag.Bool("strict-edge", false, "require SNI, enforce Host header in -hosts, and omit default IP SANs")
 	flag.Parse()
+	hostList := strings.Split(*hosts, ",")
 	if *adminToken != "" {
-		if err := runEdge(*listen, *upstream, *dir, *adminToken, strings.Split(*hosts, ",")); err != nil {
+		if err := runEdge(*listen, *upstream, *dir, *adminToken, hostList, *strict); err != nil {
 			log.Fatal(err)
 		}
 		return
 	}
-	if err := run(*listen, *upstream, *dir, strings.Split(*hosts, ",")); err != nil {
+	if err := run(*listen, *upstream, *dir, hostList, *strict); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(listen, upstream, dir string, hosts []string) error {
+func run(listen, upstream, dir string, hosts []string, strict bool) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -55,7 +57,7 @@ func run(listen, upstream, dir string, hosts []string) error {
 	if err != nil {
 		return err
 	}
-	serverCert, err := issueServerCert(caCert, caKey, hosts)
+	serverCert, err := issueServerCert(caCert, caKey, hosts, strict)
 	if err != nil {
 		return err
 	}
@@ -68,18 +70,22 @@ func run(listen, upstream, dir string, hosts []string) error {
 	proxy.FlushInterval = -1
 	srv := &http.Server{
 		Addr:      listen,
-		Handler:   accessLog(proxy, 5*time.Second),
-		TLSConfig: &tls.Config{Certificates: []tls.Certificate{serverCert}, MinVersion: tls.VersionTLS12},
+		Handler:   filterHost(accessLog(proxy, 5*time.Second), hosts, strict),
+		TLSConfig: edgeTLSConfig([]tls.Certificate{serverCert}, nil, strict),
 	}
 	log.Printf("devtls: https://%s -> %s (CA %s)", listen, upstream, filepath.Join(dir, "ca.crt"))
 	return srv.ListenAndServeTLS("", "")
 }
 
-func runEdge(listen, upstream, dir, adminToken string, hosts []string) error {
+func runEdge(listen, upstream, dir, adminToken string, hosts []string, strict bool) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	issued, err := awaitEdgeCertificate(upstream, adminToken, append([]string{"127.0.0.1", "::1"}, hosts...), 120)
+	certHosts := hosts
+	if !strict {
+		certHosts = append([]string{"127.0.0.1", "::1"}, hosts...)
+	}
+	issued, err := awaitEdgeCertificate(upstream, adminToken, certHosts, 120)
 	if err != nil {
 		return err
 	}
@@ -103,14 +109,9 @@ func runEdge(listen, upstream, dir, adminToken string, hosts []string) error {
 	proxy.Transport = retryDropped{base: http.DefaultTransport}
 	proxy.FlushInterval = -1
 	srv := &http.Server{
-		Addr:    listen,
-		Handler: mtlsEdge(accessLog(proxy, 5*time.Second), clientCAs),
-		TLSConfig: &tls.Config{
-			Certificates: []tls.Certificate{serverCert},
-			ClientAuth:   tls.RequestClientCert,
-			ClientCAs:    clientCAs,
-			MinVersion:   tls.VersionTLS12,
-		},
+		Addr:      listen,
+		Handler:   filterHost(mtlsEdge(accessLog(proxy, 5*time.Second), clientCAs), hosts, strict),
+		TLSConfig: edgeTLSConfig([]tls.Certificate{serverCert}, clientCAs, strict),
 	}
 	log.Printf("devtls: https://%s -> %s (server CA %s, client certificates verified against the cluster client CA)", listen, upstream, serverCAPath)
 	return srv.ListenAndServeTLS("", "")
@@ -163,7 +164,7 @@ func loadOrCreateCA(dir string) (*x509.Certificate, *ecdsa.PrivateKey, error) {
 	return cert, key, err
 }
 
-func issueServerCert(ca *x509.Certificate, caKey *ecdsa.PrivateKey, hosts []string) (tls.Certificate, error) {
+func issueServerCert(ca *x509.Certificate, caKey *ecdsa.PrivateKey, hosts []string, strict bool) (tls.Certificate, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return tls.Certificate{}, err
@@ -175,12 +176,16 @@ func issueServerCert(ca *x509.Certificate, caKey *ecdsa.PrivateKey, hosts []stri
 		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+	}
+	if !strict {
+		tmpl.IPAddresses = []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")}
 	}
 	for _, h := range hosts {
 		if h = strings.TrimSpace(h); h != "" {
 			if ip := net.ParseIP(h); ip != nil {
-				tmpl.IPAddresses = append(tmpl.IPAddresses, ip)
+				if !strict {
+					tmpl.IPAddresses = append(tmpl.IPAddresses, ip)
+				}
 			} else {
 				tmpl.DNSNames = append(tmpl.DNSNames, h)
 			}
