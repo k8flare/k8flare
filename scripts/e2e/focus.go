@@ -19,6 +19,8 @@ var sets = map[string][]string{
 		`[sig-api-machinery] Garbage collector should orphan RS created by deployment when deleteOptions.PropagationPolicy is Orphan`,
 		`[sig-api-machinery] Garbage collector should not delete dependents that have both valid owner and owner that's waiting for dependents to be deleted`,
 		`[sig-api-machinery] Garbage collector should not be blocked by dependency circle`,
+		`[sig-network] Netpol NetworkPolicy between server and client should support a 'default-deny-ingress' policy`,
+		`[sig-network] Netpol NetworkPolicy between server and client should enforce policy to allow traffic from pods within server namespace based on PodSelector`,
 	},
 	"advisory": {
 		`[sig-scheduling] LimitRange should create a LimitRange with defaults and ensure pod has those defaults applied.`,
