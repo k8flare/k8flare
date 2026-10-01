@@ -200,6 +200,87 @@ Remaining after this step: ClusterIP / Pod IP routing between Pod DOs,
 environment variables, a reconciler over the ledger for leaked
 containers, README.
 
+## Progress: steps 5 and 6 (routing and kubectl streams, 2026-10-01)
+
+Code: `podkubelet/cluster.ts` (pure resolution), `protocol.ts` (pure
+framing), `dial.ts`, `streams.ts`, the RPC methods on `PodKubelet`;
+tests `cluster.test.ts`, `protocol.test.ts`, `streams.test.ts` and the
+DO cases in `kubelet.test.ts`. Nothing ran on the platform: the DO is
+tested with the container faked and the front with the DO faked.
+
+- **Egress between Pods.** `routeEgress` asks the DO's `clusterTarget`
+  before passing through. `resolveClusterTarget` takes the intercepted
+  host: an IPv4 literal is looked up in the `PodLedger` (a `cloudflare`
+  Pod IP) and then as `spec.clusterIP` through the Service field
+  selector (`pkg/registry/core/service/strategy.go` exposes it); a name
+  is read as `svc`, `svc.ns`, `svc.ns.svc` or `svc.ns.svc.cluster.local`
+  (bare names use the calling Pod's namespace; every name reaches the
+  interceptor, FINDINGS #15). The Service port is matched by number, the
+  EndpointSlices labelled `kubernetes.io/service-name` give the target
+  port by port name, and a ready endpoint with `nodeName: cloudflare` is
+  forwarded to `podKubeletStub(uid).ingress(port, request)`, which calls
+  `getTcpPort(port).fetch`; a Pod reaching its own Service is served
+  locally rather than through a stub to itself. Headless Services match
+  the requested port against the endpoint ports directly. Ready
+  endpoints on other nodes answer 502 naming those nodes; no ready
+  endpoint is 503; ExternalName is 502; a host that is neither a Pod IP
+  nor a Service passes through to `fetch`. Cost: a `svc.ns`-shaped
+  internet host (two labels) costs one Service GET per request.
+- **Ingress to a Pod.** `/dial/cloudflare/<ip>/<port>/<path>` on the
+  `NodeTunnels` entrypoint, which is where `pods/proxy`
+  (`apiserver-core/proxydial.go`) and the edge (`edgehost/proxy.go`)
+  send Service and Pod traffic, looks the IP up in the ledger and calls
+  `ingress`. `X-Dial-TLS` is refused with 502 (no TLS into the
+  container through `getTcpPort`). So LoadBalancer and Ingress to a
+  `cloudflare` Pod go through the same seam, unexercised (step 7's
+  check still stands).
+- **kubectl streams.** `LocateStream` already names the node, so the
+  front hands `node: cloudflare` to `servePodStream` instead of the
+  tunnel. The front terminates the websocket and speaks the channel
+  protocol itself, as `apiserver/pkg/util/proxy/websocket.go` does:
+  channels 0-4, an empty first frame on stdout/stderr/error, `[255, ch]`
+  half-closes stdin under `v5.channel.k8s.io`, resize frames carry
+  client-go `TerminalSize` JSON, and the exit is a `metav1.Status` on
+  channel 3 (`NonZeroExitCode`, cause `ExitCode`, the translator's
+  message text). Binary `""`/`channel.k8s.io`/`v4` and the base64
+  variants are also accepted; anything else closes with 1002.
+  - `exec`: `PodKubelet.exec(argv, {stdin, stdout, stderr, tty, cols,
+    rows, control})` returns `{stdout, stderr, status}` streams; `stdin`
+    and `control` are streams the front writes into. The `control`
+    stream carries resize JSON and its end means the client went away,
+    at which point a still-running process gets SIGTERM.
+  - `port-forward`: the kubelet's websocket protocol
+    (`cri-streaming/pkg/streaming/portforward/websocket.go`): a
+    data/error channel pair per `port`, both opened with the
+    little-endian port; `PodKubelet.connectPort(port, input)` pipes the
+    client bytes into `getTcpPort(port).connect()` and returns the
+    socket's readable. kubectl itself speaks SPDY or the
+    `SPDY/3.1+portforward.k8s.io` tunnel, neither of which is served
+    here (readme-gaps: SPDY cannot be served), so this path serves
+    websocket clients only.
+  - `attach`: a Status on the error channel saying attach is not
+    available (the container's stdio belongs to the platform) and a
+    clean close, rather than an exec in disguise.
+  - `logs`: `/node/cloudflare/containerLogs/...` returns 400 with the
+    reason, which `kubectl logs` prints as `Error from server
+    (BadRequest)`; the websocket log path closes with 1008 and the same
+    text. FINDINGS #19: stdout is not reachable from the DO and where
+    it lands is not established.
+- **Unverified on the platform:** `Request`, `ReadableStream` and
+  `WritableStream` crossing Durable Object RPC (`ingress`, `exec`,
+  `connectPort`) and the lifetime of the socket behind the returned
+  readable; the field selector `spec.clusterIP` against this apiserver;
+  that a stub to the Pod's own DO is still the interceptor's Fetcher
+  (step 3's open question). An e2e (`cloudflare` Pod wgets a Service
+  backed by another `cloudflare` Pod, `kubectl exec` through the
+  deployment) is the check for both steps and needs a real account.
+
+Remaining: logs (needs a platform answer for container stdout), attach,
+SPDY-tunnelled port-forward for kubectl, endpoints on real nodes
+(a tunnel hop from the interceptor), Service environment variables, a
+reconciler over the ledger for leaked containers, step 7's e2e through
+the edge hostname, README, NodeVM removal (step 8).
+
 ## Steps and how each is checked
 
 | # | Step | Check |

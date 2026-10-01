@@ -8,6 +8,8 @@ import { clusterStub, tunnelName } from "./clusterid.ts";
 import { Metrics } from "./metrics.ts";
 import { bytesOf, sendBinary, sendLog } from "./podstream.ts";
 import type { NodeTunnel } from "@k8flare/node-tunnel";
+import { servePodStream } from "./podkubelet/streams.ts";
+import { VIRTUAL_NODE } from "./podkubelet/spec.ts";
 
 export { Cluster } from "@k8flare/cluster-store";
 export { NodeTunnel } from "@k8flare/node-tunnel";
@@ -144,6 +146,7 @@ export default {
       if (!located.ok) return located;
       const loc = (await located.json()) as { node?: string; url?: string; protocol?: string; transport?: string };
       console.log(`stream path=${path}`);
+      if (loc.node === VIRTUAL_NODE && loc.url) return servePodStream(env, ctx, { url: loc.url, protocol: loc.protocol });
       const pair = new WebSocketPair();
       const server = pair[1];
       server.accept();
