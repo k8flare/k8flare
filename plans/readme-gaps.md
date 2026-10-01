@@ -60,12 +60,18 @@ Decided on 2026-10-01, with the owner:
 - Controllers, against `cmd/kube-controller-manager/app/controller_descriptor.go`:
   - serviceaccount-token-controller is absent: nothing fills a
     `kubernetes.io/service-account-token` Secret.
-  - service-cidr and validatingadmissionpolicy-status are linked
-    (`workloads/shards/all`, `shards/vap`) but never run: `WORKLOAD_PREFIXES`
-    (`cluster-store/src/cluster.ts`) has no `/registry/servicecidrs/`,
-    `/registry/ipaddresses/` or `/registry/validatingadmissionpolicies/`.
-    device-taint-eviction runs on pod writes only, not on ResourceSlice or
-    DeviceClass writes.
+  - validatingadmissionpolicy-status is linked (`workloads/shards/vap`) and
+    must not be run yet: an admission policy write was routed to it in
+    252dd21 and the pass panicked with a nil dereference where it lists
+    ValidatingAdmissionPolicies (`workloads/workloads.go`, the
+    `validatingadmissionpolicies` source), stalling the workloads queue
+    about 230s per panic (run 36885722274: 439 of 446). The write no longer
+    starts a pass. What is left: find why that list call has no client in
+    the `workloads-vap` worker, and decide what happens to the inline type
+    check (`apiserver-admissionregistration/hooks.go`) once upstream's
+    controller writes the same status field. service-cidr now runs on
+    ServiceCIDR writes; device-taint-eviction on pod, ResourceClaim and
+    ResourceSlice writes.
   - The HPA controller is not loaded in CI: its queue consumer is in
     `wrangler.hpa.jsonc` and CI starts `wrangler.dev.jsonc` only.
   - Node health deletes a pod that tolerates the taint without
