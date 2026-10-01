@@ -211,6 +211,13 @@ func NewStorage(client *Client, codec runtime.Codec, newFunc func() runtime.Obje
 	return &Storage{client: client, codec: codec, newFunc: newFunc}
 }
 
+func (s *Storage) Client() *Client {
+	if s == nil {
+		return nil
+	}
+	return s.client
+}
+
 func (s *Storage) Versioner() storage.Versioner { return versioner }
 
 func (s *Storage) decodeInto(data []byte, rev int64, into runtime.Object) error {
