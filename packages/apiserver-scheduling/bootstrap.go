@@ -28,21 +28,32 @@ func bootstrapPriorityClasses(store *genericregistry.Store, next http.Handler) h
 		return next
 	}
 	var once sync.Once
+	hash := schedulingBootstrapHash()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		once.Do(func() {
-			ensureSystemPriorityClasses(r.Context(), store)
+			ctx := context.WithoutCancel(r.Context())
+			_ = registry.RunBootstrap(ctx, store, "scheduling", hash, func(ctx context.Context) error {
+				return ensureSystemPriorityClasses(ctx, store)
+			})
 		})
 		next.ServeHTTP(w, r)
 	})
 }
 
-func ensureSystemPriorityClasses(ctx context.Context, store *genericregistry.Store) {
-	for _, pc := range schedhelpers.SystemPriorityClasses() {
-		ensurePriorityClass(ctx, store, pc)
-	}
+func schedulingBootstrapHash() string {
+	return registry.HashObjects(schedhelpers.SystemPriorityClasses())
 }
 
-func ensurePriorityClass(ctx context.Context, store *genericregistry.Store, pc *schedulingv1.PriorityClass) {
+func ensureSystemPriorityClasses(ctx context.Context, store *genericregistry.Store) error {
+	for _, pc := range schedhelpers.SystemPriorityClasses() {
+		if err := ensurePriorityClass(ctx, store, pc); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensurePriorityClass(ctx context.Context, store *genericregistry.Store, pc *schedulingv1.PriorityClass) error {
 	ctx = genericapirequest.WithNamespace(ctx, metav1.NamespaceNone)
 	ctx = genericapirequest.WithRequestInfo(ctx, &genericapirequest.RequestInfo{
 		IsResourceRequest: true,
@@ -54,5 +65,7 @@ func ensurePriorityClass(ctx context.Context, store *genericregistry.Store, pc *
 	})
 	if _, err := store.Create(ctx, pc, rest.ValidateAllObjectFunc, &metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 		println("apiserver: bootstrap priorityclass:", pc.Name, err.Error())
+		return err
 	}
+	return nil
 }

@@ -55,20 +55,31 @@ func markLocal(obj runtime.Object) {
 
 func bootstrapLocalAPIServices(store *genericregistry.Store) func(http.Handler) http.Handler {
 	var once sync.Once
+	hash := localAPIServicesHash()
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			once.Do(func() {
-				ctx := genericapirequest.WithNamespace(r.Context(), metav1.NamespaceNone)
-				for _, sgv := range registry.Served {
-					createLocal(ctx, store, sgv.GV.Group, sgv.GV.Version)
-				}
+				ctx := context.WithoutCancel(r.Context())
+				_ = registry.RunBootstrap(ctx, store, "apiregistration", hash, func(ctx context.Context) error {
+					reqCtx := genericapirequest.WithNamespace(ctx, metav1.NamespaceNone)
+					for _, sgv := range registry.Served {
+						if err := createLocal(reqCtx, store, sgv.GV.Group, sgv.GV.Version); err != nil {
+							return err
+						}
+					}
+					return nil
+				})
 			})
 			next.ServeHTTP(w, r)
 		})
 	}
 }
 
-func createLocal(ctx context.Context, store *genericregistry.Store, group, version string) {
+func localAPIServicesHash() string {
+	return registry.HashObjects(registry.Served)
+}
+
+func createLocal(ctx context.Context, store *genericregistry.Store, group, version string) error {
 	name := version + "." + group
 	obj := &apiregistrationv1.APIService{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
@@ -82,5 +93,7 @@ func createLocal(ctx context.Context, store *genericregistry.Store, group, versi
 	helper.SetAPIServiceCondition(obj, helper.NewLocalAvailableAPIServiceCondition())
 	if _, err := store.Create(ctx, obj, rest.ValidateAllObjectFunc, &metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 		println("apiserver: bootstrap", name, ":", err.Error())
+		return err
 	}
+	return nil
 }

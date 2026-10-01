@@ -31,15 +31,23 @@ func bootstrapServiceCIDR(store *genericregistry.Store, next http.Handler) http.
 		return next
 	}
 	var once sync.Once
+	hash := networkingBootstrapHash()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		once.Do(func() {
-			ensureDefaultServiceCIDR(r.Context(), store)
+			ctx := context.WithoutCancel(r.Context())
+			_ = registry.RunBootstrap(ctx, store, "networking", hash, func(ctx context.Context) error {
+				return ensureDefaultServiceCIDR(ctx, store)
+			})
 		})
 		next.ServeHTTP(w, r)
 	})
 }
 
-func ensureDefaultServiceCIDR(ctx context.Context, store *genericregistry.Store) {
+func networkingBootstrapHash() string {
+	return registry.HashObjects(defaultServiceCIDRName, supervisor.ServiceCIDR.String())
+}
+
+func ensureDefaultServiceCIDR(ctx context.Context, store *genericregistry.Store) error {
 	ctx = genericapirequest.WithNamespace(ctx, metav1.NamespaceNone)
 	ctx = genericapirequest.WithRequestInfo(ctx, &genericapirequest.RequestInfo{
 		IsResourceRequest: true,
@@ -51,7 +59,9 @@ func ensureDefaultServiceCIDR(ctx context.Context, store *genericregistry.Store)
 	})
 	if _, err := store.Create(ctx, defaultServiceCIDR(), rest.ValidateAllObjectFunc, &metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 		println("apiserver: bootstrap servicecidr:", err.Error())
+		return err
 	}
+	return nil
 }
 
 func defaultServiceCIDR() runtime.Object {
