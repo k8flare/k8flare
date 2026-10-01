@@ -522,11 +522,23 @@ func statefulSetGap(ctx context.Context, client kubernetes.Interface) (bool, err
 		}
 		want := *set.Spec.Replicas
 		status := set.Status
-		if status.ObservedGeneration < set.Generation || status.Replicas != want || status.ReadyReplicas != want || status.CurrentRevision != status.UpdateRevision {
+		if status.ObservedGeneration < set.Generation || status.Replicas != want || status.ReadyReplicas != want || status.UpdatedReplicas < rollingUpdateTarget(set) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+func rollingUpdateTarget(set *appsv1.StatefulSet) int32 {
+	strategy := set.Spec.UpdateStrategy
+	if strategy.Type == appsv1.OnDeleteStatefulSetStrategyType {
+		return 0
+	}
+	target := *set.Spec.Replicas
+	if strategy.RollingUpdate != nil && strategy.RollingUpdate.Partition != nil {
+		target -= *strategy.RollingUpdate.Partition
+	}
+	return target
 }
 
 func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingCA, servingCA []byte, changed []string, drainFor, grace time.Duration, deadline time.Time) (*Result, error) {

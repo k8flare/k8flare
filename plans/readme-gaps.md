@@ -503,6 +503,18 @@ Decided on 2026-10-01, with the owner:
     Job, finished or not, keeps the pass running; `replicaGap` books 5s
     for as long as a ReplicaSet or Deployment has `status.replicas` short
     of `spec.replicas`; metrics is sent every 15s.
+  - Review of the bootstrap marker (Codex, 2026-10-02) found two gaps that
+    are older than the marker and are still open. A bootstrap only
+    creates: an object that exists keeps its old content when a release
+    changes the default, and the new hash is recorded all the same
+    (upstream reconciles the RBAC defaults at every start,
+    `rbac/bootstrap-roles`). And a bootstrap that fails part-way is not
+    tried again in that isolate, since it runs under a `sync.Once` that
+    drops the error; the next isolate tries again.
+  - The switch that keeps EndpointSlice events from booking a pass is one
+    counter for the whole pass, not per goroutine. On js/wasm handlers run
+    without yielding, so nothing else can book while it is set; in host
+    tests another controller's `AddAfter` in that window would be dropped.
   - The live tests failed in CI after the list bound (8 and 11 of 16,
     `Network connection lost` on an early write). Six lists at a time load
     the group workers one after another, so the first pass ends about 9s
