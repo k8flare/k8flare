@@ -1048,3 +1048,25 @@ it. Remove an entry when the behaviour exists and CI covers it.
   - NodePort session affinity: the CI network, fixed in `e2e.sh` (above).
   - Not re-run; the `[Serial]` pod spreading specs did not run in this
     run's finished shards.
+- Run 36814963545 (7f9b369): the quota reservation above regressed three
+  ResourceQuota specs (a configMap next to `kube-root-ca.crt` denied with
+  `used: configmaps=2` of 2, a pod denied with `used` equal to its own
+  requests, the RC spec's second pod denied so `ReplicaFailure` never
+  cleared). Cause: the remote admission plugin's `Admit` ran the
+  validating chain as a second `validate` phase after mutation, and the
+  apiserver then called `Validate`, so every write reached the quota
+  check twice and the second call saw the first's reservation on top of
+  the stored objects. The Admit-time pass is now the `check` phase, which
+  the quota skips; only the validate phase reserves
+  (`TestRemoteRunsTheValidatePhaseOncePerRequest`,
+  `TestResourceQuotaReservesOnlyInTheValidatePhase`). Usage is released
+  the upstream way: the resourcequota controller recomputes `status.used`
+  on the pass a pod delete or a quota write triggers, and the admission's
+  live list is only a floor, so a stale-high `status.used` lasts until
+  that pass. Also in that run: CustomResourceFieldSelectors missed the
+  DELETED event for a v2 custom resource updated out of `host=host1`
+  while the DeleteCollection'd one was delivered; `watchEvent` in
+  `apiserver-kine` does turn a modification whose previous value matched
+  into DELETED and the store sends `prev` on modifications, so the gap is
+  above that (the CR predicate against the previous object, or a cache
+  layer) and needs the shard's dev.log; not fixed.
