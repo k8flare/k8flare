@@ -982,6 +982,14 @@ it. Remove an entry when the behaviour exists and CI covers it.
     re-posting itself forever, and whether the 60 MB `admission` worker
     that had just been compiled is what it sweeps. One dump; the sampler
     takes only one per quiet period.
+    A second dump (run 36811705086, commit 00038bf, shard 0, mid-run at
+    03:49 rather than at startup) shows the same loop one frame up:
+    `DefaultForegroundTaskRunner::PopTaskFromQueue` <
+    `DefaultPlatform::PumpMessageLoop` < the `Deferred` in
+    `IoContext::runImpl`. Both are workerd draining V8's foreground task
+    queue after a continuation, so the likelier reading is a task that
+    re-posts itself, not one sweep that never ends. The shard sat until it
+    was cancelled; a Conformance shard is now capped at 90 minutes.
   - Shard 6 (`no workerd port answers /livez` after 8 min): `dev.log`
     stopped at 02:54:14.340, 17 s after `Ready`, with the addons pass
     (`addons: ok=false ... helm=true`), `/internal/loadbalancer/provision`
