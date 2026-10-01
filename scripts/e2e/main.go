@@ -53,14 +53,19 @@ func main() {
 	check(err)
 
 	for _, s := range setsToRun(*set) {
-		regex := *focus
-		if regex == "" {
-			regex = focusRegex(shardOf(sets[s], *shard, *shards))
+		var focuses []string
+		switch {
+		case *focus != "":
+			focuses = []string{*focus}
+		case s == "conformance" && *shards > 1:
+			focuses = conformanceShardFocuses(e2eTest, kubeconfig, root, *shard, *shards, nodes)
+		default:
+			focuses = []string{focusRegex(shardOf(sets[s], *shard, *shards))}
 		}
 		reportDir := filepath.Join(root, ".build/e2e/report", s)
 		check(os.MkdirAll(reportDir, 0o755))
 		fmt.Printf("=== e2e set %q nodes=%d ===\n", s, nodes)
-		err := runE2E(e2eTest, kubeconfig, regex, skips[s], reportDir, *procs, nodes)
+		err := runE2E(e2eTest, kubeconfig, focuses, skips[s], reportDir, *procs, nodes)
 		if err != nil && (s == "required" || s == *set) {
 			log.Fatalf("%s e2e set failed: %v", s, err)
 		}
@@ -202,7 +207,7 @@ func extractE2ETest(tarGzPath, dir string) error {
 	return nil
 }
 
-func runE2E(e2eTest, kubeconfig, focus, skip, reportDir string, procs, nodes int) error {
+func runE2E(e2eTest, kubeconfig string, focuses []string, skip, reportDir string, procs, nodes int) error {
 	absKubeconfig, err := filepath.Abs(kubeconfig)
 	if err != nil {
 		return err
@@ -215,8 +220,10 @@ func runE2E(e2eTest, kubeconfig, focus, skip, reportDir string, procs, nodes int
 		"--no-color",
 		"--timeout=6h",
 		fmt.Sprintf("--procs=%d", procs),
-		"--focus=" + focus,
 		"--junit-report=" + filepath.Join(absReport, "junit.xml"),
+	}
+	for _, focus := range focuses {
+		args = append(args, "--focus="+focus)
 	}
 	if skip != "" {
 		args = append(args, "--skip="+skip)
@@ -236,6 +243,22 @@ func runE2E(e2eTest, kubeconfig, focus, skip, reportDir string, procs, nodes int
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func conformanceShardFocuses(e2eTest, kubeconfig, root string, shard, shards, nodes int) []string {
+	listDir := filepath.Join(root, ".build/e2e/report/conformance-list")
+	check(os.MkdirAll(listDir, 0o755))
+	names, err := listSelectedSpecs(e2eTest, kubeconfig, focusRegex(sets["conformance"]), skips["conformance"], listDir, nodes)
+	check(err)
+	if len(names) == 0 {
+		log.Fatal("the conformance dry run selected no specs")
+	}
+	mine := shardSpecNames(names, shard, shards)
+	fmt.Printf("conformance shard %d/%d runs %d of %d specs\n", shard, shards, len(mine), len(names))
+	if len(mine) == 0 {
+		log.Fatalf("conformance shard %d/%d has no specs", shard, shards)
+	}
+	return anchoredFocusFlags(mine)
 }
 
 func check(err error) {
