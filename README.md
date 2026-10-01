@@ -79,7 +79,7 @@ root, one flat `packages/` directory, tooling under `scripts/`.
 A node joins with the stock k3s binary:
 
 ```
-curl -sfL https://get.k3s.io | K3S_URL=https://<cluster-host> K3S_TOKEN=<K10 token> sh -s - agent
+curl -sfL https://get.k3s.io | K3S_URL=https://<cluster-host> K3S_TOKEN=<K10 token> sh -s - agent --disable-apiserver-lb
 ```
 
 Cloudflare presents a serving certificate issued by the cluster's server
