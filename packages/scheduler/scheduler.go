@@ -26,6 +26,7 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler"
 	schedconfig "k8s.io/kubernetes/pkg/scheduler/apis/config"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config/latest"
+	"k8s.io/kubernetes/pkg/scheduler/backend/queue"
 )
 
 const (
@@ -92,21 +93,11 @@ func QueueAttempt(msgs []QueueMessage) (int, bool) {
 	return attempt, true
 }
 
-func RetryDelaySeconds(attempt, unschedulable int) int {
+func RetryDelaySeconds(unschedulable int) int {
 	if unschedulable == 0 {
 		return 0
 	}
-	if attempt < 0 {
-		attempt = 0
-	}
-	if attempt >= 6 {
-		return 60
-	}
-	delay := 1 << attempt
-	if delay > 60 {
-		return 60
-	}
-	return delay
+	return int(queue.DefaultPodMaxInUnschedulablePodsDuration / time.Second)
 }
 
 func Schedule(ctx context.Context, client kubernetes.Interface) (*Result, error) {
