@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	apinet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/user"
 	bootstrapapi "k8s.io/cluster-bootstrap/token/api"
@@ -41,26 +42,29 @@ const nodeProxyUser = "system:serviceaccount:kube-system:k8flare-node-proxy"
 // from /v1-k3s/config, with the same field names and types so the JSON
 // matches. The real type does not build for js (it imports kine's sqlite).
 type k3sControlConfig struct {
-	HTTPSPort          int
-	SupervisorPort     int
-	ClusterIPRange     *net.IPNet
-	ServiceIPRange     *net.IPNet
-	ClusterIPRanges    []*net.IPNet
-	ServiceIPRanges    []*net.IPNet
-	ClusterDNS         net.IP
-	ClusterDNSs        []net.IP
-	ClusterDomain      string
-	FlannelBackend     string
-	DisableKubeProxy   bool
-	DisableNPC         bool
-	DisableCCM         bool
-	EgressSelectorMode string
+	HTTPSPort            int
+	SupervisorPort       int
+	ClusterIPRange       *net.IPNet
+	ServiceIPRange       *net.IPNet
+	ClusterIPRanges      []*net.IPNet
+	ServiceIPRanges      []*net.IPNet
+	ServiceNodePortRange *apinet.PortRange
+	ClusterDNS           net.IP
+	ClusterDNSs          []net.IP
+	ClusterDomain        string
+	FlannelBackend       string
+	DisableKubeProxy     bool
+	DisableNPC           bool
+	DisableCCM           bool
+	EgressSelectorMode   string
 }
 
 var (
 	ClusterCIDR = mustCIDR("10.42.0.0/16")
 	ServiceCIDR = mustCIDR("10.43.0.0/16")
 	ClusterDNS  = net.ParseIP("10.43.0.10")
+
+	ServiceNodePortRange = apinet.PortRange{Base: 30000, Size: 2768}
 
 	ClusterDomain = "cluster.local"
 )
@@ -90,9 +94,9 @@ func (s *Supervisor) config(r *http.Request) k3sControlConfig {
 	return k3sControlConfig{
 		HTTPSPort: port, SupervisorPort: port,
 		ClusterIPRange: ClusterCIDR, ServiceIPRange: ServiceCIDR,
-		ClusterIPRanges: []*net.IPNet{ClusterCIDR}, ServiceIPRanges: []*net.IPNet{ServiceCIDR},
+		ClusterIPRanges: []*net.IPNet{ClusterCIDR}, ServiceIPRanges: []*net.IPNet{ServiceCIDR}, ServiceNodePortRange: &ServiceNodePortRange,
 		ClusterDNS: ClusterDNS, ClusterDNSs: []net.IP{ClusterDNS}, ClusterDomain: ClusterDomain,
-		FlannelBackend: "vxlan", DisableNPC: true, DisableCCM: true,
+		FlannelBackend: "vxlan", DisableCCM: true,
 		EgressSelectorMode: "cluster",
 	}
 }
