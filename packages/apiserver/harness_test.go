@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -109,7 +110,22 @@ func startDevURL(t *testing.T) (string, *kubernetes.Clientset) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	waitForFirstControllerPass(t, cs, deadline)
 	return base, cs
+}
+
+func waitForFirstControllerPass(t *testing.T, cs *kubernetes.Clientset, deadline time.Time) {
+	t.Helper()
+	for {
+		cm, err := cs.CoreV1().ConfigMaps("default").Get(context.Background(), "kube-root-ca.crt", metav1.GetOptions{})
+		if err == nil && cm.Annotations["kubernetes.io/description"] != "" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the root CA publisher did not reach the default namespace: %v", err)
+		}
+		time.Sleep(time.Second)
+	}
 }
 
 func devConfig(base, token string) *rest.Config {
