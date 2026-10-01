@@ -276,6 +276,28 @@ up() {
     wait_for "the node proxy" 60 5 node_proxy_ready
   fi
   kubectl --kubeconfig "$KUBECONFIG_PATH" get nodes -o wide
+  node_cost
+}
+
+node_cost() {
+  local node budget procs pods total
+  node=$(hostname)
+  budget=${NODE_PLATFORM_BUDGET_MIB:-600}
+  procs=$(ps -eo rss=,comm= | awk '$2 ~ /^(k8flare-agent|k3s|containerd)/ { s += $1 } END { print int(s / 1024) }')
+  pods=$(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s get --raw "/api/v1/nodes/$node/proxy/stats/summary" |
+    jq -r '.pods[] | select(.podRef.namespace == "kube-system") | "\(.podRef.name) \((.memory.workingSetBytes // 0) / 1048576 | floor)"') || pods=
+  total=$(awk -v procs="$procs" '{ s += $2 } END { print procs + s }' <<<"$pods")
+  {
+    echo "node=$node nodes=$NODES agent_and_runtime_rss_mib=$procs kube_system_pods_working_set_mib=$((total - procs)) total_mib=$total budget_mib=$budget"
+    awk 'NF { print (($1 ~ /^(coredns|k8flare-node-proxy)/) ? "pod " : "unexpected_pod ") $1 " " $2 }' <<<"$pods"
+  } | tee "$LOGS/node-cost.txt"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    { echo '```'; cat "$LOGS/node-cost.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+  fi
+  if [ "$NODES" -eq 1 ] && [ "$total" -gt "$budget" ]; then
+    echo "the platform costs the node $total MiB, over the budget of $budget MiB" >&2
+    return 1
+  fi
 }
 
 sample_resources() {
