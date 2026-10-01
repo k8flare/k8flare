@@ -47,7 +47,7 @@ jobs:
         working-directory: packages/cluster-store
 
       - name: Test the PodKubelet Durable Object
-        run: node --import ./test/register.mjs --test test/*.test.ts
+        run: node --import ./test/register.mjs --test test/*.test.ts src/*_test.ts src/nodes/*_test.ts
         working-directory: packages/control-plane-worker
 
       - name: Fetch the Kubernetes mirrors
@@ -58,6 +58,14 @@ jobs:
           go test -count=1 -timeout 20m \
             -skip '^(TestAdmissionExtensions|TestCompaction|TestConfigMapVerbs|TestControllers|TestCustomResources|TestInformerWatchList|TestOpenAPI|TestNodePodCIDRAndPodLifecycle|TestRBAC|TestScheduler|TestSchedulerWakesOnNode|TestSupervisorJoin|TestTables|TestWatch|TestWatchSelectorTransitions|TestNodeFieldSelectorDefaults)$' \
             ./packages/...
+
+      - name: Test the scripts module
+        run: go test -count=1 ./...
+        working-directory: scripts
+
+      - name: Test the node proxy
+        run: go test -count=1 ./...
+        working-directory: packages/node-proxy
 
       - name: Test the js/wasm packages
         env:
