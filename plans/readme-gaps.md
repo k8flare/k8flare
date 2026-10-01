@@ -1200,3 +1200,38 @@ it. Remove an entry when the behaviour exists and CI covers it.
     upstream's `afterDelete` does (`TestDeletingAServiceDeletesItsEndpoints`).
     Not changed: that hook still releases the Service's IPs on a dry-run
     delete, which upstream skips.
+- Runs 36840583147 (443 of 446) and 36840587032 (444 of 446), both 9cc3bd1
+  again: CustomResourceFieldSelectors failed in all three runs of this
+  commit, Endpoints lifecycle in two. Two more specs failed once each in
+  36840583147. Both looked like one write arriving twice through the
+  `devtls` replay; neither is.
+  - CustomResourceConversionWebhook, non homogeneous list (`"cr-instance-2"
+    already exists`). The audit log has five creates with five audit IDs:
+    the first answers 500 after 11.4s and the other four 409; the spec
+    retries a failed create up to five times. The first create stored the
+    object and then failed converting it back for the response:
+    `conversion webhook ... failed: ... kine GET /kv ...: bridge: pump
+    window closed`, with `drain timeout kind=dispatch age=5s in-flight: 1`
+    and `age=10s` before it. It is the borrowed window of the
+    FieldSelectors failure, this time inside a unary request whose
+    conversion was handed to a newer request that had already answered.
+    The same bridge fix covers it
+    (`TestHandlerFetchWithoutAWindowStaysOnItsOwnRequestWhenANewerOneIsOpen`).
+  - ControllerRevision lifecycle (`Failed to delete ControllerRevision ...
+    not found`). The audit log has `system:kube-controller-manager`
+    patching the two daemon pods and deleting the initial revision 600ms
+    before the spec's own delete arrives. The spec creates a second
+    revision with the initial one's `Data`, so both match the DaemonSet and
+    upstream's `dedupCurHistories` keeps the higher revision, relabels the
+    pods and deletes the other. That is upstream behaviour; the spec
+    depends on its list and delete, two round trips, beating the
+    controller's event, two pod patches and a delete. Here the spec's list
+    took 320ms and its DELETE reached the front worker 920ms after the step
+    began, while the pass's writes took about 100ms each. Not fixed; the
+    lever is the latency of an external request, not the controller.
+  - The replay itself: the `devtls` logs of the four shards read hold 49
+    replays. Every replayed write with a path of its own (a namespace
+    DELETE, a pod POST, a pod status PATCH, a rolebinding POST) reached the
+    front worker once, after the replay, and the three checked against the
+    audit log have one entry each, so those were requests workerd never
+    read, as the replay assumes. `devtls` is not changed.
