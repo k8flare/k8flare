@@ -93,6 +93,9 @@ func decodeAll(kvs []kine.KV) map[string]*apiextensionsv1.CustomResourceDefiniti
 
 func (r *refillableInformer) refill(kvs []kine.KV) int {
 	want := decodeAll(kvs)
+	for _, crd := range want {
+		routeConversionToWorker(crd)
+	}
 	indexer := r.GetIndexer()
 	r.mu.Lock()
 	handlers := append([]cache.ResourceEventHandler(nil), r.handlers...)

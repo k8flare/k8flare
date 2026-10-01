@@ -13,6 +13,7 @@ import (
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apiserver/pkg/util/webhook"
 	"k8s.io/client-go/rest"
 )
@@ -20,6 +21,7 @@ import (
 const (
 	workerURLHost = "k8flare.com"
 	workerURLPath = "/worker/"
+	workerAnnot   = "k8flare.com/worker"
 	hooksBaseHost = "hooks.internal"
 	hooksBasePath = "/hook/"
 )
@@ -54,6 +56,20 @@ func workerNameFromRequest(req *http.Request) (string, bool) {
 		return "", false
 	}
 	return name, true
+}
+
+func routeConversionToWorker(crd *apiextensionsv1.CustomResourceDefinition) {
+	name := strings.Trim(strings.TrimSpace(crd.Annotations[workerAnnot]), "/")
+	if name == "" || strings.Contains(name, "/") {
+		return
+	}
+	conversion := crd.Spec.Conversion
+	if conversion == nil || conversion.Strategy != apiextensionsv1.WebhookConverter || conversion.Webhook == nil || conversion.Webhook.ClientConfig == nil {
+		return
+	}
+	workerURL := "https://" + workerURLHost + workerURLPath + name
+	conversion.Webhook.ClientConfig.URL = &workerURL
+	conversion.Webhook.ClientConfig.Service = nil
 }
 
 func (r *conversionResolver) urlTransport() http.RoundTripper {

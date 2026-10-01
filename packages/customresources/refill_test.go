@@ -45,3 +45,28 @@ func TestRefillDeliversChangesToHandlers(t *testing.T) {
 		t.Fatalf("lister a = %v %v", got, err)
 	}
 }
+
+func TestRefillRoutesAnnotatedConversionToWorkerWithoutChangingTheStoredCRD(t *testing.T) {
+	data, err := json.Marshal(webhookConvertedCRD(map[string]string{workerAnnot: "convert-echo"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	kvs := []kine.KV{{Key: crdStoragePrefix + "widgets.example.com", Value: base64.StdEncoding.EncodeToString(data), ModRevision: 1}}
+	factory := informers.NewSharedInformerFactory(fake.NewSimpleClientset(), 0)
+	r := registerRefillable(factory)
+	r.refill(kvs)
+	served, err := factory.Apiextensions().V1().CustomResourceDefinitions().Lister().Get("widgets.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := served.Spec.Conversion.Webhook.ClientConfig
+	if cfg.Service != nil || cfg.URL == nil || *cfg.URL != "https://k8flare.com/worker/convert-echo" {
+		t.Fatalf("served clientConfig %+v", cfg)
+	}
+	for _, stored := range decodeCRDs(kvs) {
+		cfg := stored.Spec.Conversion.Webhook.ClientConfig
+		if cfg.URL != nil || cfg.Service == nil {
+			t.Fatalf("stored clientConfig %+v", cfg)
+		}
+	}
+}
