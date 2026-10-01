@@ -6,12 +6,12 @@ import (
 	"testing"
 )
 
-const dryRunReport = `[{"SpecReports":[
-{"ContainerHierarchyTexts":["[sig-a] Thing"],"LeafNodeText":"should work [Conformance]","State":"passed"},
-{"ContainerHierarchyTexts":["[sig-a] Thing"],"LeafNodeText":"should work [Conformance]","State":"passed"},
-{"ContainerHierarchyTexts":["[sig-b] Other [Serial]"],"LeafNodeText":"does (a|b) [Conformance]","State":"passed"},
-{"ContainerHierarchyTexts":["[sig-c]"],"LeafNodeText":"not focused","State":"skipped"},
-{"ContainerHierarchyTexts":[],"LeafNodeText":"","State":"passed"}
+const dryRunReport = `[{"SuiteDescription":"Suite","SpecReports":[
+{"ContainerHierarchyTexts":["[sig-a] Thing"],"LeafNodeText":"should work [Conformance]","LeafNodeType":"It","State":"passed"},
+{"ContainerHierarchyTexts":["[sig-a] Thing"],"LeafNodeText":"should work [Conformance]","LeafNodeType":"It","State":"passed"},
+{"ContainerHierarchyTexts":["[sig-b] Other [Serial]"],"LeafNodeText":"does (a|b) [Conformance]","LeafNodeType":"It","State":"passed"},
+{"ContainerHierarchyTexts":["[sig-c]"],"LeafNodeText":"not focused","LeafNodeType":"It","State":"skipped"},
+{"ContainerHierarchyTexts":[],"LeafNodeText":"","LeafNodeType":"SynchronizedBeforeSuite","State":"passed"}
 ]}]`
 
 func TestSelectedSpecNamesKeepsFocusedSpecsSortedAndUnique(t *testing.T) {
@@ -20,8 +20,8 @@ func TestSelectedSpecNamesKeepsFocusedSpecsSortedAndUnique(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		"[sig-a] Thing should work [Conformance]",
-		"[sig-b] Other [Serial] does (a|b) [Conformance]",
+		"Suite [sig-a] Thing should work [Conformance]",
+		"Suite [sig-b] Other [Serial] does (a|b) [Conformance]",
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("got %q, want %q", got, want)

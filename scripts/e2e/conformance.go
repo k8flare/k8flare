@@ -14,12 +14,14 @@ import (
 const focusNamesPerFlag = 50
 
 type dryRunSuite struct {
-	SpecReports []dryRunSpec
+	SuiteDescription string
+	SpecReports      []dryRunSpec
 }
 
 type dryRunSpec struct {
 	ContainerHierarchyTexts []string
 	LeafNodeText            string
+	LeafNodeType            string
 	State                   string
 }
 
@@ -32,10 +34,10 @@ func selectedSpecNames(report []byte) ([]string, error) {
 	var names []string
 	for _, suite := range suites {
 		for _, spec := range suite.SpecReports {
-			if spec.State != "passed" || spec.LeafNodeText == "" {
+			if spec.State != "passed" || spec.LeafNodeType != "It" {
 				continue
 			}
-			name := strings.Join(append(slices.Clone(spec.ContainerHierarchyTexts), spec.LeafNodeText), " ")
+			name := strings.Join(slices.Concat([]string{suite.SuiteDescription}, spec.ContainerHierarchyTexts, []string{spec.LeafNodeText}), " ")
 			if !seen[name] {
 				seen[name] = true
 				names = append(names, name)
