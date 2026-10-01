@@ -87,6 +87,10 @@ node_proxy_ready() {
   [ "$(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s -n kube-system get ds k8flare-node-proxy -o jsonpath='{.status.numberReady}')" -ge "$NODES" ]
 }
 
+netpol_settled() {
+  [ "$(grep -lsE 'Starting network policy controller version|Skipping network policy controller start' "$LOGS"/agent*.log | wc -l)" -ge "$NODES" ]
+}
+
 write_accepted() {
   kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s create namespace ci-writecheck &&
     kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s delete namespace ci-writecheck --wait=false
@@ -270,6 +274,11 @@ up() {
       join_container_node "$token" "$index"
     done
     wait_for "$NODES Ready untainted nodes" 120 5 nodes_ready "$NODES"
+  fi
+  wait_for "the network policy controller on $NODES nodes" 120 5 netpol_settled
+  if grep -s 'Skipping network policy controller start' "$LOGS"/agent*.log; then
+    echo "a node skipped the network policy controller" >&2
+    return 1
   fi
   wait_for "the API to accept a write" 60 5 write_accepted
   if [ "${AGENT:-k8flare}" = k3s ]; then
