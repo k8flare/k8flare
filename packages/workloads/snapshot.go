@@ -19,6 +19,16 @@ type snapshotInformer struct {
 	stale    atomic.Bool
 	list     func(context.Context) ([]runtime.Object, error)
 	passCtx  context.Context
+
+	ownersSyncedInPass bool
+}
+
+func (s *snapshotInformer) deliver(notify func()) {
+	if s.ownersSyncedInPass {
+		pending.withoutBooking(notify)
+		return
+	}
+	notify()
 }
 
 func newSnapshotInformer(example runtime.Object) *snapshotInformer {
@@ -69,11 +79,13 @@ func (s *snapshotInformer) replay(objs []runtime.Object) {
 	s.mu.Lock()
 	handlers := append([]cache.ResourceEventHandler(nil), s.handlers...)
 	s.mu.Unlock()
-	for _, o := range objs {
-		for _, h := range handlers {
-			h.OnAdd(o, true)
+	s.deliver(func() {
+		for _, o := range objs {
+			for _, h := range handlers {
+				h.OnAdd(o, true)
+			}
 		}
-	}
+	})
 }
 
 func (s *snapshotInformer) note(obj runtime.Object) {
@@ -97,13 +109,15 @@ func (s *snapshotInformer) note(obj runtime.Object) {
 	s.mu.Lock()
 	handlers := append([]cache.ResourceEventHandler(nil), s.handlers...)
 	s.mu.Unlock()
-	for _, h := range handlers {
-		if exists {
-			h.OnUpdate(old, copied)
-		} else {
-			h.OnAdd(copied, false)
+	s.deliver(func() {
+		for _, h := range handlers {
+			if exists {
+				h.OnUpdate(old, copied)
+			} else {
+				h.OnAdd(copied, false)
+			}
 		}
-	}
+	})
 }
 
 func (s *snapshotInformer) forget(namespace, name string) {
@@ -123,9 +137,11 @@ func (s *snapshotInformer) forget(namespace, name string) {
 	s.mu.Lock()
 	handlers := append([]cache.ResourceEventHandler(nil), s.handlers...)
 	s.mu.Unlock()
-	for _, h := range handlers {
-		h.OnDelete(old)
-	}
+	s.deliver(func() {
+		for _, h := range handlers {
+			h.OnDelete(old)
+		}
+	})
 }
 
 func (s *snapshotInformer) catchUp() {

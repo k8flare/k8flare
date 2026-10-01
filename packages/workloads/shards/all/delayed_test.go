@@ -2,13 +2,18 @@ package all
 
 import (
 	"context"
+	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/utils/ptr"
 
 	"github.com/k8flare/k8flare/packages/workloads"
@@ -53,4 +58,79 @@ func TestSyncBooksTheDeploymentProgressDeadlineWithoutFurtherWrites(t *testing.T
 		}
 	}
 	t.Fatalf("conditions = %v", got.Status.Conditions)
+}
+
+func assignResourceVersions(client *fake.Clientset) {
+	var version atomic.Int64
+	stamp := func(action k8stesting.Action) (bool, runtime.Object, error) {
+		if written, ok := action.(interface{ GetObject() runtime.Object }); ok {
+			if obj, err := meta.Accessor(written.GetObject()); err == nil {
+				obj.SetResourceVersion(strconv.FormatInt(version.Add(1), 10))
+			}
+		}
+		return false, nil, nil
+	}
+	client.PrependReactor("create", "*", stamp)
+	client.PrependReactor("update", "*", stamp)
+}
+
+func TestSyncDoesNotRebookAPodChangeWhenNothingIsDue(t *testing.T) {
+	labels := map[string]string{"app": "web"}
+	d := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "default", UID: "d1"},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: ptr.To[int32](1),
+			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Template: v1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels}, Spec: v1.PodSpec{Containers: []v1.Container{{Name: "c", Image: "i"}}}},
+		},
+	}
+	svc := &v1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "default", UID: "s1"},
+		Spec:       v1.ServiceSpec{Selector: labels, ClusterIP: "10.43.0.20", Ports: []v1.ServicePort{{Port: 80}}},
+	}
+	client := fake.NewSimpleClientset(d, svc)
+	assignGeneratedNames(client)
+	assignResourceVersions(client)
+	changed := []string{"endpointslices", "controllerrevisions", "endpoints", "replicasets", "daemonsets", "deployments", "pods"}
+	var next time.Duration
+	for i := 0; i < 3; i++ {
+		result, err := workloads.Sync(context.Background(), client, []byte("ca"), nil, nil, changed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		next = time.Duration(result.NextMs) * time.Millisecond
+	}
+	pods, err := client.CoreV1().Pods("default").List(context.Background(), metav1.ListOptions{})
+	if err != nil || len(pods.Items) != 1 {
+		t.Fatalf("pods = %d, %v, want the one replica", len(pods.Items), err)
+	}
+	slices, err := client.DiscoveryV1().EndpointSlices("default").List(context.Background(), metav1.ListOptions{})
+	if err != nil || len(slices.Items) != 1 {
+		t.Fatalf("endpointslices = %d, %v, want the one the controller manages", len(slices.Items), err)
+	}
+	if next > 0 && next < time.Minute {
+		t.Fatalf("next pass in %s with one pending pod and no deadline near, want none before the progress deadline", next)
+	}
+}
+
+func TestSyncRebooksAPodChangeWhileAStatefulSetIsNotSettled(t *testing.T) {
+	labels := map[string]string{"app": "db"}
+	set := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "default", UID: "s1", Generation: 1},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas:    ptr.To[int32](2),
+			ServiceName: "db",
+			Selector:    &metav1.LabelSelector{MatchLabels: labels},
+			Template:    v1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels}, Spec: v1.PodSpec{Containers: []v1.Container{{Name: "c", Image: "i"}}}},
+		},
+	}
+	client := fake.NewSimpleClientset(set)
+	assignGeneratedNames(client)
+	result, err := workloads.Sync(context.Background(), client, []byte("ca"), nil, nil, []string{"statefulsets", "pods"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next := time.Duration(result.NextMs) * time.Millisecond; next <= 0 || next > 2*time.Second {
+		t.Fatalf("next pass in %s while the StatefulSet has unready replicas, want within 2s", next)
+	}
 }

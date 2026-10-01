@@ -412,8 +412,10 @@ func SyncWithin(ctx context.Context, client kubernetes.Interface, rootCA, signin
 			result.NextMs = follow.NextMs
 		}
 	}
-	if controllers["statefulset"] && changedHas(changed, "pods") {
-		result.NextMs = soonest(result.NextMs, 2*time.Second)
+	if controllers["statefulset"] && changedHas(changed, "pods") && result.Objects["statefulsets"] > 0 {
+		if gap, err := statefulSetGap(ctx, client); err != nil || gap {
+			result.NextMs = soonest(result.NextMs, 2*time.Second)
+		}
 	}
 	if retry, ok := replicaGap(ctx, client, controllers); ok {
 		result.NextMs = soonest(result.NextMs, retry)
@@ -508,6 +510,25 @@ func deploymentGap(ctx context.Context, client kubernetes.Interface) (bool, erro
 	return false, nil
 }
 
+func statefulSetGap(ctx context.Context, client kubernetes.Interface) (bool, error) {
+	list, err := client.AppsV1().StatefulSets(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return false, err
+	}
+	for i := range list.Items {
+		set := &list.Items[i]
+		if set.DeletionTimestamp != nil || set.Spec.Replicas == nil {
+			continue
+		}
+		want := *set.Spec.Replicas
+		status := set.Status
+		if status.ObservedGeneration < set.Generation || status.Replicas != want || status.ReadyReplicas != want || status.CurrentRevision != status.UpdateRevision {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingCA, servingCA []byte, changed []string, drainFor, grace time.Duration, deadline time.Time) (*Result, error) {
 	controllers, needed := wanted(changed)
 	ctx, cancel := context.WithCancel(ctx)
@@ -557,7 +578,9 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 			}
 		}
 		result.Objects[s.name] = len(objs)
-		all = append(all, loadedSource{register(ctx, factory, s.example), objs})
+		informer := register(ctx, factory, s.example)
+		informer.ownersSyncedInPass = s.name == "endpointslices"
+		all = append(all, loadedSource{informer, objs})
 	}
 	if err := recordCronChildren(ctx, client, loadedNamed(src, loaded, "cronjobs"), loadedNamed(src, loaded, "jobs")); err != nil {
 		println("workloads: cronjob active list:", err.Error())
