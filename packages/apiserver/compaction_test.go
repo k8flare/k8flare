@@ -4,6 +4,7 @@ package apiserver_test
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -39,20 +40,6 @@ func TestCompaction(t *testing.T) {
 	if err != nil || got.Data["n"] != "1100" {
 		t.Fatalf("latest value after compaction: %v %v", got.Data, err)
 	}
-	w, err := cms.Watch(c, metav1.ListOptions{ResourceVersion: first.ResourceVersion})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer w.Stop()
-	select {
-	case ev := <-w.ResultChan():
-		status, ok := ev.Object.(*metav1.Status)
-		if ev.Type != watch.Error || !ok || status.Reason != metav1.StatusReasonExpired {
-			t.Fatalf("watch from a compacted revision: got %s %v", ev.Type, ev.Object)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("no watch event for a compacted revision")
-	}
 	files, _ := filepath.Glob(filepath.Join(devState, "v3", "do", "*", "*.sqlite"))
 	var db string
 	for _, f := range files {
@@ -67,6 +54,34 @@ func TestCompaction(t *testing.T) {
 	if db == "" {
 		t.Fatalf("no kine database under %s", devState)
 	}
+	maxOut, err := exec.Command("sqlite3", db, "SELECT MAX(id) FROM kine").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	maxID, _ := strconv.Atoi(strings.TrimSpace(string(maxOut)))
+	compactTarget := maxID - 1000
+	compactSQL := fmt.Sprintf(
+		"INSERT INTO meta (key, value) VALUES ('compact_revision', %d) ON CONFLICT(key) DO UPDATE SET value = excluded.value; "+
+			"DELETE FROM kine WHERE id <= %d AND (deleted = 1 OR EXISTS (SELECT 1 FROM kine AS newer WHERE newer.name = kine.name AND newer.id > kine.id AND newer.id <= %d));",
+		compactTarget, compactTarget, compactTarget,
+	)
+	if err := exec.Command("sqlite3", db, compactSQL).Run(); err != nil {
+		t.Fatal(err)
+	}
+	w, err := cms.Watch(c, metav1.ListOptions{ResourceVersion: first.ResourceVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Stop()
+	select {
+	case ev := <-w.ResultChan():
+		status, ok := ev.Object.(*metav1.Status)
+		if ev.Type != watch.Error || !ok || status.Reason != metav1.StatusReasonExpired {
+			t.Fatalf("watch from a compacted revision: got %s %v", ev.Type, ev.Object)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("no watch event for a compacted revision")
+	}
 	out, err := exec.Command("sqlite3", db, "SELECT COUNT(*), (SELECT value FROM meta WHERE key = 'compact_revision'), (SELECT MAX(id) FROM kine) FROM kine").Output()
 	if err != nil {
 		t.Fatal(err)
@@ -77,7 +92,7 @@ func TestCompaction(t *testing.T) {
 	}
 	rows, _ := strconv.Atoi(fields[0])
 	compact, _ := strconv.Atoi(fields[1])
-	maxID, _ := strconv.Atoi(fields[2])
+	maxID, _ = strconv.Atoi(fields[2])
 	if rows == 0 || compact < 1 || rows >= maxID || rows > maxID-compact+500 {
 		t.Fatalf("kine rows=%d compact=%d max=%d (want history dropped to about %d retained revisions)", rows, compact, maxID, 1000)
 	}
