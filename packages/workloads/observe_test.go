@@ -62,6 +62,7 @@ func TestPodCreatePublishesRCStatusWhenTheSpecIsMet(t *testing.T) {
 	}
 	pods := newSnapshotInformer(&corev1.Pod{})
 	rcs := newSnapshotInformer(&corev1.ReplicationController{})
+	rcs.fill([]runtime.Object{rc})
 	client := observeWrites(fake.NewSimpleClientset(rc), []loadedSource{{informer: pods}, {informer: rcs}})
 	_, err := client.CoreV1().Pods("default").Create(context.Background(), &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{

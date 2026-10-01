@@ -187,6 +187,7 @@ func (c observeCore) Pods(namespace string) corev1client.PodInterface {
 		pods:         c.pods,
 		rcs:          c.rcs,
 		rcStatus:     c.CoreV1Interface.ReplicationControllers(namespace),
+		controllers:  c.c,
 	}
 }
 
@@ -219,9 +220,20 @@ type observePods struct {
 	pods      *snapshotInformer
 	rcs       *snapshotInformer
 	rcStatus  corev1client.ReplicationControllerInterface
+
+	controllers *observeClient
 }
 
 func (p observePods) Create(ctx context.Context, pod *corev1.Pod, opts metav1.CreateOptions) (*corev1.Pod, error) {
+	if err := p.controllers.controllerLeftSnapshot(p.namespace, pod); err != nil {
+		return nil, err
+	}
+	if err := podCreates.Wait(ctx); err != nil {
+		return nil, err
+	}
+	if err := p.controllers.controllerLeftSnapshot(p.namespace, pod); err != nil {
+		return nil, err
+	}
 	got, err := p.PodInterface.Create(ctx, pod, opts)
 	if err != nil {
 		p.pods.markStale()
