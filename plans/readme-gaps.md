@@ -515,6 +515,13 @@ Decided on 2026-10-01, with the owner:
     requests per 30s without pause (`scheduler: bound=0 unschedulable=2
     attempt=16`). Upstream moves such pods back on cluster events and
     flushes them every 5 minutes. Metrics is sent every 15s.
+  - Conformance on 3b8bfa4, three runs: 446, 445, 445 of 446. The two
+    failures are different specs and neither is a controller that missed
+    a pass: DNS for Subdomain failed reading the prober pod's log
+    (`bridge: no response headers` after 30s on `pods/.../log`), and
+    CustomResourceFieldSelectors timed out after 30s waiting for its
+    watch events. Both are the load-dependent kind seen before. main moved
+    to 3b8bfa4.
   - Review of the bootstrap marker (Codex, 2026-10-02) found two gaps that
     are older than the marker and are still open. A bootstrap only
     creates: an object that exists keeps its old content when a release
