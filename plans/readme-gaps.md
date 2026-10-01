@@ -1265,7 +1265,7 @@ it. Remove an entry when the behaviour exists and CI covers it.
     Here 20 pod creates a second is the whole capacity. Limiting every
     call of the workloads client to 20/30 was tried on a throwaway branch
     and made three runs worse (439, 444, 441): it throttles the namespace
-    deleter. Done instead, not yet run in CI: the pod client the
+    deleter. Done instead, in 5f188fe: the pod client the
     controllers create through takes one token per create from a bucket
     of 20 a second, burst 30, shared by the isolate (the controller
     manager's client defaults, `pkg/controller/apis/config/v1alpha1/defaults.go`),
@@ -1296,3 +1296,23 @@ it. Remove an entry when the behaviour exists and CI covers it.
     listed at .335, patched the two pods and deleted the initial revision
     at .882, and the spec's first list reached the front worker at .930,
     790ms after it was sent, so it never saw two revisions.
+- Runs 36857943990 (445), 36857947190 (445) and 36857951122 (446 of 446,
+  the first full pass) on the tree of 1a8bacb, the pod create limiter and
+  the owner check. Shard 4 passes in all three, the MutatingAdmissionPolicy
+  spec with it, and no shard reports a workerd spin. The two failures are
+  one request each that waited past its client's deadline. Neither is
+  fixed.
+  - LimitRange (36857943990 shard 5), `limit_range.go:185`: the GET of
+    `limit-range` reached `devtls` at 12:10:00.978 and was given up at
+    12:10:18.979 with no byte back (502). Two node lease PUTs with a 10s
+    timeout were answered 502 in the same window.
+  - Watchers concurrent watches (36857947190 shard 0), `watch.go:454`:
+    the watch from resourceVersion 2178 and the DELETE of `cm-0` reached
+    `devtls` at 12:27:50.780 and .800 and both were given up at
+    12:28:00.780 with no byte back.
+  - The workerd main thread was at 1000ms or more per second in 21 of 22
+    and 13 of 13 samples of those windows. That is not what sets the two
+    runs apart: the same holds for 421 to 785 samples of every shard but
+    one of the run that passed (205 of 939 in shard 6). What made these
+    two requests wait 10s and 18s inside workerd while others were served
+    was not looked at.
