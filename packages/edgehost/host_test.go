@@ -66,3 +66,39 @@ func TestServicePath(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func useClusterDomain(t *testing.T, domain string) {
+	t.Helper()
+	SetClusterDomain(domain)
+	t.Cleanup(func() { SetClusterDomain("") })
+}
+
+func TestConfiguredClusterDomain(t *testing.T) {
+	useClusterDomain(t, "example.test")
+	if got := IngressHostname("default", "web"); got != "web--default.example.test" {
+		t.Fatalf("IngressHostname: got %q, want %q", got, "web--default.example.test")
+	}
+	ref, ok := ParseServiceHost("web--default.example.test")
+	if !ok || ref != (Ref{Name: "web", Namespace: "default"}) {
+		t.Fatalf("ParseServiceHost example.test: got %+v, %v", ref, ok)
+	}
+	if _, ok := ParseServiceHost("web--default.k8flare.com"); ok {
+		t.Fatal("web--default.k8flare.com resolved when cluster domain is example.test")
+	}
+	if ref, ok := ParseServiceHost("web.default.svc.example.test"); !ok || ref != (Ref{Name: "web", Namespace: "default"}) {
+		t.Fatalf("ParseServiceHost legacy: got %+v, %v", ref, ok)
+	}
+	if ref, ok := ParseServiceHost("web--default.svc.example.test"); !ok || ref != (Ref{Name: "web", Namespace: "default"}) {
+		t.Fatalf("ParseServiceHost legacy dash: got %+v, %v", ref, ok)
+	}
+}
+
+func TestDefaultClusterDomainUnchanged(t *testing.T) {
+	if got := IngressHostname("default", "lb-web"); got != "lb-web--default.k8flare.com" {
+		t.Fatalf("IngressHostname: got %q", got)
+	}
+	ref, ok := ParseServiceHost("lb-web--default.k8flare.com")
+	if !ok || ref != (Ref{Name: "lb-web", Namespace: "default"}) {
+		t.Fatalf("ParseServiceHost default: got %+v, %v", ref, ok)
+	}
+}

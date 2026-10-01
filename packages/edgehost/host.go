@@ -6,23 +6,43 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 const (
-	zoneSuffix   = ".k8flare.com"
-	legacySuffix = ".svc.k8flare.com"
-	LBClass      = "k8flare.com/edge"
+	defaultDomain = "k8flare.com"
+	LBClass       = "k8flare.com/edge"
 )
 
-var dnsLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+var (
+	dnsLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+	domain   = defaultDomain
+	domainMu sync.RWMutex
+)
 
 type Ref struct {
 	Namespace string
 	Name      string
 }
 
+func SetClusterDomain(d string) {
+	domainMu.Lock()
+	defer domainMu.Unlock()
+	if d == "" {
+		domain = defaultDomain
+	} else {
+		domain = d
+	}
+}
+
+func clusterDomain() string {
+	domainMu.RLock()
+	defer domainMu.RUnlock()
+	return domain
+}
+
 func IngressHostname(namespace, name string) string {
-	return name + "--" + namespace + zoneSuffix
+	return name + "--" + namespace + "." + clusterDomain()
 }
 
 func OwnsClass(cls string) bool {
@@ -31,6 +51,9 @@ func OwnsClass(cls string) bool {
 
 func ParseServiceHost(host string) (Ref, bool) {
 	h := strings.ToLower(strings.Split(host, ":")[0])
+	d := clusterDomain()
+
+	legacySuffix := ".svc." + d
 	if strings.HasSuffix(h, legacySuffix) {
 		labels := strings.Split(strings.TrimSuffix(h, legacySuffix), ".")
 		if len(labels) == 2 && dnsLabel.MatchString(labels[0]) && dnsLabel.MatchString(labels[1]) {
@@ -41,6 +64,8 @@ func ParseServiceHost(host string) (Ref, bool) {
 		}
 		return Ref{}, false
 	}
+
+	zoneSuffix := "." + d
 	if strings.HasSuffix(h, zoneSuffix) && !strings.Contains(strings.TrimSuffix(h, zoneSuffix), ".") {
 		return dashRef(strings.TrimSuffix(h, zoneSuffix))
 	}

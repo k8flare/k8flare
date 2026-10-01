@@ -39,6 +39,7 @@ export async function apiserverFetch(env: Env, request: Request): Promise<Respon
     MAX_MUTATING_REQUESTS_INFLIGHT: env.MAX_MUTATING_REQUESTS_INFLIGHT,
     CLUSTER_UID: env.CLUSTER_UID,
     AUDIT_POLICY: env.AUDIT_POLICY,
+    CLUSTER_DOMAIN: env.CLUSTER_DOMAIN,
     API_HOSTS: env.API_HOSTS,
     DISABLE: env.DISABLE,
     OUTBOUND: env.OUTBOUND,

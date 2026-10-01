@@ -1,7 +1,11 @@
 const origin = "https://k8flare.kooffice.workers.dev";
 
+interface Env {
+  CLUSTER_DOMAIN?: string;
+}
+
 export default {
-  async fetch(request: Request): Promise<Response> {
+  async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const dest = new URL(url.pathname + url.search, origin);
     if (url.search && /\/pods\/[^/]+\/(exec|attach|portforward)(?:\/|$)/.test(url.pathname)) {
@@ -16,9 +20,11 @@ export default {
     headers.set("X-Forwarded-Host", url.host);
     headers.set("X-Forwarded-Proto", url.protocol.replace(":", ""));
     const host = url.hostname.toLowerCase();
-    if (host === "api.k8flare.com" || host === "k8flare.com") {
+    const domain = env.CLUSTER_DOMAIN || "k8flare.com";
+    const apiHost = "api." + domain;
+    if (host === apiHost || host === domain) {
       headers.delete("Host");
-    } else if (host.endsWith(".k8flare.com")) {
+    } else if (host.endsWith("." + domain)) {
       headers.set("Host", host);
     }
     return fetch(new Request(dest.toString(), { method: request.method, headers, body: request.body, redirect: "manual" }));

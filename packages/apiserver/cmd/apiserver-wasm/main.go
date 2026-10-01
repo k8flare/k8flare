@@ -25,6 +25,7 @@ func inflightLimit(name string, fallback int) int {
 }
 
 func main() {
+	edgehost.SetClusterDomain(bridge.Getenv("CLUSTER_DOMAIN"))
 	edgehost.AddAPIHosts(bridge.Getenv("API_HOSTS"))
 	edgehost.SetDisabled(bridge.Getenv("DISABLE"))
 	requiredClaims, err := auth.ParseRequiredClaims(bridge.Getenv("OIDC_REQUIRED_CLAIMS"))
