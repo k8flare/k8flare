@@ -290,6 +290,45 @@ func fillSupporting(ctx context.Context, client kubernetes.Interface, factory in
 	}); err != nil {
 		return err
 	}
+	if err := fill(factory.Core().V1().ReplicationControllers().Informer(), func() ([]runtime.Object, error) {
+		l, err := client.CoreV1().ReplicationControllers("").List(ctx, all)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]runtime.Object, 0, len(l.Items))
+		for i := range l.Items {
+			out = append(out, &l.Items[i])
+		}
+		return out, nil
+	}); err != nil {
+		return err
+	}
+	if err := fill(factory.Apps().V1().ReplicaSets().Informer(), func() ([]runtime.Object, error) {
+		l, err := client.AppsV1().ReplicaSets("").List(ctx, all)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]runtime.Object, 0, len(l.Items))
+		for i := range l.Items {
+			out = append(out, &l.Items[i])
+		}
+		return out, nil
+	}); err != nil {
+		return err
+	}
+	if err := fill(factory.Apps().V1().StatefulSets().Informer(), func() ([]runtime.Object, error) {
+		l, err := client.AppsV1().StatefulSets("").List(ctx, all)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]runtime.Object, 0, len(l.Items))
+		for i := range l.Items {
+			out = append(out, &l.Items[i])
+		}
+		return out, nil
+	}); err != nil {
+		return err
+	}
 	if err := fill(factory.Policy().V1().PodDisruptionBudgets().Informer(), func() ([]runtime.Object, error) {
 		l, err := client.PolicyV1().PodDisruptionBudgets("").List(ctx, all)
 		if err != nil {
