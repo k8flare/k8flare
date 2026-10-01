@@ -143,7 +143,7 @@ dump_main_thread() {
     echo "stack pid=$pid gdb unavailable"
     return 0
   fi
-  sudo gdb -p "$pid" -batch -ex 'thread 1' -ex 'bt 60' 2>&1 | sed "s/^/stack pid=$pid /"
+  sudo gdb -p "$pid" -batch -ex 'thread 1' -ex 'bt 60' -ex 'thread apply all bt 30' 2>&1 | sed "s/^/stack pid=$pid /"
 }
 
 sample_procs() {
@@ -289,8 +289,12 @@ run_e2e() {
   local status=0
   sample_resources &
   local sampler=$!
-  (cd scripts && go run ./e2e -set "${SET:-required}" -focus "${FOCUS:-}" -procs "${PROCS:-4}" -shard "${SHARD:-0}" -shards "${SHARDS:-1}" -kubeconfig "$KUBECONFIG_PATH") || status=$?
+  (cd scripts && ${PROBE_MINUTES:+timeout -k 30 "${PROBE_MINUTES}m"} go run ./e2e -set "${SET:-required}" -focus "${FOCUS:-}" -procs "${PROCS:-4}" -shard "${SHARD:-0}" -shards "${SHARDS:-1}" -kubeconfig "$KUBECONFIG_PATH") || status=$?
   kill "$sampler" 2>/dev/null || true
+  if [ -n "${PROBE_MINUTES:-}" ] && [ "$status" -ge 124 ]; then
+    echo "probe window of $PROBE_MINUTES min over, spin dumps: $(grep -c 'main thread busy' "$LOGS/procs.log" || true)"
+    status=0
+  fi
   return "$status"
 }
 

@@ -9,6 +9,14 @@ on:
         description: Ginkgo focus regex that replaces the Conformance set, to run single specs
         required: false
         default: ""
+      v8_flags:
+        description: Space-separated V8 flags for the local workerd (MINIFLARE_WORKERD_V8_FLAGS)
+        required: false
+        default: ""
+      probe_minutes:
+        description: Stop the suite after this many minutes and pass; the shard is then a sample for the workerd spin
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -170,12 +178,14 @@ jobs:
         run: scripts/ci/e2e.sh up
         env:
           NODES: 2
+          MINIFLARE_WORKERD_V8_FLAGS: ${{ inputs.v8_flags }}
 
       - name: Run the Conformance suite
         run: scripts/ci/e2e.sh test
         env:
           SET: conformance
           FOCUS: ${{ inputs.focus }}
+          PROBE_MINUTES: ${{ inputs.probe_minutes }}
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ needs.plan.outputs.shards }}
 
