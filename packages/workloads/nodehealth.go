@@ -108,6 +108,10 @@ func taintAndEvict(ctx context.Context, client kubernetes.Interface, node *v1.No
 			continue
 		}
 		wait, tolerated := tolerationWait(klog.FromContext(ctx), pod, &taint)
+		toleratedForever := tolerated && wait < 0
+		if toleratedForever {
+			continue
+		}
 		if tolerated {
 			left := time.Until(taint.TimeAdded.Add(wait))
 			if left > 0 {
@@ -278,10 +282,7 @@ func tolerationWait(logger klog.Logger, pod *v1.Pod, taint *v1.Taint) (time.Dura
 		if !toleration.ToleratesTaint(logger, taint, false) {
 			continue
 		}
-		if toleration.TolerationSeconds == nil {
-			return 0, false
-		}
-		return time.Duration(*toleration.TolerationSeconds) * time.Second, true
+		return minTolerationTime(pod.Spec.Tolerations[i : i+1]), true
 	}
 	return 0, false
 }
