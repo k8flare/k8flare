@@ -148,6 +148,38 @@ test("VolumeAttributesClass writes reach the workloads queue so its protection f
   assert.deepEqual(sent, ["/registry/volumeattributesclasses/e2e-1", "/registry/volumeattributesclasses/e2e-1"]);
 });
 
+test("ServiceCIDR, ValidatingAdmissionPolicy, ResourceClaim and ResourceSlice writes reach the workloads queue", async () => {
+  const sent: string[] = [];
+  const workloads = { send: async () => {}, sendBatch: async (batch: { body: { key: string } }[]) => void sent.push(...batch.map((m) => m.body.key)) };
+  const r = rig({ WL_Q: workloads } as any);
+  await r.settle();
+  await r.put("/registry/servicecidrs/extra", "v1");
+  await r.put("/registry/validatingadmissionpolicies/deny-label", "v1");
+  await r.put("/registry/resourceclaims/default/gpu", "v1");
+  await r.put("/registry/resourceslices/node-a-gpu", "v1");
+  await r.remove("/registry/servicecidrs/extra");
+  await r.settle();
+  assert.deepEqual(sent, [
+    "/registry/servicecidrs/extra",
+    "/registry/validatingadmissionpolicies/deny-label",
+    "/registry/resourceclaims/default/gpu",
+    "/registry/resourceslices/node-a-gpu",
+    "/registry/servicecidrs/extra",
+  ]);
+});
+
+test("IPAddress and DeviceClass writes do not start a workloads pass", async () => {
+  const sent: string[] = [];
+  const workloads = { send: async () => {}, sendBatch: async (batch: { body: { key: string } }[]) => void sent.push(...batch.map((m) => m.body.key)) };
+  const r = rig({ WL_Q: workloads } as any);
+  await r.settle();
+  await r.put("/registry/ipaddresses/10.43.0.5", "v1");
+  await r.put("/registry/deviceclasses/gpu", "v1");
+  await r.remove("/registry/ipaddresses/10.43.0.5");
+  await r.settle();
+  assert.deepEqual(sent, []);
+});
+
 test("HelmChart and HelmChartConfig writes of every kind reach the addons queue", async () => {
   const sent: string[] = [];
   const addons = { send: async () => {}, sendBatch: async (batch: { body: { key: string } }[]) => void sent.push(...batch.map((m) => m.body.key)) };
