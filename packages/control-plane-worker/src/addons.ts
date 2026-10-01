@@ -4,29 +4,30 @@ import { componentToken } from "./componenttoken.ts";
 const DEPLOY_TIMEOUT_MS = 120_000;
 const HELM_TIMEOUT_MS = 300_000;
 
-type ManifestsEnv = Env & { MANIFESTS_R2?: R2Bucket; DISABLE?: string };
-
-async function userManifests(bucket: R2Bucket | undefined): Promise<Record<string, string>> {
+async function userManifests(bucket: R2Bucket): Promise<Record<string, string>> {
   const manifests: Record<string, string> = {};
-  if (!bucket) return manifests;
-  const listed = await bucket.list();
-  for (const object of listed.objects) {
-    const body = await bucket.get(object.key);
-    if (body) manifests[object.key] = await body.text();
-  }
+  let cursor: string | undefined;
+  do {
+    const listed = await bucket.list({ cursor });
+    for (const object of listed.objects) {
+      const body = await bucket.get(object.key);
+      if (body) manifests[object.key] = await body.text();
+    }
+    cursor = listed.truncated ? listed.cursor : undefined;
+  } while (cursor);
   return manifests;
 }
 
-async function addonsWorker(env: ManifestsEnv): Promise<Fetcher> {
+async function addonsWorker(env: Env): Promise<Fetcher> {
   return loadWasmWorker(env.LOADER, env.ASSETS, "addons", {
     APISERVER: env.APISERVER,
     API_TOKEN: await componentToken(env, "addons"),
-    DISABLE: env.DISABLE ?? "",
+    DISABLE: env.DISABLE,
     OUTBOUND: env.OUTBOUND,
   }, env.APISERVER);
 }
 
-export async function deployAddons(env: ManifestsEnv): Promise<boolean> {
+export async function deployAddons(env: Env): Promise<boolean> {
   try {
     const worker = await addonsWorker(env);
     const resp = await worker.fetch("https://addons.internal/deploy", {
@@ -43,7 +44,7 @@ export async function deployAddons(env: ManifestsEnv): Promise<boolean> {
   }
 }
 
-export async function reconcileHelm(env: ManifestsEnv): Promise<boolean> {
+export async function reconcileHelm(env: Env): Promise<boolean> {
   try {
     const worker = await addonsWorker(env);
     const resp = await worker.fetch("https://addons.internal/helm", {

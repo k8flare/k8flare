@@ -38,7 +38,10 @@
     "R2_BUCKET": "k8flare-pods",
     "CLOUDFLARE_ACCOUNT_ID": "ed17c5c18eb6052e70234ec181709fba",
   },
-  "r2_buckets": [{ "binding": "PODS_R2", "bucket_name": "k8flare-pods" }],
+  "r2_buckets": [
+    { "binding": "PODS_R2", "bucket_name": "k8flare-pods" },
+    { "binding": "MANIFESTS_R2", "bucket_name": "k8flare-manifests" },
+  ],
   "durable_objects": {
     "bindings": [
       { "name": "CLUSTER", "class_name": "Cluster" },

@@ -7,6 +7,8 @@ import { wakePodKubelets } from "./podkubelet/wake.ts";
 
 type Target = "scheduler" | "leases" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "metrics" | "containers" | "attachdetach" | "addons";
 
+type BucketChange = { kind?: undefined; action: string; bucket: string; object: { key: string } };
+
 type FollowSend = {
   queue: string;
   delaySeconds?: number;
@@ -310,7 +312,7 @@ async function migrateStorage(env: Env): Promise<{ done: boolean; rewritten: num
   return resp.json() as Promise<{ done: boolean; rewritten: number; pending: string[] }>;
 }
 
-async function consumeAddons(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
+async function consumeAddons(batch: MessageBatch<QueueMessage | BucketChange>, env: Env): Promise<void> {
   const migrateOnly = batch.messages.every((m) => m.body.kind === "retry" && m.body.names?.includes("storage-migrate"));
   const addonsOK = migrateOnly || (await deployAddons(env));
   const helmOK = migrateOnly || (await reconcileHelm(env));
