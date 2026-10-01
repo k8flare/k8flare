@@ -2,9 +2,12 @@ import { DurableObject } from "cloudflare:workers";
 import { clusterName } from "../clusterid.ts";
 import { apiserverFetch } from "../loader.ts";
 import { PodAPI } from "./api.ts";
-import { routeEgress } from "./egress.ts";
+import { resolveClusterTarget } from "./cluster.ts";
+import { routeEgress, unreachable, type ClusterFetcher } from "./egress.ts";
 import { declaredImages } from "./images.generated.ts";
 import type { PodLedger } from "./ledger.ts";
+import { encodeStatus, exitStatus, internalErrorStatus, parseTerminalSize } from "./protocol.ts";
+import { podKubeletStub } from "./wake.ts";
 import {
   API_HOST,
   DEFAULT_POD_CIDR,
@@ -74,6 +77,22 @@ interface KubeletState {
   reported?: string;
 }
 
+export interface ExecOptions {
+  stdin: ReadableStream<Uint8Array> | null;
+  stdout: boolean;
+  stderr: boolean;
+  tty: boolean;
+  cols?: number;
+  rows?: number;
+  control: ReadableStream<Uint8Array>;
+}
+
+export interface ExecStreams {
+  stdout: ReadableStream<Uint8Array> | null;
+  stderr: ReadableStream<Uint8Array> | null;
+  status: ReadableStream<Uint8Array>;
+}
+
 const platformFailure = /no container instance that can be provided|temporarily unavailable|Invalid custom instance|Image reference must be digest-pinned|exceeds account limits|internal error|has not been started|failed to start|failed to pull|not found in|invalid image/i;
 
 function initialState(): KubeletState {
@@ -137,7 +156,97 @@ export class PodKubelet extends DurableObject<Env> {
     return routeEgress(request, {
       apiFetch: (req) => apiserverFetch(this.env, req),
       serviceAccountToken: () => this.serviceAccountToken(),
+      clusterTarget: (host, port) => this.clusterTarget(host, port),
     });
+  }
+
+  private async clusterTarget(host: string, port: number): Promise<ClusterFetcher | null> {
+    const pod = this.state.pod;
+    if (!pod) return null;
+    const ledger = this.ledger();
+    try {
+      const target = await resolveClusterTarget(host, port, pod.metadata.namespace, {
+        service: (namespace, name) => this.api.getService(namespace, name),
+        serviceByClusterIP: (ip) => this.api.serviceByClusterIP(ip),
+        endpointSlices: (namespace, service) => this.api.endpointSlices(namespace, service),
+        podByIP: (ip) => ledger.byIP(ip),
+      });
+      if (!target) return null;
+      if (target.kind === "unreachable") return { fetch: async () => unreachable(target.status, target.reason) };
+      if (target.uid === this.uid) return { fetch: (req) => this.ingress(target.port, req) };
+      const stub = podKubeletStub(this.env, target.uid);
+      return { fetch: (req) => stub.ingress(target.port, req) };
+    } catch (err) {
+      const message = `resolving ${host}:${port} in the cluster failed: ${errorText(err)}`;
+      this.log(message);
+      return { fetch: async () => unreachable(502, message) };
+    }
+  }
+
+  private runningContainer(): Container {
+    const container = this.container;
+    const ref = this.state.ref ? `${this.state.ref.namespace}/${this.state.ref.name}` : this.uid;
+    if (!container?.running || this.state.phase !== "running") throw new Error(`pod ${ref} has no running container on ${VIRTUAL_NODE}`);
+    return container;
+  }
+
+  async ingress(port: number, request: Request): Promise<Response> {
+    let container: Container;
+    try {
+      container = this.runningContainer();
+    } catch (err) {
+      return unreachable(503, errorText(err));
+    }
+    return container.getTcpPort(port).fetch(request);
+  }
+
+  async exec(command: string[], options: ExecOptions): Promise<ExecStreams> {
+    const container = this.runningContainer();
+    const proc = await container.exec(command, {
+      stdin: options.stdin ?? undefined,
+      stdout: options.stdout ? "pipe" : "ignore",
+      stderr: options.stderr ? "pipe" : "ignore",
+      pty: options.tty ? (options.cols && options.rows ? { cols: options.cols, rows: options.rows } : true) : false,
+    });
+    const status = new TransformStream<Uint8Array, Uint8Array>();
+    const writer = status.writable.getWriter();
+    let exited = false;
+    proc.exitCode
+      .then(
+        (code) => writer.write(encodeStatus(exitStatus(code))),
+        (err) => writer.write(encodeStatus(internalErrorStatus(errorText(err)))),
+      )
+      .finally(() => {
+        exited = true;
+        return writer.close().catch(() => {});
+      });
+    this.ctx.waitUntil(
+      (async () => {
+        const reader = options.control.getReader();
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const size = value ? parseTerminalSize(value) : null;
+            if (size) proc.resize(size.cols, size.rows);
+          }
+        } catch {}
+        if (!exited) {
+          try {
+            proc.kill(15);
+          } catch {}
+        }
+      })(),
+    );
+    return { stdout: proc.stdout, stderr: proc.stderr, status: status.readable };
+  }
+
+  async connectPort(port: number, input: ReadableStream<Uint8Array>): Promise<ReadableStream<Uint8Array>> {
+    const container = this.runningContainer();
+    const socket = container.getTcpPort(port).connect(`pod:${port}`);
+    await socket.opened;
+    this.ctx.waitUntil(input.pipeTo(socket.writable).catch(() => socket.close().catch(() => {})));
+    return socket.readable;
   }
 
   private async serviceAccountToken(): Promise<string | null> {

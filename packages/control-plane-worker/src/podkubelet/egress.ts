@@ -1,9 +1,13 @@
 import { API_HOST } from "./spec.ts";
 
+export interface ClusterFetcher {
+  fetch(request: Request): Promise<Response>;
+}
+
 export interface EgressDeps {
   apiFetch(request: Request): Promise<Response>;
   serviceAccountToken(): Promise<string | null>;
-  clusterTarget?(host: string, port: number): Promise<Fetcher | null>;
+  clusterTarget?(host: string, port: number): Promise<ClusterFetcher | null>;
 }
 
 const hopByHop = ["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"];
@@ -11,6 +15,10 @@ const hopByHop = ["connection", "keep-alive", "proxy-authenticate", "proxy-autho
 function isAPIServer(host: string): boolean {
   const name = host.split(":")[0].toLowerCase();
   return name === API_HOST || name === "kubernetes.default" || name === "kubernetes.default.svc.cluster.local" || name === "kubernetes";
+}
+
+export function unreachable(status: number, reason: string): Response {
+  return new Response(`${reason}\n`, { status, headers: { "Content-Type": "text/plain; charset=utf-8" } });
 }
 
 export async function routeEgress(request: Request, deps: EgressDeps): Promise<Response> {

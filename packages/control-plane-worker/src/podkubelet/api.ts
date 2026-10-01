@@ -1,5 +1,6 @@
 import { apiserverFetch } from "../loader.ts";
 import { componentToken } from "../componenttoken.ts";
+import { SERVICE_NAME_LABEL, type EndpointSlice, type Service } from "./cluster.ts";
 import type { Pod, PodStatus } from "./spec.ts";
 
 export interface NodeObject {
@@ -44,6 +45,20 @@ export class PodAPI {
 
   getNode(name: string): Promise<NodeObject | null> {
     return this.json<NodeObject>(`/api/v1/nodes/${name}`);
+  }
+
+  getService(namespace: string, name: string): Promise<Service | null> {
+    return this.json<Service>(`/api/v1/namespaces/${namespace}/services/${name}`);
+  }
+
+  async serviceByClusterIP(ip: string): Promise<Service | null> {
+    const list = await this.json<{ items?: Service[] }>(`/api/v1/services?fieldSelector=${encodeURIComponent(`spec.clusterIP=${ip}`)}`);
+    return list?.items?.[0] ?? null;
+  }
+
+  async endpointSlices(namespace: string, service: string): Promise<EndpointSlice[]> {
+    const list = await this.json<{ items?: EndpointSlice[] }>(`/apis/discovery.k8s.io/v1/namespaces/${namespace}/endpointslices?labelSelector=${encodeURIComponent(`${SERVICE_NAME_LABEL}=${service}`)}`);
+    return list?.items ?? [];
   }
 
   async configMapData(namespace: string, name: string): Promise<Record<string, string> | null> {

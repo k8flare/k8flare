@@ -8,6 +8,73 @@ interface Deferred {
   reject(err: unknown): void;
 }
 
+async function readText(stream: ReadableStream<Uint8Array>): Promise<string> {
+  const reader = stream.getReader();
+  let out = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return out;
+    out += new TextDecoder().decode(value);
+  }
+}
+
+class FakeProcess {
+  readonly cmd: string[];
+  readonly options: ContainerExecOptions;
+  readonly stdin: WritableStream | null = null;
+  readonly stdout: ReadableStream<Uint8Array> | null;
+  readonly stderr: ReadableStream<Uint8Array> | null = null;
+  readonly pid = 42;
+  readonly isPty: boolean;
+  readonly exitCode: Promise<number>;
+  readonly stdinText: Promise<string> | null;
+  resizes: Array<[number, number]> = [];
+  killed: number[] = [];
+  private exit!: (code: number) => void;
+  private closeStdout = () => {};
+
+  constructor(cmd: string[], options: ContainerExecOptions, defaultExit: number) {
+    this.cmd = cmd;
+    this.options = options;
+    this.isPty = Boolean(options.pty);
+    this.exitCode = new Promise<number>((resolve) => {
+      this.exit = resolve;
+    });
+    this.stdinText = options.stdin instanceof ReadableStream ? readText(options.stdin) : null;
+    this.stdout =
+      options.stdout === "pipe"
+        ? new ReadableStream<Uint8Array>({
+            start: (c) => {
+              c.enqueue(new TextEncoder().encode(cmd.join(" ")));
+              this.closeStdout = () => c.close();
+            },
+          })
+        : null;
+    this.defaultExit = defaultExit;
+  }
+
+  private readonly defaultExit: number;
+
+  finish(code: number): void {
+    this.closeStdout();
+    this.exit(code);
+  }
+
+  async output() {
+    this.finish(this.defaultExit);
+    return { exitCode: await this.exitCode, stdout: new TextEncoder().encode(this.cmd.join(" ")).buffer as ArrayBuffer, stderr: new ArrayBuffer(0) };
+  }
+
+  kill(signal = 15): void {
+    this.killed.push(signal);
+    this.finish(128 + signal);
+  }
+
+  resize(cols: number, rows: number): void {
+    this.resizes.push([cols, rows]);
+  }
+}
+
 class FakeContainer {
   running = false;
   starts: ContainerStartupOptions[] = [];
@@ -19,6 +86,9 @@ class FakeContainer {
   images: Record<string, string> = { httpd: "registry.cloudflare.com/acct/httpd@sha256:deadbeef" };
   probeStatus = 200;
   execExit = 0;
+  served: Array<{ port: number; url: string; host: string | null }> = [];
+  sockets: Array<{ port: number; received: Promise<string>; close: () => void }> = [];
+  processes: FakeProcess[] = [];
 
   start(options: ContainerStartupOptions): void {
     this.starts.push(options);
@@ -51,14 +121,32 @@ class FakeContainer {
 
   getTcpPort(port: number) {
     return {
-      fetch: async () => new Response("hi", { status: this.probeStatus }),
-      connect: () => ({ opened: Promise.resolve(), close: async () => {} }),
+      fetch: async (input: string | Request) => {
+        const request = typeof input === "string" ? new Request(input) : input;
+        this.served.push({ port, url: request.url, host: request.headers.get("Host") });
+        return new Response(`hi from ${port}`, { status: this.probeStatus });
+      },
+      connect: () => {
+        const input = new TransformStream<Uint8Array, Uint8Array>();
+        const received = readText(input.readable);
+        let closeOutput = () => {};
+        const readable = new ReadableStream<Uint8Array>({
+          start: (c) => {
+            c.enqueue(new TextEncoder().encode(`echo ${port}`));
+            closeOutput = () => c.close();
+          },
+        });
+        this.sockets.push({ port, received, close: () => closeOutput() });
+        return { opened: Promise.resolve({}), readable, writable: input.writable, close: async () => closeOutput() };
+      },
       port,
     };
   }
 
-  async exec(cmd: string[]) {
-    return { output: async () => ({ exitCode: this.execExit, stdout: new TextEncoder().encode(cmd.join(" ")).buffer, stderr: new ArrayBuffer(0) }), kill() {} };
+  async exec(cmd: string[], options: ContainerExecOptions = {}) {
+    const proc = new FakeProcess(cmd, options, this.execExit);
+    this.processes.push(proc);
+    return proc;
   }
 
   async setInactivityTimeout(ms: number): Promise<void> {
@@ -114,6 +202,10 @@ class FakeLedger {
   async release(uid: string) {
     this.released.push(uid);
   }
+
+  async byIP(podIP: string) {
+    return podIP === "10.42.255.9" ? { uid: "uid-9", namespace: "default", name: "peer", podIP, running: true, updatedAt: 0 } : null;
+  }
 }
 
 class FakeAPIServer {
@@ -125,6 +217,8 @@ class FakeAPIServer {
   deletes: Array<{ name: string; body: Record<string, unknown> }> = [];
   tokens = 0;
   requests: Array<{ method: string; path: string; auth: string | null }> = [];
+  services: Record<string, Record<string, unknown>> = {};
+  slices: Record<string, unknown>[] = [];
 
   constructor(pod: Pod) {
     this.pod = pod;
@@ -141,6 +235,18 @@ class FakeAPIServer {
       return cm ? Response.json({ data: cm }) : new Response("nf", { status: 404 });
     }
     if (request.method === "GET" && path.includes("/secrets/")) return new Response("nf", { status: 404 });
+    if (request.method === "GET" && /\/services\/[^/]+$/.test(path)) {
+      const svc = this.services[path.split("/").pop()!];
+      return svc ? Response.json(svc) : new Response("nf", { status: 404 });
+    }
+    if (request.method === "GET" && path === "/api/v1/services") {
+      const ip = url.searchParams.get("fieldSelector")?.replace("spec.clusterIP=", "");
+      return Response.json({ kind: "ServiceList", items: Object.values(this.services).filter((s) => (s.spec as { clusterIP?: string }).clusterIP === ip) });
+    }
+    if (request.method === "GET" && path.endsWith("/endpointslices")) {
+      const name = url.searchParams.get("labelSelector")?.replace("kubernetes.io/service-name=", "");
+      return Response.json({ kind: "EndpointSliceList", items: this.slices.filter((s) => (s.metadata as { labels: Record<string, string> }).labels["kubernetes.io/service-name"] === name) });
+    }
     if (request.method === "PUT" && path.endsWith("/status")) {
       if (!this.pod) return new Response("nf", { status: 404 });
       const body = (await request.json()) as Pod;
@@ -183,6 +289,7 @@ async function harness(pod: Pod) {
   const api = new FakeAPIServer(pod);
   api.configMaps.cm = { hello: "world" };
   const waits: Promise<unknown>[] = [];
+  const peers: Array<{ uid: string; port: number; url: string; host: string | null }> = [];
   const ctx = {
     id: { name: pod.metadata.uid },
     storage,
@@ -193,7 +300,16 @@ async function harness(pod: Pod) {
   const env = {
     ADMIN_TOKEN: "admin",
     CLUSTER_UID: "",
-    POD_KUBELET: { idFromName: (n: string) => n, get: () => ({ fetch: async () => new Response("self") }) },
+    POD_KUBELET: {
+      idFromName: (n: string) => n,
+      get: (id: unknown) => ({
+        fetch: async () => new Response("self"),
+        ingress: async (port: number, request: Request) => {
+          peers.push({ uid: String(id), port, url: request.url, host: request.headers.get("Host") });
+          return new Response(`peer ${id}:${port}`);
+        },
+      }),
+    },
     POD_LEDGER: { idFromName: (n: string) => n, get: () => ledger },
     __apiserver: (request: Request) => api.handle(request),
   };
@@ -209,7 +325,11 @@ async function harness(pod: Pod) {
     await new Promise((r) => setTimeout(r, 0));
     await settle();
   };
-  return { container, storage, ledger, api, kubelet, settle, exit };
+  return { container, storage, ledger, api, kubelet, settle, exit, peers };
+}
+
+function endpointSlice(service: string, endpoints: Array<Record<string, unknown>>, port = 8080, name = "http"): Record<string, unknown> {
+  return { metadata: { name: `${service}-x`, namespace: "default", labels: { "kubernetes.io/service-name": service } }, addressType: "IPv4", endpoints, ports: [{ name, port }] };
 }
 
 const latest = <T>(items: T[]): T => items[items.length - 1];
@@ -401,4 +521,101 @@ test("outbound requests to the API server carry a bound ServiceAccount token", a
   assert.equal(apiCall.auth, "Bearer sa-token-1");
   await h.kubelet.fetch(new Request("https://kubernetes.default.svc/api/v1/nodes"));
   assert.equal(h.api.tokens, 1);
+});
+
+test("egress to a Service name or ClusterIP reaches the endpoint Pod's Durable Object on the target port", async () => {
+  const h = await harness(makePod());
+  await h.kubelet.reconcile({ namespace: "default", name: "web" });
+  h.api.services.api = { metadata: { name: "api", namespace: "default" }, spec: { clusterIP: "10.43.0.20", ports: [{ name: "http", port: 80, targetPort: 8080 }] } };
+  h.api.slices.push(endpointSlice("api", [{ addresses: ["10.42.255.9"], conditions: { ready: true }, nodeName: "cloudflare", targetRef: { kind: "Pod", namespace: "default", name: "peer", uid: "uid-9" } }]));
+  const byName = await h.kubelet.fetch(new Request("http://api.default.svc.cluster.local/v1/items", { headers: { Host: "api.default.svc.cluster.local" } }));
+  assert.equal(await byName.text(), "peer uid-9:8080");
+  assert.deepEqual(h.peers, [{ uid: "uid-9", port: 8080, url: "http://api.default.svc.cluster.local/v1/items", host: "api.default.svc.cluster.local" }]);
+  const byIP = await h.kubelet.fetch(new Request("http://10.43.0.20/v1/items"));
+  assert.equal(await byIP.text(), "peer uid-9:8080");
+  const byPodIP = await h.kubelet.fetch(new Request("http://10.42.255.9:8080/direct"));
+  assert.equal(await byPodIP.text(), "peer uid-9:8080");
+  assert.equal(h.peers.length, 3);
+});
+
+test("egress to a Service whose endpoints are on a real node is a 502 that names the node; a Service to itself is served locally", async () => {
+  const h = await harness(makePod());
+  await h.kubelet.reconcile({ namespace: "default", name: "web" });
+  h.api.services.db = { metadata: { name: "db", namespace: "default" }, spec: { clusterIP: "10.43.0.30", ports: [{ name: "pg", port: 5432 }] } };
+  h.api.slices.push(endpointSlice("db", [{ addresses: ["10.42.0.4"], conditions: { ready: true }, nodeName: "node-a", targetRef: { kind: "Pod", namespace: "default", name: "db-0", uid: "uid-db" } }], 5432, "pg"));
+  const res = await h.kubelet.fetch(new Request("http://db.default.svc:5432/"));
+  assert.equal(res.status, 502);
+  assert.match(await res.text(), /endpoints of service default\/db are on node-a/);
+  h.api.services.self = { metadata: { name: "self", namespace: "default" }, spec: { clusterIP: "10.43.0.40", ports: [{ name: "http", port: 80 }] } };
+  h.api.slices.push(endpointSlice("self", [{ addresses: ["10.42.255.2"], conditions: { ready: true }, nodeName: "cloudflare", targetRef: { kind: "Pod", namespace: "default", name: "web", uid: "uid-1" } }]));
+  const own = await h.kubelet.fetch(new Request("http://self/healthz"));
+  assert.equal(await own.text(), "hi from 8080");
+  assert.deepEqual(h.container.served, [{ port: 8080, url: "http://self/healthz", host: null }]);
+  assert.equal(h.peers.length, 0);
+});
+
+test("ingress forwards to the container port while running and is 503 otherwise", async () => {
+  const h = await harness(makePod());
+  const early = await h.kubelet.ingress(8080, new Request("http://10.42.255.2:8080/"));
+  assert.equal(early.status, 503);
+  assert.match(await early.text(), /has no running container on cloudflare/);
+  await h.kubelet.reconcile({ namespace: "default", name: "web" });
+  const res = await h.kubelet.ingress(8080, new Request("http://10.42.255.2:8080/index.html", { headers: { Host: "web.example.com" } }));
+  assert.equal(await res.text(), "hi from 8080");
+  assert.deepEqual(h.container.served, [{ port: 8080, url: "http://10.42.255.2:8080/index.html", host: "web.example.com" }]);
+});
+
+test("exec runs the command with piped stdio, relays resizes from the control stream and ends with the exit Status", async () => {
+  const h = await harness(makePod());
+  await h.kubelet.reconcile({ namespace: "default", name: "web" });
+  const stdin = new TransformStream<Uint8Array, Uint8Array>();
+  const control = new TransformStream<Uint8Array, Uint8Array>();
+  const streams = await h.kubelet.exec(["sh"], { stdin: stdin.readable, stdout: true, stderr: false, tty: true, cols: 80, rows: 24, control: control.readable });
+  const proc = h.container.processes[0];
+  assert.deepEqual(proc.cmd, ["sh"]);
+  assert.deepEqual(proc.options.pty, { cols: 80, rows: 24 });
+  assert.equal(proc.options.stdout, "pipe");
+  assert.equal(proc.options.stderr, "ignore");
+  const controlWriter = control.writable.getWriter();
+  await controlWriter.write(new TextEncoder().encode('{"Width":120,"Height":40}'));
+  const stdinWriter = stdin.writable.getWriter();
+  await stdinWriter.write(new TextEncoder().encode("exit 3\n"));
+  await stdinWriter.close();
+  await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(proc.resizes, [[120, 40]]);
+  assert.equal(await proc.stdinText, "exit 3\n");
+  proc.finish(3);
+  assert.equal(await readText(streams.stdout!), "sh");
+  const status = JSON.parse(await readText(streams.status));
+  assert.equal(status.status, "Failure");
+  assert.deepEqual(status.details, { causes: [{ reason: "ExitCode", message: "3" }] });
+  await controlWriter.close();
+  await h.settle();
+  assert.deepEqual(proc.killed, []);
+});
+
+test("a client that goes away before the command exits gets it SIGTERMed; exec without a running container is refused", async () => {
+  const h = await harness(makePod());
+  await assert.rejects(h.kubelet.exec(["ls"], { stdin: null, stdout: true, stderr: true, tty: false, control: new ReadableStream() }), /has no running container on cloudflare/);
+  await h.kubelet.reconcile({ namespace: "default", name: "web" });
+  const control = new TransformStream<Uint8Array, Uint8Array>();
+  await h.kubelet.exec(["sleep", "100"], { stdin: null, stdout: true, stderr: true, tty: false, control: control.readable });
+  await control.writable.close();
+  await h.settle();
+  assert.deepEqual(h.container.processes[0].killed, [15]);
+});
+
+test("connectPort pipes the client bytes into the container port and returns what the port writes back", async () => {
+  const h = await harness(makePod());
+  await h.kubelet.reconcile({ namespace: "default", name: "web" });
+  const input = new TransformStream<Uint8Array, Uint8Array>();
+  const readable = await h.kubelet.connectPort(8080, input.readable);
+  const writer = input.writable.getWriter();
+  await writer.write(new TextEncoder().encode("GET / HTTP/1.0\r\n\r\n"));
+  await writer.close();
+  const socket = h.container.sockets[0];
+  assert.equal(socket.port, 8080);
+  assert.equal(await socket.received, "GET / HTTP/1.0\r\n\r\n");
+  socket.close();
+  assert.equal(await readText(readable), "echo 8080");
 });
