@@ -13,7 +13,6 @@ import (
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/util/flowcontrol"
 	"k8s.io/klog/v2"
-	pkgcontroller "k8s.io/kubernetes/pkg/controller"
 	"k8s.io/kubernetes/pkg/controller/bootstrap"
 	"k8s.io/kubernetes/pkg/controller/certificates/approver"
 	"k8s.io/kubernetes/pkg/controller/certificates/cleaner"
@@ -37,7 +36,6 @@ import (
 	"k8s.io/kubernetes/pkg/controller/serviceaccount"
 	"k8s.io/kubernetes/pkg/controller/servicecidrs"
 	"k8s.io/kubernetes/pkg/controller/statefulset"
-	"k8s.io/kubernetes/pkg/controller/tainteviction"
 	"k8s.io/kubernetes/pkg/controller/ttl"
 	"k8s.io/kubernetes/pkg/controller/ttlafterfinished"
 	"k8s.io/kubernetes/pkg/features"
@@ -188,16 +186,6 @@ func build(ctx context.Context, d workloads.Deps, controllers map[string]bool) (
 	if controllers["ttl"] {
 		ttlc := ttl.NewTTLController(ctx, core.Nodes(), client)
 		runs = append(runs, func(ctx context.Context) { ttlc.Run(ctx, 1) })
-	}
-	if controllers["tainteviction"] {
-		if err := pkgcontroller.AddPodNodeNameIndexer(core.Pods().Informer()); err != nil {
-			return nil, err
-		}
-		tm, err := tainteviction.New(ctx, client, core.Pods(), core.Nodes(), "taint-eviction-controller")
-		if err != nil {
-			return nil, err
-		}
-		runs = append(runs, func(ctx context.Context) { tm.Run(ctx) })
 	}
 	if controllers["podgc"] {
 		gcc := podgc.NewPodGCInternal(ctx, client, core.Pods(), core.Nodes(), 12500, 20*time.Second, 40*time.Second)

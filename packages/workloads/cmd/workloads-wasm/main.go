@@ -44,6 +44,7 @@ func main() {
 	var rootCA, signingCA, servingCA []byte
 	var deleter *workloads.Deleter
 	store := &kine.Client{HTTP: &http.Client{Transport: bridge.BindingTransport{Name: "STORAGE"}}}
+	workloads.Store = store
 	bridge.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/namespaces" {
 			if deleter == nil {

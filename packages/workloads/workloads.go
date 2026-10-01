@@ -607,6 +607,11 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 	if err := clearRecoveredNodes(ctx, client, nodesOf(all)); err != nil {
 		println("workloads: clearing node taints failed:", err.Error())
 	}
+	if controllers["tainteviction"] {
+		if err := evictTaintedPods(ctx, client, nodesOf(all), podsOf(all), time.Now()); err != nil {
+			println("workloads: taint eviction failed:", err.Error())
+		}
+	}
 	result.Drained = drain(workloadQueue, drainFor, grace, deadline, feed.live)
 	result.Live = feed.live()
 	took("drain")
