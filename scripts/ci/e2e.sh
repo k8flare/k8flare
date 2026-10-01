@@ -154,23 +154,25 @@ join_node() {
     > "$LOGS/agent.log" 2>&1 < /dev/null &
 }
 
+CGROUP_EVACUATE='if [ -f /sys/fs/cgroup/cgroup.controllers ]; then mkdir -p /sys/fs/cgroup/init && xargs -rn1 < /sys/fs/cgroup/cgroup.procs > /sys/fs/cgroup/init/cgroup.procs || :; sed -e "s/ / +/g" -e "s/^/+/" < /sys/fs/cgroup/cgroup.controllers > /sys/fs/cgroup/cgroup.subtree_control; fi; exec "$@"'
+
 join_container_node() {
   local token=$1 index=$2 name
   name=$(hostname)-$index
-  local -a run=(docker run -d --name "$name" --hostname "$name" --privileged --tmpfs /run --tmpfs /var/run
-    --add-host "${CONTAINER_API%%:*}:host-gateway")
+  local -a run=(docker run -d --name "$name" --hostname "$name" --privileged --cgroupns=private --tmpfs /run --tmpfs /var/run
+    --add-host "${CONTAINER_API%%:*}:host-gateway" --entrypoint /bin/sh)
   if [ "${AGENT:-k8flare}" = k8flare ]; then
     "${run[@]}" \
       -v /var/lib/rancher/k3s/data:/var/lib/rancher/k3s/data:ro \
       -v "$PWD/$WORK/k8flare-agent:/k8flare-agent:ro" \
       -v "$PWD/.build/devtls/server-ca.crt:/k8flare-dev-ca.crt:ro" \
       -e SSL_CERT_FILE=/k8flare-dev-ca.crt \
-      --entrypoint /k8flare-agent "$K3S_IMAGE" \
+      "$K3S_IMAGE" -c "$CGROUP_EVACUATE" sh /k8flare-agent \
       --server "https://$CONTAINER_API" --token "$token" --node-name "$name" >/dev/null
   else
     "${run[@]}" \
       -v /var/lib/rancher/k3s/agent/images:/var/lib/rancher/k3s/agent/images:ro \
-      "$K3S_IMAGE" \
+      "$K3S_IMAGE" -c "$CGROUP_EVACUATE" sh /bin/k3s \
       agent --server "https://$CONTAINER_API" --token "$token" --node-name "$name" --disable-apiserver-lb >/dev/null
   fi
   nohup docker logs -f "$name" > "$LOGS/agent-$index.log" 2>&1 < /dev/null &
