@@ -65,7 +65,7 @@ func build(ctx context.Context, d workloads.Deps, controllers map[string]bool) (
 		runs = append(runs, func(ctx context.Context) { dc.Run(ctx, workloads.Workers) })
 	}
 	if controllers["endpoints"] {
-		ep := endpoint.NewEndpointController(ctx, core.Pods(), core.Services(), core.Endpoints(), client, 0)
+		ep := endpoint.NewEndpointController(ctx, core.Pods(), core.Services(), controllerOwnedLeftovers{core.Endpoints()}, client, 0)
 		runs = append(runs, func(ctx context.Context) { ep.Run(ctx, workloads.Workers) })
 	}
 	if controllers["endpointslice"] {
