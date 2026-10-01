@@ -461,6 +461,34 @@ Decided on 2026-10-01, with the owner:
   `required` set only. Run 36839051306 (65cd7e8) ended success with
   `101 Passed | 345 Failed`. This branch fails the job for the set it was
   asked to run.
+- Production (`k8flare.kooffice.workers.dev`, account KOOFFICE) runs
+  b9fff9a plus the observability change since 2026-10-01T17:49Z, deployed
+  with `cf` from `packages/control-plane-worker` (branch `work/deploy`,
+  cd3bb2c; version d2093b7b, the one before is 9636ffbb of 09-24). No
+  container application is declared, so pods on Cloudflare cannot start.
+  `/readyz` passes, the old data reads, a namespace and a Secret write
+  work. What a quarter of an hour of `wrangler tail` showed, with no node
+  and no client:
+  - The workloads pass never succeeds. Its lists of clusterroles, roles and
+    rolebindings through the `APISERVER` binding end in `bridge: fetch
+    timed out kind=hold age=30s` (inflight 21 to 28) and
+    `kind=dispatch ... binding=APIGROUPS`, the pass answers 500 and is sent
+    again about every 30s; the accounts pass fails the same way. The
+    Cluster Durable Object took about one request a second for it. Local
+    workerd does not do this. Not found yet: why. Each retry loads group
+    workers in fresh isolates (`apiserver-rbac` took 4.3s), and the pass
+    opens some thirty lists at once.
+  - The metrics pass runs every 15 to 20s with no node, and sends to
+    `k8flare-hpa`, which has no consumer in this deployment.
+  - The Cluster alarm re-arms every five minutes for compaction whether or
+    not anything was written.
+  - Delivery is paused on all twelve queues (`wrangler queues
+    pause-delivery`), so nothing runs in the background and controllers do
+    not act; four minutes then showed one event, the alarm.
+  - `k8flare.kooffice.jp` answers 302 to the Access login for a request
+    that carries only `Authorization: Bearer`, so `kubectl` with a token
+    from `k8flare access-credential` does not get through Access as
+    configured.
 - Nothing runs the suite against a Cloudflare deployment; every run is
   local workerd in GitHub Actions. `make deploycheck` is a manual probe.
   Issue #4 was filed by `prod-probe.yml`, which exists only at `old-main`.
