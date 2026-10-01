@@ -20,8 +20,8 @@ const LEASE_CHECK_EVERY_MS = 50_000;
 const OUTBOX_BATCH = 100;
 const MAX_DELAY_S = 86_400;
 
-type Target = "scheduler" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "metrics" | "containers" | "attachdetach" | "addons";
-const targets: Target[] = ["scheduler", "workloads", "crds", "gc", "accounts", "extensions", "metrics", "containers", "attachdetach", "addons"];
+type Target = "scheduler" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "metrics" | "containers" | "attachdetach" | "addons" | "hpa";
+const targets: Target[] = ["scheduler", "workloads", "crds", "gc", "accounts", "extensions", "metrics", "containers", "attachdetach", "addons", "hpa"];
 const SCHEMA_VERSION = 1;
 const controllerAnnot = "k8flare.io/controller";
 const REGISTRY_PREFIX = "/registry/";
@@ -604,6 +604,7 @@ export class Cluster extends DurableObject<Env> {
     if (target === "containers") return this.env.CONTAINERS_Q;
     if (target === "attachdetach") return this.env.AD_Q;
     if (target === "addons") return this.env.ADDON_Q;
+    if (target === "hpa") return this.env.HPA_Q;
     return this.env.CTRL_Q;
   }
 
