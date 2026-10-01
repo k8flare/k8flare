@@ -50,6 +50,20 @@ func VaultPEM(ctx context.Context, store *kine.Client, name string) ([]byte, err
 	return []byte(record.Cert + record.Key), nil
 }
 
+var ServiceAccountKey []byte
+
+func VaultServiceAccountKey(ctx context.Context, store *kine.Client) ([]byte, error) {
+	kv, _, err := store.Get(ctx, "/vault/sa-signing-key")
+	if err != nil {
+		return nil, err
+	}
+	raw, err := base64.StdEncoding.DecodeString(kv.Value)
+	if err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
 func startCSRSigners(ctx context.Context, client kubernetes.Interface, inf certificatesinformers.CertificateSigningRequestInformer, clientCA, servingCA []byte) []func(context.Context) {
 	var runs []func(context.Context)
 	add := func(name string, pem []byte, signers ...string) {

@@ -21,11 +21,12 @@ import (
 // in its own package and its own worker binary, so the controller packages it
 // imports are the only ones that binary links.
 type Deps struct {
-	Client    kubernetes.Interface
-	Factory   informers.SharedInformerFactory
-	RootCA    []byte
-	SigningCA []byte
-	ServingCA []byte
+	Client            kubernetes.Interface
+	Factory           informers.SharedInformerFactory
+	RootCA            []byte
+	SigningCA         []byte
+	ServingCA         []byte
+	ServiceAccountKey []byte
 }
 
 func (d Deps) VAPolicies() vapSnapshot { return validatingAdmissionPolicySnapshot(d.Factory) }

@@ -12,6 +12,7 @@ import (
 	supervisor "github.com/k8flare/k8flare/packages/apiserver-supervisor"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/util/flowcontrol"
+	"k8s.io/client-go/util/keyutil"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/controller/bootstrap"
 	"k8s.io/kubernetes/pkg/controller/certificates/approver"
@@ -39,6 +40,7 @@ import (
 	"k8s.io/kubernetes/pkg/controller/ttl"
 	"k8s.io/kubernetes/pkg/controller/ttlafterfinished"
 	"k8s.io/kubernetes/pkg/features"
+	serviceaccounttoken "k8s.io/kubernetes/pkg/serviceaccount"
 	"k8s.io/utils/clock"
 )
 
@@ -116,6 +118,24 @@ func build(ctx context.Context, d workloads.Deps, controllers map[string]bool) (
 			return nil, err
 		}
 		runs = append(runs, func(ctx context.Context) { accounts.Run(ctx, 1) })
+	}
+	if controllers["serviceaccounttoken"] && len(d.ServiceAccountKey) > 0 {
+		key, err := keyutil.ParsePrivateKeyPEM(d.ServiceAccountKey)
+		if err != nil {
+			return nil, err
+		}
+		generator, err := serviceaccounttoken.JWTTokenGenerator(serviceaccounttoken.LegacyIssuer, key)
+		if err != nil {
+			return nil, err
+		}
+		tokens, err := serviceaccount.NewTokensController(klog.FromContext(ctx), core.ServiceAccounts(), core.Secrets(), client, serviceaccount.TokensControllerOptions{
+			TokenGenerator: generator,
+			RootCA:         rootCA,
+		})
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, func(ctx context.Context) { tokens.Run(ctx, workloads.Workers) })
 	}
 	if controllers["legacytoken"] {
 		cleaner, err := serviceaccount.NewLegacySATokenCleaner(core.ServiceAccounts(), core.Secrets(), core.Pods(), client, clock.RealClock{}, serviceaccount.LegacySATokenCleanerOptions{

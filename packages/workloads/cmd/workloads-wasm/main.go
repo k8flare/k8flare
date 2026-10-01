@@ -93,6 +93,9 @@ func main() {
 		if servingCA == nil {
 			servingCA, _ = workloads.VaultPEM(r.Context(), store, "server-ca")
 		}
+		if workloads.ServiceAccountKey == nil {
+			workloads.ServiceAccountKey, _ = workloads.VaultServiceAccountKey(r.Context(), store)
+		}
 		if rootCA == nil {
 			ca, err := client.CoreV1().RESTClient().Get().AbsPath("/cacerts").DoRaw(r.Context())
 			if err != nil {

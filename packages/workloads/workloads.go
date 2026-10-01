@@ -212,6 +212,7 @@ var controllerNeeds = map[string][]string{
 	"statefulset":               {"pods", "statefulsets", "persistentvolumeclaims", "controllerrevisions"},
 	"daemonset":                 {"pods", "daemonsets", "controllerrevisions", "nodes"},
 	"serviceaccounts":           {"namespaces", "serviceaccounts"},
+	"serviceaccounttoken":       {"secrets", "serviceaccounts"},
 	"rootca":                    {"namespaces", "configmaps"},
 	"bootstrapsigner":           {"configmaps", "secrets"},
 	"tokencleaner":              {"secrets"},
@@ -586,7 +587,7 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 	if needed == nil || needed["configmaps"] {
 		ensureClusterInfo(ctx, client, rootCA)
 	}
-	runs, err := Deps{Client: client, Factory: factory, RootCA: rootCA, SigningCA: signingCA, ServingCA: servingCA}.buildShards(ctx, controllers)
+	runs, err := Deps{Client: client, Factory: factory, RootCA: rootCA, SigningCA: signingCA, ServingCA: servingCA, ServiceAccountKey: ServiceAccountKey}.buildShards(ctx, controllers)
 	if err != nil {
 		return nil, err
 	}
