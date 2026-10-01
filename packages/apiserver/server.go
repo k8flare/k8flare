@@ -97,7 +97,8 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	oidc := cfg.OIDC
 	oidc.HTTP = cfg.Outbound
 	sa := auth.ServiceAccountToken{HMAC: []byte(cfg.AdminToken), Objects: auth.NewServiceAccountObjects(auth.KineObjects{Client: client})}
-	tokens := auth.WithAuthenticatedGroup(union.New(auth.AdminToken(cfg.AdminToken), auth.ReadonlyToken(cfg.ReadonlyToken), auth.ComponentTokens{Key: []byte(cfg.AdminToken)}, auth.VaultToken{Vault: v}, auth.NodeToken{Vault: v}, sa, oidc, access))
+	bootstrap := auth.BootstrapToken{Objects: auth.KineObjects{Client: client}}
+	tokens := auth.WithAuthenticatedGroup(union.New(auth.AdminToken(cfg.AdminToken), auth.ReadonlyToken(cfg.ReadonlyToken), auth.ComponentTokens{Key: []byte(cfg.AdminToken)}, auth.VaultToken{Vault: v}, auth.NodeToken{Vault: v}, sa, bootstrap, oidc, access))
 	edgeCert := auth.EdgeClientCert{ClientCA: func(ctx context.Context) ([]byte, error) { return v.CAPEM(ctx, "client-ca") }}
 	authn := group.NewAuthenticatedGroupAdder(requnion.New(bearertoken.New(tokens), edgeCert, access))
 	authorizer := authz.New(client)
@@ -146,6 +147,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	root := http.NewServeMux()
 	kubeletSupervisor := supervisor.New(v, cfg.JoinToken)
 	kubeletSupervisor.ClientCerts = edgeCert
+	kubeletSupervisor.BootstrapTokens = bearertoken.New(bootstrap)
 	kubeletSupervisor.ServiceAccounts = bearertoken.New(tokens)
 	mux.HandleFunc("/internal/kubelet-client", kubeletSupervisor.KubeletClient)
 	mux.HandleFunc("/internal/proxy-client", adminOnly(kubeletSupervisor.ProxyClient))

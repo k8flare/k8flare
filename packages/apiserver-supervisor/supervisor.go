@@ -20,6 +20,7 @@ import (
 
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/user"
+	bootstrapapi "k8s.io/cluster-bootstrap/token/api"
 	utilnet "k8s.io/utils/net"
 )
 
@@ -31,6 +32,7 @@ type Supervisor struct {
 	ClientCerts authenticator.Request
 
 	ServiceAccounts authenticator.Request
+	BootstrapTokens authenticator.Request
 }
 
 const nodeProxyUser = "system:serviceaccount:kube-system:k8flare-node-proxy"
@@ -96,6 +98,12 @@ func (s *Supervisor) config(r *http.Request) k3sControlConfig {
 }
 
 func (s *Supervisor) authorized(r *http.Request) bool {
+	if s.BootstrapTokens != nil {
+		resp, ok, err := s.BootstrapTokens.AuthenticateRequest(r)
+		if err == nil && ok && slices.Contains(resp.User.GetGroups(), bootstrapapi.BootstrapDefaultGroup) {
+			return true
+		}
+	}
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok {
 		_, token, ok = r.BasicAuth()

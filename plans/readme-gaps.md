@@ -241,7 +241,10 @@ it. Remove an entry when the behaviour exists and CI covers it.
   - Not run in a deployed Worker: `tail()` must relay the lines to
     Workers Logs.
 - Upgrades: no storage migration mechanism.
-- Bootstrap-token Secrets are not accepted for joins.
+- Bootstrap-token Secrets now authenticate API bearer requests and k3s agent
+  joins through the upstream bootstrap authenticator. Unit tests cover validation
+  and supervisor access; a Secret-backed join has not been exercised with a live
+  k3s agent under workerd. `k8flare token` continues to manage vault-backed tokens.
 
 ## Security
 
