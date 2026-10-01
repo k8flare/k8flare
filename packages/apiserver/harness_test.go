@@ -3,8 +3,10 @@
 package apiserver_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -129,7 +131,34 @@ func waitForFirstControllerPass(t *testing.T, cs *kubernetes.Clientset, deadline
 }
 
 func devConfig(base, token string) *rest.Config {
-	return &rest.Config{Host: base, BearerToken: token, Transport: &http.Transport{IdleConnTimeout: 2 * time.Second}}
+	return &rest.Config{Host: base, BearerToken: token, Transport: resendWhenDevProxyDrops{&http.Transport{IdleConnTimeout: 2 * time.Second}}}
+}
+
+type resendWhenDevProxyDrops struct{ http.RoundTripper }
+
+func (r resendWhenDevProxyDrops) RoundTrip(req *http.Request) (*http.Response, error) {
+	for attempt := 0; ; attempt++ {
+		resp, err := r.RoundTripper.RoundTrip(req)
+		if err != nil || resp.StatusCode != http.StatusInternalServerError || attempt == 3 {
+			return resp, err
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		dropped := bytes.Contains(body, []byte("Network connection lost")) && bytes.Contains(body, []byte("miniflare"))
+		if !dropped || (req.Body != nil && req.GetBody == nil) {
+			resp.Body = io.NopCloser(bytes.NewReader(body))
+			return resp, nil
+		}
+		if req.GetBody != nil {
+			if req.Body, err = req.GetBody(); err != nil {
+				return nil, err
+			}
+		}
+		time.Sleep(time.Second)
+	}
 }
 
 func freePort(t *testing.T) int {
