@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"syscall"
 )
 
 const (
@@ -21,6 +22,10 @@ type retryDropped struct {
 type replayBody struct {
 	io.Reader
 	io.Closer
+}
+
+func unanswered(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, syscall.ECONNRESET)
 }
 
 func (t retryDropped) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -49,7 +54,7 @@ func (t retryDropped) send(req *http.Request, body []byte) (*http.Response, erro
 			try.ContentLength = int64(len(body))
 		}
 		resp, err := t.base.RoundTrip(try)
-		if errors.Is(err, io.EOF) && attempt < droppedRetries {
+		if unanswered(err) && attempt < droppedRetries {
 			log.Printf("devtls: %s %s lost its connection before wrangler dev answered, retrying", req.Method, req.URL.Path)
 			continue
 		}
