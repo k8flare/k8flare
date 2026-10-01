@@ -27,7 +27,7 @@ func init() {
 	utilruntime.Must(corev1.AddToScheme(scheme.Scheme))
 }
 
-var nodeClusterRoles = []string{"system:node-proxier"}
+var nodeClusterRoles = []string{"system:node-proxier", "system:k3s-controller"}
 
 var (
 	bootstrapClusterRoles        = append(bootstrappolicy.ClusterRoles(), bootstrappolicy.ControllerRoles()...)
