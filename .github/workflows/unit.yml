@@ -73,6 +73,12 @@ jobs:
           GOARCH: wasm
         run: go test -count=1 "-exec=env -i PATH=$PATH $(go env GOROOT)/lib/wasm/go_js_wasm_exec" ./packages/worker-bridge ./packages/node-tunnel
 
+      - name: Test that every workloads source lists under js/wasm
+        env:
+          GOOS: js
+          GOARCH: wasm
+        run: go test -count=1 "-exec=env -i PATH=$PATH $(go env GOROOT)/lib/wasm/go_js_wasm_exec" -run '^(TestEverySourceCanList|TestValidatingAdmissionPoliciesSource)$' ./packages/workloads
+
       - name: Save Go caches
         if: always()
         uses: actions/cache/save@v6
