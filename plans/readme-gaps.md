@@ -503,6 +503,18 @@ Decided on 2026-10-01, with the owner:
     Job, finished or not, keeps the pass running; `replicaGap` books 5s
     for as long as a ReplicaSet or Deployment has `status.replicas` short
     of `spec.replicas`; metrics is sent every 15s.
+  - Deployed as 7cad8d15 (2026-10-02). With workloads and every other
+    queue but three delivering, a Deployment created with kubectl got its
+    ReplicaSet and pod about 30s later and the Cluster Durable Object then
+    took no request for minutes (per 30s: 21, 4, 23, 1, 0, 0, 0, 0, 0, 0,
+    25, 1, 0, 0; the late burst is the 5-minute alarm). Left paused:
+    `k8flare-scheduler`, `k8flare-metrics`, `k8flare-hpa`. The scheduler
+    retries unschedulable pods on a timer by design (`RetryDelaySeconds`,
+    1s doubling to 60s, then every 60s), and with no node the two add-on
+    pods are unschedulable for good: with it delivering the object took 30
+    requests per 30s without pause (`scheduler: bound=0 unschedulable=2
+    attempt=16`). Upstream moves such pods back on cluster events and
+    flushes them every 5 minutes. Metrics is sent every 15s.
   - Review of the bootstrap marker (Codex, 2026-10-02) found two gaps that
     are older than the marker and are still open. A bootstrap only
     creates: an object that exists keeps its old content when a release
