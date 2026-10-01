@@ -28,38 +28,62 @@ func bootstrapRBAC(clusterRoles, clusterRoleBindings, roles, roleBindings *gener
 		return next
 	}
 	var once sync.Once
+	hash := rbacBootstrapHash()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		once.Do(func() {
-			ensureRBAC(r.Context(), clusterRoles, clusterRoleBindings, roles, roleBindings)
+			ctx := context.WithoutCancel(r.Context())
+			_ = registry.RunBootstrap(ctx, clusterRoles, "rbac", hash, func(ctx context.Context) error {
+				return ensureRBAC(ctx, clusterRoles, clusterRoleBindings, roles, roleBindings)
+			})
 		})
 		next.ServeHTTP(w, r)
 	})
 }
 
-func ensureRBAC(ctx context.Context, clusterRoles, clusterRoleBindings, roles, roleBindings *genericregistry.Store) {
+func rbacBootstrapHash() string {
+	return registry.HashObjects(
+		bootstrappolicy.ClusterRoles(),
+		bootstrappolicy.ControllerRoles(),
+		bootstrappolicy.ClusterRoleBindings(),
+		bootstrappolicy.ControllerRoleBindings(),
+		bootstrappolicy.NamespaceRoles(),
+		bootstrappolicy.NamespaceRoleBindings(),
+	)
+}
+
+func ensureRBAC(ctx context.Context, clusterRoles, clusterRoleBindings, roles, roleBindings *genericregistry.Store) error {
 	for _, cr := range append(bootstrappolicy.ClusterRoles(), bootstrappolicy.ControllerRoles()...) {
-		ensureClusterRole(ctx, clusterRoles, &cr)
+		if err := ensureClusterRole(ctx, clusterRoles, &cr); err != nil {
+			return err
+		}
 	}
 	for _, crb := range append(bootstrappolicy.ClusterRoleBindings(), bootstrappolicy.ControllerRoleBindings()...) {
-		ensureClusterRoleBinding(ctx, clusterRoleBindings, &crb)
+		if err := ensureClusterRoleBinding(ctx, clusterRoleBindings, &crb); err != nil {
+			return err
+		}
 	}
 	if roles != nil {
 		for ns, list := range bootstrappolicy.NamespaceRoles() {
 			for i := range list {
-				ensureRole(ctx, roles, ns, &list[i])
+				if err := ensureRole(ctx, roles, ns, &list[i]); err != nil {
+					return err
+				}
 			}
 		}
 	}
 	if roleBindings != nil {
 		for ns, list := range bootstrappolicy.NamespaceRoleBindings() {
 			for i := range list {
-				ensureRoleBinding(ctx, roleBindings, ns, &list[i])
+				if err := ensureRoleBinding(ctx, roleBindings, ns, &list[i]); err != nil {
+					return err
+				}
 			}
 		}
 	}
+	return nil
 }
 
-func ensureClusterRole(ctx context.Context, store *genericregistry.Store, cr *rbacv1.ClusterRole) {
+func ensureClusterRole(ctx context.Context, store *genericregistry.Store, cr *rbacv1.ClusterRole) error {
 	obj := cr.DeepCopy()
 	ctx = genericapirequest.WithNamespace(ctx, metav1.NamespaceNone)
 	ctx = genericapirequest.WithRequestInfo(ctx, &genericapirequest.RequestInfo{
@@ -72,10 +96,12 @@ func ensureClusterRole(ctx context.Context, store *genericregistry.Store, cr *rb
 	})
 	if _, err := store.Create(ctx, obj, rest.ValidateAllObjectFunc, &metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 		println("apiserver: bootstrap clusterrole:", obj.Name, err.Error())
+		return err
 	}
+	return nil
 }
 
-func ensureClusterRoleBinding(ctx context.Context, store *genericregistry.Store, crb *rbacv1.ClusterRoleBinding) {
+func ensureClusterRoleBinding(ctx context.Context, store *genericregistry.Store, crb *rbacv1.ClusterRoleBinding) error {
 	obj := crb.DeepCopy()
 	ctx = genericapirequest.WithNamespace(ctx, metav1.NamespaceNone)
 	ctx = genericapirequest.WithRequestInfo(ctx, &genericapirequest.RequestInfo{
@@ -88,10 +114,12 @@ func ensureClusterRoleBinding(ctx context.Context, store *genericregistry.Store,
 	})
 	if _, err := store.Create(ctx, obj, rest.ValidateAllObjectFunc, &metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 		println("apiserver: bootstrap clusterrolebinding:", obj.Name, err.Error())
+		return err
 	}
+	return nil
 }
 
-func ensureRole(ctx context.Context, store *genericregistry.Store, ns string, role *rbacv1.Role) {
+func ensureRole(ctx context.Context, store *genericregistry.Store, ns string, role *rbacv1.Role) error {
 	obj := role.DeepCopy()
 	ctx = genericapirequest.WithNamespace(ctx, ns)
 	ctx = genericapirequest.WithRequestInfo(ctx, &genericapirequest.RequestInfo{
@@ -105,10 +133,12 @@ func ensureRole(ctx context.Context, store *genericregistry.Store, ns string, ro
 	})
 	if _, err := store.Create(ctx, obj, rest.ValidateAllObjectFunc, &metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 		println("apiserver: bootstrap role:", ns+"/"+obj.Name, err.Error())
+		return err
 	}
+	return nil
 }
 
-func ensureRoleBinding(ctx context.Context, store *genericregistry.Store, ns string, rb *rbacv1.RoleBinding) {
+func ensureRoleBinding(ctx context.Context, store *genericregistry.Store, ns string, rb *rbacv1.RoleBinding) error {
 	obj := rb.DeepCopy()
 	ctx = genericapirequest.WithNamespace(ctx, ns)
 	ctx = genericapirequest.WithRequestInfo(ctx, &genericapirequest.RequestInfo{
@@ -122,5 +152,7 @@ func ensureRoleBinding(ctx context.Context, store *genericregistry.Store, ns str
 	})
 	if _, err := store.Create(ctx, obj, rest.ValidateAllObjectFunc, &metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 		println("apiserver: bootstrap rolebinding:", ns+"/"+obj.Name, err.Error())
+		return err
 	}
+	return nil
 }
