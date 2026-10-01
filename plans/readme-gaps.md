@@ -1235,3 +1235,49 @@ it. Remove an entry when the behaviour exists and CI covers it.
     front worker once, after the replay, and the three checked against the
     audit log have one entry each, so those were requests workerd never
     read, as the replay assumes. `devtls` is not changed.
+- Runs 36844656269 (443), 36844659450 (442) and 36844662872 (445 of 446)
+  on a1687e5. Endpoints lifecycle passes in all three. What is left is
+  one cause, the workerd main thread at 100%, seen three ways. None of it
+  is fixed, and none of it comes from the bridge change.
+  - Shard 4 in the first two runs (Watchers `Watch closed unexpectedly`,
+    a liveness pod `not found`, a webhook deployment never ready, two
+    pods not Succeeded after 539s). The MutatingAdmissionPolicy spec
+    creates `marker-deployment`, which its policy mutates to 1337
+    replicas, and deletes it at once. In the passing runs the delete
+    lands 0.4 to 0.7s after the create and before a pass has acted. In
+    the failing ones a pass created the ReplicaSet first (in 36844659450
+    0.5s after the Deployment was already deleted, from a list taken
+    before the delete) and its ReplicaSet controller created all 1337
+    pods inside one pass of 57s and 67s: the slow start doubles its
+    batches up to 245 concurrent creates, the client is not rate limited
+    (QPS 1000), and
+    `drain` does not end a pass while a sync is in flight. The main
+    thread sat at 1000ms or more per second in 517 of 536 and 683 of 712
+    samples for nine to thirteen minutes while the pods were scheduled,
+    reported on and collected; `devtls` answered 133 and 189 requests
+    with 502, node leases among them, and the Watchers spec's PUT waited
+    from 10:03:33 to 10:12:27 to reach the front worker. In that run the
+    garbage collector deleted the ReplicaSet a second after the pass
+    ended. Upstream
+    creates pods at the same 20 a second (the controller manager's
+    client QPS), but its apiserver has room left, so the delete and the
+    collector get through within a second and a few dozen pods exist.
+    Here 20 pod creates a second is the whole capacity. The lever is to
+    keep one pass from filling the event loop, for example a cap on the
+    requests the workloads client has in flight, so that the delete and
+    the collector are served while a ReplicaSet scales; it needs a
+    cluster to measure and is not done.
+  - CustomResourceFieldSelectors, once (36844659450 shard 5), now at
+    line 305 instead of 293: both plain v2 watches received both DELETED
+    events. The spec gives its informers a 30s context from registration.
+    With the main thread saturated in all 38 samples of that window, the
+    creates took 5s, the lists 9s, the DeleteCollection 4.5s and the
+    update's GET and PUT 3.5s and 9.2s, so the PUT finished 1.8s after
+    the informers had been cancelled. No event was dropped and no
+    `drain timeout` or `pump window closed` appears.
+  - ControllerRevision, once (36844662872 shard 1), now `failed to count
+    required ControllerRevisions`: the same `dedupCurHistories` race from
+    the other side. The spec's create answered at 10:26:59.143, the pass
+    listed at .335, patched the two pods and deleted the initial revision
+    at .882, and the spec's first list reached the front worker at .930,
+    790ms after it was sent, so it never saw two revisions.
