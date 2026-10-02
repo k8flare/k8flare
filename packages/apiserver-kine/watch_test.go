@@ -2,13 +2,19 @@ package kine
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/apiserver/pkg/storage"
@@ -99,5 +105,60 @@ func TestWatchDeliversProgressAsBookmarkOnlyWhenAsked(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSelectorWatchKeepsDeliveringUpdatesAfterTheObjectEntersTheSelector(t *testing.T) {
+	previous := WatchDialer
+	defer func() { WatchDialer = previous }()
+	codec := scheme.Codecs.LegacyCodec(appsv1.SchemeGroupVersion)
+	replicaSet := func(labelled bool, ready int32) string {
+		rs := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Name: "test-rs", Namespace: "ns"}}
+		if labelled {
+			rs.Labels = map[string]string{"test-rs": "patched"}
+		}
+		rs.Status.ReadyReplicas = ready
+		data, err := runtime.Encode(codec, rs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return base64.StdEncoding.EncodeToString(data)
+	}
+	const key = "/registry/replicasets/ns/test-rs"
+	modified := func(rev int64, prev, value string) []byte {
+		msg, err := json.Marshal(kineEvent{Rev: rev, Type: "modified", Key: key, Prev: prev, Value: value})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return msg
+	}
+	replicaSetAttrs := func(obj runtime.Object) (labels.Set, fields.Set, error) {
+		rs := obj.(*appsv1.ReplicaSet)
+		return labels.Set(rs.Labels), fields.Set{}, nil
+	}
+	msgs := make(chan []byte, 8)
+	msgs <- modified(10, replicaSet(false, 0), replicaSet(true, 0))
+	msgs <- modified(11, replicaSet(true, 0), replicaSet(true, 1))
+	msgs <- modified(12, replicaSet(true, 1), replicaSet(true, 2))
+	msgs <- modified(13, replicaSet(true, 2), replicaSet(true, 3))
+	msgs <- []byte(`{"rev":14,"type":"progress"}`)
+	WatchDialer = func(context.Context, string) (<-chan []byte, func(), error) { return msgs, func() {}, nil }
+	s := NewStorage(&Client{Secrets: &SecretCipher{}}, codec, func() runtime.Object { return &appsv1.ReplicaSet{} })
+	pred := storage.SelectionPredicate{Label: labels.SelectorFromSet(labels.Set{"test-rs": "patched"}), Field: fields.Everything(), GetAttrs: replicaSetAttrs, AllowWatchBookmarks: true}
+	w, err := s.Watch(context.Background(), "/replicasets/ns/", storage.ListOptions{Recursive: true, ResourceVersion: "9", Predicate: pred})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Stop()
+	want := []watch.EventType{watch.Added, watch.Modified, watch.Modified, watch.Modified, watch.Bookmark}
+	for i, wantType := range want {
+		select {
+		case ev := <-w.ResultChan():
+			if ev.Type != wantType {
+				t.Fatalf("event %d = %v, want %v", i, ev.Type, wantType)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("event %d (%v) never arrived", i, wantType)
+		}
 	}
 }
