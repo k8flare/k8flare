@@ -85,9 +85,6 @@ func userInfoFromRequest(u admit.User) user.Info {
 
 func requestAttributes(req *admit.Request, obj, oldObj runtime.Object) admission.Attributes {
 	op := admission.Operation(req.Operation)
-	if op == "" {
-		op = admission.Create
-	}
 	return admission.NewAttributesRecord(
 		obj,
 		oldObj,
@@ -105,9 +102,6 @@ func requestAttributes(req *admit.Request, obj, oldObj runtime.Object) admission
 
 func runUpstreamPlugin(ctx context.Context, plugin admission.Interface, req *admit.Request) error {
 	op := admission.Operation(req.Operation)
-	if op == "" {
-		op = admission.Create
-	}
 	if !plugin.Handles(op) {
 		return nil
 	}
@@ -124,7 +118,7 @@ func runUpstreamPlugin(ctx context.Context, plugin admission.Interface, req *adm
 	attrs := requestAttributes(req, obj, oldObj)
 
 	switch req.Phase {
-	case "", "admit":
+	case "admit":
 		mutator, ok := plugin.(admission.MutationInterface)
 		if !ok {
 			return nil
