@@ -77,12 +77,6 @@ func TestDiffRuntimeClass(t *testing.T) {
 	status.oldObject = runtimeClassPod(strPtr("gone"), nil)
 	cases = append(cases, bothPhases(update)...)
 	cases = append(cases, bothPhases(status)...)
-	cases = applyKnown(t, cases, map[string]*knownDifference{
-		"empty runtime class name":               {reason: "upstream looks up a non-nil empty runtimeClassName and rejects it as not found, ours treats it as unset (runtimeclass/admission.go prepareObjects)", signature: "outcome: upstream denied 403 Forbidden; ours allowed"},
-		"empty runtime class name (validate)":    {reason: "same as the admit case", signature: "outcome: upstream denied 403 Forbidden; ours allowed"},
-		"runtime class being deleted":            {reason: "ours rejects a RuntimeClass with a deletionTimestamp as not found, upstream still uses it (runtimeclass/admission.go prepareObjects)", signature: "outcome: upstream allowed; ours denied 403 Forbidden"},
-		"runtime class being deleted (validate)": {reason: "both reject but for different reasons: upstream finds the class and reports the overhead mismatch, ours reports it not found (runtimeclass/admission.go validateOverhead)", messageOnly: true},
-	})
 	runDiffCases(t, cases)
 }
 

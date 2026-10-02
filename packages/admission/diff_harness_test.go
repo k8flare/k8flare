@@ -101,7 +101,7 @@ var pluginPairs = map[string]pluginPair{
 	"DefaultStorageClass":           {upstream: setdefault.PluginName, swapped: true, admit: storeOnly(applyDefaultStorageClass)},
 	"DefaultIngressClass":           {upstream: defaultingressclass.PluginName, swapped: true, admit: storeOnly(applyDefaultIngressClass)},
 	"StorageObjectInUseProtection":  {upstream: storageobjectinuseprotection.PluginName, admit: storeOnly(applyStorageObjectInUseProtection)},
-	"RuntimeClass":                  {upstream: runtimeclass.PluginName, admit: storeOnly(applyRuntimeClass), validate: storeOnly(validateRuntimeClass)},
+	"RuntimeClass":                  {upstream: runtimeclass.PluginName, swapped: true, admit: storeOnly(applyRuntimeClass), validate: storeOnly(validateRuntimeClass)},
 	"TaintNodesByCondition":         {upstream: nodetaint.PluginName, swapped: true, admit: storeOnly(applyTaintNodesByCondition)},
 	"PodTopologyLabels":             {upstream: podtopologylabels.PluginName, admit: storeOnly(applyPodTopologyLabels)},
 	"PersistentVolumeClaimResize":   {upstream: resize.PluginName, validate: storeOnly(applyPersistentVolumeClaimResize)},

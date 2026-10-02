@@ -9,6 +9,7 @@ import (
 	admit "github.com/k8flare/k8flare/packages/apiserver-admit"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	nodev1 "k8s.io/api/node/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -20,10 +21,12 @@ import (
 	informerscore "k8s.io/client-go/informers/core"
 	"k8s.io/client-go/informers/internalinterfaces"
 	informersnetworking "k8s.io/client-go/informers/networking"
+	informersnode "k8s.io/client-go/informers/node"
 	informersscheduling "k8s.io/client-go/informers/scheduling"
 	informersstorage "k8s.io/client-go/informers/storage"
 	"k8s.io/client-go/kubernetes"
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
+	nodev1client "k8s.io/client-go/kubernetes/typed/node/v1"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -66,6 +69,40 @@ func (n *limitRangeIndexerNamespaced) List(_ context.Context, _ metav1.ListOptio
 		result.Items = append(result.Items, *lr)
 	}
 	return result, nil
+}
+
+type runtimeClassIndexerClient struct {
+	kubernetes.Interface
+	indexer cache.Indexer
+}
+
+func (c *runtimeClassIndexerClient) NodeV1() nodev1client.NodeV1Interface {
+	return &runtimeClassIndexerNodeV1{indexer: c.indexer}
+}
+
+type runtimeClassIndexerNodeV1 struct {
+	nodev1client.NodeV1Interface
+	indexer cache.Indexer
+}
+
+func (c *runtimeClassIndexerNodeV1) RuntimeClasses() nodev1client.RuntimeClassInterface {
+	return &runtimeClassIndexerGetter{indexer: c.indexer}
+}
+
+type runtimeClassIndexerGetter struct {
+	nodev1client.RuntimeClassInterface
+	indexer cache.Indexer
+}
+
+func (g *runtimeClassIndexerGetter) Get(_ context.Context, name string, _ metav1.GetOptions) (*nodev1.RuntimeClass, error) {
+	obj, exists, err := g.indexer.GetByKey(name)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, apierrors.NewNotFound(nodev1.Resource("runtimeclasses"), name)
+	}
+	return obj.(*nodev1.RuntimeClass), nil
 }
 
 type storeInformer struct {
@@ -138,6 +175,7 @@ type storeIndexer[T runtime.Object] struct {
 	namespaced  bool
 	items       map[string]T
 	byNamespace map[string][]T
+	absent      map[string]bool
 	allLoaded   bool
 }
 
@@ -150,6 +188,7 @@ func newStoreIndexer[T runtime.Object](ctx context.Context, s *store, prefix str
 		namespaced:  namespaced,
 		items:       make(map[string]T),
 		byNamespace: make(map[string][]T),
+		absent:      make(map[string]bool),
 	}
 }
 
@@ -176,7 +215,7 @@ func (idx *storeIndexer[T]) GetByKey(key string) (any, bool, error) {
 	if item, ok := idx.items[key]; ok {
 		return item, true, nil
 	}
-	if idx.allLoaded {
+	if idx.allLoaded || idx.absent[key] {
 		return nil, false, nil
 	}
 	if idx.store == nil || idx.store.client == nil {
@@ -187,6 +226,7 @@ func (idx *storeIndexer[T]) GetByKey(key string) (any, bool, error) {
 		return nil, false, err
 	}
 	if !exists {
+		idx.absent[key] = true
 		return nil, false, nil
 	}
 	idx.items[key] = obj
@@ -346,6 +386,7 @@ type storeInformerFactory struct {
 	limitRange    cache.Indexer
 	storageClass  cache.Indexer
 	ingressClass  cache.Indexer
+	runtimeClass  cache.Indexer
 	failure       error
 }
 
@@ -358,6 +399,7 @@ func newStoreInformerFactory(ctx context.Context, s *store) *storeInformerFactor
 	f.priorityClass = newStoreIndexer[*schedulingv1.PriorityClass](ctx, s, "/registry/priorityclasses/", false, f.fail)
 	f.limitRange = newStoreIndexer[*corev1.LimitRange](ctx, s, "/registry/limitranges/", true, f.fail)
 	f.storageClass = newStoreIndexer[*storagev1.StorageClass](ctx, s, "/registry/storageclasses/", false, f.fail)
+	f.runtimeClass = newStoreIndexer[*nodev1.RuntimeClass](ctx, s, "/registry/runtimeclasses/", false, f.fail)
 	f.ingressClass = newStoreIndexer[*networkingv1.IngressClass](ctx, s, "/registry/ingressclasses/", false, f.fail)
 	return f
 }
@@ -408,6 +450,10 @@ func (f *storeInformerFactory) Networking() informersnetworking.Interface {
 	return informersnetworking.New(f, metav1.NamespaceAll, nil)
 }
 
+func (f *storeInformerFactory) Node() informersnode.Interface {
+	return informersnode.New(f, metav1.NamespaceAll, nil)
+}
+
 func (f *storeInformerFactory) InformerName() *cache.InformerName { return nil }
 
 func (f *storeInformerFactory) InformerFor(obj runtime.Object, newFunc internalinterfaces.NewInformerFunc) cache.SharedIndexInformer {
@@ -418,6 +464,8 @@ func (f *storeInformerFactory) InformerFor(obj runtime.Object, newFunc internali
 		return storeInformer{indexer: f.limitRange}
 	case *storagev1.StorageClass:
 		return storeInformer{indexer: f.storageClass}
+	case *nodev1.RuntimeClass:
+		return storeInformer{indexer: f.runtimeClass}
 	case *networkingv1.IngressClass:
 		return storeInformer{indexer: f.ingressClass}
 	default:

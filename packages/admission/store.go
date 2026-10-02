@@ -9,7 +9,6 @@ import (
 	admissionregv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
-	nodev1 "k8s.io/api/node/v1"
 	storagev1 "k8s.io/api/storage/v1"
 )
 
@@ -136,10 +135,6 @@ func (s *store) namespace(ctx context.Context, name string) (corev1.Namespace, b
 
 func (s *store) serviceAccount(ctx context.Context, ns, name string) (corev1.ServiceAccount, bool, error) {
 	return getJSON[corev1.ServiceAccount](ctx, s.client, "/registry/serviceaccounts/"+ns+"/"+name)
-}
-
-func (s *store) runtimeClass(ctx context.Context, name string) (nodev1.RuntimeClass, bool, error) {
-	return getJSON[nodev1.RuntimeClass](ctx, s.client, "/registry/runtimeclasses/"+name)
 }
 
 func (s *store) storageClasses(ctx context.Context) ([]storagev1.StorageClass, error) {
