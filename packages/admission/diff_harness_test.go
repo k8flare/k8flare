@@ -98,7 +98,7 @@ func authorizerOnly(fn func(context.Context, authorizer.Authorizer, *admit.Reque
 var pluginPairs = map[string]pluginPair{
 	"DefaultTolerationSeconds":      {upstream: defaulttolerationseconds.PluginName, swapped: true, admit: storeOnly(applyDefaultTolerationSeconds)},
 	"LimitRanger":                   {upstream: limitranger.PluginName, swapped: true, admit: storeOnly(applyLimitRanger), validate: storeOnly(validateLimitRanger)},
-	"DefaultStorageClass":           {upstream: setdefault.PluginName, admit: storeOnly(applyDefaultStorageClass)},
+	"DefaultStorageClass":           {upstream: setdefault.PluginName, swapped: true, admit: storeOnly(applyDefaultStorageClass)},
 	"DefaultIngressClass":           {upstream: defaultingressclass.PluginName, admit: storeOnly(applyDefaultIngressClass)},
 	"StorageObjectInUseProtection":  {upstream: storageobjectinuseprotection.PluginName, admit: storeOnly(applyStorageObjectInUseProtection)},
 	"RuntimeClass":                  {upstream: runtimeclass.PluginName, admit: storeOnly(applyRuntimeClass), validate: storeOnly(validateRuntimeClass)},

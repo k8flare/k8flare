@@ -364,6 +364,22 @@ func (f *storeInformerFactory) fail(err error) {
 	}
 }
 
+type informerFactoryInitializer struct{ factory *storeInformerFactory }
+
+func (i informerFactoryInitializer) Initialize(plugin admission.Interface) {
+	if w, ok := plugin.(interface {
+		SetExternalKubeInformerFactory(informers.SharedInformerFactory)
+	}); ok {
+		w.SetExternalKubeInformerFactory(i.factory)
+	}
+}
+
+func initUpstreamPlugin(register func(*admission.Plugins), name string, f *storeInformerFactory) (admission.Interface, error) {
+	plugins := admission.NewPlugins()
+	register(plugins)
+	return plugins.InitPlugin(name, nil, informerFactoryInitializer{f})
+}
+
 func runWithFactory(ctx context.Context, plugin admission.Interface, f *storeInformerFactory, req *admit.Request) error {
 	err := runUpstreamPlugin(ctx, plugin, req)
 	if f.failure != nil {
