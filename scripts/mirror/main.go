@@ -5,8 +5,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -20,7 +18,6 @@ import (
 type op struct {
 	kind     string
 	path     string
-	overlay  string
 	astOps   []edit
 	decls    fileEdit
 	required []string
@@ -29,23 +26,16 @@ type op struct {
 // hostOnly keeps the upstream file for every target but js.
 func hostOnly(path string) op { return op{kind: "hostOnly", path: path} }
 
-// replaceJS keeps the upstream file for host builds and adds the overlay
-// (which carries its own //go:build js constraint) beside it.
-func replaceJS(path, overlay string) op { return op{kind: "replaceJS", path: path, overlay: overlay} }
-
 func narrowClientset(path string) op { return op{kind: "narrowClientset", path: path} }
 
 func narrowInformerFactory(path string) op { return op{kind: "narrowInformerFactory", path: path} }
 
 func narrowInformerGroups(dir string) op { return op{kind: "narrowInformerGroups", path: dir} }
 
-func addJS(path, overlay string) op { return op{kind: "addJS", path: path, overlay: overlay} }
-
 type mirror struct {
 	name    string
 	module  string
 	version string
-	pins    []string
 	ops     []op
 }
 
@@ -95,11 +85,6 @@ var mirrors = []mirror{
 	{
 		name:   "kubernetes",
 		module: "github.com/k3s-io/kubernetes",
-		pins: []string{
-			"pkg/scheduler/backend/queue/testing.go",
-			"pkg/scheduler/backend/queue/scheduling_queue.go",
-			"pkg/controller/certificates/cleaner/pcrcleaner.go",
-		},
 		ops: []op{
 			keepDeclsJS("pkg/securitycontext/util_darwin.go", "possibleCPUs"),
 			patchJSAST("pkg/util/filesystem/util_unix.go",
@@ -140,9 +125,6 @@ var mirrors = []mirror{
 	{
 		name:   "client-go",
 		module: "github.com/k3s-io/kubernetes/staging/src/k8s.io/client-go",
-		pins: []string{
-			"informers/generic.go",
-		},
 		ops: []op{
 			patchAST("util/workqueue/delaying_queue.go",
 				insertAfter("delayingType.AddAfter", "q.metrics.retry()", "ObserveDelay(duration)"),
@@ -153,6 +135,10 @@ var mirrors = []mirror{
 			),
 			narrowClientset("kubernetes/clientset.go"),
 			narrowInformerFactory("informers/factory.go"),
+			requireDecls("informers/generic.go",
+				"type GenericInformer interface { Informer() cache.SharedIndexInformer; Lister() cache.GenericLister }",
+				"func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource) (GenericInformer, error)",
+			),
 			hostOnly("informers/generic.go"),
 			narrowInformerGroups("informers"),
 			keepDeclsJS("util/certificate/csr/csr.go", "ExpirationSecondsToDuration"),
@@ -161,7 +147,6 @@ var mirrors = []mirror{
 	{
 		name:   "apiextensions",
 		module: "github.com/k3s-io/kubernetes/staging/src/k8s.io/apiextensions-apiserver",
-		pins:   []string{},
 		ops: []op{
 			keepDeclsJS("pkg/apiserver/apiserver.go", "Scheme", "Codecs", "unversionedVersion", "unversionedTypes", "init"),
 			patchAST("pkg/apiserver/customresource_discovery.go",
@@ -232,7 +217,6 @@ var mirrors = []mirror{
 }
 
 func main() {
-	writePins := len(os.Args) > 1 && os.Args[1] == "-write-pins"
 	root, err := repoRoot()
 	check(err)
 	for _, m := range mirrors {
@@ -242,9 +226,6 @@ func main() {
 		check(err)
 		dst := filepath.Join(root, ".build", m.name+"-mirror")
 		overlays := filepath.Join(root, "scripts/mirror/_overlays")
-		for _, rel := range m.pins {
-			check(checkPin(src, rel, filepath.Join(overlays, m.name, pinName(rel)), writePins))
-		}
 		check(os.RemoveAll(dst))
 		check(copyTree(src, dst))
 		for _, o := range m.ops {
@@ -287,30 +268,6 @@ func moduleDir(module, version string) (string, error) {
 	return info.Dir, nil
 }
 
-func pinName(rel string) string {
-	return "upstream-" + strings.ReplaceAll(rel, "/", "-") + ".sha256"
-}
-
-func checkPin(src, rel, pinFile string, write bool) error {
-	data, err := os.ReadFile(filepath.Join(src, rel))
-	if err != nil {
-		return err
-	}
-	sum := sha256.Sum256(data)
-	got := hex.EncodeToString(sum[:])
-	if write {
-		return os.WriteFile(pinFile, []byte(got+"\n"), 0o644)
-	}
-	want, err := os.ReadFile(pinFile)
-	if err != nil {
-		return fmt.Errorf("%s: no pin (run with -write-pins after reviewing the overlay): %w", rel, err)
-	}
-	if strings.TrimSpace(string(want)) != got {
-		return fmt.Errorf("%s changed upstream (pin %s, got %s): review the overlay, then refresh the pin", rel, strings.TrimSpace(string(want)), got)
-	}
-	return nil
-}
-
 func copyTree(src, dst string) error {
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		return err
@@ -347,30 +304,6 @@ func apply(dst, overlays string, o op) error {
 	case "hostOnly":
 		_, err := keepHostOnly(dst, o.path)
 		return err
-	case "addJS":
-		data, err := os.ReadFile(filepath.Join(overlays, o.overlay))
-		if err != nil {
-			return err
-		}
-		if !bytes.HasPrefix(data, []byte("//go:build js")) {
-			return fmt.Errorf("%s: overlay must start with a //go:build js constraint", o.overlay)
-		}
-		if err := os.MkdirAll(filepath.Dir(filepath.Join(dst, o.path)), 0o755); err != nil {
-			return err
-		}
-		return os.WriteFile(filepath.Join(dst, o.path), data, 0o644)
-	case "replaceJS":
-		if _, err := keepHostOnly(dst, o.path); err != nil {
-			return err
-		}
-		data, err := os.ReadFile(filepath.Join(overlays, o.overlay))
-		if err != nil {
-			return err
-		}
-		if !bytes.HasPrefix(data, []byte("//go:build js")) {
-			return fmt.Errorf("%s: overlay must start with a //go:build js constraint", o.overlay)
-		}
-		return os.WriteFile(filepath.Join(dst, jsName(o.path)), data, 0o644)
 	case "patchAST", "patchJSAST":
 		return applyAST(dst, overlays, o)
 	case "astJS":
