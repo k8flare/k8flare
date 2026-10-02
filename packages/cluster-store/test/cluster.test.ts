@@ -170,6 +170,28 @@ test("ServiceCIDR, ValidatingAdmissionPolicy, ResourceClaim and ResourceSlice wr
   ]);
 });
 
+test("Role, RoleBinding, LimitRange, NetworkPolicy and ResourceClaimTemplate writes reach the workloads queue", async () => {
+  const sent: string[] = [];
+  const workloads = { send: async () => {}, sendBatch: async (batch: { body: { key: string } }[]) => void sent.push(...batch.map((m) => m.body.key)) };
+  const r = rig({ WL_Q: workloads } as any);
+  await r.settle();
+  await r.put("/registry/roles/default/reader", "v1");
+  await r.put("/registry/rolebindings/default/reader", "v1");
+  await r.put("/registry/limitranges/default/limits", "v1");
+  await r.put("/registry/networkpolicies/default/deny", "v1");
+  await r.put("/registry/resourceclaimtemplates/default/gpu", "v1");
+  await r.remove("/registry/roles/default/reader");
+  await r.settle();
+  assert.deepEqual(sent, [
+    "/registry/roles/default/reader",
+    "/registry/rolebindings/default/reader",
+    "/registry/limitranges/default/limits",
+    "/registry/networkpolicies/default/deny",
+    "/registry/resourceclaimtemplates/default/gpu",
+    "/registry/roles/default/reader",
+  ]);
+});
+
 test("IPAddress and DeviceClass writes do not start a workloads pass", async () => {
   const sent: string[] = [];
   const workloads = { send: async () => {}, sendBatch: async (batch: { body: { key: string } }[]) => void sent.push(...batch.map((m) => m.body.key)) };
