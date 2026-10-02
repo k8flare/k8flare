@@ -1790,4 +1790,5 @@ Decided on 2026-10-01, with the owner:
     `system-cluster-critical` until the scheduling API has created the
     object, and CoreDNS is created first. Unit and E2E did not notice.
     The fallback to the built-in list is back (ae337c4) as a known
-    difference; rerun pending.
+    difference; the rerun (69d206e) passed Unit, E2E and Conformance 3 of
+    3.
