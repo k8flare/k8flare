@@ -86,6 +86,7 @@ export class Cluster extends DurableObject<Env> {
       );
       this.sweepNamespaces();
       this.seedAddons();
+      this.dueAt("compact_due", COMPACT_INTERVAL_MS);
       ctx.waitUntil(this.armAlarm());
     });
   }
@@ -138,6 +139,11 @@ export class Cluster extends DurableObject<Env> {
 
   private setMeta(key: string, value: number): void {
     this.ctx.storage.sql.exec("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", key, value);
+  }
+
+  private compactDue(): number | null {
+    const rows = this.ctx.storage.sql.exec("SELECT value FROM meta WHERE key = 'compact_due'").toArray();
+    return rows.length === 0 ? null : (rows[0].value as number);
   }
 
   private dueAt(key: string, intervalMs: number): number {
@@ -295,6 +301,7 @@ export class Cluster extends DurableObject<Env> {
       case "POST /progress": {
         this.restoreWatchers();
         this.sendProgressToAll();
+        this.ctx.waitUntil(this.armAlarm());
         return Response.json({ ok: true, watchers: this.watchers.size });
       }
       case "POST /restore": {
@@ -387,7 +394,7 @@ export class Cluster extends DurableObject<Env> {
     if (rev - this.compactRevision() >= MAX_RETAINED_REVISIONS + COMPACT_SLACK_REVISIONS) this.compactTo(rev - MAX_RETAINED_REVISIONS);
     const type = deleted ? "deleted" : prev ? "modified" : "created";
     this.record(name, type, rev, value, prev);
-    this.restoreWatchers();
+    const restored = this.restoreWatchers();
     const notified = new Set<WebSocket>();
     const matched = [...this.watchers].filter(([, w]) => (w.exact ? name === w.prefix : name.startsWith(w.prefix)));
     if (matched.length > 0) {
@@ -412,7 +419,8 @@ export class Cluster extends DurableObject<Env> {
         if (!notified.has(ws)) this.sendProgress(ws, rev);
       }
     }
-    this.expireWatchers();
+    const expired = this.expireWatchers();
+    if (restored || expired) this.ctx.waitUntil(this.armAlarm());
     return rev;
   }
 
@@ -471,16 +479,19 @@ export class Cluster extends DurableObject<Env> {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  private expireWatchers(): void {
+  private expireWatchers(): boolean {
     const cutoff = Date.now() - WATCH_LEASE_MS;
     const rev = this.revision();
+    let changed = false;
     for (const [ws, w] of this.watchers) {
       if (w.openedAt < cutoff) {
         this.watchers.delete(ws);
         this.sendProgress(ws, rev);
         closeQuietly(ws, "lease");
+        changed = true;
       }
     }
+    return changed;
   }
 
   private sendProgress(ws: WebSocket, rev: number): void {
@@ -504,25 +515,31 @@ export class Cluster extends DurableObject<Env> {
     this.restoreWatchers();
     this.expireWatchers();
     if (this.watchers.size > 0 && now >= this.progressDue) this.sendProgressToAll();
-    if (now >= this.dueAt("compact_due", COMPACT_INTERVAL_MS)) this.compactByTime(now);
+    const compactDue = this.compactDue();
+    if (compactDue !== null && now >= compactDue) this.compactByTime(now);
     await this.takeScheduledSnapshot(now);
     await this.armAlarm();
   }
 
   private async armAlarm(): Promise<void> {
     this.restoreWatchers();
+    this.expireWatchers();
     const schedule = snapshotSchedule(this.env as Env & SnapshotVars);
     const next = nextAlarmAt(
       [
         ...[...this.watchers.values()].map((w) => w.openedAt + WATCH_LEASE_MS),
         this.watchers.size > 0 ? this.progressDue : null,
-        this.dueAt("compact_due", COMPACT_INTERVAL_MS),
+        this.compactDue(),
         schedule && this.snapshotBucket() ? this.dueAt("snapshot_due", schedule.intervalMs) : null,
       ],
       Date.now(),
     );
     const existing = await this.ctx.storage.getAlarm();
-    if (next !== null && (existing === null || existing > next)) {
+    if (next === null) {
+      if (existing !== null) {
+        await this.ctx.storage.deleteAlarm();
+      }
+    } else if (existing !== next) {
       await this.ctx.storage.setAlarm(next);
     }
   }
@@ -581,13 +598,15 @@ export class Cluster extends DurableObject<Env> {
     }
   }
 
-  private restoreWatchers(): void {
+  private restoreWatchers(): boolean {
     const live = new Map<WebSocket, Watcher>();
     for (const ws of this.ctx.getWebSockets()) {
       const w = this.watchers.get(ws) ?? (ws.deserializeAttachment() as Watcher | null);
       if (w) live.set(ws, w);
     }
+    const changed = live.size !== this.watchers.size;
     this.watchers = live;
+    return changed;
   }
 
   private queue(target: Target): Queue<QueueMessage> {
@@ -719,12 +738,13 @@ export class Cluster extends DurableObject<Env> {
   async webSocketClose(ws: WebSocket): Promise<void> {
     this.watchers.delete(ws);
     closeQuietly(ws, "peer");
-    this.ctx.waitUntil(this.armAlarm());
+    await this.armAlarm();
   }
 
   async webSocketError(ws: WebSocket): Promise<void> {
     this.watchers.delete(ws);
     closeQuietly(ws, "error");
+    await this.armAlarm();
   }
 }
 

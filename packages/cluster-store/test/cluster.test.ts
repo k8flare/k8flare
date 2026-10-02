@@ -307,3 +307,32 @@ test("a node keeps exactly one pending lease check: lease writes and follow-ups 
   await r.settle();
   assert.equal(sent.length, 3);
 });
+
+test("closing a watcher updates or clears alarm when nothing else is due", async (t) => {
+  const tick = clock(t);
+  const r = rig({ SNAPSHOT_INTERVAL_HOURS: "0" });
+  await r.settle();
+  r.sql.exec("DELETE FROM meta WHERE key = 'compact_due'");
+  const ws1 = r.watch({ prefix: "/registry/pods/", since: "1" });
+  await r.settle();
+  assert.equal(r.alarm.at, start + 30_000);
+  await r.cluster.webSocketClose(ws1 as any);
+  await r.settle();
+  assert.equal(r.alarm.at, null);
+
+  const wsA = r.watch({ prefix: "/registry/pods/", since: "1" });
+  await r.settle();
+  tick(10_000);
+  const wsB = r.watch({ prefix: "/registry/pods/", since: "1" });
+  await r.settle();
+  tick(31_000);
+  await r.fire();
+  assert.equal(r.alarm.at, start + 41_000 + 30_000);
+  (r.cluster as any).progressDue = start + 500_000;
+  await (r.cluster as any).armAlarm();
+  assert.equal(r.alarm.at, start + 360_000);
+  await r.cluster.webSocketClose(wsA as any);
+  await r.settle();
+  assert.equal(r.alarm.at, start + 10_000 + 360_000);
+});
+
