@@ -136,3 +136,68 @@ not version-bound.
    extract its functions with a generator. The admission worker is not
    split.
 3. Step 4, the scheduled bump, comes after steps 1 and 2.
+
+## Progress (2026-10-02)
+
+Step 1, on `work/codegen` (not merged; Unit and E2E pending):
+
+- The lean clientset, the informer factory and the nine group
+  `interface.go` files are output of `scripts/mirror/lean.go`, driven by
+  one table (`scripts/mirror/keep.go`). The table is still written by
+  hand; deriving it from what `packages/` calls is not done. The
+  `ForResource` stub that stands in for upstream's `generic.go` is a
+  string constant next to the table.
+- Every text patch is an AST edit that names its declaration
+  (`scripts/mirror/astedit.go`); `patch`, `patchJS` and `appendText` are
+  gone. Code this project inserts lives in eight `.go` files under
+  `_overlays/<mirror>/append/`; four statement-level inserts stay as short
+  strings in `main.go`.
+- Four stub overlays are generated from upstream's declarations
+  (`scripts/mirror/ast.go`: keep named declarations, or keep the signature
+  and return a fixed error). Six stay hand-written because they carry
+  logic of their own: `mount_helper_unix.go`, `tracing_utils.go`,
+  `feature_support_checker.go`, `sharding_parser.go`, `register.go`,
+  `signal.go`.
+- The eight module versions are in `scripts/internal/upstream/versions.mod`
+  only; the root `go.mod` carries one of them, so it could not be the
+  source. `versionInfo` and two more literals read
+  `packages/kubeversion/zz_generated_version.go`.
+- Pins: 43 to 10. Hand-written replacement overlays: 23 to 8.
+- Check: the mirror output of the branch against today's, all eight
+  mirrors with `diff -r`: 15 files differ, the 11 lean files and the 4
+  stubs, by comments, declaration order, private field names and
+  `errors.New` for `fmt.Errorf`. Both clientset constructors initialise
+  the same 18 group clients. The js build of `./packages/...` passes.
+
+Step 2:
+
+- `controllerNeeds` and `WORKLOAD_PREFIXES` are generated from the
+  informers the shard constructors are handed (`scripts/genwake`,
+  `work/wake-gen`, on top of `ci/batch8`; equal to the hand tables as
+  data). `sources` stays hand-written: its example objects, page closures
+  and order are not in the constructors. What the derivation showed:
+  - Seven resources a constructor is handed an informer for wake nothing
+    when written: `deviceclasses`, `ipaddresses`, `limitranges`,
+    `networkpolicies`, `resourceclaimtemplates`, `roles`, `rolebindings`.
+    A controller sees them only when another write starts a pass. Kept
+    as it is today, as the named list `undeliveredWakes`; not yet checked
+    per resource whether a spec or a user can observe it.
+  - Dead entries: the prefixes `/registry/storage.k8s.io/`,
+    `/registry/certificates.k8s.io/` and
+    `/registry/rbac.authorization.k8s.io/` (nothing writes those keys),
+    `minions`, and `resourcequota`'s need for `networking.k8s.io`.
+- Field selectors: nothing to generate. `fieldlabels.go` is not a table of
+  labels; the supported labels already come from upstream's registered
+  conversion funcs, and the file reads the selected field as a JSON path.
+  Replacing that reader with upstream's `GetAttrs` is a step 3 item.
+- Admission order: not expressible as upstream's `AllOrderedPlugins`
+  filtered by what is implemented. `packages/admission/chain.go` runs
+  mutation in a different order in five places and validation in six;
+  validating webhooks and ValidatingAdmissionPolicy run before every
+  built-in validator, upstream runs them after all but ResourceQuota. Read,
+  not run: no request was found that one order allows and the other
+  denies; what differs is which denial message is returned when two
+  plugins deny, and that a validating webhook is called for a request a
+  built-in would have rejected. ComputeClass running first was not
+  analysed. Moving to upstream's order is a step 3 item (behaviour
+  change).
