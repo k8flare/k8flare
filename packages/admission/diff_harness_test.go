@@ -199,7 +199,17 @@ func (c diffCase) userInfo() user.Info {
 }
 
 func (c diffCase) attributes(object, oldObject runtime.Object) admission.Attributes {
-	return admission.NewAttributesRecord(object, oldObject, c.kind, c.namespace, c.objName, c.resource, c.subresource, c.op(), &metav1.CreateOptions{}, c.dryRun, c.userInfo())
+	req := admit.Request{
+		Name:        c.objName,
+		Namespace:   c.namespace,
+		Resource:    c.resource,
+		Subresource: c.subresource,
+		Operation:   string(c.op()),
+		DryRun:      c.dryRun,
+		Kind:        c.kind,
+		User:        admitUser(c.userInfo()),
+	}
+	return requestAttributes(&req, object, oldObject)
 }
 
 func versionedCopy(t *testing.T, obj runtime.Object) runtime.Object {
@@ -217,11 +227,7 @@ func toInternal(t *testing.T, obj runtime.Object) runtime.Object {
 	if obj == nil {
 		return nil
 	}
-	gvks, _, err := legacyscheme.Scheme.ObjectKinds(obj)
-	if err != nil {
-		t.Fatalf("object kinds: %v", err)
-	}
-	out, err := legacyscheme.Scheme.ConvertToVersion(obj, schema.GroupVersion{Group: gvks[0].Group, Version: runtime.APIVersionInternal})
+	out, err := toInternalObject(obj)
 	if err != nil {
 		t.Fatalf("convert to internal: %v", err)
 	}
@@ -233,11 +239,10 @@ func toVersioned(t *testing.T, obj runtime.Object, gv schema.GroupVersion) runti
 	if obj == nil {
 		return nil
 	}
-	out, err := legacyscheme.Scheme.ConvertToVersion(obj.DeepCopyObject(), gv)
+	out, err := toVersionedObject(obj, gv)
 	if err != nil {
 		t.Fatalf("convert to versioned: %v", err)
 	}
-	out.GetObjectKind().SetGroupVersionKind(schema.GroupVersionKind{})
 	return out
 }
 

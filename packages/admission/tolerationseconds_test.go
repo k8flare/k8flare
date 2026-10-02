@@ -9,6 +9,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
+const defaultTolerationSeconds = int64(300)
+
 func TestDefaultTolerationSecondsAddsBoth(t *testing.T) {
 	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
