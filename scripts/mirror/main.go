@@ -158,6 +158,7 @@ func (s *Server) ServeConn(clientKey string, conn wsConn) error {
 			"pkg/controller/nodeipam/ipam/cidr_allocator.go",
 			"pkg/controller/podgc/gc_controller.go",
 			"pkg/controller/certificates/cleaner/pcrcleaner.go",
+			"plugin/pkg/auth/authorizer/node/graph_populator.go",
 		},
 		ops: []op{
 			addJS("pkg/securitycontext/util_js.go", "kubernetes/securitycontext_cpus.go"),
@@ -165,6 +166,7 @@ func (s *Server) ServeConn(clientKey string, conn wsConn) error {
 			replaceJS("pkg/scheduler/backend/cache/debugger/signal.go", "kubernetes/signal.go"),
 			hostOnly("pkg/scheduler/backend/queue/testing.go"),
 			hostOnly("pkg/controller/certificates/cleaner/pcrcleaner.go"),
+			hostOnly("plugin/pkg/auth/authorizer/node/graph_populator.go"),
 			patchJS("pkg/controller/nodeipam/node_ipam_controller.go", []op{
 				patch("", "\tcloudprovider \"k8s.io/cloud-provider\"\n", ""),
 				patch("", "cloud                cloudprovider.Interface", "cloud                interface{}"),

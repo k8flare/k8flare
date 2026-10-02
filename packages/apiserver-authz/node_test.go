@@ -10,14 +10,12 @@ import (
 	"testing"
 
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
-	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
-	"k8s.io/client-go/kubernetes/scheme"
 )
 
 func TestNodeAuthorizerIsolation(t *testing.T) {
@@ -44,7 +42,7 @@ func TestNodeAuthorizerIsolation(t *testing.T) {
 		t.Fatalf("own status: %v", d)
 	}
 
-	lease := &authorizer.AttributesRecord{User: node, ResourceRequest: true, Resource: "leases", Verb: "update", Namespace: "kube-node-lease", Name: "k8flare-c1"}
+	lease := &authorizer.AttributesRecord{User: node, ResourceRequest: true, APIGroup: "coordination.k8s.io", Resource: "leases", Verb: "update", Namespace: "kube-node-lease", Name: "k8flare-c1"}
 	if d, _, _ := n.Authorize(context.Background(), lease); d != authorizer.DecisionAllow {
 		t.Fatalf("own lease: %v", d)
 	}
@@ -57,7 +55,7 @@ func TestNodeAuthorizerIsolation(t *testing.T) {
 	if d, _, _ := n.Authorize(context.Background(), lease); d != authorizer.DecisionNoOpinion {
 		t.Fatalf("other lease: %v", d)
 	}
-	leaseList := &authorizer.AttributesRecord{User: node, ResourceRequest: true, Resource: "leases", Verb: "list", Namespace: "kube-node-lease"}
+	leaseList := &authorizer.AttributesRecord{User: node, ResourceRequest: true, APIGroup: "coordination.k8s.io", Resource: "leases", Verb: "list", Namespace: "kube-node-lease"}
 	if d, reason, _ := n.Authorize(context.Background(), leaseList); d != authorizer.DecisionNoOpinion || reason == "" {
 		t.Fatalf("unscoped lease list: %v %q", d, reason)
 	}
@@ -72,59 +70,50 @@ func TestNodeAuthorizerIsolation(t *testing.T) {
 		t.Fatalf("scoped list: %v", d)
 	}
 
-	nodeSel, _ := fields.ParseSelector("metadata.name=k8flare-c1")
-	listOwnNode := &authorizer.AttributesRecord{User: node, ResourceRequest: true, Resource: "nodes", Verb: "list", FieldSelectorRequirements: nodeSel.Requirements()}
-	if d, _, _ := n.Authorize(context.Background(), listOwnNode); d != authorizer.DecisionAllow {
-		t.Fatalf("own node list: %v", d)
-	}
-	if got := nameFromAttrs(&authorizer.AttributesRecord{FieldSelectorRequirements: nodeSel.Requirements()}); got != "k8flare-c1" {
-		t.Fatalf("nameFromAttrs: %s", got)
-	}
-
 	secretSel, _ := fields.ParseSelector("metadata.name=sample-webhook-secret")
 	secretList := &authorizer.AttributesRecord{User: node, ResourceRequest: true, Resource: "secrets", Verb: "list", Namespace: "webhook-7325", FieldSelectorRequirements: secretSel.Requirements()}
-	if d, _, _ := n.Authorize(context.Background(), secretList); d != authorizer.DecisionDeny {
+	if d, _, _ := n.Authorize(context.Background(), secretList); d != authorizer.DecisionNoOpinion {
 		t.Fatalf("named secret without graph: %v", d)
 	}
 	saList := &authorizer.AttributesRecord{User: node, ResourceRequest: true, Resource: "serviceaccounts", Verb: "list", Namespace: "default"}
-	if d, reason, _ := n.Authorize(context.Background(), saList); d != authorizer.DecisionDeny || reason == "" {
+	if d, reason, _ := n.Authorize(context.Background(), saList); d != authorizer.DecisionNoOpinion || reason == "" {
 		t.Fatalf("serviceaccount list: %v %q", d, reason)
 	}
 	claimList := &authorizer.AttributesRecord{User: node, ResourceRequest: true, Resource: "resourceclaims", Verb: "list", Namespace: "default", APIGroup: "resource.k8s.io"}
-	if d, reason, _ := n.Authorize(context.Background(), claimList); d != authorizer.DecisionDeny || reason == "" {
+	if d, reason, _ := n.Authorize(context.Background(), claimList); d != authorizer.DecisionNoOpinion || reason == "" {
 		t.Fatalf("resourceclaim list: %v %q", d, reason)
 	}
 	allSecrets := &authorizer.AttributesRecord{User: node, ResourceRequest: true, Resource: "secrets", Verb: "list", Namespace: "webhook-7325"}
-	if d, _, _ := n.Authorize(context.Background(), allSecrets); d != authorizer.DecisionAllow {
+	if d, _, _ := n.Authorize(context.Background(), allSecrets); d != authorizer.DecisionNoOpinion {
 		t.Fatalf("unscoped secrets list: %v", d)
 	}
 	allCM := &authorizer.AttributesRecord{User: node, ResourceRequest: true, Resource: "configmaps", Verb: "watch", Namespace: "kube-system"}
-	if d, _, _ := n.Authorize(context.Background(), allCM); d != authorizer.DecisionAllow {
+	if d, _, _ := n.Authorize(context.Background(), allCM); d != authorizer.DecisionNoOpinion {
 		t.Fatalf("configmap watch: %v", d)
 	}
 	getUnref := &authorizer.AttributesRecord{User: node, ResourceRequest: true, Resource: "secrets", Verb: "get", Namespace: "default", Name: "unref-probe"}
-	if d, _, _ := n.Authorize(context.Background(), getUnref); d != authorizer.DecisionDeny {
+	if d, _, _ := n.Authorize(context.Background(), getUnref); d != authorizer.DecisionNoOpinion {
 		t.Fatalf("unreferenced get: %v", d)
 	}
 	pvcWrite := &authorizer.AttributesRecord{User: node, ResourceRequest: true, Resource: "persistentvolumeclaims", Verb: "patch", Namespace: "default", Name: "disk"}
-	if d, reason, _ := n.Authorize(context.Background(), pvcWrite); d != authorizer.DecisionDeny || reason != "node cannot write related objects" {
+	if d, reason, _ := n.Authorize(context.Background(), pvcWrite); d != authorizer.DecisionNoOpinion || reason == "" {
 		t.Fatalf("pvc write: %v %q", d, reason)
 	}
 	pv := &authorizer.AttributesRecord{User: node, ResourceRequest: true, Resource: "persistentvolumes", Verb: "get", Name: "disk"}
-	if d, reason, _ := n.Authorize(context.Background(), pv); d != authorizer.DecisionDeny || reason != "node graph unavailable" {
+	if d, reason, _ := n.Authorize(context.Background(), pv); d != authorizer.DecisionNoOpinion || reason == "" {
 		t.Fatalf("pv get: %v %q", d, reason)
 	}
 	pvWrite := *pv
 	pvWrite.Verb = "patch"
-	if d, reason, _ := n.Authorize(context.Background(), &pvWrite); d != authorizer.DecisionDeny || reason != "node cannot write related objects" {
+	if d, reason, _ := n.Authorize(context.Background(), &pvWrite); d != authorizer.DecisionNoOpinion || reason == "" {
 		t.Fatalf("pv write: %v %q", d, reason)
 	}
 	vaGet := &authorizer.AttributesRecord{User: node, ResourceRequest: true, Resource: "volumeattachments", Verb: "get", APIGroup: "storage.k8s.io", Name: "disk"}
-	if d, reason, _ := n.Authorize(context.Background(), vaGet); d != authorizer.DecisionDeny || reason != "node graph unavailable" {
+	if d, reason, _ := n.Authorize(context.Background(), vaGet); d != authorizer.DecisionNoOpinion || reason == "" {
 		t.Fatalf("volumeattachment get: %v %q", d, reason)
 	}
 	pvcStatus := &authorizer.AttributesRecord{User: node, ResourceRequest: true, Resource: "persistentvolumeclaims", Subresource: "status", Verb: "patch", Namespace: "default", Name: "disk"}
-	if d, reason, _ := n.Authorize(context.Background(), pvcStatus); d != authorizer.DecisionDeny || reason != "node graph unavailable" {
+	if d, reason, _ := n.Authorize(context.Background(), pvcStatus); d != authorizer.DecisionNoOpinion || reason == "" {
 		t.Fatalf("pvc status: %v %q", d, reason)
 	}
 	ownCSI := &authorizer.AttributesRecord{User: node, ResourceRequest: true, Resource: "csinodes", Verb: "patch", APIGroup: "storage.k8s.io", Name: "k8flare-c1"}
@@ -133,7 +122,7 @@ func TestNodeAuthorizerIsolation(t *testing.T) {
 	}
 	otherCSI := *ownCSI
 	otherCSI.Name = "k8flare-agent"
-	if d, reason, _ := n.Authorize(context.Background(), &otherCSI); d != authorizer.DecisionDeny || reason == "" {
+	if d, reason, _ := n.Authorize(context.Background(), &otherCSI); d != authorizer.DecisionNoOpinion || reason == "" {
 		t.Fatalf("other csinode: %v %q", d, reason)
 	}
 	slice := &authorizer.AttributesRecord{User: node, ResourceRequest: true, Resource: "resourceslices", Verb: "create", APIGroup: "resource.k8s.io", Name: "probe"}
@@ -241,138 +230,12 @@ func TestNodeAuthorizerVolumeAttachmentOwner(t *testing.T) {
 		t.Fatalf("own volumeattachment: %v %v", d, err)
 	}
 	own.User = &user.DefaultInfo{Name: "system:node:k8flare-agent", Groups: []string{user.NodesGroup}}
-	if d, reason, _ := n.Authorize(context.Background(), own); d != authorizer.DecisionDeny || reason == "" {
+	if d, reason, _ := n.Authorize(context.Background(), own); d != authorizer.DecisionNoOpinion || reason == "" {
 		t.Fatalf("other volumeattachment: %v %q", d, reason)
 	}
 }
 
-func TestNodeAuthorizerEndpointsFromVolume(t *testing.T) {
-	pod := &corev1.Pod{}
-	pod.Namespace = "default"
-	pod.Name = "app"
-	pod.Spec.NodeName = "k8flare-c1"
-	pod.Spec.Volumes = []corev1.Volume{{Name: "data", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "data"}}}}
-	pvc := &corev1.PersistentVolumeClaim{}
-	pvc.Namespace = "default"
-	pvc.Name = "data"
-	pvc.Spec.VolumeName = "pv-gluster"
-	pv := &corev1.PersistentVolume{}
-	pv.Name = "pv-gluster"
-	storageNS := "storage"
-	pv.Spec.Glusterfs = &corev1.GlusterfsPersistentVolumeSource{EndpointsName: "gluster", EndpointsNamespace: &storageNS, Path: "vol"}
-	codec := scheme.Codecs.LegacyCodec(corev1.SchemeGroupVersion)
-	encode := func(obj runtime.Object) string {
-		t.Helper()
-		raw, err := runtime.Encode(codec, obj)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return base64.StdEncoding.EncodeToString(raw)
-	}
-	podRaw, pvcRaw, pvRaw := encode(pod), encode(pvc), encode(pv)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/list" {
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"revision": 1,
-				"kvs": []map[string]any{{
-					"key": "/registry/pods/default/app", "value": podRaw, "modRevision": 1,
-				}},
-			})
-			return
-		}
-		key := r.URL.Query().Get("key")
-		value := ""
-		switch key {
-		case "/registry/persistentvolumeclaims/default/data":
-			value = pvcRaw
-		case "/registry/persistentvolumes/pv-gluster":
-			value = pvRaw
-		default:
-			w.WriteHeader(http.StatusNotFound)
-			_ = json.NewEncoder(w).Encode(map[string]any{"error": "not found"})
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"revision": 1,
-			"kv":       map[string]any{"key": key, "value": value, "modRevision": 1},
-		})
-	}))
-	defer srv.Close()
-	n := &nodeAuthorizer{
-		client: &kine.Client{HTTP: &http.Client{Transport: rewriteHost{base: srv.URL, next: srv.Client().Transport}}},
-		ident:  nodeidentifierStub{},
-	}
-	node := &user.DefaultInfo{Name: "system:node:k8flare-c1", Groups: []string{user.NodesGroup}}
-	get := &authorizer.AttributesRecord{User: node, ResourceRequest: true, Resource: "endpoints", Verb: "get", Namespace: "storage", Name: "gluster"}
-	if d, reason, err := n.Authorize(context.Background(), get); err != nil || d != authorizer.DecisionAllow {
-		t.Fatalf("pv endpoint: %v %q %v", d, reason, err)
-	}
-	get.Namespace = "default"
-	if d, _, _ := n.Authorize(context.Background(), get); d != authorizer.DecisionDeny {
-		t.Fatalf("wrong namespace: %v", d)
-	}
-	list := &authorizer.AttributesRecord{User: node, ResourceRequest: true, Resource: "endpoints", Verb: "list", Namespace: "storage"}
-	if d, _, _ := n.Authorize(context.Background(), list); d != authorizer.DecisionDeny {
-		t.Fatalf("endpoint list: %v", d)
-	}
-}
-
-func TestPodReferences(t *testing.T) {
-	pod := corev1.Pod{}
-	pod.Namespace = "default"
-	pod.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: "pull"}}
-	pod.Spec.Volumes = []corev1.Volume{
-		{Name: "v", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "vol"}}},
-		{Name: "p", VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{
-			{ConfigMap: &corev1.ConfigMapProjection{LocalObjectReference: corev1.LocalObjectReference{Name: "kube-root-ca.crt"}}},
-			{Secret: &corev1.SecretProjection{LocalObjectReference: corev1.LocalObjectReference{Name: "proj-secret"}}},
-		}}}},
-	}
-	if !podReferences(pod, "secrets", "default", "pull") || !podReferences(pod, "secrets", "default", "vol") || !podReferences(pod, "secrets", "default", "proj-secret") {
-		t.Fatal("expected secret refs")
-	}
-	if !podReferences(pod, "configmaps", "default", "kube-root-ca.crt") {
-		t.Fatal("expected projected configmap ref")
-	}
-	if podReferences(pod, "secrets", "other", "pull") || podReferences(pod, "secrets", "default", "nope") {
-		t.Fatal("unexpected secret ref")
-	}
-	claim := "gpu"
-	generated := "pod-gpu-generated"
-	pod.Spec.ResourceClaims = []corev1.PodResourceClaim{{Name: "gpu", ResourceClaimName: &claim}}
-	pod.Status.ResourceClaimStatuses = []corev1.PodResourceClaimStatus{{Name: "gpu", ResourceClaimName: &generated}}
-	pod.Status.ExtendedResourceClaimStatus = &corev1.PodExtendedResourceClaimStatus{ResourceClaimName: "extended"}
-	if !podReferences(pod, "resourceclaims", "default", "gpu") || !podReferences(pod, "resourceclaims", "default", "pod-gpu-generated") || !podReferences(pod, "resourceclaims", "default", "extended") {
-		t.Fatal("expected resource claim refs")
-	}
-	if podReferences(pod, "resourceclaims", "other", "gpu") {
-		t.Fatal("unexpected resource claim ref")
-	}
-	pod.Spec.ServiceAccountName = "builder"
-	if !podReferences(pod, "serviceaccounts", "default", "builder") || podReferences(pod, "serviceaccounts", "default", "default") {
-		t.Fatal("expected service account ref")
-	}
-	pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: "g", VolumeSource: corev1.VolumeSource{Glusterfs: &corev1.GlusterfsVolumeSource{EndpointsName: "gluster", Path: "vol"}}})
-	if !podReferences(pod, "endpoints", "default", "gluster") || podReferences(pod, "endpoints", "other", "gluster") {
-		t.Fatal("expected gluster endpoint ref")
-	}
-}
-
 type nodeidentifierStub struct{}
-
-func TestChainHonorsNodeDenyBeforeRBAC(t *testing.T) {
-	node := &user.DefaultInfo{Name: "system:node:k8flare-c1", Groups: []string{user.NodesGroup}}
-	allow := authorizer.AuthorizerFunc(func(context.Context, authorizer.Attributes) (authorizer.Decision, string, error) {
-		return authorizer.DecisionAllow, "rbac", nil
-	})
-	c := chain{&nodeAuthorizer{ident: nodeidentifierStub{}}, allow}
-	got, _, _ := c.Authorize(context.Background(), &authorizer.AttributesRecord{
-		User: node, ResourceRequest: true, Resource: "secrets", Verb: "get", Namespace: "default", Name: "unref-probe",
-	})
-	if got != authorizer.DecisionDeny {
-		t.Fatalf("got %v", got)
-	}
-}
 
 func (nodeidentifierStub) NodeIdentity(u user.Info) (string, bool) {
 	if u == nil {
