@@ -9,10 +9,6 @@ import (
 	admissionregv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
-	networkingv1 "k8s.io/api/networking/v1"
-	nodev1 "k8s.io/api/node/v1"
-	schedulingv1 "k8s.io/api/scheduling/v1"
-	storagev1 "k8s.io/api/storage/v1"
 )
 
 type store struct {
@@ -112,10 +108,6 @@ func (s *store) mutatingBindings(ctx context.Context) ([]admissionregv1.Mutating
 	return listPrefix[admissionregv1.MutatingAdmissionPolicyBinding](ctx, s.client, "/registry/mutatingadmissionpolicybindings/")
 }
 
-func (s *store) limitRanges(ctx context.Context, ns string) ([]corev1.LimitRange, error) {
-	return listPrefix[corev1.LimitRange](ctx, s.client, "/registry/limitranges/"+ns+"/")
-}
-
 func (s *store) service(ctx context.Context, ns, name string) (corev1.Service, bool, error) {
 	return getJSON[corev1.Service](ctx, s.client, "/registry/services/"+ns+"/"+name)
 }
@@ -142,24 +134,4 @@ func (s *store) namespace(ctx context.Context, name string) (corev1.Namespace, b
 
 func (s *store) serviceAccount(ctx context.Context, ns, name string) (corev1.ServiceAccount, bool, error) {
 	return getJSON[corev1.ServiceAccount](ctx, s.client, "/registry/serviceaccounts/"+ns+"/"+name)
-}
-
-func (s *store) runtimeClass(ctx context.Context, name string) (nodev1.RuntimeClass, bool, error) {
-	return getJSON[nodev1.RuntimeClass](ctx, s.client, "/registry/runtimeclasses/"+name)
-}
-
-func (s *store) priorityClass(ctx context.Context, name string) (schedulingv1.PriorityClass, bool, error) {
-	return getJSON[schedulingv1.PriorityClass](ctx, s.client, "/registry/priorityclasses/"+name)
-}
-
-func (s *store) priorityClasses(ctx context.Context) ([]schedulingv1.PriorityClass, error) {
-	return listPrefix[schedulingv1.PriorityClass](ctx, s.client, "/registry/priorityclasses/")
-}
-
-func (s *store) storageClasses(ctx context.Context) ([]storagev1.StorageClass, error) {
-	return listPrefix[storagev1.StorageClass](ctx, s.client, "/registry/storageclasses/")
-}
-
-func (s *store) ingressClasses(ctx context.Context) ([]networkingv1.IngressClass, error) {
-	return listPrefix[networkingv1.IngressClass](ctx, s.client, "/registry/ingressclasses/")
 }

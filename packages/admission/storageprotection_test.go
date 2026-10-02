@@ -6,6 +6,7 @@ import (
 
 	admit "github.com/k8flare/k8flare/packages/apiserver-admit"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	volumeutil "k8s.io/kubernetes/pkg/volume/util"
 )
 
 func TestStorageProtectionAddsPVCFinalizer(t *testing.T) {
@@ -16,7 +17,7 @@ func TestStorageProtectionAddsPVCFinalizer(t *testing.T) {
 	if !out.Allowed {
 		t.Fatalf("expected allow: %+v", out)
 	}
-	if !hasFinalizer(out.Object, pvcProtectionFinalizer) {
+	if !hasFinalizer(out.Object, volumeutil.PVCProtectionFinalizer) {
 		t.Fatalf("finalizers = %v", objectFinalizers(out.Object))
 	}
 }
@@ -26,7 +27,7 @@ func TestStorageProtectionKeepsExistingPVCFinalizer(t *testing.T) {
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := pvcReq(nil)
-	req.Object["metadata"].(map[string]any)["finalizers"] = []any{pvcProtectionFinalizer, "example.com/keep"}
+	req.Object["metadata"].(map[string]any)["finalizers"] = []any{volumeutil.PVCProtectionFinalizer, "example.com/keep"}
 	out := postAdmit(t, h, req)
 	if !out.Allowed {
 		t.Fatalf("expected allow: %+v", out)
@@ -34,7 +35,7 @@ func TestStorageProtectionKeepsExistingPVCFinalizer(t *testing.T) {
 	got := objectFinalizers(out.Object)
 	n := 0
 	for _, f := range got {
-		if f == pvcProtectionFinalizer {
+		if f == volumeutil.PVCProtectionFinalizer {
 			n++
 		}
 	}
@@ -62,7 +63,7 @@ func TestStorageProtectionAddsPVFinalizer(t *testing.T) {
 	if !out.Allowed {
 		t.Fatalf("expected allow: %+v", out)
 	}
-	if !hasFinalizer(out.Object, pvProtectionFinalizer) {
+	if !hasFinalizer(out.Object, volumeutil.PVProtectionFinalizer) {
 		t.Fatalf("finalizers = %v", objectFinalizers(out.Object))
 	}
 }

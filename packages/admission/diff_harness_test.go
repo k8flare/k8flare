@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -70,6 +71,7 @@ type oursFunc func(context.Context, *store, authorizer.Authorizer, *admit.Reques
 
 type pluginPair struct {
 	upstream string
+	swapped  bool
 	admit    oursFunc
 	validate oursFunc
 }
@@ -94,16 +96,16 @@ func authorizerOnly(fn func(context.Context, authorizer.Authorizer, *admit.Reque
 }
 
 var pluginPairs = map[string]pluginPair{
-	"DefaultTolerationSeconds":      {upstream: defaulttolerationseconds.PluginName, admit: storeOnly(applyDefaultTolerationSeconds)},
-	"LimitRanger":                   {upstream: limitranger.PluginName, admit: storeOnly(applyLimitRanger), validate: storeOnly(validateLimitRanger)},
-	"DefaultStorageClass":           {upstream: setdefault.PluginName, admit: storeOnly(applyDefaultStorageClass)},
-	"DefaultIngressClass":           {upstream: defaultingressclass.PluginName, admit: storeOnly(applyDefaultIngressClass)},
-	"StorageObjectInUseProtection":  {upstream: storageobjectinuseprotection.PluginName, admit: storeOnly(applyStorageObjectInUseProtection)},
-	"RuntimeClass":                  {upstream: runtimeclass.PluginName, admit: storeOnly(applyRuntimeClass), validate: storeOnly(validateRuntimeClass)},
-	"TaintNodesByCondition":         {upstream: nodetaint.PluginName, admit: storeOnly(applyTaintNodesByCondition)},
-	"PodTopologyLabels":             {upstream: podtopologylabels.PluginName, admit: storeOnly(applyPodTopologyLabels)},
-	"PersistentVolumeClaimResize":   {upstream: resize.PluginName, validate: storeOnly(applyPersistentVolumeClaimResize)},
-	"CertificateSubjectRestriction": {upstream: subjectrestriction.PluginName, validate: storeOnly(applyCertificateSubjectRestriction)},
+	"DefaultTolerationSeconds":      {upstream: defaulttolerationseconds.PluginName, swapped: true, admit: storeOnly(applyDefaultTolerationSeconds)},
+	"LimitRanger":                   {upstream: limitranger.PluginName, swapped: true, admit: storeOnly(applyLimitRanger), validate: storeOnly(validateLimitRanger)},
+	"DefaultStorageClass":           {upstream: setdefault.PluginName, swapped: true, admit: storeOnly(applyDefaultStorageClass)},
+	"DefaultIngressClass":           {upstream: defaultingressclass.PluginName, swapped: true, admit: storeOnly(applyDefaultIngressClass)},
+	"StorageObjectInUseProtection":  {upstream: storageobjectinuseprotection.PluginName, swapped: true, admit: storeOnly(applyStorageObjectInUseProtection)},
+	"RuntimeClass":                  {upstream: runtimeclass.PluginName, swapped: true, admit: storeOnly(applyRuntimeClass), validate: storeOnly(validateRuntimeClass)},
+	"TaintNodesByCondition":         {upstream: nodetaint.PluginName, swapped: true, admit: storeOnly(applyTaintNodesByCondition)},
+	"PodTopologyLabels":             {upstream: podtopologylabels.PluginName, swapped: true, admit: storeOnly(applyPodTopologyLabels)},
+	"PersistentVolumeClaimResize":   {upstream: resize.PluginName, swapped: true, validate: storeOnly(applyPersistentVolumeClaimResize)},
+	"CertificateSubjectRestriction": {upstream: subjectrestriction.PluginName, swapped: true, validate: storeOnly(applyCertificateSubjectRestriction)},
 	"CertificateApproval":           {upstream: approval.PluginName, validate: authorizerOnly(applyCertificateApproval)},
 	"CertificateSigning":            {upstream: signing.PluginName, validate: authorizerOnly(applyCertificateSigning)},
 	"ServiceAccount":                {upstream: serviceaccount.PluginName, admit: serviceAccountAdmit, validate: storeOnly(validateServiceAccount)},
@@ -112,7 +114,7 @@ var pluginPairs = map[string]pluginPair{
 	"ResourceQuota":                 {upstream: resourcequota.PluginName, validate: storeOnly(applyResourceQuota)},
 	"PodResize":                     {upstream: podresize.PluginName, validate: storeOnly(validatePodResize)},
 	"NodeDeclaredFeatures":          {upstream: nodedeclaredfeatures.PluginName, validate: storeOnly(validateNodeDeclaredFeatures)},
-	"Priority":                      {upstream: priority.PluginName, admit: storeOnly(applyPriority), validate: storeOnly(validatePriorityClass)},
+	"Priority":                      {upstream: priority.PluginName, swapped: true, admit: storeOnly(applyPriority), validate: storeOnly(validatePriorityClass)},
 }
 
 var upstreamPlugins = func() *admission.Plugins {
@@ -172,6 +174,7 @@ type outcome struct {
 	reason  metav1.StatusReason
 	code    int32
 	message string
+	details *metav1.StatusDetails
 	object  runtime.Object
 
 	quotaUsed map[string]corev1.ResourceList
@@ -199,7 +202,17 @@ func (c diffCase) userInfo() user.Info {
 }
 
 func (c diffCase) attributes(object, oldObject runtime.Object) admission.Attributes {
-	return admission.NewAttributesRecord(object, oldObject, c.kind, c.namespace, c.objName, c.resource, c.subresource, c.op(), &metav1.CreateOptions{}, c.dryRun, c.userInfo())
+	req := admit.Request{
+		Name:        c.objName,
+		Namespace:   c.namespace,
+		Resource:    c.resource,
+		Subresource: c.subresource,
+		Operation:   string(c.op()),
+		DryRun:      c.dryRun,
+		Kind:        c.kind,
+		User:        admitUser(c.userInfo()),
+	}
+	return requestAttributes(&req, object, oldObject)
 }
 
 func versionedCopy(t *testing.T, obj runtime.Object) runtime.Object {
@@ -217,11 +230,7 @@ func toInternal(t *testing.T, obj runtime.Object) runtime.Object {
 	if obj == nil {
 		return nil
 	}
-	gvks, _, err := legacyscheme.Scheme.ObjectKinds(obj)
-	if err != nil {
-		t.Fatalf("object kinds: %v", err)
-	}
-	out, err := legacyscheme.Scheme.ConvertToVersion(obj, schema.GroupVersion{Group: gvks[0].Group, Version: runtime.APIVersionInternal})
+	out, err := toInternalObject(obj)
 	if err != nil {
 		t.Fatalf("convert to internal: %v", err)
 	}
@@ -233,11 +242,10 @@ func toVersioned(t *testing.T, obj runtime.Object, gv schema.GroupVersion) runti
 	if obj == nil {
 		return nil
 	}
-	out, err := legacyscheme.Scheme.ConvertToVersion(obj.DeepCopyObject(), gv)
+	out, err := toVersionedObject(obj, gv)
 	if err != nil {
 		t.Fatalf("convert to versioned: %v", err)
 	}
-	out.GetObjectKind().SetGroupVersionKind(schema.GroupVersionKind{})
 	return out
 }
 
@@ -412,7 +420,7 @@ func upstreamDenial(err error) outcome {
 	var status apierrors.APIStatus
 	if errors.As(err, &status) {
 		s := status.Status()
-		return outcome{reason: s.Reason, code: s.Code, message: err.Error()}
+		return outcome{reason: s.Reason, code: s.Code, message: err.Error(), details: s.Details}
 	}
 	return outcome{reason: metav1.StatusReasonInternalError, code: 500, message: err.Error()}
 }
@@ -493,6 +501,9 @@ func admitUser(info user.Info) admit.User {
 
 func oursDenial(c diffCase, err error) outcome {
 	resp := denyResponse(err)
+	if resp.Status != nil {
+		return upstreamDenial(&apierrors.StatusError{ErrStatus: *resp.Status})
+	}
 	attrs := c.attributes(nil, nil)
 	var mapped error
 	switch resp.Reason {
@@ -563,10 +574,12 @@ func normalizePod(obj runtime.Object) runtime.Object {
 	return pod
 }
 
-func compareOutcomes(upstream, ours outcome) comparison {
+func compareOutcomes(upstream, ours outcome, exact bool) comparison {
 	var cmpResult comparison
-	upstream.object = normalizePod(upstream.object)
-	ours.object = normalizePod(ours.object)
+	if !exact {
+		upstream.object = normalizePod(upstream.object)
+		ours.object = normalizePod(ours.object)
+	}
 	if upstream.summary() != ours.summary() {
 		cmpResult.outcomeDiff = fmt.Sprintf("upstream %s; ours %s", upstream.summary(), ours.summary())
 		cmpResult.messages = fmt.Sprintf("upstream %q; ours %q", upstream.message, ours.message)
@@ -580,11 +593,32 @@ func compareOutcomes(upstream, ours outcome) comparison {
 		}
 		return cmpResult
 	}
-	if upstream.message != ours.message {
+	upstreamMessage, oursMessage := upstream.message, ours.message
+	if !exact {
+		upstreamMessage, oursMessage = normalizeForbiddenMessage(upstreamMessage), normalizeForbiddenMessage(oursMessage)
+	}
+	if upstreamMessage != oursMessage {
 		cmpResult.messageDiff = "differs"
 		cmpResult.messages = fmt.Sprintf("upstream %q; ours %q", upstream.message, ours.message)
 	}
+	if exact && !apiequality.Semantic.DeepEqual(upstream.details, ours.details) {
+		cmpResult.outcomeDiff = "status.details (- upstream, + ours):\n" + changedLines(cmp.Diff(upstream.details, ours.details))
+	}
 	return cmpResult
+}
+
+func normalizeForbiddenMessage(msg string) string {
+	open := strings.Index(msg, "[")
+	close := strings.LastIndex(msg, "]")
+	if open < 0 || close < 0 || close <= open {
+		return msg
+	}
+	prefix := msg[:open+1]
+	suffix := msg[close:]
+	inner := msg[open+1 : close]
+	parts := strings.Split(inner, ", ")
+	sort.Strings(parts)
+	return prefix + strings.Join(parts, ", ") + suffix
 }
 
 func (c comparison) signature() string {
@@ -608,7 +642,7 @@ func runDiffCases(t *testing.T, cases []diffCase) {
 			upstream := runUpstream(t, c, pair)
 			ours := runOurs(t, c, pair)
 			t.Logf("upstream: %s; ours: %s", upstream.summary(), ours.summary())
-			result := compareOutcomes(upstream, ours)
+			result := compareOutcomes(upstream, ours, pair.swapped)
 			got := result.signature()
 			if c.known == nil {
 				if got != "" {
@@ -630,7 +664,7 @@ func runDiffCases(t *testing.T, cases []diffCase) {
 				for _, rewrite := range c.known.rewrites {
 					rewrite(rewritten.object)
 				}
-				if rest := compareOutcomes(rewritten, ours).signature(); rest != "" {
+				if rest := compareOutcomes(rewritten, ours, pair.swapped).signature(); rest != "" {
 					t.Fatalf("known difference (%s) changed: after applying it upstream still differs:\n%s", c.known.reason, rest)
 				}
 			default:
@@ -639,20 +673,6 @@ func runDiffCases(t *testing.T, cases []diffCase) {
 				}
 			}
 		})
-	}
-}
-
-func withKnown(c diffCase, reason, signature string) diffCase {
-	c.known = &knownDifference{reason: reason, signature: signature}
-	return c
-}
-
-func dropAnnotation(key string) objectRewrite {
-	return func(obj runtime.Object) {
-		accessor, _ := meta.Accessor(obj)
-		annotations := accessor.GetAnnotations()
-		delete(annotations, key)
-		accessor.SetAnnotations(annotations)
 	}
 }
 
@@ -673,31 +693,6 @@ func applyKnown(t *testing.T, cases []diffCase, known map[string]*knownDifferenc
 		}
 	}
 	return cases
-}
-
-func dropLabels(keys ...string) objectRewrite {
-	return func(obj runtime.Object) {
-		accessor, _ := meta.Accessor(obj)
-		labels := accessor.GetLabels()
-		for _, key := range keys {
-			delete(labels, key)
-		}
-		accessor.SetLabels(labels)
-	}
-}
-
-func addLabels(add map[string]string) objectRewrite {
-	return func(obj runtime.Object) {
-		accessor, _ := meta.Accessor(obj)
-		labels := accessor.GetLabels()
-		if labels == nil {
-			labels = map[string]string{}
-		}
-		for k, v := range add {
-			labels[k] = v
-		}
-		accessor.SetLabels(labels)
-	}
 }
 
 type allowSigners map[string]bool

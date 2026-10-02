@@ -3,140 +3,38 @@ package admission
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
 	admit "github.com/k8flare/k8flare/packages/apiserver-admit"
 	corev1 "k8s.io/api/core/v1"
-	schedulingv1 "k8s.io/api/scheduling/v1"
-	schedhelpers "k8s.io/kubernetes/pkg/apis/scheduling/v1"
+	_ "k8s.io/kubernetes/pkg/apis/scheduling/install"
+	"k8s.io/kubernetes/plugin/pkg/admission/priority"
 )
 
+func newPriorityPlugin(ctx context.Context, s *store) (*priority.Plugin, *storeInformerFactory, error) {
+	p := priority.NewPlugin()
+	f := newStoreInformerFactory(ctx, s)
+	p.SetExternalKubeClientSet(&dummyClient{})
+	p.SetExternalKubeInformerFactory(f)
+	if err := p.ValidateInitialization(); err != nil {
+		return nil, nil, err
+	}
+	return p, f, nil
+}
+
 func applyPriority(ctx context.Context, s *store, req *admit.Request) error {
-	if req.Resource.Resource != "pods" || req.Subresource != "" || req.Object == nil {
-		return nil
-	}
-	if req.Operation != "CREATE" && req.Operation != "UPDATE" {
-		return nil
-	}
-	pod, err := decodePod(req.Object)
+	p, f, err := newPriorityPlugin(ctx, s)
 	if err != nil {
 		return err
 	}
-	if req.Operation == "UPDATE" {
-		old, err := decodePod(req.OldObject)
-		if err != nil {
-			return err
-		}
-		if pod.Spec.Priority == nil && old != nil && old.Spec.Priority != nil {
-			pod.Spec.Priority = old.Spec.Priority
-		}
-		if pod.Spec.PreemptionPolicy == nil && old != nil && old.Spec.PreemptionPolicy != nil {
-			pod.Spec.PreemptionPolicy = old.Spec.PreemptionPolicy
-		}
-		return writePodObject(req, pod)
-	}
-	name, value, policy, err := resolvePriority(ctx, s, pod.Spec.PriorityClassName)
-	if err != nil {
-		return err
-	}
-	pod.Spec.PriorityClassName = name
-	if pod.Spec.Priority != nil && *pod.Spec.Priority != value {
-		return fmt.Errorf("the integer value of priority (%d) must not be provided in pod spec; priority admission controller computed %d from the given PriorityClass name", *pod.Spec.Priority, value)
-	}
-	pod.Spec.Priority = &value
-	if policy != nil {
-		if pod.Spec.PreemptionPolicy != nil && *pod.Spec.PreemptionPolicy != *policy {
-			return fmt.Errorf("the string value of PreemptionPolicy (%s) must not be provided in pod spec; priority admission controller computed %s from the given PriorityClass name", *pod.Spec.PreemptionPolicy, *policy)
-		}
-		pod.Spec.PreemptionPolicy = policy
-	}
-	return writePodObject(req, pod)
-}
-
-func resolvePriority(ctx context.Context, s *store, className string) (string, int32, *corev1.PreemptionPolicy, error) {
-	if className == "" {
-		return defaultPriority(ctx, s)
-	}
-	if s == nil {
-		return "", 0, nil, fmt.Errorf("no PriorityClass with name %s was found", className)
-	}
-	pc, ok, err := s.priorityClass(ctx, className)
-	if err != nil {
-		return "", 0, nil, err
-	}
-	if !ok {
-		pc, ok = systemPriorityClass(className)
-	}
-	if !ok {
-		return "", 0, nil, fmt.Errorf("no PriorityClass with name %s was found", className)
-	}
-	return className, pc.Value, pc.PreemptionPolicy, nil
-}
-
-func systemPriorityClass(name string) (schedulingv1.PriorityClass, bool) {
-	for _, pc := range schedhelpers.SystemPriorityClasses() {
-		if pc.Name == name {
-			return *pc, true
-		}
-	}
-	return schedulingv1.PriorityClass{}, false
-}
-
-func defaultPriority(ctx context.Context, s *store) (string, int32, *corev1.PreemptionPolicy, error) {
-	preempt := corev1.PreemptLowerPriority
-	if s == nil {
-		return "", 0, &preempt, nil
-	}
-	def, err := globalDefaultPriorityClass(ctx, s)
-	if err != nil {
-		return "", 0, nil, err
-	}
-	if def != nil {
-		return def.Name, def.Value, def.PreemptionPolicy, nil
-	}
-	return "", 0, &preempt, nil
-}
-
-func globalDefaultPriorityClass(ctx context.Context, s *store) (*schedulingv1.PriorityClass, error) {
-	list, err := s.priorityClasses(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var def *schedulingv1.PriorityClass
-	for i := range list {
-		pc := &list[i]
-		if !pc.GlobalDefault {
-			continue
-		}
-		if def == nil || def.Value > pc.Value {
-			def = pc
-		}
-	}
-	return def, nil
+	return runWithFactory(ctx, p, f, req)
 }
 
 func validatePriorityClass(ctx context.Context, s *store, req *admit.Request) error {
-	if req.Resource.Resource != "priorityclasses" || req.Subresource != "" || req.Object == nil {
-		return nil
-	}
-	if req.Operation != "CREATE" && req.Operation != "UPDATE" {
-		return nil
-	}
-	if globalDefault, _ := req.Object["globalDefault"].(bool); !globalDefault || s == nil {
-		return nil
-	}
-	def, err := globalDefaultPriorityClass(ctx, s)
+	p, f, err := newPriorityPlugin(ctx, s)
 	if err != nil {
-		return fmt.Errorf("failed to get default priority class: %v", err)
+		return err
 	}
-	if def == nil {
-		return nil
-	}
-	meta, _ := req.Object["metadata"].(map[string]any)
-	if name, _ := meta["name"].(string); req.Operation == "CREATE" || def.Name != name {
-		return fmt.Errorf("PriorityClass %v is already marked as default. Only one default can exist", def.Name)
-	}
-	return nil
+	return runWithFactory(ctx, p, f, req)
 }
 
 func decodePod(obj map[string]any) (*corev1.Pod, error) {
