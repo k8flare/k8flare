@@ -93,7 +93,7 @@ export default defineConfig({
 				maxBatchTimeout: 1,
 				maxConcurrency: 1,
 				maxRetries: 10,
-				name: "k8flare-metrics",
+				name: "k8flare-hpa",
 			}),
 			triggers.queue({
 				deadLetterQueue: "k8flare-dlq",
@@ -170,9 +170,6 @@ export default defineConfig({
 			EXT_Q: bindings.queue({
 				name: "k8flare-extensions",
 			}),
-			METRICS_Q: bindings.queue({
-				name: "k8flare-metrics",
-			}),
 			CONTAINERS_Q: bindings.queue({
 				name: "k8flare-containers",
 			}),
@@ -212,6 +209,10 @@ export default defineConfig({
 			ATTACHDETACH: bindings.worker({
 				worker: "k8flare",
 				exportName: "AttachDetach",
+			}),
+			HPA: bindings.worker({
+				worker: "k8flare",
+				exportName: "HorizontalPodAutoscaler",
 			}),
 			GC: bindings.worker({
 				worker: "k8flare",
