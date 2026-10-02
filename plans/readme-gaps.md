@@ -1570,3 +1570,45 @@ Decided on 2026-10-01, with the owner:
   - Not established: why requests entering through the dev proxy starve
     while in-process requests are served. Not looked at: why a custom
     resource request costs ten times a built-in one.
+- Runs 36954014600 (444), 36954020327 (446) and 36954025939 (445 of 446)
+  on 3337b7e (`ci/batch6`: 699ba58 plus the node taint retry, the HPA
+  consumer in the main Worker, the HPA pass that returns at once with no
+  HPA, and the removal of the 15s metrics loop). Unit and E2E pass. The
+  three failures are in shard 4 and none comes from the batch.
+  - 36954014600, `AdmissionWebhook should honor timeout` and `ConfigMap
+    optional updates` (both `bridge: no response headers in time` after
+    18 minutes): the 1337-pod pass again. The MutatingAdmissionPolicy
+    spec's create of `marker-deployment` answered at 02:57:26.587 and its
+    DELETE entered `devtls` at 02:57:26.700. A pass that began at
+    02:57:26.395 created the ReplicaSet at 27.168 and 1338 pods by
+    02:58:28 at the limiter's 20 a second. The DELETE reached the front
+    worker at 03:06:50, after one `lost its connection` replay at
+    02:58:48, so the owner check of 5f188fe had no deletion to see. Up to
+    02:57:26 the shard looked like the three passing runs on 699ba58 (3
+    replays and no 502 in `devtls`, 9 to 12 passes a minute), and the
+    taint retry fired once in the whole run (`nodes "e2e-fake-node-g26j2"
+    not found`), so the new retry is not what loaded it. The same thing
+    happened in one of the three runs of the Gateway batch (36954041871,
+    DELETE sent 03:30:12, answered 03:37:48). In the other seven shard 4
+    logs read (four with this batch's code, three on 699ba58) no pod was
+    created in that namespace. This is the caveat recorded with 5f188fe:
+    the delete has to get into workerd while the pass runs, and a request
+    from outside can wait minutes there.
+  - 36954025939, `ServiceAccounts should mount an API token into pods`
+    (`kubectl exec` exit 1, `close 1011 ... close 1006 (abnormal closure):
+    unexpected EOF`): two exec sessions to the same node 50ms apart.
+    `packages/node-tunnel/tunnel.go` keeps one package-level `stream` for
+    a node's tunnel object; the second session's dial replaced it at
+    02:49:40.833, the first ended normally at .837 (`kubelet read done`),
+    its client socket closed, `upgradeClosed` closed whatever `stream`
+    was, and the second session read EOF at .843. Stdin bytes and bytes
+    queued before the dial share the slot the same way. One occurrence in
+    nine shard 4 logs (15 to 18 exec sessions each). Being fixed on
+    `work/stream-id`.
+- The Gateway batch (`ci/batch7`, e994b7b: the above plus the Gateway API
+  CRDs, the harness wait for packaged add-ons and the ConfigMap count
+  fix) failed the required E2E set and all three Conformance runs
+  (36954041871, 36954047059, 36954052382), with 55 to 127 `devtls`
+  replays and 13 to 256 502s in shard 4 against 1 to 17 and 0 to 1 on
+  699ba58. Not merged. The CRDs stay out until the cost of a custom
+  resource request and the wait of outside requests are understood.
