@@ -190,6 +190,15 @@ func TestDropIfBranchWithoutElseRemovesStatement(t *testing.T) {
 	wantContains(t, got, "\tbefore()\n\tafter()\n")
 }
 
+func TestDropIfBranchTakesTheBlankLineAboveWithIt(t *testing.T) {
+	src := "package p\n\nfunc f(p any) {\n\tbefore()\n\n\tif p != nil {\n\t\tutil.Lookup(p)\n\t}\n\tafter()\n}\n"
+	out, err := runEdits("p/s.go", t.TempDir(), []byte(src), []edit{dropIfBranch("f", "p != nil", "util.Lookup")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantContains(t, string(out), "\tbefore()\n\tafter()\n")
+}
+
 func TestDropIfBranchNotFound(t *testing.T) {
 	_, err := run(t, dropIfBranch("holder.Run", "q != nil", "util.Lookup"))
 	wantError(t, err, "p/sample.go", "holder.Run", "q != nil")

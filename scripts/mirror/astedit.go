@@ -107,6 +107,17 @@ func (s *source) wholeLines(start, end int) (int, int, bool) {
 	return ls, le, true
 }
 
+func (s *source) withoutBlankLineAbove(lineStart int) int {
+	if lineStart == 0 {
+		return lineStart
+	}
+	prev := s.lineStart(lineStart - 1)
+	if len(bytes.TrimSpace(s.data[prev:lineStart])) == 0 {
+		return prev
+	}
+	return lineStart
+}
+
 func (s *source) splice(spans []span) error {
 	sort.Slice(spans, func(i, j int) bool { return spans[i].start > spans[j].start })
 	for i := 1; i < len(spans); i++ {
@@ -455,7 +466,11 @@ func insertAt(fn, anchor, code string, place anchorPlace, before bool) edit {
 		if before {
 			at = s.lineStart(m.start)
 		}
-		return s.splice([]span{{at, at, strings.Trim(code, "\n") + "\n"}})
+		code = strings.TrimLeft(code, "\n")
+		if !strings.HasSuffix(code, "\n") {
+			code += "\n"
+		}
+		return s.splice([]span{{at, at, code}})
 	}
 }
 
@@ -541,6 +556,7 @@ func dropIfBranch(fn, cond, bodyUses string) edit {
 		switch e := st.Else.(type) {
 		case nil:
 			start, end, _ := s.wholeLines(s.off(st.Pos()), s.off(st.End()))
+			start = s.withoutBlankLineAbove(start)
 			return s.apply([]span{{start, end, ""}}, dropped...)
 		case *ast.IfStmt:
 			return s.apply([]span{{s.off(st.Pos()), s.off(e.Pos()), ""}}, dropped...)

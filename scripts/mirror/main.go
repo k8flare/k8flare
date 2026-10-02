@@ -19,14 +19,8 @@ type op struct {
 	kind    string
 	path    string
 	overlay string
-	from    string
-	to      string
-	text    string
-	edits   []op
 	astOps  []edit
 }
-
-func patch(path, from, to string) op { return op{kind: "patch", path: path, from: from, to: to} }
 
 // hostOnly keeps the upstream file for every target but js.
 func hostOnly(path string) op { return op{kind: "hostOnly", path: path} }
@@ -36,12 +30,6 @@ func hostOnly(path string) op { return op{kind: "hostOnly", path: path} }
 func replaceJS(path, overlay string) op { return op{kind: "replaceJS", path: path, overlay: overlay} }
 
 func addJS(path, overlay string) op { return op{kind: "addJS", path: path, overlay: overlay} }
-
-// patchJS keeps the upstream file for host builds and adds a js-only copy
-// with the given replacements applied and text appended.
-func patchJS(path string, edits []op) op { return op{kind: "patchJS", path: path, edits: edits} }
-
-func appendText(path, text string) op { return op{kind: "append", path: path, text: text} }
 
 type mirror struct {
 	name    string
@@ -158,18 +146,10 @@ var mirrors = []mirror{
 			"util/certificate/csr/csr.go",
 		},
 		ops: []op{
-			patch("util/workqueue/delaying_queue.go",
-				"\tq.metrics.retry()\n",
-				"\tq.metrics.retry()\n\tObserveDelay(duration)\n"),
-			appendText("util/workqueue/delaying_queue.go", `
-var DelayObserver func(delay time.Duration)
-
-func ObserveDelay(delay time.Duration) {
-	if delay > 0 && DelayObserver != nil {
-		DelayObserver(delay)
-	}
-}
-`),
+			patchAST("util/workqueue/delaying_queue.go",
+				insertAfter("delayingType.AddAfter", "q.metrics.retry()", "ObserveDelay(duration)"),
+				appendDecls("client-go/append/delay_observer.go"),
+			),
 			replaceJS("kubernetes/scheme/register.go", "client-go/register.go"),
 			replaceJS("kubernetes/clientset.go", "client-go/kubernetes/clientset.go"),
 			replaceJS("informers/factory.go", "client-go/informers/factory.go"),
@@ -192,16 +172,12 @@ func ObserveDelay(delay time.Duration) {
 		version: "v1.36.4-k3s1",
 		pins: []string{
 			"pkg/apiserver/apiserver.go",
-			"pkg/apiserver/customresource_discovery.go",
 		},
 		ops: []op{
 			replaceJS("pkg/apiserver/apiserver.go", "apiextensions/apiserver.go"),
-			appendText("pkg/apiserver/customresource_discovery.go", `
-func NewDiscoveryHandlers(delegate http.Handler) (*versionDiscoveryHandler, *groupDiscoveryHandler) {
-	return &versionDiscoveryHandler{discovery: map[schema.GroupVersion]*discovery.APIVersionHandler{}, delegate: delegate},
-		&groupDiscoveryHandler{discovery: map[string]*discovery.APIGroupHandler{}, delegate: delegate}
-}
-`),
+			patchAST("pkg/apiserver/customresource_discovery.go",
+				appendDecls("apiextensions/append/discovery_handlers.go"),
+			),
 		},
 	},
 	{
@@ -209,111 +185,45 @@ func NewDiscoveryHandlers(delegate http.Handler) (*versionDiscoveryHandler, *gro
 		module:  "github.com/k3s-io/kubernetes/staging/src/k8s.io/apiserver",
 		version: "v1.36.4-k3s1",
 		pins: []string{
-			"pkg/util/webhook/authentication.go",
-			"pkg/util/webhook/client.go",
-			"pkg/storage/cacher/cache_watcher.go",
 			"pkg/server/filters/priority-and-fairness.go",
-			"pkg/storageversion/manager.go",
-			"pkg/storage/storagebackend/config.go",
 			"pkg/storage/storagebackend/factory/factory.go",
 			"pkg/storage/feature/feature_support_checker.go",
 			"pkg/sharding/parser.go",
-			"pkg/endpoints/installer.go",
 		},
 		ops: []op{
 			hostOnly("pkg/storage/storagebackend/factory/etcd3.go"),
 			replaceJS("pkg/storage/storagebackend/factory/factory.go", "apiserver/factory.go"),
 			replaceJS("pkg/storage/feature/feature_support_checker.go", "apiserver/feature_support_checker.go"),
 			replaceJS("pkg/sharding/parser.go", "apiserver/sharding_parser.go"),
-			patchJS("pkg/storage/cacher/cache_watcher.go", []op{
-				patch("", "\tutilflowcontrol \"k8s.io/apiserver/pkg/util/flowcontrol\"\n", ""),
-				patch("", "\tutilflowcontrol.WatchInitialized(ctx)\n", ""),
-			}),
+			patchJSAST("pkg/storage/cacher/cache_watcher.go",
+				replaceNode("cacheWatcher.process", "utilflowcontrol.WatchInitialized(ctx)", ""),
+			),
 			replaceJS("pkg/server/filters/priority-and-fairness.go", "apiserver/priority_and_fairness.go"),
-			patchJS("pkg/storageversion/manager.go", []op{
-				patch("", "\t\"k8s.io/client-go/kubernetes\"\n", "\tapiserverinternalv1alpha1 \"k8s.io/client-go/kubernetes/typed/apiserverinternal/v1alpha1\"\n"),
-				patch("", "clientset, err := kubernetes.NewForConfig(kubeAPIServerClientConfig)", "clientset, err := apiserverinternalv1alpha1.NewForConfig(kubeAPIServerClientConfig)"),
-				patch("", "sc := clientset.InternalV1alpha1().StorageVersions()", "sc := clientset.StorageVersions()"),
-			}),
-			patch("pkg/util/webhook/client.go",
-				"		if len(cfg.TLSClientConfig.ServerName) == 0 {\n			cfg.TLSClientConfig.ServerName = serverName\n		}\n\n		delegateDialer := cfg.Dial\n",
-				"		if len(cfg.TLSClientConfig.ServerName) == 0 {\n			cfg.TLSClientConfig.ServerName = serverName\n		}\n\n		if cfg.Transport != nil {\n			if WebhookTransportSetup != nil {\n				WebhookTransportSetup(cfg, serverName, cc.CABundle)\n			}\n			cfg.QPS = -1\n			cfg.ContentConfig.NegotiatedSerializer = cm.negotiatedSerializer\n			cfg.ContentConfig.ContentType = runtime.ContentTypeJSON\n			cfg.TLSClientConfig = rest.TLSClientConfig{}\n			return cfg, nil\n		}\n\n		delegateDialer := cfg.Dial\n"),
-			patch("pkg/util/webhook/client.go",
-				"	if !isLocalHost(u) {\n		cfg.NextProtos = []string{\"http/1.1\"}\n	}\n\n	return complete(cfg)\n}\n",
-				"	if !isLocalHost(u) {\n		cfg.NextProtos = []string{\"http/1.1\"}\n	}\n\n	if cfg.Transport != nil {\n		cfg.QPS = -1\n		cfg.ContentConfig.NegotiatedSerializer = cm.negotiatedSerializer\n		cfg.ContentConfig.ContentType = runtime.ContentTypeJSON\n		cfg.TLSClientConfig = rest.TLSClientConfig{}\n		return cfg, nil\n	}\n\n	return complete(cfg)\n}\n"),
-			appendText("pkg/util/webhook/client.go", `
-// WebhookTransportSetup, when set, lets an embedding program replace
-// net.Dial for webhook Service backends (GOOS=js cannot dial ClusterIPs).
-var WebhookTransportSetup func(cfg *rest.Config, serverName string, ca []byte)
-`),
-			patchJS("pkg/util/webhook/authentication.go", []op{
-				patch("", "\tegressselector \"k8s.io/apiserver/pkg/server/egressselector\"\n", ""),
-				patch("", "\tutilnet \"k8s.io/apimachinery/pkg/util/net\"\n", ""),
-				patch("", "\tegressSelector *egressselector.EgressSelector,\n", "\tegressSelector any,\n"),
-				patch("", `
-				if egressSelector != nil {
-					networkContext := egressselector.ControlPlane.AsNetworkContext()
-					var egressDialer utilnet.DialFunc
-					egressDialer, err = egressSelector.Lookup(networkContext)
-
-					if err != nil {
-						return nil, err
-					}
-
-					ret.Dial = egressDialer
-				}
-`, ""),
-				patch("", `
-				if egressSelector != nil {
-					networkContext := egressselector.Cluster.AsNetworkContext()
-					var egressDialer utilnet.DialFunc
-					egressDialer, err = egressSelector.Lookup(networkContext)
-					if err != nil {
-						return nil, err
-					}
-
-					ret.Dial = egressDialer
-				} else if proxyTransport != nil && proxyTransport.DialContext != nil {
-`, `
-				if proxyTransport != nil && proxyTransport.DialContext != nil {
-`),
-			}),
-			patchJS("pkg/storage/storagebackend/config.go", []op{
-				patch("", "\t\"k8s.io/apiserver/pkg/server/egressselector\"\n", ""),
-				patch("", "\t\"k8s.io/apiserver/pkg/storage/etcd3\"\n", ""),
-				patch("", "\tEgressLookup egressselector.Lookup\n", ""),
-				patch("", "\tLeaseManagerConfig etcd3.LeaseManagerConfig\n", "\tLeaseManagerConfig LeaseManagerConfig\n"),
-				patch("", "etcd3.NewDefaultLeaseManagerConfig()", "NewDefaultLeaseManagerConfig()"),
-				appendText("", `
-// Local copy of etcd3.LeaseManagerConfig so that this package does not link
-// the etcd3 storage implementation and the etcd client, which do not build
-// for GOOS=js. Added by scripts/mirror.
-type LeaseManagerConfig struct {
-	ReuseDurationSeconds int64
-	MaxObjectCount       int64
-}
-
-func NewDefaultLeaseManagerConfig() LeaseManagerConfig {
-	return LeaseManagerConfig{ReuseDurationSeconds: 60, MaxObjectCount: 1000}
-}
-`),
-			}),
-			patch("pkg/endpoints/installer.go",
-				"\t\tHubGroupVersion: schema.GroupVersion{Group: fqKindToRegister.Group, Version: runtime.APIVersionInternal},",
-				"\t\tHubGroupVersion: hubGroupVersionFor(a.group.Typer, a.group.GroupVersion, fqKindToRegister),"),
-			appendText("pkg/endpoints/installer.go", `
-// hubGroupVersionFor is the version a PATCH body is decoded to before the
-// merge is applied: the internal version when the scheme has one, the served
-// version otherwise. This apiserver registers external types only, and
-// upstream hardcodes the internal hub. Added by scripts/mirror.
-func hubGroupVersionFor(typer runtime.ObjectTyper, served schema.GroupVersion, kind schema.GroupVersionKind) schema.GroupVersion {
-	internal := schema.GroupVersion{Group: kind.Group, Version: runtime.APIVersionInternal}
-	if typer != nil && typer.Recognizes(internal.WithKind(kind.Kind)) {
-		return internal
-	}
-	return served
-}
-`),
+			patchJSAST("pkg/storageversion/manager.go",
+				replaceSelector("kubernetes", "NewForConfig", "apiserverinternalv1alpha1.NewForConfig"),
+				addImport("apiserverinternalv1alpha1", "k8s.io/client-go/kubernetes/typed/apiserverinternal/v1alpha1"),
+				replaceNode("defaultManager.UpdateStorageVersions", "clientset.InternalV1alpha1().StorageVersions()", "clientset.StorageVersions()"),
+			),
+			patchAST("pkg/util/webhook/client.go",
+				insertBefore("ClientManager.hookClientConfig", "delegateDialer := cfg.Dial", "if cfg.Transport != nil {\n\tif WebhookTransportSetup != nil {\n\t\tWebhookTransportSetup(cfg, serverName, cc.CABundle)\n\t}\n\tcfg.QPS = -1\n\tcfg.ContentConfig.NegotiatedSerializer = cm.negotiatedSerializer\n\tcfg.ContentConfig.ContentType = runtime.ContentTypeJSON\n\tcfg.TLSClientConfig = rest.TLSClientConfig{}\n\treturn cfg, nil\n}\n\n"),
+				insertBeforeTopLevel("ClientManager.hookClientConfig", "return complete(cfg)", "if cfg.Transport != nil {\n\tcfg.QPS = -1\n\tcfg.ContentConfig.NegotiatedSerializer = cm.negotiatedSerializer\n\tcfg.ContentConfig.ContentType = runtime.ContentTypeJSON\n\tcfg.TLSClientConfig = rest.TLSClientConfig{}\n\treturn cfg, nil\n}\n\n"),
+				appendDecls("apiserver/append/webhook_transport_setup.go"),
+			),
+			patchJSAST("pkg/util/webhook/authentication.go",
+				replaceParamType("NewDefaultAuthenticationInfoResolverWrapper", "egressSelector", "any"),
+				dropIfBranch("NewDefaultAuthenticationInfoResolverWrapper", "egressSelector != nil", "egressselector.ControlPlane"),
+				dropIfBranch("NewDefaultAuthenticationInfoResolverWrapper", "egressSelector != nil", "egressselector.Cluster"),
+			),
+			patchJSAST("pkg/storage/storagebackend/config.go",
+				removeField("TransportConfig", "EgressLookup"),
+				replaceFieldType("Config", "LeaseManagerConfig", "LeaseManagerConfig"),
+				replaceSelector("etcd3", "NewDefaultLeaseManagerConfig", "NewDefaultLeaseManagerConfig"),
+				appendDecls("apiserver/append/lease_manager_config.go"),
+			),
+			patchAST("pkg/endpoints/installer.go",
+				replaceNode("APIInstaller.registerResourceHandlers", "schema.GroupVersion{Group: fqKindToRegister.Group, Version: runtime.APIVersionInternal}", "hubGroupVersionFor(a.group.Typer, a.group.GroupVersion, fqKindToRegister)"),
+				appendDecls("apiserver/append/hub_group_version.go"),
+			),
 		},
 	},
 	{
@@ -437,7 +347,6 @@ func keepHostOnly(dst, path string) ([]byte, error) {
 }
 
 func apply(dst, overlays string, o op) error {
-	target := filepath.Join(dst, o.path)
 	switch o.kind {
 	case "hostOnly":
 		_, err := keepHostOnly(dst, o.path)
@@ -466,42 +375,8 @@ func apply(dst, overlays string, o op) error {
 			return fmt.Errorf("%s: overlay must start with a //go:build js constraint", o.overlay)
 		}
 		return os.WriteFile(filepath.Join(dst, jsName(o.path)), data, 0o644)
-	case "patchJS":
-		data, err := keepHostOnly(dst, o.path)
-		if err != nil {
-			return err
-		}
-		for _, e := range o.edits {
-			switch e.kind {
-			case "patch":
-				if !bytes.Contains(data, []byte(e.from)) {
-					return fmt.Errorf("%s no longer contains the text this patch replaces:\n%s", o.path, e.from)
-				}
-				data = bytes.Replace(data, []byte(e.from), []byte(e.to), 1)
-			case "append":
-				data = append(data, e.text...)
-			}
-		}
-		return os.WriteFile(filepath.Join(dst, jsName(o.path)), append([]byte(jsTag), data...), 0o644)
-	case "patch":
-		data, err := os.ReadFile(target)
-		if err != nil {
-			return err
-		}
-		if !bytes.Contains(data, []byte(o.from)) {
-			return fmt.Errorf("%s no longer contains the text this patch replaces:\n%s", o.path, o.from)
-		}
-		return os.WriteFile(target, bytes.Replace(data, []byte(o.from), []byte(o.to), 1), 0o644)
 	case "patchAST", "patchJSAST":
 		return applyAST(dst, overlays, o)
-	case "append":
-		f, err := os.OpenFile(target, os.O_APPEND|os.O_WRONLY, 0o644)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		_, err = f.WriteString(o.text)
-		return err
 	}
 	return fmt.Errorf("unknown op %q", o.kind)
 }
