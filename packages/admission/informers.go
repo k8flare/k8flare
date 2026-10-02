@@ -17,11 +17,49 @@ import (
 	informersscheduling "k8s.io/client-go/informers/scheduling"
 	informersstorage "k8s.io/client-go/informers/storage"
 	"k8s.io/client-go/kubernetes"
+	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/tools/cache"
 )
 
 type dummyClient struct {
 	kubernetes.Interface
+}
+
+type limitRangeIndexerClient struct {
+	kubernetes.Interface
+	indexer cache.Indexer
+}
+
+func (c *limitRangeIndexerClient) CoreV1() corev1client.CoreV1Interface {
+	return &limitRangeIndexerCoreV1{indexer: c.indexer}
+}
+
+type limitRangeIndexerCoreV1 struct {
+	corev1client.CoreV1Interface
+	indexer cache.Indexer
+}
+
+func (c *limitRangeIndexerCoreV1) LimitRanges(ns string) corev1client.LimitRangeInterface {
+	return &limitRangeIndexerNamespaced{indexer: c.indexer, namespace: ns}
+}
+
+type limitRangeIndexerNamespaced struct {
+	corev1client.LimitRangeInterface
+	indexer   cache.Indexer
+	namespace string
+}
+
+func (n *limitRangeIndexerNamespaced) List(_ context.Context, _ metav1.ListOptions) (*corev1.LimitRangeList, error) {
+	items, err := n.indexer.ByIndex(cache.NamespaceIndex, n.namespace)
+	if err != nil {
+		return nil, err
+	}
+	result := &corev1.LimitRangeList{}
+	for _, item := range items {
+		lr := item.(*corev1.LimitRange)
+		result.Items = append(result.Items, *lr)
+	}
+	return result, nil
 }
 
 type storeInformer struct {

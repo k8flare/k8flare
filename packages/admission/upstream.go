@@ -145,7 +145,7 @@ func runUpstreamPlugin(ctx context.Context, plugin admission.Interface, req *adm
 		}
 		return nil
 
-	case "validate":
+	default:
 		validator, ok := plugin.(admission.ValidationInterface)
 		if !ok {
 			return nil
@@ -153,9 +153,6 @@ func runUpstreamPlugin(ctx context.Context, plugin admission.Interface, req *adm
 		if err := validator.Validate(ctx, attrs, legacyObjectInterfaces); err != nil {
 			return err
 		}
-		return nil
-
-	default:
 		return nil
 	}
 }

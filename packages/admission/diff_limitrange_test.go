@@ -148,34 +148,6 @@ func TestDiffLimitRangerPods(t *testing.T) {
 	deleted.operation = "DELETE"
 	cases = append(cases, bothPhases(deleted, limitRange("a", containerBounds))...)
 
-	annotation := "kubernetes.io/limit-ranger"
-	annotationReason := "upstream records what it defaulted in the kubernetes.io/limit-ranger annotation, this project does not (limitranger/admission.go mergePodResourceRequirements)"
-	requestsReason := "ours copies a defaulted limit into a missing request, upstream leaves the request empty (limitranger/admission.go mergeContainerResources)"
-	noAnnotation := &knownDifference{reason: annotationReason, rewrites: []objectRewrite{dropAnnotation(annotation)}}
-	withRequests := &knownDifference{reason: annotationReason + "; " + requestsReason, rewrites: []objectRewrite{dropAnnotation(annotation), requestsFollowLimits}}
-	lastItemWins := &knownDifference{reason: annotationReason + "; upstream lets the last container item in a limit range win a conflicting default, ours the first (limitranger/admission.go defaultContainerResourceRequirements)", rewrites: []objectRewrite{dropAnnotation(annotation), cpuLimit("75m")}}
-	messageReason := "upstream aggregates every violated constraint into one bracketed message with a double space before No limit/No request, ours returns the first violation with one space (limitranger/admission.go PodValidateLimitFunc)"
-	messageOnly := &knownDifference{reason: messageReason, messageOnly: true}
-	cases = applyKnown(t, cases, map[string]*knownDifference{
-		"defaults fill an empty container":                                 noAnnotation,
-		"defaults keep an explicit request":                                noAnnotation,
-		"defaults keep an explicit limit":                                  noAnnotation,
-		"default limit only gives the request the limit value":             withRequests,
-		"default request only":                                             noAnnotation,
-		"explicit request with a default limit smaller":                    noAnnotation,
-		"ephemeral storage default":                                        withRequests,
-		"init containers get defaults too":                                 noAnnotation,
-		"two limit ranges with disjoint defaults":                          withRequests,
-		"two container items in one limit range with conflicting defaults": lastItemWins,
-		"defaults then bounds satisfied":                                   noAnnotation,
-		"container request above max with no limit (validate)":             messageOnly,
-		"container with no resources against min (validate)":               messageOnly,
-		"container with no limit against max (validate)":                   messageOnly,
-		"defaults then bounds satisfied (validate)":                        messageOnly,
-		"pod totals below min (validate)":                                  messageOnly,
-		"pod with no resources against pod min (validate)":                 messageOnly,
-		"pod-level resources (validate)":                                   {reason: "ours sums container resources only, upstream uses spec.resources when PodLevelResources is on (limitranger/admission.go PodValidateLimitFunc podRequests)", signature: "outcome: upstream allowed; ours denied 403 Forbidden"},
-	})
 	runDiffCases(t, cases)
 }
 
@@ -211,36 +183,5 @@ func TestDiffLimitRangerClaims(t *testing.T) {
 	add("claim with only a max", "CREATE", claim(""), limitRange("a", corev1.LimitRangeItem{Type: corev1.LimitTypePersistentVolumeClaim, Max: storage("10Gi")}))
 	add("claim with a container-type range", "CREATE", claim("20Gi"), limitRange("a", corev1.LimitRangeItem{Type: corev1.LimitTypeContainer, Max: rl("100m", "")}))
 	add("claim with no limit ranges", "CREATE", claim("20Gi"))
-	cases = applyKnown(t, cases, map[string]*knownDifference{
-		"claim without a request (validate)": {reason: "upstream aggregates min and max violations into one message, ours returns the first (limitranger/admission.go PersistentVolumeClaimValidateLimitFunc)", messageOnly: true},
-	})
 	runDiffCases(t, cases)
-}
-
-func requestsFollowLimits(obj runtime.Object) {
-	pod := obj.(*corev1.Pod)
-	for _, containers := range [][]corev1.Container{pod.Spec.Containers, pod.Spec.InitContainers} {
-		for i := range containers {
-			res := &containers[i].Resources
-			for name, limit := range res.Limits {
-				if _, ok := res.Requests[name]; ok {
-					continue
-				}
-				if res.Requests == nil {
-					res.Requests = corev1.ResourceList{}
-				}
-				res.Requests[name] = limit
-			}
-		}
-	}
-}
-
-func cpuLimit(value string) objectRewrite {
-	return func(obj runtime.Object) {
-		pod := obj.(*corev1.Pod)
-		for i := range pod.Spec.Containers {
-			res := &pod.Spec.Containers[i].Resources
-			res.Limits[corev1.ResourceCPU] = quantity(value)
-		}
-	}
 }

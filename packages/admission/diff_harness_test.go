@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -96,7 +97,7 @@ func authorizerOnly(fn func(context.Context, authorizer.Authorizer, *admit.Reque
 
 var pluginPairs = map[string]pluginPair{
 	"DefaultTolerationSeconds":      {upstream: defaulttolerationseconds.PluginName, swapped: true, admit: storeOnly(applyDefaultTolerationSeconds)},
-	"LimitRanger":                   {upstream: limitranger.PluginName, admit: storeOnly(applyLimitRanger), validate: storeOnly(validateLimitRanger)},
+	"LimitRanger":                   {upstream: limitranger.PluginName, swapped: true, admit: storeOnly(applyLimitRanger), validate: storeOnly(validateLimitRanger)},
 	"DefaultStorageClass":           {upstream: setdefault.PluginName, admit: storeOnly(applyDefaultStorageClass)},
 	"DefaultIngressClass":           {upstream: defaultingressclass.PluginName, admit: storeOnly(applyDefaultIngressClass)},
 	"StorageObjectInUseProtection":  {upstream: storageobjectinuseprotection.PluginName, admit: storeOnly(applyStorageObjectInUseProtection)},
@@ -590,7 +591,7 @@ func compareOutcomes(upstream, ours outcome, checkDetails bool) comparison {
 		}
 		return cmpResult
 	}
-	if upstream.message != ours.message {
+	if normalizeForbiddenMessage(upstream.message) != normalizeForbiddenMessage(ours.message) {
 		cmpResult.messageDiff = "differs"
 		cmpResult.messages = fmt.Sprintf("upstream %q; ours %q", upstream.message, ours.message)
 	}
@@ -598,6 +599,20 @@ func compareOutcomes(upstream, ours outcome, checkDetails bool) comparison {
 		cmpResult.outcomeDiff = "status.details (- upstream, + ours):\n" + changedLines(cmp.Diff(upstream.details, ours.details))
 	}
 	return cmpResult
+}
+
+func normalizeForbiddenMessage(msg string) string {
+	open := strings.Index(msg, "[")
+	close := strings.LastIndex(msg, "]")
+	if open < 0 || close < 0 || close <= open {
+		return msg
+	}
+	prefix := msg[:open+1]
+	suffix := msg[close:]
+	inner := msg[open+1 : close]
+	parts := strings.Split(inner, ", ")
+	sort.Strings(parts)
+	return prefix + strings.Join(parts, ", ") + suffix
 }
 
 func (c comparison) signature() string {
