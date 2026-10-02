@@ -33,18 +33,17 @@ func (r *StreamRegistry) Register(id string) {
 	}
 }
 
-func (r *StreamRegistry) Attach(id string, w StreamWriter) [][]byte {
+func (r *StreamRegistry) Attach(id string, w StreamWriter) ([][]byte, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	slot, ok := r.slots[id]
 	if !ok {
-		slot = &streamSlot{}
-		r.slots[id] = slot
+		return nil, false
 	}
 	slot.writer = w
 	queued := slot.pending
 	slot.pending = nil
-	return queued
+	return queued, true
 }
 
 func (r *StreamRegistry) Send(id string, data []byte) (StreamWriter, bool) {
@@ -52,8 +51,7 @@ func (r *StreamRegistry) Send(id string, data []byte) (StreamWriter, bool) {
 	defer r.mu.Unlock()
 	slot, ok := r.slots[id]
 	if !ok {
-		slot = &streamSlot{}
-		r.slots[id] = slot
+		return nil, false
 	}
 	if slot.writer == nil {
 		slot.pending = append(slot.pending, data)

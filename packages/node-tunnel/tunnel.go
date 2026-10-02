@@ -269,7 +269,11 @@ func startKubeletStream(id string, rawURL string, header http.Header, send js.Va
 		return
 	}
 	println("kubelet dial ok")
-	queued := streamRegistry.Attach(id, conn)
+	queued, ok := streamRegistry.Attach(id, conn)
+	if !ok {
+		_ = conn.Close()
+		return
+	}
 	for _, data := range queued {
 		_ = conn.WriteMessage(websocket.BinaryMessage, data)
 	}
