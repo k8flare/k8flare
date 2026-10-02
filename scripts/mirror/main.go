@@ -20,6 +20,7 @@ type op struct {
 	path    string
 	overlay string
 	astOps  []edit
+	decls   fileEdit
 }
 
 // hostOnly keeps the upstream file for every target but js.
@@ -143,7 +144,6 @@ var mirrors = []mirror{
 			"informers/resource/interface.go",
 			"informers/scheduling/interface.go",
 			"informers/storage/interface.go",
-			"util/certificate/csr/csr.go",
 		},
 		ops: []op{
 			patchAST("util/workqueue/delaying_queue.go",
@@ -163,18 +163,16 @@ var mirrors = []mirror{
 			replaceJS("informers/resource/interface.go", "client-go/informers/resource/interface.go"),
 			replaceJS("informers/scheduling/interface.go", "client-go/informers/scheduling/interface.go"),
 			replaceJS("informers/storage/interface.go", "client-go/informers/storage/interface.go"),
-			replaceJS("util/certificate/csr/csr.go", "client-go/csr.go"),
+			keepDeclsJS("util/certificate/csr/csr.go", "ExpirationSecondsToDuration"),
 		},
 	},
 	{
 		name:    "apiextensions",
 		module:  "github.com/k3s-io/kubernetes/staging/src/k8s.io/apiextensions-apiserver",
 		version: "v1.36.4-k3s1",
-		pins: []string{
-			"pkg/apiserver/apiserver.go",
-		},
+		pins:    []string{},
 		ops: []op{
-			replaceJS("pkg/apiserver/apiserver.go", "apiextensions/apiserver.go"),
+			keepDeclsJS("pkg/apiserver/apiserver.go", "Scheme", "Codecs", "unversionedVersion", "unversionedTypes", "init"),
 			patchAST("pkg/apiserver/customresource_discovery.go",
 				appendDecls("apiextensions/append/discovery_handlers.go"),
 			),
@@ -185,20 +183,20 @@ var mirrors = []mirror{
 		module:  "github.com/k3s-io/kubernetes/staging/src/k8s.io/apiserver",
 		version: "v1.36.4-k3s1",
 		pins: []string{
-			"pkg/server/filters/priority-and-fairness.go",
-			"pkg/storage/storagebackend/factory/factory.go",
 			"pkg/storage/feature/feature_support_checker.go",
 			"pkg/sharding/parser.go",
 		},
 		ops: []op{
 			hostOnly("pkg/storage/storagebackend/factory/etcd3.go"),
-			replaceJS("pkg/storage/storagebackend/factory/factory.go", "apiserver/factory.go"),
+			stubFuncsJS("pkg/storage/storagebackend/factory/factory.go", []string{"DestroyFunc"},
+				"errNoEtcd", "storagebackend/factory: etcd storage is not available in this build",
+				"Create", "CreateHealthCheck", "CreateReadyCheck"),
 			replaceJS("pkg/storage/feature/feature_support_checker.go", "apiserver/feature_support_checker.go"),
 			replaceJS("pkg/sharding/parser.go", "apiserver/sharding_parser.go"),
 			patchJSAST("pkg/storage/cacher/cache_watcher.go",
 				replaceNode("cacheWatcher.process", "utilflowcontrol.WatchInitialized(ctx)", ""),
 			),
-			replaceJS("pkg/server/filters/priority-and-fairness.go", "apiserver/priority_and_fairness.go"),
+			keepDeclsJS("pkg/server/filters/priority-and-fairness.go", "tooManyRequests"),
 			patchJSAST("pkg/storageversion/manager.go",
 				replaceSelector("kubernetes", "NewForConfig", "apiserverinternalv1alpha1.NewForConfig"),
 				addImport("apiserverinternalv1alpha1", "k8s.io/client-go/kubernetes/typed/apiserverinternal/v1alpha1"),
@@ -377,6 +375,8 @@ func apply(dst, overlays string, o op) error {
 		return os.WriteFile(filepath.Join(dst, jsName(o.path)), data, 0o644)
 	case "patchAST", "patchJSAST":
 		return applyAST(dst, overlays, o)
+	case "astJS":
+		return applyDeclsAST(dst, o)
 	}
 	return fmt.Errorf("unknown op %q", o.kind)
 }

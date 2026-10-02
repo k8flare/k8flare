@@ -293,20 +293,6 @@ func (s *source) findFunc(name string) (*ast.FuncDecl, error) {
 	return nil, fmt.Errorf("%s: function %s not found", s.path, name)
 }
 
-func receiverName(e ast.Expr) string {
-	switch t := e.(type) {
-	case *ast.StarExpr:
-		return receiverName(t.X)
-	case *ast.IndexExpr:
-		return receiverName(t.X)
-	case *ast.IndexListExpr:
-		return receiverName(t.X)
-	case *ast.Ident:
-		return t.Name
-	}
-	return ""
-}
-
 func (s *source) findStruct(typ string) (*ast.StructType, error) {
 	for _, d := range s.file.Decls {
 		g, ok := d.(*ast.GenDecl)
