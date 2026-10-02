@@ -199,7 +199,7 @@ test("HelmChart and HelmChartConfig writes of every kind reach the addons queue"
   ]);
 });
 
-function metricsQueue() {
+function targetQueue() {
   const sent: string[] = [];
   const queue = {
     send: async (body: { kind: string }) => void sent.push(body.kind),
@@ -208,26 +208,19 @@ function metricsQueue() {
   return { sent, queue };
 }
 
-test("the metrics scrape is seeded on start and by node changes", async () => {
-  const { sent, queue } = metricsQueue();
-  const r = rig({ METRICS_Q: queue, DISABLE: "servicelb,edge-routing" } as any);
+test("HorizontalPodAutoscaler writes reach the hpa queue and node changes do not send metrics", async () => {
+  const { sent: hpaSent, queue: hpaQueue } = targetQueue();
+  const { sent: wlSent, queue: wlQueue } = targetQueue();
+  const r = rig({ HPA_Q: hpaQueue, WL_Q: wlQueue } as any);
   await r.settle();
-  await r.put("/registry/minions/node-a", "v1");
+  await r.put("/registry/horizontalpodautoscalers/default/h", "v1");
   await r.settle();
-  assert.deepEqual(sent, ["retry", "/registry/minions/node-a"]);
-});
+  assert.deepEqual(hpaSent, ["/registry/horizontalpodautoscalers/default/h"]);
+  assert.deepEqual(wlSent, ["/registry/horizontalpodautoscalers/default/h"]);
 
-test("nothing reaches the metrics queue when metrics-server is disabled", async () => {
-  const { sent, queue } = metricsQueue();
-  const scheduled: string[] = [];
-  const scheduler = { send: async () => {}, sendBatch: async (batch: { body: { key: string } }[]) => void scheduled.push(...batch.map((m) => m.body.key)) };
-  const r = rig({ METRICS_Q: queue, SCHED_Q: scheduler, DISABLE: "coredns, metrics-server" } as any);
-  await r.settle();
   await r.put("/registry/minions/node-a", "v1");
-  await r.remove("/registry/minions/node-a");
   await r.settle();
-  assert.deepEqual(sent, []);
-  assert.deepEqual(scheduled, ["/registry/minions/node-a", "/registry/minions/node-a"]);
+  assert.deepEqual(hpaSent, ["/registry/horizontalpodautoscalers/default/h"]);
 });
 
 test("the garbage collector hears about ownership and deletion, not every status write of an owned object", async () => {
