@@ -222,7 +222,7 @@ Step 2:
 - Node authorizer (`work/nodeauth-upstream`): upstream's NodeAuthorizer
   over a graph built per request from the node's own pods, the PVs and
   the named VolumeAttachment or ResourceSlice. No known differences left
-  in 124,903 questions; `node.go` went from 736 lines to 160. A node may
+  in 124,903 questions; `node.go` went from 554 lines to 160. A node may
   now list endpoints: upstream has no opinion and RBAC allows it through
   the k3s-controller role. Not merged: the customresources worker grew to
   65,814,760 bytes and 45,461 functions (98% of the cap), three times the
