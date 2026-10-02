@@ -5,7 +5,8 @@ version, and generation from upstream source by AST analysis in place of
 hand-maintained copies, so that a Kubernetes or k3s bump is cheap. Work on
 an area starts once CI covers it.
 
-Status: proposal, not approved. Nothing below is implemented.
+Status: approved by the owner on 2026-10-02, steps 1 and 2 first. Work
+started on step 1 (`work/mirror-gen`).
 
 ## Where the code is today
 
@@ -127,13 +128,11 @@ The 18,860 lines of own code: the Go/Worker bridge, the loader, queue
 follow-up, the Cluster Durable Object, edge routing, the supervisor. It is
 not version-bound.
 
-## Open questions for the owner
+## Decisions (owner, 2026-10-02)
 
-1. Step 3 changes behaviour-bearing code. Is "byte-identical outcome under
-   the differential tests, then swap" the bar, or should each swap also
-   wait for three Conformance runs?
-2. For admission, "run upstream on a snapshot" may cost worker size. If a
-   plugin does not fit, is function extraction acceptable, or should the
-   admission worker be split?
-3. Step 4 opens pull requests on a schedule. Wanted now, or after steps 1
-   and 2?
+1. Step 3: a swap needs the differential tests to agree and three
+   Conformance runs, each swap by itself.
+2. Admission: when running the upstream plugin does not fit the worker,
+   extract its functions with a generator. The admission worker is not
+   split.
+3. Step 4, the scheduled bump, comes after steps 1 and 2.
