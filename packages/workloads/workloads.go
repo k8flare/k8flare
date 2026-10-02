@@ -38,6 +38,7 @@ import (
 	rbaclisters "k8s.io/client-go/listers/rbac/v1"
 	"k8s.io/client-go/scale"
 	"k8s.io/client-go/tools/cache"
+	clientretry "k8s.io/client-go/util/retry"
 )
 
 const (
@@ -58,6 +59,7 @@ const (
 	maxEndpointsPerSlice = 100
 	daemonSetWorkers     = 2
 	unfinishedJobRecheck = 10 * time.Second
+	taintClearRetry      = 2 * time.Second
 	maxDelay             = 24 * time.Hour
 )
 
@@ -623,6 +625,7 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 
 	if err := clearRecoveredNodes(ctx, client, nodesOf(all)); err != nil {
 		println("workloads: clearing node taints failed:", err.Error())
+		result.NextMs = soonest(result.NextMs, taintClearRetry)
 	}
 	if controllers["tainteviction"] {
 		if err := evictTaintedPods(ctx, client, nodesOf(all), podsOf(all), time.Now()); err != nil {
@@ -932,14 +935,32 @@ func clearRecoveredNodes(ctx context.Context, client kubernetes.Interface, nodes
 		if !nodeReady(node) && !(held && known) {
 			continue
 		}
-		fresh := node.DeepCopy()
-		taints := removeUnreachableTaints(fresh)
-		ready := restoreReady(fresh)
-		if taints {
-			var err error
-			if fresh, err = client.CoreV1().Nodes().Update(ctx, fresh, metav1.UpdateOptions{}); err != nil {
+		stale := node.DeepCopy()
+		if !removeUnreachableTaints(stale) && !restoreReady(stale) {
+			continue
+		}
+		var fresh *v1.Node
+		ready := false
+		err := clientretry.RetryOnConflict(clientretry.DefaultRetry, func() error {
+			current, err := client.CoreV1().Nodes().Get(ctx, node.Name, metav1.GetOptions{})
+			if err != nil {
 				return err
 			}
+			fresh = current.DeepCopy()
+			taints := removeUnreachableTaints(fresh)
+			ready = restoreReady(fresh)
+			if !taints {
+				return nil
+			}
+			updated, err := client.CoreV1().Nodes().Update(ctx, fresh, metav1.UpdateOptions{})
+			if err != nil {
+				return err
+			}
+			fresh = updated
+			return nil
+		})
+		if err != nil {
+			return err
 		}
 		if ready {
 			if _, err := client.CoreV1().Nodes().UpdateStatus(ctx, fresh, metav1.UpdateOptions{}); err != nil {
