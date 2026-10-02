@@ -34,6 +34,12 @@ func hostOnly(path string) op { return op{kind: "hostOnly", path: path} }
 // (which carries its own //go:build js constraint) beside it.
 func replaceJS(path, overlay string) op { return op{kind: "replaceJS", path: path, overlay: overlay} }
 
+func narrowClientset(path string) op { return op{kind: "narrowClientset", path: path} }
+
+func narrowInformerFactory(path string) op { return op{kind: "narrowInformerFactory", path: path} }
+
+func narrowInformerGroups(dir string) op { return op{kind: "narrowInformerGroups", path: dir} }
+
 func addJS(path, overlay string) op { return op{kind: "addJS", path: path, overlay: overlay} }
 
 // patchJS keeps the upstream file for host builds and adds a js-only copy
@@ -206,18 +212,7 @@ func (s *Server) ServeConn(clientKey string, conn wsConn) error {
 		version: "v1.36.4-k3s1",
 		pins: []string{
 			"kubernetes/scheme/register.go",
-			"kubernetes/clientset.go",
-			"informers/factory.go",
 			"informers/generic.go",
-			"informers/admissionregistration/interface.go",
-			"informers/apps/interface.go",
-			"informers/batch/interface.go",
-			"informers/coordination/interface.go",
-			"informers/discovery/interface.go",
-			"informers/policy/interface.go",
-			"informers/resource/interface.go",
-			"informers/scheduling/interface.go",
-			"informers/storage/interface.go",
 			"util/certificate/csr/csr.go",
 		},
 		ops: []op{
@@ -234,18 +229,10 @@ func ObserveDelay(delay time.Duration) {
 }
 `),
 			replaceJS("kubernetes/scheme/register.go", "client-go/register.go"),
-			replaceJS("kubernetes/clientset.go", "client-go/kubernetes/clientset.go"),
-			replaceJS("informers/factory.go", "client-go/informers/factory.go"),
+			narrowClientset("kubernetes/clientset.go"),
+			narrowInformerFactory("informers/factory.go"),
 			hostOnly("informers/generic.go"),
-			replaceJS("informers/admissionregistration/interface.go", "client-go/informers/admissionregistration/interface.go"),
-			replaceJS("informers/apps/interface.go", "client-go/informers/apps/interface.go"),
-			replaceJS("informers/batch/interface.go", "client-go/informers/batch/interface.go"),
-			replaceJS("informers/coordination/interface.go", "client-go/informers/coordination/interface.go"),
-			replaceJS("informers/discovery/interface.go", "client-go/informers/discovery/interface.go"),
-			replaceJS("informers/policy/interface.go", "client-go/informers/policy/interface.go"),
-			replaceJS("informers/resource/interface.go", "client-go/informers/resource/interface.go"),
-			replaceJS("informers/scheduling/interface.go", "client-go/informers/scheduling/interface.go"),
-			replaceJS("informers/storage/interface.go", "client-go/informers/storage/interface.go"),
+			narrowInformerGroups("informers"),
 			replaceJS("util/certificate/csr/csr.go", "client-go/csr.go"),
 		},
 	},
@@ -529,6 +516,40 @@ func apply(dst, overlays string, o op) error {
 			return fmt.Errorf("%s: overlay must start with a //go:build js constraint", o.overlay)
 		}
 		return os.WriteFile(filepath.Join(dst, jsName(o.path)), data, 0o644)
+	case "narrowClientset", "narrowInformerFactory":
+		data, err := keepHostOnly(dst, o.path)
+		if err != nil {
+			return err
+		}
+		var lean []byte
+		if o.kind == "narrowClientset" {
+			lean, err = leanClientset(data, keptGroupVersions(keptAPIs))
+		} else {
+			lean, err = leanInformerFactory(data, keptFactoryGroups(keptAPIs))
+		}
+		if err != nil {
+			return fmt.Errorf("%s: %w", o.path, err)
+		}
+		return os.WriteFile(filepath.Join(dst, jsName(o.path)), lean, 0o644)
+	case "narrowInformerGroups":
+		for _, g := range keptAPIs {
+			if !g.NarrowInformer {
+				continue
+			}
+			rel := filepath.Join(o.path, g.Name, "interface.go")
+			data, err := keepHostOnly(dst, rel)
+			if err != nil {
+				return err
+			}
+			lean, err := leanInformerGroup(data, g.Name, g.Versions)
+			if err != nil {
+				return fmt.Errorf("%s: %w", rel, err)
+			}
+			if err := os.WriteFile(filepath.Join(dst, jsName(rel)), lean, 0o644); err != nil {
+				return err
+			}
+		}
+		return nil
 	case "patchJS":
 		data, err := keepHostOnly(dst, o.path)
 		if err != nil {
