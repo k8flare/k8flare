@@ -94,7 +94,6 @@ var mirrors = []mirror{
 		name:   "kubernetes",
 		module: "github.com/k3s-io/kubernetes",
 		pins: []string{
-			"pkg/scheduler/backend/cache/debugger/signal.go",
 			"pkg/scheduler/backend/queue/testing.go",
 			"pkg/scheduler/backend/queue/scheduling_queue.go",
 			"pkg/controller/certificates/cleaner/pcrcleaner.go",
@@ -102,7 +101,10 @@ var mirrors = []mirror{
 		ops: []op{
 			addJS("pkg/securitycontext/util_js.go", "kubernetes/securitycontext_cpus.go"),
 			addJS("pkg/util/filesystem/util_js.go", "kubernetes/filesystem_js.go"),
-			replaceJS("pkg/scheduler/backend/cache/debugger/signal.go", "kubernetes/signal.go"),
+			patchJSAST("pkg/scheduler/backend/cache/debugger/signal.go",
+				addImport("", "os"),
+				replaceSelector("syscall", "SIGUSR2", "os.Interrupt"),
+			),
 			hostOnly("pkg/scheduler/backend/queue/testing.go"),
 			hostOnly("pkg/controller/certificates/cleaner/pcrcleaner.go"),
 			patchJSAST("pkg/controller/nodeipam/node_ipam_controller.go",
