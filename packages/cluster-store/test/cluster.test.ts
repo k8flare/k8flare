@@ -99,6 +99,8 @@ test("the alarm always books the earliest deadline among leases, progress, compa
   clock(t);
   const r = rig();
   await r.settle();
+  await r.put("/registry/pods/default/a", "v1");
+  await r.put("/registry/pods/default/a", "v2", 2);
   assert.equal(r.alarm.at, start + 5 * MINUTE);
   r.watch({ prefix: "/registry/pods/", since: "1" });
   await r.settle();
@@ -335,4 +337,28 @@ test("closing a watcher updates or clears alarm when nothing else is due", async
   await r.settle();
   assert.equal(r.alarm.at, start + 10_000 + 360_000);
 });
+
+test("compaction is due only when there is something to compact", async (t) => {
+  const tick = clock(t);
+  const r = rig({ SNAPSHOT_INTERVAL_HOURS: "0" });
+  await r.settle();
+  assert.equal(r.alarm.at, null);
+
+  await r.put("/registry/pods/default/a", "v1");
+  await r.settle();
+  assert.equal(r.alarm.at, null);
+
+  await r.put("/registry/pods/default/a", "v2", 2);
+  await r.settle();
+  assert.equal(r.alarm.at, start + 5 * MINUTE);
+
+  tick(5 * MINUTE + 1000);
+  await r.fire();
+  assert.equal(r.alarm.at, null);
+
+  await r.put("/registry/pods/default/a", "v3", 3);
+  await r.settle();
+  assert.equal(r.alarm.at, start + 5 * MINUTE + 1000 + 5 * MINUTE);
+});
+
 

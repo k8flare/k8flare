@@ -86,7 +86,6 @@ export class Cluster extends DurableObject<Env> {
       );
       this.sweepNamespaces();
       this.seedAddons();
-      this.dueAt("compact_due", COMPACT_INTERVAL_MS);
       ctx.waitUntil(this.armAlarm());
     });
   }
@@ -146,6 +145,13 @@ export class Cluster extends DurableObject<Env> {
     return rows.length === 0 ? null : (rows[0].value as number);
   }
 
+  private bookCompaction(due: number): void {
+    const current = this.compactDue();
+    if (current === null || current > due) {
+      this.setMeta("compact_due", due);
+    }
+  }
+
   private dueAt(key: string, intervalMs: number): number {
     const rows = this.ctx.storage.sql.exec("SELECT value FROM meta WHERE key = ?", key).toArray();
     if (rows.length > 0) return rows[0].value as number;
@@ -176,10 +182,37 @@ export class Cluster extends DurableObject<Env> {
     } while (removed >= COMPACT_BATCH);
   }
 
+  private nextCompactionDue(now: number): number | null {
+    if (this.revision() - this.compactRevision() >= MAX_RETAINED_REVISIONS) {
+      return now;
+    }
+    const compactRev = this.compactRevision();
+    const rows = this.ctx.storage.sql.exec(`
+      SELECT MIN(due) AS next_due FROM (
+        SELECT old.ts + ?1 AS due
+        FROM kine AS old
+        WHERE old.deleted = 1
+        UNION ALL
+        SELECT CASE
+          WHEN old.id > ?2 THEN old.ts + ?1
+          ELSE (SELECT MAX(newer.ts) FROM kine AS newer WHERE newer.name = old.name AND newer.id > old.id) + ?1
+        END AS due
+        FROM kine AS old
+        WHERE EXISTS (SELECT 1 FROM kine AS newer WHERE newer.name = old.name AND newer.id > old.id)
+      )
+    `, COMPACT_RETAIN_MS, compactRev).toArray();
+    return rows.length > 0 && rows[0].next_due !== null ? (rows[0].next_due as number) : null;
+  }
+
   private compactByTime(now: number): void {
     const newest = this.ctx.storage.sql.exec("SELECT id FROM kine WHERE ts <= ? ORDER BY id DESC LIMIT 1", now - COMPACT_RETAIN_MS).toArray();
     this.compactTo(compactionTarget({ revision: this.revision(), timeTarget: newest.length === 0 ? 0 : (newest[0].id as number), maxRetained: MAX_RETAINED_REVISIONS }));
-    this.setMeta("compact_due", now + COMPACT_INTERVAL_MS);
+    const nextDue = this.nextCompactionDue(now);
+    if (nextDue !== null) {
+      this.setMeta("compact_due", Math.max(nextDue, now));
+    } else {
+      this.ctx.storage.sql.exec("DELETE FROM meta WHERE key = 'compact_due'");
+    }
   }
 
   private current(name: string): KV | null {
@@ -392,6 +425,17 @@ export class Cluster extends DurableObject<Env> {
       )
       .one().id as number;
     if (rev - this.compactRevision() >= MAX_RETAINED_REVISIONS + COMPACT_SLACK_REVISIONS) this.compactTo(rev - MAX_RETAINED_REVISIONS);
+    if (deleted || prev) {
+      let due = Date.now() + COMPACT_RETAIN_MS;
+      if (prev && this.compactRevision() < prev.modRevision) {
+        const prevRow = this.ctx.storage.sql.exec("SELECT ts FROM kine WHERE id = ?", prev.modRevision).toArray();
+        const prevTs = prevRow.length > 0 ? (prevRow[0].ts as number) : Date.now();
+        due = Math.min(due, prevTs + COMPACT_RETAIN_MS);
+      }
+      this.bookCompaction(due);
+    } else if (rev - this.compactRevision() >= MAX_RETAINED_REVISIONS) {
+      this.bookCompaction(Date.now());
+    }
     const type = deleted ? "deleted" : prev ? "modified" : "created";
     this.record(name, type, rev, value, prev);
     const restored = this.restoreWatchers();
@@ -420,7 +464,7 @@ export class Cluster extends DurableObject<Env> {
       }
     }
     const expired = this.expireWatchers();
-    if (restored || expired) this.ctx.waitUntil(this.armAlarm());
+    if (restored || expired || deleted || prev) this.ctx.waitUntil(this.armAlarm());
     return rev;
   }
 
