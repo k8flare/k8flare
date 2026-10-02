@@ -5,8 +5,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -18,19 +16,15 @@ import (
 )
 
 type op struct {
-	kind    string
-	path    string
-	overlay string
-	astOps  []edit
-	decls   fileEdit
+	kind     string
+	path     string
+	astOps   []edit
+	decls    fileEdit
+	required []string
 }
 
 // hostOnly keeps the upstream file for every target but js.
 func hostOnly(path string) op { return op{kind: "hostOnly", path: path} }
-
-// replaceJS keeps the upstream file for host builds and adds the overlay
-// (which carries its own //go:build js constraint) beside it.
-func replaceJS(path, overlay string) op { return op{kind: "replaceJS", path: path, overlay: overlay} }
 
 func narrowClientset(path string) op { return op{kind: "narrowClientset", path: path} }
 
@@ -38,13 +32,10 @@ func narrowInformerFactory(path string) op { return op{kind: "narrowInformerFact
 
 func narrowInformerGroups(dir string) op { return op{kind: "narrowInformerGroups", path: dir} }
 
-func addJS(path, overlay string) op { return op{kind: "addJS", path: path, overlay: overlay} }
-
 type mirror struct {
 	name    string
 	module  string
 	version string
-	pins    []string
 	ops     []op
 }
 
@@ -84,24 +75,25 @@ var mirrors = []mirror{
 	{
 		name:   "component-base",
 		module: "github.com/k3s-io/kubernetes/staging/src/k8s.io/component-base",
-		pins:   []string{"tracing/utils.go"},
 		ops: []op{
-			replaceJS("tracing/utils.go", "component-base/tracing_utils.go"),
+			patchJSAST("tracing/utils.go",
+				replaceBody("WrapperFor", "return func(rt http.RoundTripper) http.RoundTripper { return rt }"),
+				keepOnly("TracerProvider", "noopTracerProvider", "noopTracerProvider.Shutdown", "NewNoopTracerProvider", "Propagators", "WrapperFor"),
+			),
 		},
 	},
 	{
 		name:   "kubernetes",
 		module: "github.com/k3s-io/kubernetes",
-		pins: []string{
-			"pkg/scheduler/backend/cache/debugger/signal.go",
-			"pkg/scheduler/backend/queue/testing.go",
-			"pkg/scheduler/backend/queue/scheduling_queue.go",
-			"pkg/controller/certificates/cleaner/pcrcleaner.go",
-		},
 		ops: []op{
-			addJS("pkg/securitycontext/util_js.go", "kubernetes/securitycontext_cpus.go"),
-			addJS("pkg/util/filesystem/util_js.go", "kubernetes/filesystem_js.go"),
-			replaceJS("pkg/scheduler/backend/cache/debugger/signal.go", "kubernetes/signal.go"),
+			keepDeclsJS("pkg/securitycontext/util_darwin.go", "possibleCPUs"),
+			patchJSAST("pkg/util/filesystem/util_unix.go",
+				replaceBody("IsUnixDomainSocket", "return false, fmt.Errorf(\"unix domain sockets are not available: %s\", filePath)"),
+			),
+			patchJSAST("pkg/scheduler/backend/cache/debugger/signal.go",
+				addImport("", "os"),
+				replaceSelector("syscall", "SIGUSR2", "os.Interrupt"),
+			),
 			hostOnly("pkg/scheduler/backend/queue/testing.go"),
 			hostOnly("pkg/controller/certificates/cleaner/pcrcleaner.go"),
 			patchJSAST("pkg/controller/nodeipam/node_ipam_controller.go",
@@ -133,18 +125,20 @@ var mirrors = []mirror{
 	{
 		name:   "client-go",
 		module: "github.com/k3s-io/kubernetes/staging/src/k8s.io/client-go",
-		pins: []string{
-			"kubernetes/scheme/register.go",
-			"informers/generic.go",
-		},
 		ops: []op{
 			patchAST("util/workqueue/delaying_queue.go",
 				insertAfter("delayingType.AddAfter", "q.metrics.retry()", "ObserveDelay(duration)"),
 				appendDecls("client-go/append/delay_observer.go"),
 			),
-			replaceJS("kubernetes/scheme/register.go", "client-go/register.go"),
+			patchJSAST("kubernetes/scheme/register.go",
+				replaceVarValue("localSchemeBuilder", "runtime.SchemeBuilder{}"),
+			),
 			narrowClientset("kubernetes/clientset.go"),
 			narrowInformerFactory("informers/factory.go"),
+			requireDecls("informers/generic.go",
+				"type GenericInformer interface { Informer() cache.SharedIndexInformer; Lister() cache.GenericLister }",
+				"func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource) (GenericInformer, error)",
+			),
 			hostOnly("informers/generic.go"),
 			narrowInformerGroups("informers"),
 			keepDeclsJS("util/certificate/csr/csr.go", "ExpirationSecondsToDuration"),
@@ -153,7 +147,6 @@ var mirrors = []mirror{
 	{
 		name:   "apiextensions",
 		module: "github.com/k3s-io/kubernetes/staging/src/k8s.io/apiextensions-apiserver",
-		pins:   []string{},
 		ops: []op{
 			keepDeclsJS("pkg/apiserver/apiserver.go", "Scheme", "Codecs", "unversionedVersion", "unversionedTypes", "init"),
 			patchAST("pkg/apiserver/customresource_discovery.go",
@@ -164,17 +157,21 @@ var mirrors = []mirror{
 	{
 		name:   "apiserver",
 		module: "github.com/k3s-io/kubernetes/staging/src/k8s.io/apiserver",
-		pins: []string{
-			"pkg/storage/feature/feature_support_checker.go",
-			"pkg/sharding/parser.go",
-		},
 		ops: []op{
 			hostOnly("pkg/storage/storagebackend/factory/etcd3.go"),
 			stubFuncsJS("pkg/storage/storagebackend/factory/factory.go", []string{"DestroyFunc"},
 				"errNoEtcd", "storagebackend/factory: etcd storage is not available in this build",
 				"Create", "CreateHealthCheck", "CreateReadyCheck"),
-			replaceJS("pkg/storage/feature/feature_support_checker.go", "apiserver/feature_support_checker.go"),
-			replaceJS("pkg/sharding/parser.go", "apiserver/sharding_parser.go"),
+			patchJSAST("pkg/storage/feature/feature_support_checker.go",
+				replaceVarValue("DefaultFeatureSupportChecker", "noEtcd{}"),
+				removeField("FeatureSupportChecker", "CheckClient"),
+				keepOnly("DefaultFeatureSupportChecker", "FeatureSupportChecker"),
+				appendDecls("apiserver/append/no_etcd_feature_support.go"),
+			),
+			patchJSAST("pkg/sharding/parser.go",
+				replaceBody("Parse", "if expr == \"\" {\n\treturn nil, nil\n}\nreturn nil, fmt.Errorf(\"sharding: ShardSelector expressions are not supported in this build\")"),
+				keepOnly("Parse"),
+			),
 			patchJSAST("pkg/storage/cacher/cache_watcher.go",
 				replaceNode("cacheWatcher.process", "utilflowcontrol.WatchInitialized(ctx)", ""),
 			),
@@ -209,15 +206,17 @@ var mirrors = []mirror{
 	{
 		name:   "mount-utils",
 		module: "github.com/k3s-io/kubernetes/staging/src/k8s.io/mount-utils",
-		pins:   []string{"mount_helper_unix.go"},
 		ops: []op{
-			replaceJS("mount_helper_unix.go", "mount-utils/mount_helper_unix.go"),
+			patchJSAST("mount_helper_unix.go",
+				replaceBody("IsCorruptedMnt", "return false"),
+				replaceBody("PathExists", "_, err := os.Stat(path)\nif err == nil {\n\treturn true, nil\n}\nif errors.Is(err, fs.ErrNotExist) {\n\treturn false, nil\n}\nreturn false, err"),
+				keepOnly("IsCorruptedMnt", "PathExists"),
+			),
 		},
 	},
 }
 
 func main() {
-	writePins := len(os.Args) > 1 && os.Args[1] == "-write-pins"
 	root, err := repoRoot()
 	check(err)
 	if len(os.Args) > 1 && os.Args[1] == "-check-keep" {
@@ -231,9 +230,6 @@ func main() {
 		check(err)
 		dst := filepath.Join(root, ".build", m.name+"-mirror")
 		overlays := filepath.Join(root, "scripts/mirror/_overlays")
-		for _, rel := range m.pins {
-			check(checkPin(src, rel, filepath.Join(overlays, m.name, pinName(rel)), writePins))
-		}
 		check(os.RemoveAll(dst))
 		check(copyTree(src, dst))
 		for _, o := range m.ops {
@@ -276,30 +272,6 @@ func moduleDir(module, version string) (string, error) {
 	return info.Dir, nil
 }
 
-func pinName(rel string) string {
-	return "upstream-" + strings.ReplaceAll(rel, "/", "-") + ".sha256"
-}
-
-func checkPin(src, rel, pinFile string, write bool) error {
-	data, err := os.ReadFile(filepath.Join(src, rel))
-	if err != nil {
-		return err
-	}
-	sum := sha256.Sum256(data)
-	got := hex.EncodeToString(sum[:])
-	if write {
-		return os.WriteFile(pinFile, []byte(got+"\n"), 0o644)
-	}
-	want, err := os.ReadFile(pinFile)
-	if err != nil {
-		return fmt.Errorf("%s: no pin (run with -write-pins after reviewing the overlay): %w", rel, err)
-	}
-	if strings.TrimSpace(string(want)) != got {
-		return fmt.Errorf("%s changed upstream (pin %s, got %s): review the overlay, then refresh the pin", rel, strings.TrimSpace(string(want)), got)
-	}
-	return nil
-}
-
 func copyTree(src, dst string) error {
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		return err
@@ -336,34 +308,12 @@ func apply(dst, overlays string, o op) error {
 	case "hostOnly":
 		_, err := keepHostOnly(dst, o.path)
 		return err
-	case "addJS":
-		data, err := os.ReadFile(filepath.Join(overlays, o.overlay))
-		if err != nil {
-			return err
-		}
-		if !bytes.HasPrefix(data, []byte("//go:build js")) {
-			return fmt.Errorf("%s: overlay must start with a //go:build js constraint", o.overlay)
-		}
-		if err := os.MkdirAll(filepath.Dir(filepath.Join(dst, o.path)), 0o755); err != nil {
-			return err
-		}
-		return os.WriteFile(filepath.Join(dst, o.path), data, 0o644)
-	case "replaceJS":
-		if _, err := keepHostOnly(dst, o.path); err != nil {
-			return err
-		}
-		data, err := os.ReadFile(filepath.Join(overlays, o.overlay))
-		if err != nil {
-			return err
-		}
-		if !bytes.HasPrefix(data, []byte("//go:build js")) {
-			return fmt.Errorf("%s: overlay must start with a //go:build js constraint", o.overlay)
-		}
-		return os.WriteFile(filepath.Join(dst, jsName(o.path)), data, 0o644)
 	case "patchAST", "patchJSAST":
 		return applyAST(dst, overlays, o)
 	case "astJS":
 		return applyDeclsAST(dst, o)
+	case "requireDecls":
+		return applyRequireDecls(dst, o)
 	case "narrowClientset", "narrowInformerFactory":
 		data, err := keepHostOnly(dst, o.path)
 		if err != nil {

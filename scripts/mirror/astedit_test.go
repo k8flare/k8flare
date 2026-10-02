@@ -247,3 +247,147 @@ func TestAppendDecls(t *testing.T) {
 	_, err = runEdits("q/other.go", overlays, []byte("package q\n"), []edit{appendDecls("hook.go")})
 	wantError(t, err, "hook.go", "package p")
 }
+
+func TestReplaceBodyKeepsSignatureAndDropsUnusedImports(t *testing.T) {
+	got := mustRun(t, replaceBody("holder.Run", "return nil"))
+	wantContains(t, got, "func (h *holder) Run(ctx context.Context, p cloud.Interface, n int) error {\n\treturn nil\n}")
+	wantAbsent(t, got, "flow.Watch", "example.com/other/flow")
+	wantContains(t, got, "example.com/other/util", `"fmt"`)
+	_, err := run(t, replaceBody("missing", "return"))
+	wantError(t, err, "p/sample.go", "missing")
+}
+
+const valueSource = `package p
+
+import (
+	"example.com/other/a"
+	"example.com/other/b"
+)
+
+var plain = 1
+
+var (
+	builder = list{
+		a.One,
+		b.Two,
+	}
+	other = 2
+)
+
+var pair, twin = 1, 2
+`
+
+func runOn(t *testing.T, src string, edits ...edit) (string, error) {
+	t.Helper()
+	out, err := runEdits("p/value.go", t.TempDir(), []byte(src), edits)
+	return string(out), err
+}
+
+func TestReplaceVarValue(t *testing.T) {
+	out, err := runOn(t, valueSource, replaceVarValue("builder", "list{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantContains(t, out, "builder = list{}", "other   = 2")
+	wantAbsent(t, out, "a.One", "example.com/other/a", "example.com/other/b")
+	out, err = runOn(t, valueSource, replaceVarValue("plain", "2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantContains(t, out, "var plain = 2")
+	_, err = runOn(t, valueSource, replaceVarValue("missing", "1"))
+	wantError(t, err, "p/value.go", "missing")
+	_, err = runOn(t, valueSource, replaceVarValue("pair", "1"))
+	wantError(t, err, "p/value.go", "pair")
+}
+
+func TestKeepOnlyDropsOtherDeclarationsAndTheirImports(t *testing.T) {
+	got := mustRun(t, replaceBody("solo", "before()"), keepOnly("solo"))
+	wantContains(t, got, "func solo(p cloud.Interface)", `cloud "example.com/cloud"`)
+	wantAbsent(t, got, "holder", "plain", "fmt", "example.com/other")
+	_, err := run(t, keepOnly("absent"))
+	wantError(t, err, "absent")
+}
+
+const interfaceSource = `package p
+
+type Checker interface {
+	Supports(name string) bool
+	// Check recalculates.
+	// Second doc line.
+	Check(c client, name string)
+}
+
+type client interface{ Endpoints() []string }
+`
+
+func TestRemoveFieldOfInterfaceTakesTheMethodAndItsDoc(t *testing.T) {
+	out, err := runOn(t, interfaceSource, removeField("Checker", "Check"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantContains(t, out, "Supports(name string) bool")
+	wantAbsent(t, out, "Check(", "Check recalculates", "Second doc line")
+	_, err = runOn(t, interfaceSource, removeField("Checker", "Nope"))
+	wantError(t, err, "p/value.go", "Checker.Nope")
+}
+
+func TestAddImportToSingleLineImport(t *testing.T) {
+	src := "package p\n\nimport \"syscall\"\n\nvar s = syscall.SIGUSR2\n"
+	out, err := runOn(t, src, addImport("", "os"), replaceSelector("syscall", "SIGUSR2", "os.Interrupt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantContains(t, out, "import \"os\"\n", "var s = os.Interrupt")
+	wantAbsent(t, out, "syscall")
+	_, err = runOn(t, "package p\n", addImport("", "os"))
+	wantError(t, err, "p/value.go", "import")
+}
+
+func TestWithoutBuildConstraint(t *testing.T) {
+	got := string(withoutBuildConstraint([]byte("//go:build (!windows) && !js\n\n/*\nLicense\n*/\n\npackage p\n")))
+	if got != "/*\nLicense\n*/\n\npackage p\n" {
+		t.Fatalf("got %q", got)
+	}
+	same := "/*\nLicense\n*/\n\npackage p\n"
+	if got := string(withoutBuildConstraint([]byte(same))); got != same {
+		t.Fatalf("got %q", got)
+	}
+}
+
+const upstreamDecls = `package p
+
+type GenericInformer interface {
+	// Informer returns the informer.
+	Informer() cache.SharedIndexInformer
+	Lister() cache.GenericLister
+}
+
+func (f *factory) ForResource(resource schema.GroupVersionResource) (GenericInformer, error) {
+	return nil, nil
+}
+
+func Free(a, b int) string { return "" }
+`
+
+func TestCheckDeclsAcceptsMatchingSignaturesIgnoringNamesAndComments(t *testing.T) {
+	err := checkDecls("p/generic.go", []byte(upstreamDecls),
+		"type GenericInformer interface { Informer() cache.SharedIndexInformer; Lister() cache.GenericLister }",
+		"func (f *factory) ForResource(r schema.GroupVersionResource) (GenericInformer, error)",
+		"func Free(x, y int) string",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCheckDeclsNamesWhatIsGoneOrChanged(t *testing.T) {
+	err := checkDecls("p/generic.go", []byte(upstreamDecls), "func Gone() error")
+	wantError(t, err, "p/generic.go", "Gone", "not found")
+	err = checkDecls("p/generic.go", []byte(upstreamDecls), "func Free(a int) string")
+	wantError(t, err, "p/generic.go", "Free", "changed")
+	err = checkDecls("p/generic.go", []byte(upstreamDecls), "type GenericInformer interface { Informer() cache.SharedIndexInformer }")
+	wantError(t, err, "p/generic.go", "GenericInformer", "changed")
+	err = checkDecls("p/generic.go", []byte(upstreamDecls), "func (f *other) ForResource(resource schema.GroupVersionResource) (GenericInformer, error)")
+	wantError(t, err, "other.ForResource", "not found")
+}

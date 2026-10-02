@@ -44,6 +44,7 @@ func applyAST(dst, overlays string, o op) error {
 	var err error
 	if o.kind == "patchJSAST" {
 		data, err = keepHostOnly(dst, o.path)
+		data = withoutBuildConstraint(data)
 	} else {
 		data, err = os.ReadFile(filepath.Join(dst, o.path))
 	}
@@ -190,14 +191,24 @@ func (s *source) dropUnusedImports(candidates []string) error {
 		want[c] = true
 	}
 	var spans []span
-	for _, imp := range s.file.Imports {
-		name := importName(imp)
-		if !want[name] || s.usesPackage(name) {
+	for _, d := range s.file.Decls {
+		g, ok := d.(*ast.GenDecl)
+		if !ok || g.Tok != token.IMPORT {
 			continue
 		}
-		start, end := s.off(imp.Pos()), s.off(imp.End())
-		start, end, _ = s.wholeLines(start, end)
-		spans = append(spans, span{start, end, ""})
+		for _, sp := range g.Specs {
+			imp := sp.(*ast.ImportSpec)
+			name := importName(imp)
+			if !want[name] || s.usesPackage(name) {
+				continue
+			}
+			from, to := imp.Pos(), imp.End()
+			if !g.Lparen.IsValid() {
+				from, to = g.Pos(), g.End()
+			}
+			start, end, _ := s.wholeLines(s.off(from), s.off(to))
+			spans = append(spans, span{start, end, ""})
+		}
 	}
 	if len(spans) == 0 {
 		return nil
@@ -314,12 +325,35 @@ func (s *source) findStruct(typ string) (*ast.StructType, error) {
 	return nil, fmt.Errorf("%s: type %s not found", s.path, typ)
 }
 
+func (s *source) findFields(typ string) (*ast.FieldList, error) {
+	for _, d := range s.file.Decls {
+		g, ok := d.(*ast.GenDecl)
+		if !ok || g.Tok != token.TYPE {
+			continue
+		}
+		for _, sp := range g.Specs {
+			ts := sp.(*ast.TypeSpec)
+			if ts.Name.Name != typ {
+				continue
+			}
+			switch t := ts.Type.(type) {
+			case *ast.StructType:
+				return t.Fields, nil
+			case *ast.InterfaceType:
+				return t.Methods, nil
+			}
+			return nil, fmt.Errorf("%s: type %s is not a struct or an interface", s.path, typ)
+		}
+	}
+	return nil, fmt.Errorf("%s: type %s not found", s.path, typ)
+}
+
 func (s *source) findField(typ, name string) (*ast.Field, error) {
-	st, err := s.findStruct(typ)
+	fields, err := s.findFields(typ)
 	if err != nil {
 		return nil, err
 	}
-	for _, f := range st.Fields.List {
+	for _, f := range fields.List {
 		for _, n := range f.Names {
 			if n.Name == name {
 				return f, nil
@@ -593,7 +627,11 @@ func removeField(typ, name string) edit {
 		if len(f.Names) != 1 {
 			return fmt.Errorf("%s: field %s.%s shares its declaration with other names", s.path, typ, name)
 		}
-		start, end, _ := s.wholeLines(s.off(f.Pos()), s.off(f.End()))
+		from := f.Pos()
+		if _, isMethod := f.Type.(*ast.FuncType); isMethod && f.Doc != nil {
+			from = f.Doc.Pos()
+		}
+		start, end, _ := s.wholeLines(s.off(from), s.off(f.End()))
 		return s.apply([]span{{start, end, ""}}, pkgNames(f.Type)...)
 	}
 }
@@ -613,6 +651,15 @@ func addField(typ, field string) edit {
 	}
 }
 
+func withoutBuildConstraint(data []byte) []byte {
+	rest, found := bytes.CutPrefix(data, []byte("//go:build "))
+	if !found {
+		return data
+	}
+	_, after, _ := bytes.Cut(rest, []byte("\n"))
+	return bytes.TrimLeft(after, "\n")
+}
+
 func isStdlib(path string) bool {
 	first, _, _ := strings.Cut(path, "/")
 	return !strings.Contains(first, ".")
@@ -628,7 +675,7 @@ func addImport(alias, path string) edit {
 			}
 		}
 		if decl == nil {
-			return fmt.Errorf("%s: no parenthesized import declaration to add %s to", s.path, path)
+			return s.addSingleImport(alias, path)
 		}
 		line := "\t"
 		if alias != "" {
@@ -653,6 +700,71 @@ func addImport(alias, path string) edit {
 		}
 		at := s.lineEnd(s.off(last.End()))
 		return s.splice([]span{{at, at, line}})
+	}
+}
+
+func (s *source) addSingleImport(alias, path string) error {
+	var last *ast.GenDecl
+	for _, d := range s.file.Decls {
+		if g, ok := d.(*ast.GenDecl); ok && g.Tok == token.IMPORT {
+			last = g
+		}
+	}
+	if last == nil {
+		return fmt.Errorf("%s: no import declaration to add %s to", s.path, path)
+	}
+	line := "import "
+	if alias != "" {
+		line += alias + " "
+	}
+	at := s.lineEnd(s.off(last.End()))
+	return s.splice([]span{{at, at, line + strconv.Quote(path) + "\n"}})
+}
+
+func replaceBody(fn, code string) edit {
+	return func(s *source) error {
+		f, err := s.findFunc(fn)
+		if err != nil {
+			return err
+		}
+		start, end := s.off(f.Body.Lbrace)+1, s.off(f.Body.Rbrace)
+		return s.apply([]span{{start, end, "\n" + strings.Trim(code, "\n") + "\n"}}, pkgNames(f.Body)...)
+	}
+}
+
+func replaceVarValue(name, to string) edit {
+	return func(s *source) error {
+		for _, d := range s.file.Decls {
+			g, ok := d.(*ast.GenDecl)
+			if !ok || g.Tok != token.VAR {
+				continue
+			}
+			for _, sp := range g.Specs {
+				vs := sp.(*ast.ValueSpec)
+				for _, n := range vs.Names {
+					if n.Name != name {
+						continue
+					}
+					if len(vs.Names) != 1 || len(vs.Values) != 1 {
+						return fmt.Errorf("%s: variable %s shares its declaration with other names or has no single value", s.path, name)
+					}
+					v := vs.Values[0]
+					return s.apply([]span{{s.off(v.Pos()), s.off(v.End()), to}}, pkgNames(v)...)
+				}
+			}
+		}
+		return fmt.Errorf("%s: variable %s not found", s.path, name)
+	}
+}
+
+func keepOnly(names ...string) edit {
+	return func(s *source) error {
+		out, err := rewriteDecls(s.data, fileEdit{keep: names})
+		if err != nil {
+			return fmt.Errorf("%s: %w", s.path, err)
+		}
+		s.data = out
+		return s.reparse()
 	}
 }
 
