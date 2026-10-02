@@ -13,6 +13,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/k8flare/k8flare/scripts/internal/upstream"
 )
 
 type op struct {
@@ -52,10 +54,9 @@ type mirror struct {
 
 var mirrors = []mirror{
 	{
-		name:    "k3s",
-		module:  "github.com/k3s-io/k3s",
-		version: "v1.36.5-0.20260821152713-4dedb15be780",
-		pins:    []string{"pkg/daemons/control/deps/deps.go", "pkg/agent/tunnel/tunnel.go"},
+		name:   "k3s",
+		module: "github.com/k3s-io/k3s",
+		pins:   []string{"pkg/daemons/control/deps/deps.go", "pkg/agent/tunnel/tunnel.go"},
 		ops: []op{
 			patch("pkg/daemons/control/deps/deps.go",
 				"func KubeConfig(dest, url, caCert, clientCert, clientKey string) error {\n",
@@ -94,10 +95,9 @@ func tunnelHeaders() http.Header {
 		},
 	},
 	{
-		name:    "remotedialer",
-		module:  "github.com/rancher/remotedialer",
-		version: "v0.6.0-rc.1.0.20250916111157-f160aa32568d",
-		pins:    []string{"server.go", "session.go", "session_sync.go"},
+		name:   "remotedialer",
+		module: "github.com/rancher/remotedialer",
+		pins:   []string{"server.go", "session.go", "session_sync.go"},
 		ops: []op{
 			patch("session.go",
 				"\tclient           bool\n}",
@@ -135,18 +135,16 @@ func (s *Server) ServeConn(clientKey string, conn wsConn) error {
 		},
 	},
 	{
-		name:    "component-base",
-		module:  "github.com/k3s-io/kubernetes/staging/src/k8s.io/component-base",
-		version: "v1.36.4-k3s1",
-		pins:    []string{"tracing/utils.go"},
+		name:   "component-base",
+		module: "github.com/k3s-io/kubernetes/staging/src/k8s.io/component-base",
+		pins:   []string{"tracing/utils.go"},
 		ops: []op{
 			replaceJS("tracing/utils.go", "component-base/tracing_utils.go"),
 		},
 	},
 	{
-		name:    "kubernetes",
-		module:  "github.com/k3s-io/kubernetes",
-		version: "v1.36.4-k3s1",
+		name:   "kubernetes",
+		module: "github.com/k3s-io/kubernetes",
 		pins: []string{
 			"pkg/scheduler/backend/cache/debugger/signal.go",
 			"pkg/scheduler/backend/queue/testing.go",
@@ -201,9 +199,8 @@ func (s *Server) ServeConn(clientKey string, conn wsConn) error {
 		},
 	},
 	{
-		name:    "client-go",
-		module:  "github.com/k3s-io/kubernetes/staging/src/k8s.io/client-go",
-		version: "v1.36.4-k3s1",
+		name:   "client-go",
+		module: "github.com/k3s-io/kubernetes/staging/src/k8s.io/client-go",
 		pins: []string{
 			"kubernetes/scheme/register.go",
 			"kubernetes/clientset.go",
@@ -250,9 +247,8 @@ func ObserveDelay(delay time.Duration) {
 		},
 	},
 	{
-		name:    "apiextensions",
-		module:  "github.com/k3s-io/kubernetes/staging/src/k8s.io/apiextensions-apiserver",
-		version: "v1.36.4-k3s1",
+		name:   "apiextensions",
+		module: "github.com/k3s-io/kubernetes/staging/src/k8s.io/apiextensions-apiserver",
 		pins: []string{
 			"pkg/apiserver/apiserver.go",
 			"pkg/apiserver/customresource_discovery.go",
@@ -268,9 +264,8 @@ func NewDiscoveryHandlers(delegate http.Handler) (*versionDiscoveryHandler, *gro
 		},
 	},
 	{
-		name:    "apiserver",
-		module:  "github.com/k3s-io/kubernetes/staging/src/k8s.io/apiserver",
-		version: "v1.36.4-k3s1",
+		name:   "apiserver",
+		module: "github.com/k3s-io/kubernetes/staging/src/k8s.io/apiserver",
 		pins: []string{
 			"pkg/util/webhook/authentication.go",
 			"pkg/util/webhook/client.go",
@@ -380,10 +375,9 @@ func hubGroupVersionFor(typer runtime.ObjectTyper, served schema.GroupVersion, k
 		},
 	},
 	{
-		name:    "mount-utils",
-		module:  "github.com/k3s-io/kubernetes/staging/src/k8s.io/mount-utils",
-		version: "v1.36.4-k3s1",
-		pins:    []string{"mount_helper_unix.go"},
+		name:   "mount-utils",
+		module: "github.com/k3s-io/kubernetes/staging/src/k8s.io/mount-utils",
+		pins:   []string{"mount_helper_unix.go"},
 		ops: []op{
 			replaceJS("mount_helper_unix.go", "mount-utils/mount_helper_unix.go"),
 		},
@@ -395,6 +389,8 @@ func main() {
 	root, err := repoRoot()
 	check(err)
 	for _, m := range mirrors {
+		m.version, err = upstream.VersionOf(m.module)
+		check(err)
 		src, err := moduleDir(m.module, m.version)
 		check(err)
 		dst := filepath.Join(root, ".build", m.name+"-mirror")
