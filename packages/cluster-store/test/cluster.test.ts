@@ -361,4 +361,50 @@ test("compaction is due only when there is something to compact", async (t) => {
   assert.equal(r.alarm.at, start + 5 * MINUTE + 1000 + 5 * MINUTE);
 });
 
+test("constructing the object on an idle store sends nothing to any queue", async (t) => {
+  const tick = clock(t);
+  const r0 = rig();
+  await r0.settle();
+  tick(120_000);
+
+  const sent: { queue: string; body: any }[] = [];
+  const makeQueue = (name: string) => ({
+    send: async (body: any) => void sent.push({ queue: name, body }),
+    sendBatch: async (batch: any[]) => void sent.push(...batch.map((m) => ({ queue: name, body: m.body }))),
+  });
+  const queues = {
+    CTRL_Q: makeQueue("ctrl"),
+    SCHED_Q: makeQueue("sched"),
+    WL_Q: makeQueue("wl"),
+    CRD_Q: makeQueue("crd"),
+    GC_Q: makeQueue("gc"),
+    ACCT_Q: makeQueue("acct"),
+    EXT_Q: makeQueue("ext"),
+    CONTAINERS_Q: makeQueue("containers"),
+    AD_Q: makeQueue("ad"),
+    ADDON_Q: makeQueue("addon"),
+    HPA_Q: makeQueue("hpa"),
+  };
+
+  const pending: Promise<unknown>[] = [];
+  const ctx = {
+    storage: {
+      sql: r0.sql,
+      getAlarm: async () => r0.alarm.at,
+      setAlarm: async (at: number) => void (r0.alarm.at = at),
+      deleteAlarm: async () => void (r0.alarm.at = null),
+    },
+    waitUntil: (p: Promise<unknown>) => void pending.push(p),
+    blockConcurrencyWhile: (fn: () => Promise<void>) => fn(),
+    acceptWebSocket: () => {},
+    getWebSockets: () => [],
+  };
+  const env = { ...queues, PODS_R2: r0.bucket, CLUSTER_UID: "test" };
+  new (r0.cluster.constructor as any)(ctx, env);
+  while (pending.length) await pending.shift();
+
+  assert.deepEqual(sent, []);
+});
+
+
 

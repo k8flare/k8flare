@@ -84,7 +84,6 @@ export class Cluster extends DurableObject<Env> {
         `INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO NOTHING`,
         SCHEMA_VERSION,
       );
-      this.sweepNamespaces();
       this.seedAddons();
       ctx.waitUntil(this.armAlarm());
     });
@@ -103,18 +102,6 @@ export class Cluster extends DurableObject<Env> {
         );
       })(),
     );
-  }
-
-  private sweepNamespaces(): void {
-    const now = Date.now();
-    const rows = this.ctx.storage.sql.exec("SELECT value FROM meta WHERE key = 'namespace_sweep'").toArray();
-    const last = rows.length === 0 ? 0 : (rows[0].value as number);
-    if (now - last < 60_000) return;
-    this.ctx.storage.sql.exec(
-      "INSERT INTO meta (key, value) VALUES ('namespace_sweep', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-      now,
-    );
-    this.ctx.waitUntil(this.env.ACCT_Q.send({ kind: "retry" }));
   }
 
   private schemaVersion(): number {
