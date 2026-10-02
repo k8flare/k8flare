@@ -151,3 +151,29 @@ func TestDrainIgnoresYieldWhileLive(t *testing.T) {
 }
 
 var _ cache.ResourceEventHandler = (*recordedEvents)(nil)
+
+func TestLiveFeedGivesAnObjectTheRevisionItWasStoredAt(t *testing.T) {
+	previous := WatchDialer
+	defer func() { WatchDialer = previous }()
+	msgs := make(chan []byte, 2)
+	WatchDialer = func(context.Context, string) (<-chan []byte, func(), error) {
+		return msgs, func() {}, nil
+	}
+	endpoints := newSnapshotInformer(&corev1.Endpoints{})
+	all := []loadedSource{{informer: endpoints}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	feed := followWrites(ctx, all, []int64{10})
+	msgs <- storedEvent(t, 11, "created", "/registry/endpoints/default/stored", &corev1.Endpoints{ObjectMeta: metav1.ObjectMeta{Name: "stored", Namespace: "default"}})
+	deadline := time.Now().Add(5 * time.Second)
+	for feed.count() < 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	held, exists, err := endpoints.GetIndexer().GetByKey("default/stored")
+	if err != nil || !exists {
+		t.Fatalf("the stored object is not in the snapshot: %v", err)
+	}
+	if got := held.(*corev1.Endpoints).ResourceVersion; got != "11" {
+		t.Fatalf("resourceVersion %q, want the stored revision 11", got)
+	}
+}
