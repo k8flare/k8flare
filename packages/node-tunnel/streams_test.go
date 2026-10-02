@@ -2,9 +2,11 @@ package nodetunnel
 
 import (
 	"bytes"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type mockStreamWriter struct {
@@ -65,6 +67,16 @@ func TestPendingBytesRouting(t *testing.T) {
 
 	connB := &mockStreamWriter{}
 	r.Attach("stream-b", connB)
+
+	for i := 0; i < 100; i++ {
+		connB.mu.Lock()
+		n := len(connB.messages)
+		connB.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
 
 	if len(connA.messages) != 0 {
 		t.Fatalf("expected 0 messages on connA, got %d", len(connA.messages))
@@ -144,12 +156,7 @@ func TestStreamAttachOrder(t *testing.T) {
 		release:    make(chan struct{}),
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		r.Attach("stream-1", w)
-	}()
+	r.Attach("stream-1", w)
 
 	<-w.firstBlock
 	sendDone := make(chan struct{})
@@ -158,9 +165,25 @@ func TestStreamAttachOrder(t *testing.T) {
 		close(sendDone)
 	}()
 
+	select {
+	case <-sendDone:
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("Send blocked while writer was writing")
+	}
+
 	close(w.release)
-	<-sendDone
-	wg.Wait()
+
+	for i := 0; i < 100; i++ {
+		w.mu.Lock()
+		n := len(w.messages)
+		w.mu.Unlock()
+		if n == 3 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	r.Close("stream-1")
 
 	if w.overlapped {
 		t.Fatal("writes overlapped concurrently")
@@ -173,5 +196,44 @@ func TestStreamAttachOrder(t *testing.T) {
 		if !bytes.Equal(w.messages[i], exp) {
 			t.Fatalf("message %d: expected %s, got %s", i, exp, w.messages[i])
 		}
+	}
+}
+
+func TestWriterGoroutineLifecycle(t *testing.T) {
+	settle := func() int {
+		var n int
+		for i := 0; i < 20; i++ {
+			n = runtime.NumGoroutine()
+			time.Sleep(2 * time.Millisecond)
+		}
+		return n
+	}
+	base := settle()
+
+	r := NewStreamRegistry()
+	r.Register("stream-close")
+	w1 := &mockStreamWriter{}
+	r.Attach("stream-close", w1)
+	_ = r.Send("stream-close", []byte("msg1"))
+	_ = r.Send("stream-close", []byte("msg2"))
+	r.Close("stream-close")
+
+	r.Register("stream-detach")
+	w2 := &mockStreamWriter{}
+	r.Attach("stream-detach", w2)
+	_ = r.Send("stream-detach", []byte("msg3"))
+	_ = r.Send("stream-detach", []byte("msg4"))
+	r.Detach("stream-detach", w2)
+
+	var final int
+	for i := 0; i < 50; i++ {
+		final = runtime.NumGoroutine()
+		if final <= base {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if final > base {
+		t.Fatalf("goroutine leak: started with %d, ended with %d", base, final)
 	}
 }
