@@ -72,8 +72,9 @@ Decided on 2026-10-01, with the owner:
     controller writes the same status field. service-cidr now runs on
     ServiceCIDR writes; device-taint-eviction on pod, ResourceClaim and
     ResourceSlice writes.
-  - The HPA controller is not loaded in CI: its queue consumer is in
-    `wrangler.hpa.jsonc` and CI starts `wrangler.dev.jsonc` only.
+  - The HPA controller is loaded in CI since 23aabe4: the main Worker
+    consumes `k8flare-hpa` and calls the `HorizontalPodAutoscaler`
+    entrypoint.
   - Node health deletes a pod that tolerates the taint without
     `tolerationSeconds`: `tolerationWait` (`workloads/nodehealth.go`)
     returns not-tolerated for it. Upstream never evicts such a pod. Read,
@@ -502,7 +503,10 @@ Decided on 2026-10-01, with the owner:
     pod event of a pod it owns (`enqueueSyncJobBatched`), so a pod of a
     Job, finished or not, keeps the pass running; `replicaGap` books 5s
     for as long as a ReplicaSet or Deployment has `status.replicas` short
-    of `spec.replicas`; metrics is sent every 15s.
+    of `spec.replicas`. The 15s metrics message is gone since 1ebcd82 and
+    3337b7e: an HPA pass scrapes, and with an HPA in the cluster books the
+    next one 15s out (upstream's sync period) in one `deadlines` slot of
+    the Cluster object; with none it books nothing.
   - Deployed as 7cad8d15 (2026-10-02). With workloads and every other
     queue but three delivering, a Deployment created with kubectl got its
     ReplicaSet and pod about 30s later and the Cluster Durable Object then
@@ -1651,3 +1655,102 @@ Decided on 2026-10-01, with the owner:
     worker (`failed after 3 attempts: Network connection lost`), and
     recovers by itself when the user worker's queue empties (`recovered
     on attempt 3`). CI's `devtls` talks to the user workerd directly.
+- Runs on `ci/batch8` (3337b7e plus the per-stream slot in the node tunnel,
+  the front worker's yield and the garbage collector's twenty workers;
+  merged as 33cad95). Unit and E2E pass on each step.
+  - With the yield at 50ms (497255e) and at 200ms (6cd10bc), three runs
+    each: every shard but 0 and 1 passed in five of the six, and two
+    `[Serial]` Garbage collector specs failed in all six (`failed to
+    delete the rc ... context deadline exceeded`). The collector deleted
+    the 100 pods of an rc in 92s and 98s against 23s on 699ba58. The
+    interval was not the lever. The workerd main thread is at 1000ms a
+    second either way; the yield lets requests from outside in, each
+    gated in-process request then waits for everything in flight to
+    finish (81 front requests released in one millisecond, then 8s of
+    work), and `packages/gc/collect.go` synced one item at a time, so it
+    advanced one request per cycle.
+  - 5ece01d: the collector syncs with twenty goroutines, upstream's
+    `ConcurrentGCSyncs`; `item.OwnerReferences`, which a foreground
+    owner's sync rewrites on its dependents, is read and written under a
+    per-item mutex (`TestConcurrentGCSyncs`, `TestRaceOnOwnerReferences`
+    under `-race`). Not checked: two goroutines can now patch the same
+    dependent's ownerReferences from one snapshot (the owner unblocking
+    it, the dependent dropping a stale owner); the later patch wins and
+    the next pass sees the result.
+  - Runs 36978505166 (446), 36978512349 (445), 36978519214 (446), then
+    36983344668, 36983352526 and 36983360809 (446 each): five full passes
+    of six, three in a row.
+  - The one failure, `ReplicaSet Replace and Patch tests` (also once on
+    6cd10bc, run 36970625324): the controller did its work (three pods
+    Ready by 07:46:43, four status updates written), and the spec's watch
+    (`labelSelector=test-rs=patched`, bookmarks allowed, opened 07:46:26.083)
+    delivered the replayed event and one live event and then nothing for
+    five minutes. The store still held the watcher: it closed it on its
+    6-minute lease at 07:52:26.099 and kine redialed 1ms later, and kine
+    was not blocked (more than the 64 buffered bookmarks went through).
+    So the events are lost at or after kine's filter: dropped by
+    `watchEvent`, or lost in the response stream between
+    `responseWriter.Write` in the `apiserver-apps` worker (which enqueues
+    and never blocks) and the client. It was the only apps-group watch of
+    the run in both failures. Not established which; being reproduced on
+    the dev stack (`work/watch-repro`).
+  - Read from the same logs, not yet reproduced: a client that goes away
+    does not end its watch. The watch above has no `ResponseComplete`,
+    eight of ten admin watches without `timeoutSeconds` never complete,
+    the leaked one redials every 6 minutes, and goroutines grew from
+    14352 to 19168 in `apiserver` and from 118 to 3202 in
+    `apiserver-apps` over the shard. Suspected place, by reading:
+    `abort` in `BindingTransport.RoundTrip` runs through `window.Run`,
+    which queues the job until the request's window is pumped, and the
+    cancelled front request no longer pumps it.
+- What comparing with upstream on the host showed (tests only, nothing
+  fixed; `work/diff-nodeauth` 7bd12b8, `work/diff-admission` aad3e4e).
+  - Node authorizer (`apiserver-authz/node.go`) against upstream's
+    `NodeAuthorizer` with `NodeRules`, 124,903 questions over one cluster
+    state: 55,927 answers differ, in 21 named classes. Allowed here where
+    upstream has no opinion (so RBAC would decide): a token for any
+    service account, list and watch of every PVC and of leases, reads
+    without a namespace, subresources on reads, resources of another API
+    group with the same name, mirror pod references, PVs bound through
+    the PVC's `volumeName`, the default service account. Denied here and
+    allowed upstream: secrets and configmaps of ephemeral containers, CSI
+    volume secret refs, PV secret refs, PVCs of generic ephemeral
+    volumes, PVs bound through `claimRef`, `endpoints` get. Denied here
+    where upstream has no opinion: about 18,000 questions a request can
+    reach, which never get to RBAC. `node.go` consults no feature gate.
+    Replacement by upstream's authorizer over a per-request graph is on
+    `work/nodeauth-upstream`.
+  - Admission, 18 plugins, about 750 cases against the upstream plugin
+    built over a fake clientset: 59 cases differ. Outcome differences,
+    by plugin: NodeRestriction does not check a mirror pod's owner
+    references or its secret, configmap, claim and service account
+    references, and has no audience restriction on node token requests;
+    ServiceAccount ignores `kubernetes.io/enforce-mountable-secrets`,
+    does not special-case mirror pods, admits a pod whose default
+    service account does not exist yet, and appends a second token
+    volume to a pod that has one; ResourceQuota charges a pod's full
+    usage on every update, skips the resize subresource, treats a
+    resource missing from `status.used` as zero and falls back to
+    `spec.hard`; PodSecurity evaluates updates upstream calls
+    insignificant and treats a missing namespace as unlabeled;
+    LimitRanger ignores pod-level resources and copies a defaulted limit
+    into a missing request; RuntimeClass rejects a class being deleted
+    and accepts an empty name; Priority resolves a system class that is
+    not in the cluster; PodTopologyLabels also labels on update;
+    PersistentVolumeClaimResize ignores the beta class annotation. Not
+    covered: ServiceAccount's volume paths of `limitSecretReferences`,
+    PodSecurity on namespace label changes, NodeRestriction on
+    `podcertificaterequests` and `resourceslices`.
+- Writes that woke nothing (`work/wake-check` 9cde004, on `ci/batch8`, not
+  merged): Role, RoleBinding, LimitRange and NetworkPolicy writes now
+  start a workloads pass, the only thing that recomputes a
+  ResourceQuota's `count/*` usage here (upstream's quota monitor is not
+  built: no `DiscoveryFunc`), and so do ResourceClaimTemplate writes,
+  which upstream answers by requeueing the pods that reference the
+  template. Left: `deviceclasses` (upstream registers no handler and reads
+  no lister) and `ipaddresses`: `claimServiceIPs` stores the IPAddress
+  before the Service, and a pass woken by that write runs
+  `ensureServiceIPAddresses`, which deletes an address whose Service is
+  not listed. What that leaves: a ServiceCIDR being deleted keeps its
+  finalizer after its last IPAddress goes until another ServiceCIDR
+  write.
