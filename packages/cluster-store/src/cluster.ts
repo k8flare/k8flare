@@ -20,8 +20,8 @@ const LEASE_CHECK_EVERY_MS = 50_000;
 const OUTBOX_BATCH = 100;
 const MAX_DELAY_S = 86_400;
 
-type Target = "scheduler" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "metrics" | "containers" | "attachdetach" | "addons" | "hpa";
-const targets: Target[] = ["scheduler", "workloads", "crds", "gc", "accounts", "extensions", "metrics", "containers", "attachdetach", "addons", "hpa"];
+type Target = "scheduler" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "containers" | "attachdetach" | "addons" | "hpa";
+const targets: Target[] = ["scheduler", "workloads", "crds", "gc", "accounts", "extensions", "containers", "attachdetach", "addons", "hpa"];
 const SCHEMA_VERSION = 1;
 const controllerAnnot = "k8flare.io/controller";
 const REGISTRY_PREFIX = "/registry/";
@@ -84,27 +84,9 @@ export class Cluster extends DurableObject<Env> {
         SCHEMA_VERSION,
       );
       this.sweepNamespaces();
-      this.seedMetrics();
       this.seedAddons();
       ctx.waitUntil(this.armAlarm());
     });
-  }
-
-  private metricsServerDisabled(): boolean {
-    return (this.env.DISABLE ?? "").split(",").some((name) => name.trim() === "metrics-server");
-  }
-
-  private seedMetrics(): void {
-    if (this.metricsServerDisabled()) return;
-    const now = Date.now();
-    const rows = this.ctx.storage.sql.exec("SELECT value FROM meta WHERE key = 'metrics_seed'").toArray();
-    const last = rows.length === 0 ? 0 : (rows[0].value as number);
-    if (now - last < 15_000) return;
-    this.ctx.storage.sql.exec(
-      "INSERT INTO meta (key, value) VALUES ('metrics_seed', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-      now,
-    );
-    this.ctx.waitUntil(this.env.METRICS_Q.send({ kind: "retry" }));
   }
 
   private seedAddons(): void {
@@ -600,7 +582,6 @@ export class Cluster extends DurableObject<Env> {
     if (target === "gc") return this.env.GC_Q;
     if (target === "accounts") return this.env.ACCT_Q;
     if (target === "extensions") return this.env.EXT_Q;
-    if (target === "metrics") return this.env.METRICS_Q;
     if (target === "containers") return this.env.CONTAINERS_Q;
     if (target === "attachdetach") return this.env.AD_Q;
     if (target === "addons") return this.env.ADDON_Q;
@@ -620,6 +601,7 @@ export class Cluster extends DurableObject<Env> {
       return;
     }
     const routes: Target[] = [];
+    if (name.startsWith("/registry/horizontalpodautoscalers/")) routes.push("hpa");
     if (name.startsWith("/registry/endpointslices/") || name.startsWith("/registry/endpoints/")) {
       if (type !== "modified" || !prev || endpointPublishChanged(prev.value, value)) routes.push("workloads");
     } else if (WORKLOAD_PREFIXES.some((p) => name.startsWith(p))) routes.push("workloads");
@@ -642,7 +624,6 @@ export class Cluster extends DurableObject<Env> {
     } else if (name.startsWith("/registry/minions/") || name.startsWith("/registry/nodes/")) {
       if (type !== "modified" || !prev || nodeChanged(prev.value, value)) {
         routes.push("scheduler", "workloads");
-        if (!this.metricsServerDisabled()) routes.push("metrics");
       }
     }
     for (const target of routes) {

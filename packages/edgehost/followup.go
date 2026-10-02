@@ -6,9 +6,9 @@ import (
 )
 
 const (
-	refusedRetryS = 5
-	gcSettleS     = 2
-	metricsDelayS = 15
+	refusedRetryS                     = 5
+	gcSettleS                         = 2
+	horizontalPodAutoscalerSyncPeriod = 15
 
 	storageMigrateOnly = "storage-migrate"
 )
@@ -27,6 +27,7 @@ type followIn struct {
 	NextMs          int64    `json:"nextMs"`
 	Drained         bool     `json:"drained"`
 	HasResult       bool     `json:"hasResult"`
+	HPAs            int      `json:"hpas"`
 	Deleted         int      `json:"deleted"`
 	Patched         int      `json:"patched"`
 	Pending         int      `json:"pending"`
@@ -140,9 +141,11 @@ func followUp(in followIn) followResult {
 		if delayMs > 0 {
 			out.Sends = append(out.Sends, retry("ctrl", nil, nil, nil, in.Node, ceilSeconds(delayMs)))
 		}
-	case "metrics":
-		if !disabled[MetricsServer] {
-			out.Sends = append(out.Sends, retry("hpa", nil, nil, nil, "", 0), retry("metrics", nil, nil, nil, "", metricsDelayS))
+	case "hpa":
+		if !in.HasResult {
+			out.Sends = append(out.Sends, retry("hpa", nil, nil, nil, "", refusedRetryS))
+		} else if in.HPAs > 0 {
+			out.Sends = append(out.Sends, retry("hpa", nil, nil, nil, "", horizontalPodAutoscalerSyncPeriod))
 		}
 	case "containers":
 		if in.HasWork {
