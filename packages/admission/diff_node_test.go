@@ -217,8 +217,5 @@ func TestDiffPersistentVolumeClaimResize(t *testing.T) {
 	status := resizeCase("status subresource", sized("2Gi", strPtr("grow"), corev1.ClaimPending), sized("1Gi", strPtr("grow"), corev1.ClaimPending))
 	status.subresource = "status"
 	cases = append(cases, create, noOld, status)
-	cases = applyKnown(t, cases, map[string]*knownDifference{
-		"grow with the class from the beta annotation": {reason: "upstream resolves the class through GetPersistentVolumeClaimClass which prefers the volume.beta.kubernetes.io/storage-class annotation over spec.storageClassName, ours reads spec.storageClassName only (pkg/apis/core/helper GetPersistentVolumeClaimClass, resize/admission.go allowResize)", signature: "outcome: upstream allowed; ours denied 403 Forbidden"},
-	})
 	runDiffCases(t, cases)
 }

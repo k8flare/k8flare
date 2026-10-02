@@ -104,7 +104,7 @@ var pluginPairs = map[string]pluginPair{
 	"RuntimeClass":                  {upstream: runtimeclass.PluginName, swapped: true, admit: storeOnly(applyRuntimeClass), validate: storeOnly(validateRuntimeClass)},
 	"TaintNodesByCondition":         {upstream: nodetaint.PluginName, swapped: true, admit: storeOnly(applyTaintNodesByCondition)},
 	"PodTopologyLabels":             {upstream: podtopologylabels.PluginName, swapped: true, admit: storeOnly(applyPodTopologyLabels)},
-	"PersistentVolumeClaimResize":   {upstream: resize.PluginName, validate: storeOnly(applyPersistentVolumeClaimResize)},
+	"PersistentVolumeClaimResize":   {upstream: resize.PluginName, swapped: true, validate: storeOnly(applyPersistentVolumeClaimResize)},
 	"CertificateSubjectRestriction": {upstream: subjectrestriction.PluginName, swapped: true, validate: storeOnly(applyCertificateSubjectRestriction)},
 	"CertificateApproval":           {upstream: approval.PluginName, validate: authorizerOnly(applyCertificateApproval)},
 	"CertificateSigning":            {upstream: signing.PluginName, validate: authorizerOnly(applyCertificateSigning)},

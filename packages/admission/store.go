@@ -9,7 +9,6 @@ import (
 	admissionregv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
-	storagev1 "k8s.io/api/storage/v1"
 )
 
 type store struct {
@@ -135,8 +134,4 @@ func (s *store) namespace(ctx context.Context, name string) (corev1.Namespace, b
 
 func (s *store) serviceAccount(ctx context.Context, ns, name string) (corev1.ServiceAccount, bool, error) {
 	return getJSON[corev1.ServiceAccount](ctx, s.client, "/registry/serviceaccounts/"+ns+"/"+name)
-}
-
-func (s *store) storageClasses(ctx context.Context) ([]storagev1.StorageClass, error) {
-	return listPrefix[storagev1.StorageClass](ctx, s.client, "/registry/storageclasses/")
 }
