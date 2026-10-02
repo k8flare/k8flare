@@ -23,6 +23,7 @@ type op struct {
 	to      string
 	text    string
 	edits   []op
+	astOps  []edit
 }
 
 func patch(path, from, to string) op { return op{kind: "patch", path: path, from: from, to: to} }
@@ -555,6 +556,8 @@ func apply(dst, overlays string, o op) error {
 			return fmt.Errorf("%s no longer contains the text this patch replaces:\n%s", o.path, o.from)
 		}
 		return os.WriteFile(target, bytes.Replace(data, []byte(o.from), []byte(o.to), 1), 0o644)
+	case "patchAST", "patchJSAST":
+		return applyAST(dst, overlays, o)
 	case "append":
 		f, err := os.OpenFile(target, os.O_APPEND|os.O_WRONLY, 0o644)
 		if err != nil {
