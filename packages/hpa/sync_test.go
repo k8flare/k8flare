@@ -85,6 +85,30 @@ func TestSyncScalesDeployment(t *testing.T) {
 	}
 }
 
+func TestSyncNoHPAs(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	start := time.Now()
+	res, err := syncFor(context.Background(), client, &deploymentScales{}, staticMetrics{}, RESTMapper(), 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	elapsed := time.Since(start)
+	if elapsed > time.Second {
+		t.Fatalf("took too long: %v", elapsed)
+	}
+	if got := res.Objects["horizontalpodautoscalers"]; got != 0 {
+		t.Fatalf("expected 0 horizontalpodautoscalers, got %d", got)
+	}
+	if !res.Drained {
+		t.Fatal("expected Drained to be true")
+	}
+	for _, action := range client.Actions() {
+		if action.GetVerb() == "list" && action.GetResource().Resource == "pods" {
+			t.Fatalf("unexpected list pods action: %#v", action)
+		}
+	}
+}
+
 type deploymentScales struct{ replicas int32 }
 
 func (s *deploymentScales) Scales(string) scale.ScaleInterface { return s }
