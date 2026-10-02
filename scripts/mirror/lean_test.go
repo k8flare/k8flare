@@ -280,6 +280,19 @@ func New(c rest.Interface) *Clientset {
 	}
 }
 
+func TestLeanInformerFactoryFailsWhenStubImportAliasDiffers(t *testing.T) {
+	src := strings.Replace(factorySource, `cache "k8s.io/client-go/tools/cache"`, `mycache "k8s.io/client-go/tools/cache"`, 1)
+	_, err := leanInformerFactory([]byte(src), []string{"apps"})
+	if err == nil {
+		t.Fatal("expected error when stub import alias differs from existing import alias")
+	}
+	for _, want := range []string{"k8s.io/client-go/tools/cache", "mycache", "cache"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should contain %q", err, want)
+		}
+	}
+}
+
 const factorySource = `package informers
 
 import (

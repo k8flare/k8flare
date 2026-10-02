@@ -251,7 +251,7 @@ func (p *pruned) mergeDecls(src string) error {
 	if err != nil {
 		return fmt.Errorf("parse additions to %s: %w", p.name, err)
 	}
-	have := make(map[string]bool)
+	have := make(map[string]string)
 	var importDecl *ast.GenDecl
 	for _, decl := range p.file.Decls {
 		if gen, ok := decl.(*ast.GenDecl); ok && gen.Tok == token.IMPORT {
@@ -259,7 +259,8 @@ func (p *pruned) mergeDecls(src string) error {
 				importDecl = gen
 			}
 			for _, spec := range gen.Specs {
-				have[spec.(*ast.ImportSpec).Path.Value] = true
+				imp := spec.(*ast.ImportSpec)
+				have[imp.Path.Value] = importName(imp)
 			}
 		}
 	}
@@ -271,12 +272,17 @@ func (p *pruned) mergeDecls(src string) error {
 		}
 		for _, spec := range gen.Specs {
 			imp := spec.(*ast.ImportSpec)
-			if have[imp.Path.Value] {
+			extraName := importName(imp)
+			if existingName, ok := have[imp.Path.Value]; ok {
+				if existingName != extraName {
+					return fmt.Errorf("%s: import %s already imported as %s, stub imports as %s", p.name, imp.Path.Value, existingName, extraName)
+				}
 				continue
 			}
 			if importDecl == nil {
 				return fmt.Errorf("%s has no import declaration to extend", p.name)
 			}
+			have[imp.Path.Value] = extraName
 			importDecl.Specs = append(importDecl.Specs, imp)
 			p.file.Imports = append(p.file.Imports, imp)
 		}
