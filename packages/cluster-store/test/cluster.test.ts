@@ -447,6 +447,68 @@ test("alarms carry every deadline, so nothing polls: an idle cluster after compa
   assert.equal((await r.get("/stats")).watchers, 0);
 });
 
+test("count bound at MAX_RETAINED_REVISIONS does not cause alarm to loop", async (t) => {
+  const tick = clock(t);
+  const r = rig({ SNAPSHOT_INTERVAL_HOURS: "0" });
+  await r.settle();
+
+  r.sql.exec(
+    "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt LIMIT 100000) INSERT INTO kine (name, deleted, value, ts) SELECT '/registry/k' || x, 0, X'00', ? FROM cnt",
+    Date.now(),
+  );
+  await r.put("/registry/pods/default/trigger", "v");
+  await r.settle();
+
+  assert.ok(r.alarm.at === null || r.alarm.at > Date.now() + 1000);
+
+  for (let i = 0; i < 10; i++) {
+    await r.fire();
+    assert.ok(r.alarm.at === null || r.alarm.at > Date.now() + 1000);
+  }
+});
+
+test("alarm sequence terminates without re-booking past or current time across mixed revisions", async (t) => {
+  const tick = clock(t);
+  const r = rig({ SNAPSHOT_INTERVAL_HOURS: "0" });
+  await r.settle();
+
+  await r.put("/registry/pods/default/live", "v0");
+
+  await r.put("/registry/pods/default/old-super", "v1");
+  tick(1 * MINUTE);
+  await r.put("/registry/pods/default/old-super", "v2", 3);
+
+  await r.put("/registry/pods/default/old-del", "v1");
+  tick(1 * MINUTE);
+  await r.remove("/registry/pods/default/old-del");
+
+  await r.put("/registry/pods/default/recent-super", "v1");
+  tick(4 * MINUTE);
+  await r.put("/registry/pods/default/recent-super", "v2", 6);
+
+  await r.put("/registry/pods/default/recent-del", "v1");
+  tick(1 * MINUTE);
+  await r.remove("/registry/pods/default/recent-del");
+  await r.settle();
+
+  let steps = 0;
+  while (r.alarm.at !== null) {
+    steps++;
+    assert.ok(steps <= 10, "alarm sequence must terminate within a small number of steps");
+    const firedAt = r.alarm.at;
+    if (firedAt > Date.now()) {
+      tick(firedAt - Date.now());
+    }
+    await r.fire();
+    await r.settle();
+    if (r.alarm.at !== null) {
+      assert.ok(r.alarm.at > firedAt, `next alarm (${r.alarm.at}) must be strictly after fired alarm (${firedAt})`);
+    }
+  }
+  assert.equal(r.alarm.at, null);
+});
+
+
 
 
 
