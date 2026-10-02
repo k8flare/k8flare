@@ -218,7 +218,6 @@ func (s *Server) ServeConn(clientKey string, conn wsConn) error {
 			"informers/resource/interface.go",
 			"informers/scheduling/interface.go",
 			"informers/storage/interface.go",
-			"util/certificate/csr/csr.go",
 		},
 		ops: []op{
 			patch("util/workqueue/delaying_queue.go",
@@ -246,7 +245,7 @@ func ObserveDelay(delay time.Duration) {
 			replaceJS("informers/resource/interface.go", "client-go/informers/resource/interface.go"),
 			replaceJS("informers/scheduling/interface.go", "client-go/informers/scheduling/interface.go"),
 			replaceJS("informers/storage/interface.go", "client-go/informers/storage/interface.go"),
-			replaceJS("util/certificate/csr/csr.go", "client-go/csr.go"),
+			keepDeclsJS("util/certificate/csr/csr.go", "ExpirationSecondsToDuration"),
 		},
 	},
 	{
@@ -254,11 +253,10 @@ func ObserveDelay(delay time.Duration) {
 		module:  "github.com/k3s-io/kubernetes/staging/src/k8s.io/apiextensions-apiserver",
 		version: "v1.36.4-k3s1",
 		pins: []string{
-			"pkg/apiserver/apiserver.go",
 			"pkg/apiserver/customresource_discovery.go",
 		},
 		ops: []op{
-			replaceJS("pkg/apiserver/apiserver.go", "apiextensions/apiserver.go"),
+			keepDeclsJS("pkg/apiserver/apiserver.go", "Scheme", "Codecs", "unversionedVersion", "unversionedTypes", "init"),
 			appendText("pkg/apiserver/customresource_discovery.go", `
 func NewDiscoveryHandlers(delegate http.Handler) (*versionDiscoveryHandler, *groupDiscoveryHandler) {
 	return &versionDiscoveryHandler{discovery: map[schema.GroupVersion]*discovery.APIVersionHandler{}, delegate: delegate},
@@ -275,24 +273,24 @@ func NewDiscoveryHandlers(delegate http.Handler) (*versionDiscoveryHandler, *gro
 			"pkg/util/webhook/authentication.go",
 			"pkg/util/webhook/client.go",
 			"pkg/storage/cacher/cache_watcher.go",
-			"pkg/server/filters/priority-and-fairness.go",
 			"pkg/storageversion/manager.go",
 			"pkg/storage/storagebackend/config.go",
-			"pkg/storage/storagebackend/factory/factory.go",
 			"pkg/storage/feature/feature_support_checker.go",
 			"pkg/sharding/parser.go",
 			"pkg/endpoints/installer.go",
 		},
 		ops: []op{
 			hostOnly("pkg/storage/storagebackend/factory/etcd3.go"),
-			replaceJS("pkg/storage/storagebackend/factory/factory.go", "apiserver/factory.go"),
+			stubFuncsJS("pkg/storage/storagebackend/factory/factory.go", []string{"DestroyFunc"},
+				"errNoEtcd", "storagebackend/factory: etcd storage is not available in this build",
+				"Create", "CreateHealthCheck", "CreateReadyCheck"),
 			replaceJS("pkg/storage/feature/feature_support_checker.go", "apiserver/feature_support_checker.go"),
 			replaceJS("pkg/sharding/parser.go", "apiserver/sharding_parser.go"),
 			patchJS("pkg/storage/cacher/cache_watcher.go", []op{
 				patch("", "\tutilflowcontrol \"k8s.io/apiserver/pkg/util/flowcontrol\"\n", ""),
 				patch("", "\tutilflowcontrol.WatchInitialized(ctx)\n", ""),
 			}),
-			replaceJS("pkg/server/filters/priority-and-fairness.go", "apiserver/priority_and_fairness.go"),
+			keepDeclsJS("pkg/server/filters/priority-and-fairness.go", "tooManyRequests"),
 			patchJS("pkg/storageversion/manager.go", []op{
 				patch("", "\t\"k8s.io/client-go/kubernetes\"\n", "\tapiserverinternalv1alpha1 \"k8s.io/client-go/kubernetes/typed/apiserverinternal/v1alpha1\"\n"),
 				patch("", "clientset, err := kubernetes.NewForConfig(kubeAPIServerClientConfig)", "clientset, err := apiserverinternalv1alpha1.NewForConfig(kubeAPIServerClientConfig)"),
@@ -529,6 +527,8 @@ func apply(dst, overlays string, o op) error {
 			return fmt.Errorf("%s: overlay must start with a //go:build js constraint", o.overlay)
 		}
 		return os.WriteFile(filepath.Join(dst, jsName(o.path)), data, 0o644)
+	case "astJS":
+		return applyAST(dst, o)
 	case "patchJS":
 		data, err := keepHostOnly(dst, o.path)
 		if err != nil {
