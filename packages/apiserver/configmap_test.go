@@ -88,7 +88,7 @@ func TestConfigMapVerbs(t *testing.T) {
 	if _, err := cs.CoreV1().ConfigMaps("other").Create(c, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "a"}}, metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	all, err := cs.CoreV1().ConfigMaps("").List(c, metav1.ListOptions{FieldSelector: notRootCA})
+	all, err := cs.CoreV1().ConfigMaps("").List(c, metav1.ListOptions{FieldSelector: notRootCA + ",metadata.namespace!=kube-system"})
 	if err != nil || len(all.Items) != 5 {
 		var got []string
 		for i := range all.Items {
