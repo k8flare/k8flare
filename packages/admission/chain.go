@@ -2,10 +2,12 @@ package admission
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	admit "github.com/k8flare/k8flare/packages/apiserver-admit"
 	admissionregv1 "k8s.io/api/admissionregistration/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 func (h *Handler) run(ctx context.Context, req admit.Request) (admit.Response, error) {
@@ -183,6 +185,16 @@ func failClosed(p *admissionregv1.FailurePolicyType, err error) error {
 }
 
 func denyResponse(err error) admit.Response {
+	var apiStatus apierrors.APIStatus
+	if errors.As(err, &apiStatus) {
+		st := apiStatus.Status()
+		return admit.Response{
+			Allowed: false,
+			Message: st.Message,
+			Reason:  string(st.Reason),
+			Status:  &st,
+		}
+	}
 	out := admit.Response{Allowed: false, Message: err.Error()}
 	switch err.(type) {
 	case invalidError:

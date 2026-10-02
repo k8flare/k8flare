@@ -70,6 +70,7 @@ type oursFunc func(context.Context, *store, authorizer.Authorizer, *admit.Reques
 
 type pluginPair struct {
 	upstream string
+	swapped  bool
 	admit    oursFunc
 	validate oursFunc
 }
@@ -94,16 +95,16 @@ func authorizerOnly(fn func(context.Context, authorizer.Authorizer, *admit.Reque
 }
 
 var pluginPairs = map[string]pluginPair{
-	"DefaultTolerationSeconds":      {upstream: defaulttolerationseconds.PluginName, admit: storeOnly(applyDefaultTolerationSeconds)},
+	"DefaultTolerationSeconds":      {upstream: defaulttolerationseconds.PluginName, swapped: true, admit: storeOnly(applyDefaultTolerationSeconds)},
 	"LimitRanger":                   {upstream: limitranger.PluginName, admit: storeOnly(applyLimitRanger), validate: storeOnly(validateLimitRanger)},
 	"DefaultStorageClass":           {upstream: setdefault.PluginName, admit: storeOnly(applyDefaultStorageClass)},
 	"DefaultIngressClass":           {upstream: defaultingressclass.PluginName, admit: storeOnly(applyDefaultIngressClass)},
 	"StorageObjectInUseProtection":  {upstream: storageobjectinuseprotection.PluginName, admit: storeOnly(applyStorageObjectInUseProtection)},
 	"RuntimeClass":                  {upstream: runtimeclass.PluginName, admit: storeOnly(applyRuntimeClass), validate: storeOnly(validateRuntimeClass)},
-	"TaintNodesByCondition":         {upstream: nodetaint.PluginName, admit: storeOnly(applyTaintNodesByCondition)},
+	"TaintNodesByCondition":         {upstream: nodetaint.PluginName, swapped: true, admit: storeOnly(applyTaintNodesByCondition)},
 	"PodTopologyLabels":             {upstream: podtopologylabels.PluginName, admit: storeOnly(applyPodTopologyLabels)},
 	"PersistentVolumeClaimResize":   {upstream: resize.PluginName, validate: storeOnly(applyPersistentVolumeClaimResize)},
-	"CertificateSubjectRestriction": {upstream: subjectrestriction.PluginName, validate: storeOnly(applyCertificateSubjectRestriction)},
+	"CertificateSubjectRestriction": {upstream: subjectrestriction.PluginName, swapped: true, validate: storeOnly(applyCertificateSubjectRestriction)},
 	"CertificateApproval":           {upstream: approval.PluginName, validate: authorizerOnly(applyCertificateApproval)},
 	"CertificateSigning":            {upstream: signing.PluginName, validate: authorizerOnly(applyCertificateSigning)},
 	"ServiceAccount":                {upstream: serviceaccount.PluginName, admit: serviceAccountAdmit, validate: storeOnly(validateServiceAccount)},
@@ -172,6 +173,7 @@ type outcome struct {
 	reason  metav1.StatusReason
 	code    int32
 	message string
+	details *metav1.StatusDetails
 	object  runtime.Object
 
 	quotaUsed map[string]corev1.ResourceList
@@ -417,7 +419,7 @@ func upstreamDenial(err error) outcome {
 	var status apierrors.APIStatus
 	if errors.As(err, &status) {
 		s := status.Status()
-		return outcome{reason: s.Reason, code: s.Code, message: err.Error()}
+		return outcome{reason: s.Reason, code: s.Code, message: err.Error(), details: s.Details}
 	}
 	return outcome{reason: metav1.StatusReasonInternalError, code: 500, message: err.Error()}
 }
@@ -498,6 +500,9 @@ func admitUser(info user.Info) admit.User {
 
 func oursDenial(c diffCase, err error) outcome {
 	resp := denyResponse(err)
+	if resp.Status != nil {
+		return upstreamDenial(&apierrors.StatusError{ErrStatus: *resp.Status})
+	}
 	attrs := c.attributes(nil, nil)
 	var mapped error
 	switch resp.Reason {
@@ -568,7 +573,7 @@ func normalizePod(obj runtime.Object) runtime.Object {
 	return pod
 }
 
-func compareOutcomes(upstream, ours outcome) comparison {
+func compareOutcomes(upstream, ours outcome, checkDetails bool) comparison {
 	var cmpResult comparison
 	upstream.object = normalizePod(upstream.object)
 	ours.object = normalizePod(ours.object)
@@ -588,6 +593,9 @@ func compareOutcomes(upstream, ours outcome) comparison {
 	if upstream.message != ours.message {
 		cmpResult.messageDiff = "differs"
 		cmpResult.messages = fmt.Sprintf("upstream %q; ours %q", upstream.message, ours.message)
+	}
+	if checkDetails && !apiequality.Semantic.DeepEqual(upstream.details, ours.details) {
+		cmpResult.outcomeDiff = "status.details (- upstream, + ours):\n" + changedLines(cmp.Diff(upstream.details, ours.details))
 	}
 	return cmpResult
 }
@@ -613,7 +621,7 @@ func runDiffCases(t *testing.T, cases []diffCase) {
 			upstream := runUpstream(t, c, pair)
 			ours := runOurs(t, c, pair)
 			t.Logf("upstream: %s; ours: %s", upstream.summary(), ours.summary())
-			result := compareOutcomes(upstream, ours)
+			result := compareOutcomes(upstream, ours, pair.swapped)
 			got := result.signature()
 			if c.known == nil {
 				if got != "" {
@@ -635,7 +643,7 @@ func runDiffCases(t *testing.T, cases []diffCase) {
 				for _, rewrite := range c.known.rewrites {
 					rewrite(rewritten.object)
 				}
-				if rest := compareOutcomes(rewritten, ours).signature(); rest != "" {
+				if rest := compareOutcomes(rewritten, ours, pair.swapped).signature(); rest != "" {
 					t.Fatalf("known difference (%s) changed: after applying it upstream still differs:\n%s", c.known.reason, rest)
 				}
 			default:

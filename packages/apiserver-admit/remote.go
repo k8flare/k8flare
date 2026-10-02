@@ -44,6 +44,7 @@ type Response struct {
 	Allowed bool           `json:"allowed"`
 	Message string         `json:"message"`
 	Reason  string         `json:"reason,omitempty"`
+	Status  *metav1.Status `json:"status,omitempty"`
 	Object  map[string]any `json:"object"`
 }
 
@@ -125,6 +126,9 @@ func (r *remote) call(ctx context.Context, a admission.Attributes, phase string)
 		return admission.NewForbidden(a, fmt.Errorf("admission: %w", err))
 	}
 	if !out.Allowed {
+		if out.Status != nil {
+			return &apierrors.StatusError{ErrStatus: *out.Status}
+		}
 		msg := out.Message
 		if msg == "" {
 			msg = "denied"

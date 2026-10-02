@@ -2,13 +2,8 @@ package admission
 
 import (
 	"context"
-	"encoding/base64"
-	"errors"
-	"fmt"
-	"strings"
 
 	admit "github.com/k8flare/k8flare/packages/apiserver-admit"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -50,25 +45,6 @@ func decodeRequestObject(m map[string]any, gvk schema.GroupVersionKind) (runtime
 	if !legacyscheme.Scheme.Recognizes(gvk) {
 		return nil, nil
 	}
-	if gvk.Kind == "CertificateSigningRequest" {
-		if spec, ok := m["spec"].(map[string]any); ok {
-			if raw, ok := spec["request"].(string); ok {
-				if _, err := base64.StdEncoding.DecodeString(raw); err != nil {
-					mCopy := make(map[string]any, len(m))
-					for k, v := range m {
-						mCopy[k] = v
-					}
-					specCopy := make(map[string]any, len(spec))
-					for k, v := range spec {
-						specCopy[k] = v
-					}
-					specCopy["request"] = base64.StdEncoding.EncodeToString([]byte(raw))
-					mCopy["spec"] = specCopy
-					m = mCopy
-				}
-			}
-		}
-	}
 	versioned, err := legacyscheme.Scheme.New(gvk)
 	if err != nil {
 		return nil, err
@@ -79,21 +55,38 @@ func decodeRequestObject(m map[string]any, gvk schema.GroupVersionKind) (runtime
 	return toInternalObject(versioned)
 }
 
+func operationOptions(op admission.Operation, dryRun bool) runtime.Object {
+	var dryRunList []string
+	if dryRun {
+		dryRunList = []string{metav1.DryRunAll}
+	}
+	switch op {
+	case admission.Create:
+		return &metav1.CreateOptions{DryRun: dryRunList}
+	case admission.Update:
+		return &metav1.UpdateOptions{DryRun: dryRunList}
+	case admission.Delete:
+		return &metav1.DeleteOptions{DryRun: dryRunList}
+	case admission.Connect:
+		return nil
+	default:
+		return nil
+	}
+}
+
+func userInfoFromRequest(u admit.User) user.Info {
+	return &user.DefaultInfo{
+		Name:   u.Username,
+		UID:    u.UID,
+		Groups: u.Groups,
+		Extra:  u.Extra,
+	}
+}
+
 func requestAttributes(req *admit.Request, obj, oldObj runtime.Object) admission.Attributes {
 	op := admission.Operation(req.Operation)
 	if op == "" {
 		op = admission.Create
-	}
-	var userInfo user.Info
-	if req.User.Username != "" || req.User.UID != "" || len(req.User.Groups) > 0 || len(req.User.Extra) > 0 {
-		userInfo = &user.DefaultInfo{
-			Name:   req.User.Username,
-			UID:    req.User.UID,
-			Groups: req.User.Groups,
-			Extra:  req.User.Extra,
-		}
-	} else {
-		userInfo = &user.DefaultInfo{Name: "alice", Groups: []string{"system:authenticated"}}
 	}
 	return admission.NewAttributesRecord(
 		obj,
@@ -104,37 +97,10 @@ func requestAttributes(req *admit.Request, obj, oldObj runtime.Object) admission
 		req.Resource,
 		req.Subresource,
 		op,
-		&metav1.CreateOptions{},
+		operationOptions(op, req.DryRun),
 		req.DryRun,
-		userInfo,
+		userInfoFromRequest(req.User),
 	)
-}
-
-func mapAdmissionError(err error) error {
-	if err == nil {
-		return nil
-	}
-	var status apierrors.APIStatus
-	if errors.As(err, &status) {
-		s := status.Status()
-		msg := s.Message
-		if s.Reason == metav1.StatusReasonForbidden {
-			if idx := strings.Index(msg, "is forbidden: "); idx != -1 {
-				msg = msg[idx+len("is forbidden: "):]
-			} else if strings.HasPrefix(msg, "forbidden: ") {
-				msg = strings.TrimPrefix(msg, "forbidden: ")
-			}
-			return fmt.Errorf("%s", msg)
-		}
-		if s.Reason == metav1.StatusReasonInvalid {
-			return invalidError{msg: msg}
-		}
-		if s.Reason == metav1.StatusReasonInternalError {
-			return internalError{errors.New(msg)}
-		}
-		return fmt.Errorf("%s", msg)
-	}
-	return err
 }
 
 func runUpstreamPlugin(ctx context.Context, plugin admission.Interface, req *admit.Request) error {
@@ -164,7 +130,7 @@ func runUpstreamPlugin(ctx context.Context, plugin admission.Interface, req *adm
 			return nil
 		}
 		if err := mutator.Admit(ctx, attrs, legacyObjectInterfaces); err != nil {
-			return mapAdmissionError(err)
+			return err
 		}
 		if attrs.GetObject() != nil && req.Object != nil {
 			versioned, err := toVersionedObject(attrs.GetObject(), req.Kind.GroupVersion())
@@ -185,7 +151,7 @@ func runUpstreamPlugin(ctx context.Context, plugin admission.Interface, req *adm
 			return nil
 		}
 		if err := validator.Validate(ctx, attrs, legacyObjectInterfaces); err != nil {
-			return mapAdmissionError(err)
+			return err
 		}
 		return nil
 
