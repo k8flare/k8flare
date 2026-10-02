@@ -79,6 +79,28 @@ func TestKeepDeclsNamesEveryMissingDeclaration(t *testing.T) {
 	}
 }
 
+func TestKeepDeclsFailsWhenKeptNameSharesSpecWithExtraNames(t *testing.T) {
+	src := []byte("package demo\n\nvar Scheme, Extra = 1, 2\n")
+	_, err := keepDecls(src, []string{"Scheme"})
+	if err == nil {
+		t.Fatal("expected error when spec declares extra names")
+	}
+	if !strings.Contains(err.Error(), "Extra") {
+		t.Errorf("error %q should name the extra name Extra", err)
+	}
+	if !strings.Contains(err.Error(), "Scheme") {
+		t.Errorf("error %q should name the spec Scheme", err)
+	}
+
+	out, err := keepDecls(src, []string{"Scheme", "Extra"})
+	if err != nil {
+		t.Fatalf("unexpected error when all names in spec are kept: %v", err)
+	}
+	if !strings.Contains(string(out), "Scheme, Extra") {
+		t.Errorf("output should keep both names:\n%s", out)
+	}
+}
+
 const stubSource = `package demo
 
 import (

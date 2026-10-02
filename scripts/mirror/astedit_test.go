@@ -123,6 +123,18 @@ func TestReplaceSelectorNotFound(t *testing.T) {
 	wantError(t, err, "p/sample.go", "cloud.Missing")
 }
 
+func TestReplaceSelectorFailsOnShadowedSelector(t *testing.T) {
+	src := "package p\n\nimport cloud \"example.com/cloud\"\n\ntype S struct {\n\tInterface int\n}\n\nfunc foo(cloud S) {\n\t_ = cloud.Interface\n}\n"
+	_, err := runEdits("p/sample.go", t.TempDir(), []byte(src), []edit{replaceSelector("cloud", "Interface", "any")})
+	wantError(t, err, "p/sample.go", "cloud.Interface", "shadowed")
+}
+
+func TestReplaceSelectorIgnoresNonImportSelector(t *testing.T) {
+	src := "package p\n\ntype S struct {\n\tInterface int\n}\n\nfunc foo(cloud S) {\n\t_ = cloud.Interface\n}\n"
+	_, err := runEdits("p/sample.go", t.TempDir(), []byte(src), []edit{replaceSelector("cloud", "Interface", "any")})
+	wantError(t, err, "p/sample.go", "cloud.Interface not found")
+}
+
 func TestReplaceNodeRemovesStatementAndImport(t *testing.T) {
 	got := mustRun(t, replaceNode("holder.Run", "flow.Watch(ctx)", ""))
 	wantAbsent(t, got, "flow.Watch", "example.com/other/flow")
@@ -332,6 +344,26 @@ func TestRemoveFieldOfInterfaceTakesTheMethodAndItsDoc(t *testing.T) {
 	wantError(t, err, "p/value.go", "Checker.Nope")
 }
 
+const structSource = `package p
+
+type Config struct {
+	A int
+	// Target doc line.
+	// Second doc line.
+	Target string
+	B int
+}
+`
+
+func TestRemoveFieldOfStructTakesFieldAndItsDoc(t *testing.T) {
+	out, err := runOn(t, structSource, removeField("Config", "Target"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantContains(t, out, "A int", "B int")
+	wantAbsent(t, out, "Target", "Target doc line", "Second doc line")
+}
+
 func TestAddImportToSingleLineImport(t *testing.T) {
 	src := "package p\n\nimport \"syscall\"\n\nvar s = syscall.SIGUSR2\n"
 	out, err := runOn(t, src, addImport("", "os"), replaceSelector("syscall", "SIGUSR2", "os.Interrupt"))
@@ -353,6 +385,19 @@ func TestWithoutBuildConstraint(t *testing.T) {
 	if got := string(withoutBuildConstraint([]byte(same))); got != same {
 		t.Fatalf("got %q", got)
 	}
+}
+
+func TestUnusedImportPrunedEvenWhenLocalVariableSharesPackageName(t *testing.T) {
+	src := "package p\n\nimport \"example.com/unused\"\n\ntype S struct {\n\tField int\n}\n\nfunc foo() {\n\tunused := S{}\n\t_ = unused.Field\n}\n"
+	got, err := runEdits("p/sample.go", t.TempDir(), []byte(src), []edit{
+		func(s *source) error {
+			return s.dropUnusedImports([]string{"unused"})
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantAbsent(t, string(got), "example.com/unused")
 }
 
 const upstreamDecls = `package p
@@ -390,4 +435,20 @@ func TestCheckDeclsNamesWhatIsGoneOrChanged(t *testing.T) {
 	wantError(t, err, "p/generic.go", "GenericInformer", "changed")
 	err = checkDecls("p/generic.go", []byte(upstreamDecls), "func (f *other) ForResource(resource schema.GroupVersionResource) (GenericInformer, error)")
 	wantError(t, err, "other.ForResource", "not found")
+}
+
+func TestCheckDeclsDistinguishesTypeParameters(t *testing.T) {
+	src := "package p\n\nfunc F[P any](x int) {}\n"
+	err := checkDecls("p/generic.go", []byte(src), "func F(x int)")
+	wantError(t, err, "p/generic.go", "F", "changed")
+}
+
+func TestCheckDeclsDistinguishesTypeAlias(t *testing.T) {
+	src := "package p\n\ntype T = int\n"
+	err := checkDecls("p/generic.go", []byte(src), "type T int")
+	wantError(t, err, "p/generic.go", "T", "changed")
+
+	srcDef := "package p\n\ntype T int\n"
+	err = checkDecls("p/generic.go", []byte(srcDef), "type T = int")
+	wantError(t, err, "p/generic.go", "T", "changed")
 }

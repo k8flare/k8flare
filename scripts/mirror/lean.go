@@ -210,14 +210,15 @@ func (p *pruned) dropComments() {
 
 func (p *pruned) pruneImports() {
 	referenced := make(map[string]bool)
+	imported := importedPackages(p.file)
 	for _, decl := range p.file.Decls {
 		if gen, ok := decl.(*ast.GenDecl); ok && gen.Tok == token.IMPORT {
 			continue
 		}
 		ast.Inspect(decl, func(n ast.Node) bool {
 			if sel, ok := n.(*ast.SelectorExpr); ok {
-				if id, ok := sel.X.(*ast.Ident); ok {
-					referenced[id.Name] = true
+				if pkg, isImport, _ := packageSelector(p.file, sel, imported); isImport {
+					referenced[pkg] = true
 				}
 			}
 			return true
@@ -250,7 +251,7 @@ func (p *pruned) mergeDecls(src string) error {
 	if err != nil {
 		return fmt.Errorf("parse additions to %s: %w", p.name, err)
 	}
-	have := make(map[string]bool)
+	have := make(map[string]string)
 	var importDecl *ast.GenDecl
 	for _, decl := range p.file.Decls {
 		if gen, ok := decl.(*ast.GenDecl); ok && gen.Tok == token.IMPORT {
@@ -258,7 +259,8 @@ func (p *pruned) mergeDecls(src string) error {
 				importDecl = gen
 			}
 			for _, spec := range gen.Specs {
-				have[spec.(*ast.ImportSpec).Path.Value] = true
+				imp := spec.(*ast.ImportSpec)
+				have[imp.Path.Value] = importName(imp)
 			}
 		}
 	}
@@ -270,12 +272,17 @@ func (p *pruned) mergeDecls(src string) error {
 		}
 		for _, spec := range gen.Specs {
 			imp := spec.(*ast.ImportSpec)
-			if have[imp.Path.Value] {
+			extraName := importName(imp)
+			if existingName, ok := have[imp.Path.Value]; ok {
+				if existingName != extraName {
+					return fmt.Errorf("%s: import %s already imported as %s, stub imports as %s", p.name, imp.Path.Value, existingName, extraName)
+				}
 				continue
 			}
 			if importDecl == nil {
 				return fmt.Errorf("%s has no import declaration to extend", p.name)
 			}
+			have[imp.Path.Value] = extraName
 			importDecl.Specs = append(importDecl.Specs, imp)
 			p.file.Imports = append(p.file.Imports, imp)
 		}
@@ -441,11 +448,15 @@ func leanClientset(src []byte, keep []groupVersion) ([]byte, error) {
 				continue
 			}
 			p.dropNode(stmt)
-			if len(assign.Lhs) == 2 && i+1 < len(list) {
-				if guard, isIf := list[i+1].(*ast.IfStmt); isIf {
-					p.dropNode(guard)
-					i++
+			if len(assign.Lhs) == 2 {
+				errIdent, ok := assign.Lhs[1].(*ast.Ident)
+				if !ok || i+1 >= len(list) || !isErrReturnGuard(list[i+1], errIdent.Name) {
+					return nil, fmt.Errorf("%s: %s: expected err != nil guard following assignment", ctor.place, key)
 				}
+				p.dropNode(list[i+1])
+				i++
+			} else if len(assign.Lhs) != 1 {
+				return nil, fmt.Errorf("%s: %s: unexpected assignment shape with %d left-hand sides", ctor.place, key, len(assign.Lhs))
 			}
 		}
 		ctor.fn.Body.List = stmts
@@ -456,6 +467,36 @@ func leanClientset(src []byte, keep []groupVersion) ([]byte, error) {
 		return nil, err
 	}
 	return p.render()
+}
+
+func isErrReturnGuard(stmt ast.Stmt, errName string) bool {
+	guard, ok := stmt.(*ast.IfStmt)
+	if !ok || guard.Init != nil || guard.Else != nil {
+		return false
+	}
+	bin, ok := guard.Cond.(*ast.BinaryExpr)
+	if !ok || bin.Op != token.NEQ {
+		return false
+	}
+	if !(isIdent(bin.X, errName) && isIdent(bin.Y, "nil")) && !(isIdent(bin.X, "nil") && isIdent(bin.Y, errName)) {
+		return false
+	}
+	if guard.Body == nil || len(guard.Body.List) != 1 {
+		return false
+	}
+	ret, ok := guard.Body.List[0].(*ast.ReturnStmt)
+	if !ok || len(ret.Results) == 0 {
+		return false
+	}
+	if !isIdent(ret.Results[len(ret.Results)-1], errName) {
+		return false
+	}
+	for _, res := range ret.Results[:len(ret.Results)-1] {
+		if !isIdent(res, "nil") {
+			return false
+		}
+	}
+	return true
 }
 
 func leanInformerFactory(src []byte, keepGroups []string) ([]byte, error) {
