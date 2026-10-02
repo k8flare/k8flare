@@ -167,6 +167,28 @@ func importName(spec *ast.ImportSpec) string {
 	return p[strings.LastIndex(p, "/")+1:]
 }
 
+func importedPackages(file *ast.File) map[string]bool {
+	pkgs := make(map[string]bool)
+	for _, imp := range file.Imports {
+		name := importName(imp)
+		if name != "_" && name != "." {
+			pkgs[name] = true
+		}
+	}
+	return pkgs
+}
+
+func packageSelector(file *ast.File, sel *ast.SelectorExpr, imported map[string]bool) (string, bool, bool) {
+	x, ok := sel.X.(*ast.Ident)
+	if !ok || !imported[x.Name] {
+		return "", false, false
+	}
+	if x.Obj != nil {
+		return x.Name, false, true
+	}
+	return x.Name, true, false
+}
+
 func (s *source) usesPackage(name string) bool {
 	used := false
 	for _, d := range s.file.Decls {
@@ -376,17 +398,30 @@ func (s *source) one(where string, found []match, what string) (match, error) {
 func replaceSelector(pkg, name, to string) edit {
 	return func(s *source) error {
 		var spans []span
+		var shadowed bool
+		imported := importedPackages(s.file)
 		ast.Inspect(s.file, func(n ast.Node) bool {
 			sel, ok := n.(*ast.SelectorExpr)
 			if !ok {
 				return true
 			}
-			if x, ok := sel.X.(*ast.Ident); ok && x.Name == pkg && sel.Sel.Name == name {
+			p, isImport, isShadowed := packageSelector(s.file, sel, imported)
+			if p != pkg || sel.Sel.Name != name {
+				return true
+			}
+			if isShadowed {
+				shadowed = true
+				return false
+			}
+			if isImport {
 				spans = append(spans, span{s.off(sel.Pos()), s.off(sel.End()), to})
 				return false
 			}
 			return true
 		})
+		if shadowed {
+			return fmt.Errorf("%s: selector %s.%s is shadowed by local declaration", s.path, pkg, name)
+		}
 		if len(spans) == 0 {
 			return fmt.Errorf("%s: selector %s.%s not found", s.path, pkg, name)
 		}

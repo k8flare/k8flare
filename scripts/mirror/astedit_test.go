@@ -123,6 +123,18 @@ func TestReplaceSelectorNotFound(t *testing.T) {
 	wantError(t, err, "p/sample.go", "cloud.Missing")
 }
 
+func TestReplaceSelectorFailsOnShadowedSelector(t *testing.T) {
+	src := "package p\n\nimport cloud \"example.com/cloud\"\n\ntype S struct {\n\tInterface int\n}\n\nfunc foo(cloud S) {\n\t_ = cloud.Interface\n}\n"
+	_, err := runEdits("p/sample.go", t.TempDir(), []byte(src), []edit{replaceSelector("cloud", "Interface", "any")})
+	wantError(t, err, "p/sample.go", "cloud.Interface", "shadowed")
+}
+
+func TestReplaceSelectorIgnoresNonImportSelector(t *testing.T) {
+	src := "package p\n\ntype S struct {\n\tInterface int\n}\n\nfunc foo(cloud S) {\n\t_ = cloud.Interface\n}\n"
+	_, err := runEdits("p/sample.go", t.TempDir(), []byte(src), []edit{replaceSelector("cloud", "Interface", "any")})
+	wantError(t, err, "p/sample.go", "cloud.Interface not found")
+}
+
 func TestReplaceNodeRemovesStatementAndImport(t *testing.T) {
 	got := mustRun(t, replaceNode("holder.Run", "flow.Watch(ctx)", ""))
 	wantAbsent(t, got, "flow.Watch", "example.com/other/flow")
