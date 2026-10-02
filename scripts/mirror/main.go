@@ -139,7 +139,6 @@ var mirrors = []mirror{
 		name:   "client-go",
 		module: "github.com/k3s-io/kubernetes/staging/src/k8s.io/client-go",
 		pins: []string{
-			"kubernetes/scheme/register.go",
 			"informers/generic.go",
 		},
 		ops: []op{
@@ -147,7 +146,9 @@ var mirrors = []mirror{
 				insertAfter("delayingType.AddAfter", "q.metrics.retry()", "ObserveDelay(duration)"),
 				appendDecls("client-go/append/delay_observer.go"),
 			),
-			replaceJS("kubernetes/scheme/register.go", "client-go/register.go"),
+			patchJSAST("kubernetes/scheme/register.go",
+				replaceVarValue("localSchemeBuilder", "runtime.SchemeBuilder{}"),
+			),
 			narrowClientset("kubernetes/clientset.go"),
 			narrowInformerFactory("informers/factory.go"),
 			hostOnly("informers/generic.go"),
