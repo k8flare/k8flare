@@ -17,7 +17,7 @@ WASM_OPT := wasm-opt -Oz --strip-debug --strip-producers --enable-bulk-memory --
 mirrors:
 	cd scripts && go run ./mirror
 
-GO_SRC := $(shell find packages -name '*.go' -not -name '*_test.go') $(shell find packages/addons -name '*.yaml') go.mod scripts/mirror/main.go $(shell find scripts/mirror/_overlays -type f)
+GO_SRC := $(shell find packages -name '*.go' -not -name '*_test.go') $(shell find packages/addons -name '*.yaml') go.mod scripts/mirror/main.go scripts/internal/upstream/versions.mod $(shell find scripts/mirror/_overlays -type f)
 
 $(ASSETS)/wasm_exec.js: scripts/wasmpack/main.go
 	cd scripts && go run ./wasmpack exec ../$@
@@ -200,7 +200,7 @@ opt-wasm-list:
 wasm: $(ASSETS)/wasm_exec.js $(ASSETS)/apiserver.manifest.json $(foreach g,$(API_GROUPS),$(ASSETS)/apiserver-$(g).manifest.json) $(ASSETS)/openapi.manifest.json $(ASSETS)/customresources.manifest.json $(ASSETS)/scheduler.manifest.json $(ASSETS)/workloads.manifest.json $(ASSETS)/workloads-vap.manifest.json $(ASSETS)/attachdetach.manifest.json $(ASSETS)/addons.manifest.json $(ASSETS)/hpa.manifest.json $(ASSETS)/gc.manifest.json $(ASSETS)/admission.manifest.json $(ASSETS)/hookecho.manifest.json $(foreach g,$(GROUPS),$(ASSETS)/printers-$(g).manifest.json) $(NODE_TUNNEL_WASM)
 
 gen: images
-	cd scripts && go run ./genresources && go run ./genprinters && go run ./genopenapi
+	cd scripts && go run ./genresources && go run ./genprinters && go run ./genopenapi && go run ./genversion
 	go run ./packages/openapi/cmd/bakeopenapi
 
 ## images: record ENTRYPOINT/CMD/WorkingDir/User/Env of every image declared under
@@ -244,6 +244,7 @@ check:
 	pnpm exec tsc --noEmit
 
 vet: mirrors
+	cd scripts && go run ./mirror -check-keep
 	go vet ./packages/...
 	GOOS=js GOARCH=wasm go vet ./packages/...
 
