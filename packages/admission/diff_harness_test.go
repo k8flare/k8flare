@@ -676,20 +676,6 @@ func runDiffCases(t *testing.T, cases []diffCase) {
 	}
 }
 
-func withKnown(c diffCase, reason, signature string) diffCase {
-	c.known = &knownDifference{reason: reason, signature: signature}
-	return c
-}
-
-func dropAnnotation(key string) objectRewrite {
-	return func(obj runtime.Object) {
-		accessor, _ := meta.Accessor(obj)
-		annotations := accessor.GetAnnotations()
-		delete(annotations, key)
-		accessor.SetAnnotations(annotations)
-	}
-}
-
 func admissionOperation(op string) admission.Operation { return admission.Operation(op) }
 
 func applyKnown(t *testing.T, cases []diffCase, known map[string]*knownDifference) []diffCase {
