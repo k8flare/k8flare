@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
@@ -22,6 +23,19 @@ type item struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata"`
 	key               string
+	ownersMu          sync.Mutex
+}
+
+func (it *item) owners() []metav1.OwnerReference {
+	it.ownersMu.Lock()
+	defer it.ownersMu.Unlock()
+	return it.OwnerReferences
+}
+
+func (it *item) setOwners(refs []metav1.OwnerReference) {
+	it.ownersMu.Lock()
+	defer it.ownersMu.Unlock()
+	it.OwnerReferences = refs
 }
 
 type graph struct {

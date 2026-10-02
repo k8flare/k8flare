@@ -20,8 +20,8 @@ const LEASE_CHECK_EVERY_MS = 50_000;
 const OUTBOX_BATCH = 100;
 const MAX_DELAY_S = 86_400;
 
-type Target = "scheduler" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "metrics" | "containers" | "attachdetach" | "addons";
-const targets: Target[] = ["scheduler", "workloads", "crds", "gc", "accounts", "extensions", "metrics", "containers", "attachdetach", "addons"];
+type Target = "scheduler" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "containers" | "attachdetach" | "addons" | "hpa";
+const targets: Target[] = ["scheduler", "workloads", "crds", "gc", "accounts", "extensions", "containers", "attachdetach", "addons", "hpa"];
 const SCHEMA_VERSION = 1;
 const controllerAnnot = "k8flare.io/controller";
 const REGISTRY_PREFIX = "/registry/";
@@ -73,6 +73,7 @@ export class Cluster extends DurableObject<Env> {
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, target TEXT NOT NULL, rev INTEGER NOT NULL, key TEXT NOT NULL, type TEXT NOT NULL)`);
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS passes (target TEXT PRIMARY KEY, triggered INTEGER NOT NULL, finished INTEGER NOT NULL)`);
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS lease_checks (node TEXT PRIMARY KEY, sent INTEGER NOT NULL, due INTEGER NOT NULL DEFAULT 0)`);
+      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS deadlines (target TEXT PRIMARY KEY, due INTEGER NOT NULL)`);
       if (!ctx.storage.sql.exec("PRAGMA table_info(lease_checks)").toArray().some((c) => c.name === "due")) {
         ctx.storage.sql.exec("ALTER TABLE lease_checks ADD COLUMN due INTEGER NOT NULL DEFAULT 0");
       }
@@ -84,27 +85,9 @@ export class Cluster extends DurableObject<Env> {
         SCHEMA_VERSION,
       );
       this.sweepNamespaces();
-      this.seedMetrics();
       this.seedAddons();
       ctx.waitUntil(this.armAlarm());
     });
-  }
-
-  private metricsServerDisabled(): boolean {
-    return (this.env.DISABLE ?? "").split(",").some((name) => name.trim() === "metrics-server");
-  }
-
-  private seedMetrics(): void {
-    if (this.metricsServerDisabled()) return;
-    const now = Date.now();
-    const rows = this.ctx.storage.sql.exec("SELECT value FROM meta WHERE key = 'metrics_seed'").toArray();
-    const last = rows.length === 0 ? 0 : (rows[0].value as number);
-    if (now - last < 15_000) return;
-    this.ctx.storage.sql.exec(
-      "INSERT INTO meta (key, value) VALUES ('metrics_seed', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-      now,
-    );
-    this.ctx.waitUntil(this.env.METRICS_Q.send({ kind: "retry" }));
   }
 
   private seedAddons(): void {
@@ -284,9 +267,23 @@ export class Cluster extends DurableObject<Env> {
         return Response.json({ revision: this.insert(body.key, 1, cur.value, cur) });
       }
       case "POST /enqueue": {
-        const body = (await request.json()) as { target: Target; delayMs: number };
+        const body = (await request.json()) as { target: Target; delayMs: number; once?: boolean };
         if (!targets.includes(body.target)) return new Response("unknown target", { status: 400 });
         const delaySeconds = Math.min(MAX_DELAY_S, Math.max(0, Math.ceil(body.delayMs / 1000)));
+        if (body.once) {
+          const now = Date.now();
+          const rows = this.ctx.storage.sql.exec("SELECT due FROM deadlines WHERE target = ?", body.target).toArray();
+          if (rows.length > 0 && (rows[0].due as number) > now) {
+            return Response.json({ ok: true, booked: false });
+          }
+          this.ctx.storage.sql.exec(
+            "INSERT INTO deadlines (target, due) VALUES (?, ?) ON CONFLICT(target) DO UPDATE SET due = excluded.due",
+            body.target,
+            now + body.delayMs,
+          );
+          await this.queue(body.target).send({ kind: "retry" } satisfies QueueMessage, { delaySeconds });
+          return Response.json({ ok: true, booked: true });
+        }
         await this.queue(body.target).send({ kind: "retry" } satisfies QueueMessage, { delaySeconds });
         return Response.json({ ok: true });
       }
@@ -600,10 +597,10 @@ export class Cluster extends DurableObject<Env> {
     if (target === "gc") return this.env.GC_Q;
     if (target === "accounts") return this.env.ACCT_Q;
     if (target === "extensions") return this.env.EXT_Q;
-    if (target === "metrics") return this.env.METRICS_Q;
     if (target === "containers") return this.env.CONTAINERS_Q;
     if (target === "attachdetach") return this.env.AD_Q;
     if (target === "addons") return this.env.ADDON_Q;
+    if (target === "hpa") return this.env.HPA_Q;
     return this.env.CTRL_Q;
   }
 
@@ -619,6 +616,9 @@ export class Cluster extends DurableObject<Env> {
       return;
     }
     const routes: Target[] = [];
+    if (name.startsWith("/registry/horizontalpodautoscalers/")) {
+      if (type !== "modified" || !prev || hpaSpecChanged(prev.value, value)) routes.push("hpa");
+    }
     if (name.startsWith("/registry/endpointslices/") || name.startsWith("/registry/endpoints/")) {
       if (type !== "modified" || !prev || endpointPublishChanged(prev.value, value)) routes.push("workloads");
     } else if (WORKLOAD_PREFIXES.some((p) => name.startsWith(p))) routes.push("workloads");
@@ -641,7 +641,6 @@ export class Cluster extends DurableObject<Env> {
     } else if (name.startsWith("/registry/minions/") || name.startsWith("/registry/nodes/")) {
       if (type !== "modified" || !prev || nodeChanged(prev.value, value)) {
         routes.push("scheduler", "workloads");
-        if (!this.metricsServerDisabled()) routes.push("metrics");
       }
     }
     for (const target of routes) {
@@ -903,4 +902,11 @@ function nodeChanged(before: Uint8Array, after: Uint8Array): boolean {
     JSON.stringify(a.status?.allocatable ?? {}) !== JSON.stringify(b.status?.allocatable ?? {}) ||
     readyStatus(a) !== readyStatus(b)
   );
+}
+
+function hpaSpecChanged(before: Uint8Array, after: Uint8Array): boolean {
+  const a = decodeJSON(before);
+  const b = decodeJSON(after);
+  if (!a || !b) return true;
+  return JSON.stringify(a.spec ?? {}) !== JSON.stringify(b.spec ?? {});
 }
