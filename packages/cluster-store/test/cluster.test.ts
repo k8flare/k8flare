@@ -261,6 +261,30 @@ test("POST /enqueue with once deduplicates within delay and reschedules after du
   assert.equal(sent.length, 4);
 });
 
+test("POST /enqueue with once clears booking if queue send fails so retry can book", async () => {
+  let shouldFail = true;
+  const sent: { delaySeconds?: number }[] = [];
+  const queue = {
+    send: async (_body: unknown, opts?: { delaySeconds?: number }) => {
+      if (shouldFail) {
+        shouldFail = false;
+        throw new Error("queue send failed");
+      }
+      sent.push({ delaySeconds: opts?.delaySeconds });
+    },
+    sendBatch: async () => {},
+  };
+  const r = rig({ HPA_Q: queue } as any);
+  await r.settle();
+
+  await assert.rejects(r.post("/enqueue", { target: "hpa", delayMs: 15_000, once: true }), /queue send failed/);
+  assert.equal(sent.length, 0);
+
+  const res = await (await r.post("/enqueue", { target: "hpa", delayMs: 15_000, once: true })).json();
+  assert.deepEqual(res, { ok: true, booked: true });
+  assert.equal(sent.length, 1);
+});
+
 test("the garbage collector hears about ownership and deletion, not every status write of an owned object", async () => {
   const sent: string[] = [];
   const gc = { send: async () => {}, sendBatch: async (batch: { body: { key: string; type: string } }[]) => void sent.push(...batch.map((m) => `${m.body.type} ${m.body.key}`)) };
