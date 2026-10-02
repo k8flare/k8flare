@@ -111,7 +111,7 @@ export function rig(vars: Record<string, string> = {}): Rig {
     acceptWebSocket: (ws: FakeSocket) => void sockets.push(ws),
     getWebSockets: () => sockets.filter((s) => s.closed === null),
   };
-  const env = { CTRL_Q: queue, SCHED_Q: queue, WL_Q: queue, CRD_Q: queue, GC_Q: queue, ACCT_Q: queue, EXT_Q: queue, METRICS_Q: queue, CONTAINERS_Q: queue, AD_Q: queue, ADDON_Q: queue, PODS_R2: bucket, CLUSTER_UID: "test", ...vars };
+  const env = { CTRL_Q: queue, SCHED_Q: queue, WL_Q: queue, CRD_Q: queue, GC_Q: queue, ACCT_Q: queue, EXT_Q: queue, CONTAINERS_Q: queue, AD_Q: queue, ADDON_Q: queue, HPA_Q: queue, PODS_R2: bucket, CLUSTER_UID: "test", ...vars };
   const cluster = new Cluster(ctx as any, env as any);
   const call = (path: string, init?: RequestInit) => cluster.fetch(new Request(`http://cluster.internal${path}`, init));
   const json = (method: string, path: string, body: unknown) => call(path, { method, body: JSON.stringify(body), headers: { "content-type": "application/json" } });

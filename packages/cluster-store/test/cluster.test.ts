@@ -199,7 +199,7 @@ test("HelmChart and HelmChartConfig writes of every kind reach the addons queue"
   ]);
 });
 
-function metricsQueue() {
+function targetQueue() {
   const sent: string[] = [];
   const queue = {
     send: async (body: { kind: string }) => void sent.push(body.kind),
@@ -208,26 +208,57 @@ function metricsQueue() {
   return { sent, queue };
 }
 
-test("the metrics scrape is seeded on start and by node changes", async () => {
-  const { sent, queue } = metricsQueue();
-  const r = rig({ METRICS_Q: queue, DISABLE: "servicelb,edge-routing" } as any);
+test("HorizontalPodAutoscaler status writes do not reach hpa queue, spec changes and deletes do", async () => {
+  const { sent: hpaSent, queue: hpaQueue } = targetQueue();
+  const r = rig({ HPA_Q: hpaQueue } as any);
   await r.settle();
-  await r.put("/registry/minions/node-a", "v1");
+  const hpa = (spec: string, status: string) => `{"metadata":{"name":"h"},"spec":${spec},"status":${status}}`;
+  await r.put("/registry/horizontalpodautoscalers/default/h", hpa(`{"minReplicas":1}`, `{"currentReplicas":1}`));
   await r.settle();
-  assert.deepEqual(sent, ["retry", "/registry/minions/node-a"]);
+  assert.deepEqual(hpaSent, ["/registry/horizontalpodautoscalers/default/h"]);
+
+  await r.put("/registry/horizontalpodautoscalers/default/h", hpa(`{"minReplicas":1}`, `{"currentReplicas":2}`), 2);
+  await r.settle();
+  assert.equal(hpaSent.length, 1);
+
+  await r.put("/registry/horizontalpodautoscalers/default/h", hpa(`{"minReplicas":2}`, `{"currentReplicas":2}`), 3);
+  await r.settle();
+  assert.equal(hpaSent.length, 2);
+
+  await r.remove("/registry/horizontalpodautoscalers/default/h");
+  await r.settle();
+  assert.equal(hpaSent.length, 3);
 });
 
-test("nothing reaches the metrics queue when metrics-server is disabled", async () => {
-  const { sent, queue } = metricsQueue();
-  const scheduled: string[] = [];
-  const scheduler = { send: async () => {}, sendBatch: async (batch: { body: { key: string } }[]) => void scheduled.push(...batch.map((m) => m.body.key)) };
-  const r = rig({ METRICS_Q: queue, SCHED_Q: scheduler, DISABLE: "coredns, metrics-server" } as any);
+test("POST /enqueue with once deduplicates within delay and reschedules after due", async () => {
+  const sent: { delaySeconds?: number }[] = [];
+  const queue = {
+    send: async (_body: unknown, opts?: { delaySeconds?: number }) => void sent.push({ delaySeconds: opts?.delaySeconds }),
+    sendBatch: async () => {},
+  };
+  const r = rig({ HPA_Q: queue } as any);
   await r.settle();
-  await r.put("/registry/minions/node-a", "v1");
-  await r.remove("/registry/minions/node-a");
-  await r.settle();
-  assert.deepEqual(sent, []);
-  assert.deepEqual(scheduled, ["/registry/minions/node-a", "/registry/minions/node-a"]);
+
+  const res1 = await (await r.post("/enqueue", { target: "hpa", delayMs: 15_000, once: true })).json();
+  assert.deepEqual(res1, { ok: true, booked: true });
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].delaySeconds, 15);
+
+  const res2 = await (await r.post("/enqueue", { target: "hpa", delayMs: 15_000, once: true })).json();
+  assert.deepEqual(res2, { ok: true, booked: false });
+  assert.equal(sent.length, 1);
+
+  r.sql.exec("UPDATE deadlines SET due = ? WHERE target = 'hpa'", Date.now() - 1000);
+
+  const res3 = await (await r.post("/enqueue", { target: "hpa", delayMs: 15_000, once: true })).json();
+  assert.deepEqual(res3, { ok: true, booked: true });
+  assert.equal(sent.length, 2);
+
+  const resPlain1 = await (await r.post("/enqueue", { target: "hpa", delayMs: 5_000 })).json();
+  const resPlain2 = await (await r.post("/enqueue", { target: "hpa", delayMs: 5_000 })).json();
+  assert.deepEqual(resPlain1, { ok: true });
+  assert.deepEqual(resPlain2, { ok: true });
+  assert.equal(sent.length, 4);
 });
 
 test("the garbage collector hears about ownership and deletion, not every status write of an owned object", async () => {

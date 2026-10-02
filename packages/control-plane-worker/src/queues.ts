@@ -5,7 +5,7 @@ import { clusterStub } from "./clusterid.ts";
 import { deployAddons, reconcileHelm } from "./addons.ts";
 import { wakePodKubelets } from "./podkubelet/wake.ts";
 
-type Target = "scheduler" | "leases" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "metrics" | "containers" | "attachdetach" | "addons";
+type Target = "scheduler" | "leases" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "containers" | "attachdetach" | "addons" | "hpa";
 
 type BucketChange = { kind?: undefined; action: string; bucket: string; object: { key: string } };
 
@@ -17,6 +17,7 @@ type FollowSend = {
   changed?: string[];
   names?: string[];
   node?: string;
+  once?: boolean;
 };
 
 function targetOf(queueName: string): Target | null {
@@ -27,10 +28,10 @@ function targetOf(queueName: string): Target | null {
   if (queueName.endsWith("-gc")) return "gc";
   if (queueName.endsWith("-accounts")) return "accounts";
   if (queueName.endsWith("-extensions")) return "extensions";
-  if (queueName.endsWith("-metrics")) return "metrics";
   if (queueName.endsWith("-containers")) return "containers";
   if (queueName.endsWith("-attachdetach")) return "attachdetach";
   if (queueName.endsWith("-addons")) return "addons";
+  if (queueName.endsWith("-hpa")) return "hpa";
   return null;
 }
 
@@ -52,11 +53,25 @@ function queueOf(env: Env, name: string): Queue | null {
     case "gc": return env.GC_Q;
     case "acct": return env.ACCT_Q;
     case "ext": return env.EXT_Q;
-    case "metrics": return env.METRICS_Q;
     case "hpa": return env.HPA_Q;
     case "containers": return env.CONTAINERS_Q;
     case "addons": return env.ADDON_Q;
     case "ctrl": return env.CTRL_Q;
+    default: return null;
+  }
+}
+
+function targetForQueue(name: string): Target | null {
+  switch (name) {
+    case "sched": return "scheduler";
+    case "wl": return "workloads";
+    case "crd": return "crds";
+    case "gc": return "gc";
+    case "acct": return "accounts";
+    case "ext": return "extensions";
+    case "hpa": return "hpa";
+    case "containers": return "containers";
+    case "addons": return "addons";
     default: return null;
   }
 }
@@ -69,6 +84,16 @@ async function applySends(env: Env, sends: FollowSend[]): Promise<void> {
         body: JSON.stringify({ node: send.node ?? "", delayMs: (send.delaySeconds ?? 0) * 1000 }),
       });
       continue;
+    }
+    if (send.once) {
+      const target = targetForQueue(send.queue);
+      if (target) {
+        await clusterStub(env).fetch("https://cluster.internal/enqueue", {
+          method: "POST",
+          body: JSON.stringify({ target, delayMs: (send.delaySeconds ?? 0) * 1000, once: true }),
+        });
+        continue;
+      }
     }
     const queue = queueOf(env, send.queue);
     if (!queue) continue;
@@ -189,6 +214,36 @@ async function consumeAttachDetach(batch: MessageBatch<QueueMessage>, env: Env):
   batch.ackAll();
 }
 
+async function consumeHPA(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
+  console.log(`hpa: consume msgs=${batch.messages.length}`);
+  try {
+    await apiserverFetch(env, new Request("https://apiserver.internal/internal/metrics/scrape", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env.ADMIN_TOKEN}` },
+    }));
+  } catch (err) {
+    console.log(`hpa: metrics scrape threw ${err}`);
+  }
+  let hasResult = false;
+  let drained = false;
+  let hpas = 0;
+  try {
+    const synced = await env.HPA.sync();
+    if (synced) {
+      hasResult = true;
+      drained = Boolean(synced.drained);
+      hpas = synced.objects["horizontalpodautoscalers"] ?? 0;
+      console.log(`hpa: ${Object.entries(synced.objects).map(([k, v]) => `${k}=${v}`).join(" ")} drained=${synced.drained}`);
+    } else {
+      console.log("hpa: sync returned null");
+    }
+  } catch (err) {
+    console.log(`hpa: sync threw ${err}`);
+  }
+  await applySends(env, (await followUp(env, { target: "hpa", hasResult, drained, hpas })).sends);
+  batch.ackAll();
+}
+
 async function consumeCRDs(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
   const resp = await env.CUSTOMRESOURCES.fetch("https://customresources.internal/apis");
   await resp.text();
@@ -291,14 +346,14 @@ async function dispatch(batch: MessageBatch<QueueMessage>, env: Env, target: Tar
       return consumeLeases(batch, env);
     case "extensions":
       return consumeExtensions(batch, env);
-    case "metrics":
-      return consumeMetrics(batch, env);
     case "containers":
       return consumeContainers(batch, env);
     case "attachdetach":
       return consumeAttachDetach(batch, env);
     case "addons":
       return consumeAddons(batch, env);
+    case "hpa":
+      return consumeHPA(batch, env);
   }
   batch.ackAll();
 }
@@ -337,21 +392,4 @@ async function consumeContainers(batch: MessageBatch<QueueMessage>, env: Env): P
   console.log(`containers: keys=${keys.size} status=${resp.status} hasWork=${Boolean(body.hasWork)} kubelets=${woken}`);
   await applySends(env, (await followUp(env, { target: "containers", hasWork: Boolean(body.hasWork) })).sends);
   batch.ackAll();
-}
-
-async function consumeMetrics(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
-  const resp = await apiserverFetch(env, new Request("https://apiserver.internal/internal/metrics/scrape", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${env.ADMIN_TOKEN}` },
-  }));
-  console.log(`metrics: status=${resp.status}`);
-  const follow = await followUp(env, { target: "metrics" });
-  const delayed = follow.sends.filter((send) => send.queue === "metrics" && send.delaySeconds);
-  await applySends(env, follow.sends.filter((send) => !delayed.includes(send)));
-  batch.ackAll();
-  for (const send of delayed) {
-    await scheduler.wait((send.delaySeconds ?? 0) * 1000);
-    send.delaySeconds = 0;
-  }
-  await applySends(env, delayed);
 }

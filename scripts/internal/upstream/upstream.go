@@ -8,10 +8,9 @@ import (
 	"strings"
 )
 
-const (
-	Module  = "github.com/k3s-io/kubernetes"
-	Version = "v1.36.4-k3s1"
-)
+const Module = "github.com/k3s-io/kubernetes"
+
+var Version = mustVersionOf(Module)
 
 type ServedGroupVersion struct {
 	GV        string

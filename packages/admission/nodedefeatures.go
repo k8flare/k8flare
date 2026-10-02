@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	admit "github.com/k8flare/k8flare/packages/apiserver-admit"
+	"github.com/k8flare/k8flare/packages/kubeversion"
 	versionutil "k8s.io/apimachinery/pkg/util/version"
 	"k8s.io/component-base/version"
 	ndf "k8s.io/component-helpers/nodedeclaredfeatures"
@@ -16,7 +17,7 @@ var nodeFeatureVersion = parseComponentVersion()
 func parseComponentVersion() *versionutil.Version {
 	parsed, err := versionutil.ParseSemantic(version.Get().String())
 	if err != nil {
-		parsed, _ = versionutil.ParseSemantic("1.36.0")
+		parsed, _ = versionutil.ParseSemantic(kubeversion.Major + "." + kubeversion.Minor + ".0")
 	}
 	return parsed
 }

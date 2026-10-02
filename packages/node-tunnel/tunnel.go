@@ -141,12 +141,13 @@ func Serve() {
 		return nil
 	}))
 	binding.Set("upgrade", js.FuncOf(func(_ js.Value, args []js.Value) any {
-		rawURL := args[0].String()
-		headers := args[1]
-		send := args[2]
+		id := args[0].String()
+		rawURL := args[1].String()
+		headers := args[2]
+		send := args[3]
 		onErr := js.Undefined()
-		if len(args) > 3 {
-			onErr = args[3]
+		if len(args) > 4 {
+			onErr = args[4]
 		}
 		n := headers.Length()
 		h := http.Header{}
@@ -155,43 +156,35 @@ func Serve() {
 			h.Add(pair.Index(0).String(), pair.Index(1).String())
 		}
 		query := ""
-		if len(args) > 4 {
-			query = args[4].String()
+		if len(args) > 5 {
+			query = args[5].String()
 		}
-		go startKubeletStream(rawURL, h, send, onErr, query)
+		streamRegistry.Register(id)
+		go startKubeletStream(id, rawURL, h, send, onErr, query)
 		return nil
 	}))
 	binding.Set("upgradeMessage", js.FuncOf(func(_ js.Value, args []js.Value) any {
-		data := make([]byte, args[0].Get("byteLength").Int())
-		js.CopyBytesToGo(data, args[0])
-		mu.Lock()
-		s := stream
-		if s == nil {
-			pending = append(pending, data)
-			mu.Unlock()
-			return nil
+		id := args[0].String()
+		data := make([]byte, args[1].Get("byteLength").Int())
+		js.CopyBytesToGo(data, args[1])
+		if w, sent := streamRegistry.Send(id, data); sent {
+			_ = w.WriteMessage(websocket.BinaryMessage, data)
 		}
-		mu.Unlock()
-		_ = s.WriteMessage(websocket.BinaryMessage, data)
 		return nil
 	}))
-	binding.Set("upgradeClosed", js.FuncOf(func(js.Value, []js.Value) any {
-		mu.Lock()
-		s := stream
-		stream = nil
-		mu.Unlock()
-		if s != nil {
-			_ = s.Close()
+	binding.Set("upgradeClosed", js.FuncOf(func(_ js.Value, args []js.Value) any {
+		if len(args) > 0 {
+			id := args[0].String()
+			if w := streamRegistry.Close(id); w != nil {
+				_ = w.Close()
+			}
 		}
 		return nil
 	}))
 	bridge.Serve(handler())
 }
 
-var (
-	stream  *websocket.Conn
-	pending [][]byte
-)
+var streamRegistry = NewStreamRegistry()
 
 type firstLineConn struct {
 	net.Conn
@@ -213,20 +206,23 @@ func failUpgrade(onErr js.Value, msg string) {
 	}
 }
 
-func startKubeletStream(rawURL string, header http.Header, send js.Value, onErr js.Value, query string) {
+func startKubeletStream(id string, rawURL string, header http.Header, send js.Value, onErr js.Value, query string) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
+		streamRegistry.Close(id)
 		failUpgrade(onErr, err.Error())
 		return
 	}
 	nodeName, kubeletPath, ok := parseNodePath(u.Path)
 	if !ok {
+		streamRegistry.Close(id)
 		failUpgrade(onErr, "bad stream path")
 		return
 	}
 	kubeletPath, embeddedQuery := splitEmbeddedQuery(kubeletPath)
 	tlsConfig, err := kubeletCredentials()
 	if err != nil {
+		streamRegistry.Close(id)
 		failUpgrade(onErr, err.Error())
 		return
 	}
@@ -263,6 +259,7 @@ func startKubeletStream(rawURL string, header http.Header, send js.Value, onErr 
 	}
 	conn, resp, err := d.Dial(kubeURL.String(), reqHeader)
 	if err != nil {
+		streamRegistry.Close(id)
 		status := ""
 		if resp != nil {
 			status = resp.Status
@@ -272,21 +269,12 @@ func startKubeletStream(rawURL string, header http.Header, send js.Value, onErr 
 		return
 	}
 	println("kubelet dial ok")
-	mu.Lock()
-	stream = conn
-	queued := pending
-	pending = nil
-	mu.Unlock()
+	queued := streamRegistry.Attach(id, conn)
 	for _, data := range queued {
 		_ = conn.WriteMessage(websocket.BinaryMessage, data)
 	}
 	defer func() {
-		mu.Lock()
-		if stream == conn {
-			stream = nil
-			pending = nil
-		}
-		mu.Unlock()
+		streamRegistry.Detach(id, conn)
 		_ = conn.Close()
 	}()
 	for {
