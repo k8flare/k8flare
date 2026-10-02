@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
@@ -22,6 +23,7 @@ const (
 	orphanFinalizer     = metav1.FinalizerOrphanDependents
 	foregroundFinalizer = metav1.FinalizerDeleteDependents
 	eventTTL            = time.Hour
+	ConcurrentGCSyncs   = 20
 )
 
 type Result struct {
@@ -36,6 +38,7 @@ type collector struct {
 	mapper  meta.RESTMapper
 	graph   *graph
 	result  *Result
+	mu      sync.Mutex
 }
 
 func Collect(ctx context.Context, client kubernetes.Interface, dyn dynamic.Interface, store *kine.Client) (*Result, error) {
@@ -48,14 +51,23 @@ func Collect(ctx context.Context, client kubernetes.Interface, dyn dynamic.Inter
 		return nil, err
 	}
 	c := &collector{dynamic: dyn, mapper: restmapper.NewDiscoveryRESTMapper(groups), graph: g, result: &Result{Items: len(g.items)}}
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, ConcurrentGCSyncs)
 	for _, it := range g.items {
 		if it.DeletionTimestamp != nil && (it.hasFinalizer(foregroundFinalizer) || it.hasFinalizer(orphanFinalizer)) {
 			c.result.Pending++
 		}
-		if err := c.sync(ctx, it); err != nil {
-			println("gc:", it.key, "failed:", err.Error())
-		}
+		slots <- struct{}{}
+		wg.Add(1)
+		go func(target *item) {
+			defer wg.Done()
+			defer func() { <-slots }()
+			if err := c.sync(ctx, target); err != nil {
+				println("gc:", target.key, "failed:", err.Error())
+			}
+		}(it)
 	}
+	wg.Wait()
 	for _, it := range absentNamespace(g.items) {
 		if err := c.deleteItem(ctx, it, metav1.DeletePropagationBackground); err != nil {
 			println("gc:", it.key, "namespace gone:", err.Error())
@@ -189,7 +201,7 @@ func (c *collector) orphanDependents(ctx context.Context, it *item) error {
 
 func classify(g *graph, it *item) (solid, waiting int, stale map[types.UID]bool) {
 	stale = map[types.UID]bool{}
-	for _, ref := range it.OwnerReferences {
+	for _, ref := range it.owners() {
 		owner, ok := g.byUID[ref.UID]
 		switch {
 		case !ok:
@@ -205,7 +217,7 @@ func classify(g *graph, it *item) (solid, waiting int, stale map[types.UID]bool)
 }
 
 func (c *collector) checkOwners(ctx context.Context, it *item) error {
-	if len(it.OwnerReferences) == 0 {
+	if len(it.owners()) == 0 {
 		return nil
 	}
 	solid, waiting, stale := classify(c.graph, it)
@@ -236,8 +248,9 @@ func (c *collector) hasForegroundDependents(it *item) bool {
 }
 
 func (c *collector) unblockOwners(ctx context.Context, it *item) error {
-	refs := make([]metav1.OwnerReference, len(it.OwnerReferences))
-	copy(refs, it.OwnerReferences)
+	owners := it.owners()
+	refs := make([]metav1.OwnerReference, len(owners))
+	copy(refs, owners)
 	changed := false
 	for i := range refs {
 		if refs[i].BlockOwnerDeletion != nil && *refs[i].BlockOwnerDeletion {
@@ -251,7 +264,7 @@ func (c *collector) unblockOwners(ctx context.Context, it *item) error {
 	if err := c.patchMeta(ctx, it, map[string]any{"ownerReferences": refs}); err != nil {
 		return err
 	}
-	it.OwnerReferences = refs
+	it.setOwners(refs)
 	return nil
 }
 
@@ -266,7 +279,7 @@ func (c *collector) propagationFor(it *item) metav1.DeletionPropagation {
 }
 
 func blocks(dep *item, owner types.UID) bool {
-	for _, ref := range dep.OwnerReferences {
+	for _, ref := range dep.owners() {
 		if ref.UID == owner && ref.BlockOwnerDeletion != nil && *ref.BlockOwnerDeletion {
 			return true
 		}
@@ -305,18 +318,21 @@ func (c *collector) deleteItem(ctx context.Context, it *item, policy metav1.Dele
 	if err != nil {
 		return err
 	}
+	c.mu.Lock()
 	c.result.Deleted++
+	c.mu.Unlock()
 	return nil
 }
 
 func (c *collector) dropOwners(ctx context.Context, it *item, remove map[types.UID]bool) error {
-	kept := make([]metav1.OwnerReference, 0, len(it.OwnerReferences))
-	for _, ref := range it.OwnerReferences {
+	owners := it.owners()
+	kept := make([]metav1.OwnerReference, 0, len(owners))
+	for _, ref := range owners {
 		if !remove[ref.UID] {
 			kept = append(kept, ref)
 		}
 	}
-	if len(kept) == len(it.OwnerReferences) {
+	if len(kept) == len(owners) {
 		return nil
 	}
 	return c.patchMeta(ctx, it, map[string]any{"ownerReferences": kept})
@@ -353,6 +369,8 @@ func (c *collector) patchMeta(ctx context.Context, it *item, fields map[string]a
 	if err != nil {
 		return fmt.Errorf("patch %s: %w", it.key, err)
 	}
+	c.mu.Lock()
 	c.result.Patched++
+	c.mu.Unlock()
 	return nil
 }

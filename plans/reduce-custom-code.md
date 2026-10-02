@@ -5,7 +5,8 @@ version, and generation from upstream source by AST analysis in place of
 hand-maintained copies, so that a Kubernetes or k3s bump is cheap. Work on
 an area starts once CI covers it.
 
-Status: proposal, not approved. Nothing below is implemented.
+Status: approved by the owner on 2026-10-02, steps 1 and 2 first. Work
+started on step 1 (`work/mirror-gen`).
 
 ## Where the code is today
 
@@ -127,13 +128,102 @@ The 18,860 lines of own code: the Go/Worker bridge, the loader, queue
 follow-up, the Cluster Durable Object, edge routing, the supervisor. It is
 not version-bound.
 
-## Open questions for the owner
+## Decisions (owner, 2026-10-02)
 
-1. Step 3 changes behaviour-bearing code. Is "byte-identical outcome under
-   the differential tests, then swap" the bar, or should each swap also
-   wait for three Conformance runs?
-2. For admission, "run upstream on a snapshot" may cost worker size. If a
-   plugin does not fit, is function extraction acceptable, or should the
-   admission worker be split?
-3. Step 4 opens pull requests on a schedule. Wanted now, or after steps 1
-   and 2?
+1. Step 3: a swap needs the differential tests to agree and three
+   Conformance runs, each swap by itself.
+2. Admission: when running the upstream plugin does not fit the worker,
+   extract its functions with a generator. The admission worker is not
+   split.
+3. Step 4, the scheduled bump, comes after steps 1 and 2.
+
+## Progress (2026-10-02)
+
+Step 1, on `work/codegen` (not merged; Unit and E2E pending):
+
+- The lean clientset, the informer factory and the nine group
+  `interface.go` files are output of `scripts/mirror/lean.go`, driven by
+  one table (`scripts/mirror/keep.go`). The table is still written by
+  hand; deriving it from what `packages/` calls is not done. The
+  `ForResource` stub that stands in for upstream's `generic.go` is a
+  string constant next to the table.
+- Every text patch is an AST edit that names its declaration
+  (`scripts/mirror/astedit.go`); `patch`, `patchJS` and `appendText` are
+  gone. Code this project inserts lives in eight `.go` files under
+  `_overlays/<mirror>/append/`; four statement-level inserts stay as short
+  strings in `main.go`.
+- Four stub overlays are generated from upstream's declarations
+  (`scripts/mirror/ast.go`: keep named declarations, or keep the signature
+  and return a fixed error). Six stay hand-written because they carry
+  logic of their own: `mount_helper_unix.go`, `tracing_utils.go`,
+  `feature_support_checker.go`, `sharding_parser.go`, `register.go`,
+  `signal.go`.
+- The eight module versions are in `scripts/internal/upstream/versions.mod`
+  only; the root `go.mod` carries one of them, so it could not be the
+  source. `versionInfo` and two more literals read
+  `packages/kubeversion/zz_generated_version.go`.
+- Pins: 43 to 10. Hand-written replacement overlays: 23 to 8.
+- Check: the mirror output of the branch against today's, all eight
+  mirrors with `diff -r`: 15 files differ, the 11 lean files and the 4
+  stubs, by comments, declaration order, private field names and
+  `errors.New` for `fmt.Errorf`. Both clientset constructors initialise
+  the same 18 group clients. The js build of `./packages/...` passes.
+
+Step 2:
+
+- `controllerNeeds` and `WORKLOAD_PREFIXES` are generated from the
+  informers the shard constructors are handed (`scripts/genwake`,
+  `work/wake-gen`, on top of `ci/batch8`; equal to the hand tables as
+  data). `sources` stays hand-written: its example objects, page closures
+  and order are not in the constructors. What the derivation showed:
+  - Seven resources a constructor is handed an informer for wake nothing
+    when written: `deviceclasses`, `ipaddresses`, `limitranges`,
+    `networkpolicies`, `resourceclaimtemplates`, `roles`, `rolebindings`.
+    A controller sees them only when another write starts a pass. Kept
+    as it is today, as the named list `undeliveredWakes`; not yet checked
+    per resource whether a spec or a user can observe it.
+  - Dead entries: the prefixes `/registry/storage.k8s.io/`,
+    `/registry/certificates.k8s.io/` and
+    `/registry/rbac.authorization.k8s.io/` (nothing writes those keys),
+    `minions`, and `resourcequota`'s need for `networking.k8s.io`.
+- Field selectors: nothing to generate. `fieldlabels.go` is not a table of
+  labels; the supported labels already come from upstream's registered
+  conversion funcs, and the file reads the selected field as a JSON path.
+  Replacing that reader with upstream's `GetAttrs` is a step 3 item.
+- Admission order: not expressible as upstream's `AllOrderedPlugins`
+  filtered by what is implemented. `packages/admission/chain.go` runs
+  mutation in a different order in five places and validation in six;
+  validating webhooks and ValidatingAdmissionPolicy run before every
+  built-in validator, upstream runs them after all but ResourceQuota. Read,
+  not run: no request was found that one order allows and the other
+  denies; what differs is which denial message is returned when two
+  plugins deny, and that a validating webhook is called for a request a
+  built-in would have rejected. ComputeClass running first was not
+  analysed. Moving to upstream's order is a step 3 item (behaviour
+  change).
+- Admission, step 3 (`work/admission-upstream`): eleven plugins run
+  upstream's code through one adapter and a per-request informer factory
+  over the store: DefaultTolerationSeconds, TaintNodesByCondition,
+  CertificateSubjectRestriction, Priority, LimitRanger,
+  DefaultStorageClass, DefaultIngressClass, RuntimeClass,
+  StorageObjectInUseProtection, PodTopologyLabels,
+  PersistentVolumeClaimResize. The differential test compares status
+  exactly for them. Admission worker: 54,311,108 bytes, 35,310 functions
+  (80% of the cap; 50,377,283 and 32,511 before).
+  - One difference is kept on purpose: Priority resolves the two system
+    classes from the built-in list when the object is not stored yet.
+    Dropping it stopped CoreDNS from being created (`ci/batch11`, first
+    attempt). A swap can pass every differential case and still break
+    bootstrap; a known difference that exists for ordering reasons has to
+    be carried over, not deleted.
+  - Left: CertificateApproval and CertificateSigning (need an
+    authorizer), ServiceAccount, NodeRestriction, ResourceQuota,
+    PodSecurity, PodResize, NodeDeclaredFeatures, and the chain order.
+- Node authorizer (`work/nodeauth-upstream`): upstream's NodeAuthorizer
+  over a graph built per request from the node's own pods, the PVs and
+  the named VolumeAttachment or ResourceSlice. No known differences left
+  in 124,903 questions; `node.go` went from 554 lines to 160. A node may
+  now list endpoints: upstream has no opinion and RBAC allows it through
+  the k3s-controller role. Not merged: the customresources worker grew to
+  65,814,760 bytes and 45,461 functions (98% of the cap), three times the
+  growth of apiserver-core. Being measured.

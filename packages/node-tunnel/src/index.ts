@@ -19,9 +19,9 @@ interface Binding {
   attach(nodeName: string, send: (bytes: Uint8Array) => void): void;
   message(bytes: Uint8Array): void;
   closed(): void;
-  upgrade(url: string, headers: [string, string][], send: (bytes: Uint8Array) => void, onErr?: (err: string) => void, query?: string): void;
-  upgradeMessage(bytes: Uint8Array): void;
-  upgradeClosed(): void;
+  upgrade(id: string, url: string, headers: [string, string][], send: (bytes: Uint8Array) => void, onErr?: (err: string) => void, query?: string): void;
+  upgradeMessage(id: string, bytes: Uint8Array): void;
+  upgradeClosed(id: string): void;
   tick(): void;
 }
 
@@ -67,10 +67,10 @@ async function tunnelCredentials(env: Env): Promise<Record<string, string>> {
 
 const kubeletCredentialsRefreshMs = 60 * 60 * 1000;
 
-type SockKind = { kind: "agent" | "stream" };
+type SockKind = { kind: "agent" } | { kind: "stream"; id: string };
 
-function sockKind(ws: WebSocket): SockKind["kind"] {
-  return (ws.deserializeAttachment() as SockKind | null)?.kind ?? "agent";
+function sockKind(ws: WebSocket): SockKind {
+  return (ws.deserializeAttachment() as SockKind | null) ?? { kind: "agent" };
 }
 
 function toBytes(data: string | ArrayBuffer | ArrayBufferView): Uint8Array {
@@ -109,13 +109,18 @@ export class NodeTunnel extends DurableObject<Env> {
   private async rebind(): Promise<void> {
     const sockets = this.ctx.getWebSockets();
     if (sockets.length === 0) return;
+    for (const ws of sockets) {
+      if (sockKind(ws).kind === "stream") {
+        ws.close(1012, "no tunnel session, reconnect");
+      }
+    }
     const nodeName = (await this.ctx.storage.get<string>("node")) ?? "";
     if (!nodeName) {
       for (const ws of sockets) ws.close(1012, "no tunnel session, reconnect");
       return;
     }
     const binding = await this.go();
-    const server = sockets.find((ws) => sockKind(ws) === "agent");
+    const server = sockets.find((ws) => sockKind(ws).kind === "agent");
     if (!server) return;
     binding.attach(nodeName, (bytes) => {
       try {
@@ -205,9 +210,10 @@ export class NodeTunnel extends DurableObject<Env> {
   }
 
   private async acceptStream(request: Request): Promise<Response> {
+    const id = crypto.randomUUID();
     const pair = new WebSocketPair();
     const server = pair[1];
-    server.serializeAttachment({ kind: "stream" } satisfies SockKind);
+    server.serializeAttachment({ kind: "stream", id } satisfies SockKind);
     this.ctx.acceptWebSocket(server);
     const streamURL = new URL(request.url);
     const streamQuery = request.headers.get("X-Stream-Query") ?? "";
@@ -232,6 +238,7 @@ export class NodeTunnel extends DurableObject<Env> {
       }
     };
     binding.upgrade(
+      id,
       streamURL.toString(),
       headers,
       (bytes: Uint8Array) => {
@@ -275,9 +282,10 @@ export class NodeTunnel extends DurableObject<Env> {
   }
 
   private acceptStreamWrite(): Response {
+    const id = crypto.randomUUID();
     const pair = new WebSocketPair();
     const server = pair[1];
-    server.serializeAttachment({ kind: "stream" } satisfies SockKind);
+    server.serializeAttachment({ kind: "stream", id } satisfies SockKind);
     this.ctx.acceptWebSocket(server);
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
@@ -289,10 +297,12 @@ export class NodeTunnel extends DurableObject<Env> {
     stdin?: ReadableStream<Uint8Array>,
     initial?: ArrayBuffer[],
   ): Promise<ReadableStream<Uint8Array>> {
+    const id = crypto.randomUUID();
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
     const writer = writable.getWriter();
     const binding = await this.go();
     binding.upgrade(
+      id,
       url,
       headers,
       (bytes: Uint8Array) => {
@@ -311,32 +321,32 @@ export class NodeTunnel extends DurableObject<Env> {
         const bytes = new Uint8Array(chunk);
         if (bytes.byteLength === 0) continue;
         console.log(`stream-rpc initial ${bytes.byteLength}`);
-        binding.upgradeMessage(bytes);
+        binding.upgradeMessage(id, bytes);
       }
     }
     if (stdin) {
-      this.ctx.waitUntil(this.pumpStdin(stdin, binding));
+      this.ctx.waitUntil(this.pumpStdin(id, stdin, binding));
     }
     return readable;
   }
 
-  private async pumpStdin(stdin: ReadableStream<Uint8Array>, binding: Binding): Promise<void> {
+  private async pumpStdin(id: string, stdin: ReadableStream<Uint8Array>, binding: Binding): Promise<void> {
     const reader = stdin.getReader();
     try {
       for (;;) {
         const { value, done } = await reader.read();
         if (done) {
-          binding.upgradeClosed();
+          binding.upgradeClosed(id);
           return;
         }
         if (value) {
           console.log(`stream-rpc in ${value.byteLength}`);
-          binding.upgradeMessage(value);
+          binding.upgradeMessage(id, value);
         }
       }
     } catch {
       try {
-        binding.upgradeClosed();
+        binding.upgradeClosed(id);
       } catch {}
     }
   }
@@ -345,22 +355,22 @@ export class NodeTunnel extends DurableObject<Env> {
     const bytes = new Uint8Array(chunk);
     console.log(`stream-rpc in ${bytes.byteLength}`);
     const binding = await this.go();
-    binding.upgradeMessage(bytes);
+    binding.upgradeMessage("", bytes);
   }
 
   async closeStdin(): Promise<void> {
     try {
-      (await this.go()).upgradeClosed();
+      (await this.go()).upgradeClosed("");
     } catch {}
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const kind = sockKind(ws);
-    if (kind === "stream") {
+    if (kind.kind === "stream") {
       const bytes = toBytes(message);
       console.log(`stream-write in ${bytes.byteLength}`);
       const binding = await this.go();
-      binding.upgradeMessage(bytes);
+      binding.upgradeMessage(kind.id, bytes);
       return;
     }
     if (!this.attached) {
@@ -372,9 +382,10 @@ export class NodeTunnel extends DurableObject<Env> {
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> {
-    if (sockKind(ws) === "stream") {
+    const kind = sockKind(ws);
+    if (kind.kind === "stream") {
       try {
-        (await this.go()).upgradeClosed();
+        (await this.go()).upgradeClosed(kind.id);
       } catch {}
       return;
     }
@@ -384,9 +395,10 @@ export class NodeTunnel extends DurableObject<Env> {
   }
 
   async webSocketError(ws: WebSocket): Promise<void> {
-    if (sockKind(ws) === "stream") {
+    const kind = sockKind(ws);
+    if (kind.kind === "stream") {
       try {
-        (await this.go()).upgradeClosed();
+        (await this.go()).upgradeClosed(kind.id);
       } catch {}
       return;
     }

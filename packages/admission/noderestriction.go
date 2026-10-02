@@ -2,7 +2,10 @@ package admission
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"reflect"
 	"strings"
@@ -420,4 +423,39 @@ func restrictNodeCSR(nodeName string, req *admit.Request) error {
 		return fmt.Errorf("can only create a node CSR with CN=%s", want)
 	}
 	return nil
+}
+
+func parseCSRRequest(raw any) (*x509.CertificateRequest, error) {
+	pemBytes, ok := csrPEMBytes(raw)
+	if !ok {
+		return nil, fmt.Errorf("PEM block type must be CERTIFICATE REQUEST")
+	}
+	block, _ := pem.Decode(pemBytes)
+	if block == nil || block.Type != "CERTIFICATE REQUEST" {
+		return nil, fmt.Errorf("PEM block type must be CERTIFICATE REQUEST")
+	}
+	return x509.ParseCertificateRequest(block.Bytes)
+}
+
+func csrPEMBytes(raw any) ([]byte, bool) {
+	var b []byte
+	switch v := raw.(type) {
+	case string:
+		b = []byte(v)
+	case []byte:
+		b = v
+	default:
+		return nil, false
+	}
+	if len(b) == 0 {
+		return nil, false
+	}
+	if block, _ := pem.Decode(b); block != nil {
+		return b, true
+	}
+	dec, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(b)))
+	if err != nil || len(dec) == 0 {
+		return b, true
+	}
+	return dec, true
 }

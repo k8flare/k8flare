@@ -18,7 +18,7 @@ func TestDefaultStorageClassSetsPVC(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:              "fast",
 				CreationTimestamp: metav1.Now(),
-				Annotations:       map[string]string{defaultStorageClassAnnotation: "true"},
+				Annotations:       map[string]string{"storageclass.kubernetes.io/is-default-class": "true"},
 			},
 			Provisioner: "kubernetes.io/no-provisioner",
 		}),
@@ -40,7 +40,7 @@ func TestDefaultStorageClassLeavesExplicitClass(t *testing.T) {
 		"/registry/storageclasses/fast": mustJSON(t, storagev1.StorageClass{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:        "fast",
-				Annotations: map[string]string{defaultStorageClassAnnotation: "true"},
+				Annotations: map[string]string{"storageclass.kubernetes.io/is-default-class": "true"},
 			},
 		}),
 	}})

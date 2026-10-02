@@ -94,7 +94,7 @@ func build(ctx context.Context, d workloads.Deps, controllers map[string]bool) (
 		runs = append(runs, func(ctx context.Context) { ss.Run(ctx, workloads.Workers) })
 	}
 	if controllers["job"] {
-		jobs, err := job.NewController(ctx, client, core.Pods(), factory.Batch().V1().Jobs(), nil, nil)
+		jobs, err := job.NewController(ctx, client, workloads.OwnerSyncedPodInformer(core.Pods()), factory.Batch().V1().Jobs(), nil, nil)
 		if err != nil {
 			return nil, err
 		}

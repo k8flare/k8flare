@@ -40,7 +40,7 @@ func TestRuntimeClassPresentAllowsCreate(t *testing.T) {
 	}
 }
 
-func TestRuntimeClassDeletedIsForbidden(t *testing.T) {
+func TestRuntimeClassBeingDeletedIsStillUsed(t *testing.T) {
 	deleted := metav1.Now()
 	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
 		"/registry/runtimeclasses/gone": mustJSON(t, nodev1.RuntimeClass{
@@ -52,14 +52,8 @@ func TestRuntimeClassDeletedIsForbidden(t *testing.T) {
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, runtimeClassPodReq("gone"))
-	if out.Allowed {
-		t.Fatal("expected deleted RuntimeClass deny")
-	}
-	if out.Reason != "" && out.Reason != "Forbidden" {
-		t.Fatalf("reason = %q", out.Reason)
-	}
-	if !strings.Contains(out.Message, `pod rejected: RuntimeClass "gone" not found`) {
-		t.Fatalf("message = %q", out.Message)
+	if !out.Allowed {
+		t.Fatalf("upstream still uses a RuntimeClass that is being deleted: %+v", out)
 	}
 }
 

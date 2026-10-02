@@ -8,6 +8,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -64,5 +65,27 @@ func TestSyncResourceQuotaCountsReplicaSets(t *testing.T) {
 	used := got.Status.Used[v1.ResourceName("count/replicasets.apps")]
 	if used.Cmp(resource.MustParse("1")) != 0 {
 		t.Fatalf("status.used count/replicasets.apps = %s status=%v", used.String(), got.Status.Used)
+	}
+}
+
+func TestSyncResourceQuotaCountsRolesWhenOnlyRolesChanged(t *testing.T) {
+	rq := &v1.ResourceQuota{
+		ObjectMeta: metav1.ObjectMeta{Name: "q", Namespace: "default"},
+		Spec: v1.ResourceQuotaSpec{
+			Hard: v1.ResourceList{v1.ResourceName("count/roles.rbac.authorization.k8s.io"): resource.MustParse("2")},
+		},
+	}
+	role := &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: "reader", Namespace: "default"}}
+	client := fake.NewSimpleClientset(rq, role)
+	if _, err := workloads.Sync(context.Background(), client, []byte("ca"), nil, nil, []string{"roles"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := client.CoreV1().ResourceQuotas("default").Get(context.Background(), "q", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	used := got.Status.Used[v1.ResourceName("count/roles.rbac.authorization.k8s.io")]
+	if used.Cmp(resource.MustParse("1")) != 0 {
+		t.Fatalf("status.used count/roles.rbac.authorization.k8s.io = %s status=%v", used.String(), got.Status.Used)
 	}
 }

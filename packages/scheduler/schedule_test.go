@@ -3,12 +3,14 @@ package scheduler
 import (
 	"context"
 	"testing"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/kubernetes/pkg/scheduler/backend/queue"
 )
 
 func node(name, cpu string) *v1.Node {
@@ -103,8 +105,9 @@ func TestKeepUnboundRetriesWhenBindDoesNotReport(t *testing.T) {
 	}
 }
 
-func TestRetryDelaySeconds(t *testing.T) {
-	if RetryDelaySeconds(0, 0) != 0 || RetryDelaySeconds(0, 1) != 1 || RetryDelaySeconds(3, 1) != 8 || RetryDelaySeconds(10, 2) != 60 {
-		t.Fatal(RetryDelaySeconds(0, 0), RetryDelaySeconds(0, 1), RetryDelaySeconds(3, 1), RetryDelaySeconds(10, 2))
+func TestUnschedulablePodsAreRetriedAtTheUpstreamFlushPeriodOnly(t *testing.T) {
+	flush := int(queue.DefaultPodMaxInUnschedulablePodsDuration / time.Second)
+	if RetryDelaySeconds(0) != 0 || RetryDelaySeconds(1) != flush || RetryDelaySeconds(2) != flush {
+		t.Fatal(RetryDelaySeconds(0), RetryDelaySeconds(1), RetryDelaySeconds(2), flush)
 	}
 }

@@ -209,7 +209,7 @@ func TestLimitRangerDeniesContainerMissingLimit(t *testing.T) {
 	if out.Allowed {
 		t.Fatal("expected missing limit deny")
 	}
-	if !strings.Contains(out.Message, "maximum cpu usage per Container is 100m. No limit is specified") {
+	if !strings.Contains(out.Message, "maximum cpu usage per Container is 100m.  No limit is specified") {
 		t.Fatalf("message = %q", out.Message)
 	}
 }
@@ -248,7 +248,7 @@ func TestLimitRangerDeniesUnstructuredBarePod(t *testing.T) {
 	if out.Allowed {
 		t.Fatalf("expected missing limit deny, object=%v", obj["spec"])
 	}
-	if !strings.Contains(out.Message, "maximum cpu usage per Container is 100m. No limit is specified") {
+	if !strings.Contains(out.Message, "maximum cpu usage per Container is 100m.  No limit is specified") {
 		t.Fatalf("message = %q", out.Message)
 	}
 }
@@ -320,7 +320,7 @@ func TestLimitRangerDeniesPodMissingLimit(t *testing.T) {
 	if out.Allowed {
 		t.Fatal("expected pod missing limit deny")
 	}
-	if !strings.Contains(out.Message, "maximum cpu usage per Pod is 100m. No limit is specified") {
+	if !strings.Contains(out.Message, "maximum cpu usage per Pod is 100m.  No limit is specified") {
 		t.Fatalf("message = %q", out.Message)
 	}
 }

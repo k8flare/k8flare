@@ -45,9 +45,23 @@ func TestFollowUpAddonsResumesAPendingStorageMigrationAlone(t *testing.T) {
 	}
 }
 
-func TestFollowUpMetrics(t *testing.T) {
-	got := followUp(followIn{Target: "metrics"})
-	if len(got.Sends) != 2 || got.Sends[0].Queue != "hpa" || got.Sends[0].DelaySeconds != 0 || got.Sends[1].Queue != "metrics" || got.Sends[1].DelaySeconds != 15 {
+func TestFollowUpHPAReschedulesWhenHPAsExist(t *testing.T) {
+	got := followUp(followIn{Target: "hpa", HasResult: true, HPAs: 2})
+	if len(got.Sends) != 1 || got.Sends[0].Queue != "hpa" || got.Sends[0].DelaySeconds != 15 || !got.Sends[0].Once {
+		t.Fatal(got)
+	}
+}
+
+func TestFollowUpHPADoesNotRescheduleWhenZeroHPAs(t *testing.T) {
+	got := followUp(followIn{Target: "hpa", HasResult: true, HPAs: 0})
+	if len(got.Sends) != 0 {
+		t.Fatal(got)
+	}
+}
+
+func TestFollowUpHPARetriesOnFailure(t *testing.T) {
+	got := followUp(followIn{Target: "hpa", HasResult: false})
+	if len(got.Sends) != 1 || got.Sends[0].Queue != "hpa" || got.Sends[0].DelaySeconds != 5 || got.Sends[0].Once {
 		t.Fatal(got)
 	}
 }

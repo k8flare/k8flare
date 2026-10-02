@@ -24,20 +24,6 @@ func TestSetDisabledReplacesTheList(t *testing.T) {
 	}
 }
 
-func TestFollowUpMetricsSendsNothingWhenMetricsServerIsDisabled(t *testing.T) {
-	useDisabled(t, "metrics-server")
-	if got := followUp(followIn{Target: "metrics"}); len(got.Sends) != 0 {
-		t.Fatal(got)
-	}
-}
-
-func TestFollowUpMetricsKeepsScrapingWhenOtherAddonsAreDisabled(t *testing.T) {
-	useDisabled(t, "servicelb,edge-routing,coredns")
-	if got := followUp(followIn{Target: "metrics"}); len(got.Sends) != 2 {
-		t.Fatal(got)
-	}
-}
-
 func edgeChanges() []queueMessage {
 	return []queueMessage{
 		{Kind: "change", Key: "/registry/services/default/web"},

@@ -51,7 +51,7 @@ func main() {
 			println("scheduler: containers bound=", placed.Bound, "rejected=", placed.Rejected)
 		}
 		result.Attempt = attempt
-		result.RetryAfterS = scheduler.RetryDelaySeconds(attempt, len(result.Unschedulable))
+		result.RetryAfterS = scheduler.RetryDelaySeconds(len(result.Unschedulable))
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(result)
 	}))

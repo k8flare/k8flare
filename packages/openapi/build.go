@@ -7,6 +7,7 @@ import (
 
 	installer "github.com/k8flare/k8flare/packages/apiserver-installer"
 	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
+	"github.com/k8flare/k8flare/packages/kubeversion"
 	"github.com/k8flare/k8flare/packages/openapi/definitions"
 	openapinamer "k8s.io/apiserver/pkg/endpoints/openapi"
 	"k8s.io/apiserver/pkg/server/mux"
@@ -27,7 +28,7 @@ func SpecHandler() (http.Handler, error) {
 	}
 	container := installed.Container
 	namer := openapinamer.NewDefinitionNamer(scheme.Scheme)
-	info := &spec.Info{InfoProps: spec.InfoProps{Title: "Kubernetes", Version: "v1.36.4+k8flare"}}
+	info := &spec.Info{InfoProps: spec.InfoProps{Title: "Kubernetes", Version: kubeversion.GitVersion}}
 	oa := routes.OpenAPI{
 		Config: &common.Config{
 			ProtocolList:          []string{"https"},

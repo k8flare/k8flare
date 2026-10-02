@@ -72,8 +72,9 @@ Decided on 2026-10-01, with the owner:
     controller writes the same status field. service-cidr now runs on
     ServiceCIDR writes; device-taint-eviction on pod, ResourceClaim and
     ResourceSlice writes.
-  - The HPA controller is not loaded in CI: its queue consumer is in
-    `wrangler.hpa.jsonc` and CI starts `wrangler.dev.jsonc` only.
+  - The HPA controller is loaded in CI since 23aabe4: the main Worker
+    consumes `k8flare-hpa` and calls the `HorizontalPodAutoscaler`
+    entrypoint.
   - Node health deletes a pod that tolerates the taint without
     `tolerationSeconds`: `tolerationWait` (`workloads/nodehealth.go`)
     returns not-tolerated for it. Upstream never evicts such a pod. Read,
@@ -502,7 +503,29 @@ Decided on 2026-10-01, with the owner:
     pod event of a pod it owns (`enqueueSyncJobBatched`), so a pod of a
     Job, finished or not, keeps the pass running; `replicaGap` books 5s
     for as long as a ReplicaSet or Deployment has `status.replicas` short
-    of `spec.replicas`; metrics is sent every 15s.
+    of `spec.replicas`. The 15s metrics message is gone since 1ebcd82 and
+    3337b7e: an HPA pass scrapes, and with an HPA in the cluster books the
+    next one 15s out (upstream's sync period) in one `deadlines` slot of
+    the Cluster object; with none it books nothing.
+  - Deployed as 7cad8d15 (2026-10-02). With workloads and every other
+    queue but three delivering, a Deployment created with kubectl got its
+    ReplicaSet and pod about 30s later and the Cluster Durable Object then
+    took no request for minutes (per 30s: 21, 4, 23, 1, 0, 0, 0, 0, 0, 0,
+    25, 1, 0, 0; the late burst is the 5-minute alarm). Left paused:
+    `k8flare-scheduler`, `k8flare-metrics`, `k8flare-hpa`. The scheduler
+    retries unschedulable pods on a timer by design (`RetryDelaySeconds`,
+    1s doubling to 60s, then every 60s), and with no node the two add-on
+    pods are unschedulable for good: with it delivering the object took 30
+    requests per 30s without pause (`scheduler: bound=0 unschedulable=2
+    attempt=16`). Upstream moves such pods back on cluster events and
+    flushes them every 5 minutes. Metrics is sent every 15s.
+  - Conformance on 3b8bfa4, three runs: 446, 445, 445 of 446. The two
+    failures are different specs and neither is a controller that missed
+    a pass: DNS for Subdomain failed reading the prober pod's log
+    (`bridge: no response headers` after 30s on `pods/.../log`), and
+    CustomResourceFieldSelectors timed out after 30s waiting for its
+    watch events. Both are the load-dependent kind seen before. main moved
+    to 3b8bfa4.
   - Review of the bootstrap marker (Codex, 2026-10-02) found two gaps that
     are older than the marker and are still open. A bootstrap only
     creates: an object that exists keeps its old content when a release
@@ -1521,3 +1544,251 @@ Decided on 2026-10-01, with the owner:
     one of the run that passed (205 of 939 in shard 6). What made these
     two requests wait 10s and 18s inside workerd while others were served
     was not looked at.
+- Runs 36948221088, 36948227017 and 36948233022 on 699ba58 (the scheduler
+  flush-period retry, the Job pod events, network policy on the agents
+  and the admission policy wake): 446 of 446 in all three, the first
+  three consecutive full passes. Unit and E2E (live 16 of 16) pass on the
+  same tree; main is at 699ba58.
+- The batch before it (b804967: the same without the scheduler and Job
+  commits, plus the HPA consumer in the main Worker and the Gateway API
+  CRDs) failed `Watchers ... concurrent watches in same order` in all
+  three Conformance runs and in the required E2E set, and
+  CustomResourceFieldSelectors in all three. Each of the four changes
+  alone passed the Watchers spec once. What the failing shard shows
+  (E2E 36938910357, required 2):
+  - From 23:30:19.4 to 23:30:34.5 no request from outside reached the
+    front worker (`devtls` has the POST of a configmap waiting from
+    19.628 until the client gave up at 28.867; a node lease PUT and two
+    more requests waited 10 to 15s), while requests between workers in
+    the same isolate were served throughout: 334 in those 10s, all from
+    the namespace deleter walking three `netpol-*` namespaces. Timers
+    inside workers were late by the same amount (an HPA pass that sleeps
+    10s took 15.2s).
+  - Such windows exist without these changes too (52 requests released
+    together at 00:41:38 in the run with only the network policy
+    commits); the batch made them longer and more frequent. Two things
+    it added: an HPA pass that slept 10s every 15s with no HPA in the
+    cluster, and four more namespaced custom resource types for every
+    namespace deletion to DELETE and GET (250 to 450ms each through the
+    `customresources` worker, against about 20ms for a built-in type).
+  - Not established: why requests entering through the dev proxy starve
+    while in-process requests are served. Not looked at: why a custom
+    resource request costs ten times a built-in one.
+- Runs 36954014600 (444), 36954020327 (446) and 36954025939 (445 of 446)
+  on 3337b7e (`ci/batch6`: 699ba58 plus the node taint retry, the HPA
+  consumer in the main Worker, the HPA pass that returns at once with no
+  HPA, and the removal of the 15s metrics loop). Unit and E2E pass. The
+  three failures are in shard 4 and none comes from the batch.
+  - 36954014600, `AdmissionWebhook should honor timeout` and `ConfigMap
+    optional updates` (both `bridge: no response headers in time` after
+    18 minutes): the 1337-pod pass again. The MutatingAdmissionPolicy
+    spec's create of `marker-deployment` answered at 02:57:26.587 and its
+    DELETE entered `devtls` at 02:57:26.700. A pass that began at
+    02:57:26.395 created the ReplicaSet at 27.168 and 1338 pods by
+    02:58:28 at the limiter's 20 a second. The DELETE reached the front
+    worker at 03:06:50, after one `lost its connection` replay at
+    02:58:48, so the owner check of 5f188fe had no deletion to see. Up to
+    02:57:26 the shard looked like the three passing runs on 699ba58 (3
+    replays and no 502 in `devtls`, 9 to 12 passes a minute), and the
+    taint retry fired once in the whole run (`nodes "e2e-fake-node-g26j2"
+    not found`), so the new retry is not what loaded it. The same thing
+    happened in one of the three runs of the Gateway batch (36954041871,
+    DELETE sent 03:30:12, answered 03:37:48). In the other seven shard 4
+    logs read (four with this batch's code, three on 699ba58) no pod was
+    created in that namespace. This is the caveat recorded with 5f188fe:
+    the delete has to get into workerd while the pass runs, and a request
+    from outside can wait minutes there.
+  - 36954025939, `ServiceAccounts should mount an API token into pods`
+    (`kubectl exec` exit 1, `close 1011 ... close 1006 (abnormal closure):
+    unexpected EOF`): two exec sessions to the same node 50ms apart.
+    `packages/node-tunnel/tunnel.go` keeps one package-level `stream` for
+    a node's tunnel object; the second session's dial replaced it at
+    02:49:40.833, the first ended normally at .837 (`kubelet read done`),
+    its client socket closed, `upgradeClosed` closed whatever `stream`
+    was, and the second session read EOF at .843. Stdin bytes and bytes
+    queued before the dial share the slot the same way. One occurrence in
+    nine shard 4 logs (15 to 18 exec sessions each). Being fixed on
+    `work/stream-id`.
+- The Gateway batch (`ci/batch7`, e994b7b: the above plus the Gateway API
+  CRDs, the harness wait for packaged add-ons and the ConfigMap count
+  fix) failed the required E2E set and all three Conformance runs
+  (36954041871, 36954047059, 36954052382), with 55 to 127 `devtls`
+  replays and 13 to 256 502s in shard 4 against 1 to 17 and 0 to 1 on
+  699ba58. Not merged. The CRDs stay out until the cost of a custom
+  resource request and the wait of outside requests are understood.
+- Why a request from outside waits while requests between workers are
+  served (the open question of the two entries above). Reproduced on the
+  dev stack of this Mac on 3337b7e, no nodes: a probe GET of
+  `/api/v1/namespaces/default` every 250ms through port 18787 (p50 8ms
+  idle), then a Deployment with 1337 replicas. For the 68s of pod creates
+  273 probes had p50 60s, 221 took over 2s and 168 failed; in six of the
+  seven 10s windows no probe reached the front worker while it logged 270
+  to 370 in-process requests, and the once-a-minute `mem` lines came in
+  bursts when the creates paused. One run.
+  - Cause, from the source: kj's `waitImpl` (`kj/async.c++`) calls
+    `loop.wait()`, which is what reads sockets and fires timers, only when
+    `loop.turn()` finds the event queue empty, and polls in between only
+    every `busyPollInterval` turns, which defaults to `kj::maxValue`
+    ("if busyPollInterval is kj::maxValue, we never poll"); workerd's
+    server does not set it (the only `setBusyPollInterval` in its tree is
+    a test). Every worker of the dev stack is in one workerd on one
+    thread, a service-binding fetch between them is not socket I/O, and
+    the Durable Object's SQLite is synchronous, so a controller pass can
+    keep the queue non-empty for as long as it has work. Production runs
+    each of them in its own request context; this is the dev stack and CI
+    only.
+  - Done, 497255e on `ci/batch8`: the front worker makes a request whose
+    host is `k8flare.internal` (every component's client) await its own
+    `setTimeout(0)` when 50ms have passed since one last fired. With every
+    in-process chain passing the front worker, they all end up waiting on
+    a timer, the queue empties and the loop polls. Same procedure, one run
+    each: 297 probes during the creates, p50 232ms, max 3.2s, 7 over 2s,
+    none failed, creates 74s; for the 120s after the Deployment's delete
+    none failed against 466 of 480 without it. 10ms measured about the
+    same (p50 213ms, creates 69s), 0ms worse (p50 1.1s, creates 82s). A
+    first version that shared one promise between requests also removed
+    the failures but left p50 at 4s; a promise resolved from another
+    request's context is not something workerd promises outside the local
+    stack, so it was not used.
+  - What the probes failing in 256ms for minutes after the creates were:
+    wrangler's ProxyWorker gives up after three attempts at the user
+    worker (`failed after 3 attempts: Network connection lost`), and
+    recovers by itself when the user worker's queue empties (`recovered
+    on attempt 3`). CI's `devtls` talks to the user workerd directly.
+- Runs on `ci/batch8` (3337b7e plus the per-stream slot in the node tunnel,
+  the front worker's yield and the garbage collector's twenty workers;
+  merged as 33cad95). Unit and E2E pass on each step.
+  - With the yield at 50ms (497255e) and at 200ms (6cd10bc), three runs
+    each: every shard but 0 and 1 passed in five of the six, and two
+    `[Serial]` Garbage collector specs failed in all six (`failed to
+    delete the rc ... context deadline exceeded`). The collector deleted
+    the 100 pods of an rc in 92s and 98s against 23s on 699ba58. The
+    interval was not the lever. The workerd main thread is at 1000ms a
+    second either way; the yield lets requests from outside in, each
+    gated in-process request then waits for everything in flight to
+    finish (81 front requests released in one millisecond, then 8s of
+    work), and `packages/gc/collect.go` synced one item at a time, so it
+    advanced one request per cycle.
+  - 5ece01d: the collector syncs with twenty goroutines, upstream's
+    `ConcurrentGCSyncs`; `item.OwnerReferences`, which a foreground
+    owner's sync rewrites on its dependents, is read and written under a
+    per-item mutex (`TestConcurrentGCSyncs`, `TestRaceOnOwnerReferences`
+    under `-race`). Not checked: two goroutines can now patch the same
+    dependent's ownerReferences from one snapshot (the owner unblocking
+    it, the dependent dropping a stale owner); the later patch wins and
+    the next pass sees the result.
+  - Runs 36978505166 (446), 36978512349 (445), 36978519214 (446), then
+    36983344668, 36983352526 and 36983360809 (446 each): five full passes
+    of six, three in a row.
+  - The one failure, `ReplicaSet Replace and Patch tests` (also once on
+    6cd10bc, run 36970625324): the controller did its work (three pods
+    Ready by 07:46:43, four status updates written), and the spec's watch
+    (`labelSelector=test-rs=patched`, bookmarks allowed, opened 07:46:26.083)
+    delivered the replayed event and one live event and then nothing for
+    five minutes. The store still held the watcher: it closed it on its
+    6-minute lease at 07:52:26.099 and kine redialed 1ms later, and kine
+    was not blocked (more than the 64 buffered bookmarks went through).
+    So the events are lost at or after kine's filter: dropped by
+    `watchEvent`, or lost in the response stream between
+    `responseWriter.Write` in the `apiserver-apps` worker (which enqueues
+    and never blocks) and the client. It was the only apps-group watch of
+    the run in both failures. Not established which; being reproduced on
+    the dev stack (`work/watch-repro`).
+  - Read from the same logs, not yet reproduced: a client that goes away
+    does not end its watch. The watch above has no `ResponseComplete`,
+    eight of ten admin watches without `timeoutSeconds` never complete,
+    the leaked one redials every 6 minutes, and goroutines grew from
+    14352 to 19168 in `apiserver` and from 118 to 3202 in
+    `apiserver-apps` over the shard. Suspected place, by reading:
+    `abort` in `BindingTransport.RoundTrip` runs through `window.Run`,
+    which queues the job until the request's window is pumped, and the
+    cancelled front request no longer pumps it.
+- What comparing with upstream on the host showed (tests only, nothing
+  fixed; `work/diff-nodeauth` 7bd12b8, `work/diff-admission` aad3e4e).
+  - Node authorizer (`apiserver-authz/node.go`) against upstream's
+    `NodeAuthorizer` with `NodeRules`, 124,903 questions over one cluster
+    state: 55,927 answers differ, in 21 named classes. Allowed here where
+    upstream has no opinion (so RBAC would decide): a token for any
+    service account, list and watch of every PVC and of leases, reads
+    without a namespace, subresources on reads, resources of another API
+    group with the same name, mirror pod references, PVs bound through
+    the PVC's `volumeName`, the default service account. Denied here and
+    allowed upstream: secrets and configmaps of ephemeral containers, CSI
+    volume secret refs, PV secret refs, PVCs of generic ephemeral
+    volumes, PVs bound through `claimRef`, `endpoints` get. Denied here
+    where upstream has no opinion: about 18,000 questions a request can
+    reach, which never get to RBAC. `node.go` consults no feature gate.
+    Replacement by upstream's authorizer over a per-request graph is on
+    `work/nodeauth-upstream`.
+  - Admission, 18 plugins, about 750 cases against the upstream plugin
+    built over a fake clientset: 59 cases differ. Outcome differences,
+    by plugin: NodeRestriction does not check a mirror pod's owner
+    references or its secret, configmap, claim and service account
+    references, and has no audience restriction on node token requests;
+    ServiceAccount ignores `kubernetes.io/enforce-mountable-secrets`,
+    does not special-case mirror pods, admits a pod whose default
+    service account does not exist yet, and appends a second token
+    volume to a pod that has one; ResourceQuota charges a pod's full
+    usage on every update, skips the resize subresource, treats a
+    resource missing from `status.used` as zero and falls back to
+    `spec.hard`; PodSecurity evaluates updates upstream calls
+    insignificant and treats a missing namespace as unlabeled;
+    LimitRanger ignores pod-level resources and copies a defaulted limit
+    into a missing request; RuntimeClass rejects a class being deleted
+    and accepts an empty name; Priority resolves a system class that is
+    not in the cluster; PodTopologyLabels also labels on update;
+    PersistentVolumeClaimResize ignores the beta class annotation. Not
+    covered: ServiceAccount's volume paths of `limitSecretReferences`,
+    PodSecurity on namespace label changes, NodeRestriction on
+    `podcertificaterequests` and `resourceslices`.
+- Writes that woke nothing (`work/wake-check` 9cde004, on `ci/batch8`, not
+  merged): Role, RoleBinding, LimitRange and NetworkPolicy writes now
+  start a workloads pass, the only thing that recomputes a
+  ResourceQuota's `count/*` usage here (upstream's quota monitor is not
+  built: no `DiscoveryFunc`), and so do ResourceClaimTemplate writes,
+  which upstream answers by requeueing the pods that reference the
+  template. Left: `deviceclasses` (upstream registers no handler and reads
+  no lister) and `ipaddresses`: `claimServiceIPs` stores the IPAddress
+  before the Service, and a pass woken by that write runs
+  `ensureServiceIPAddresses`, which deletes an address whose Service is
+  not listed. What that leaves: a ServiceCIDR being deleted keeps its
+  finalizer after its last IPAddress goes until another ServiceCIDR
+  write.
+- State on 2026-10-02: main and `feat/minimal-rewrite` are at 9ecdff1
+  (`ci/batch10`: Unit, E2E, Conformance 3 of 3). What went in since the
+  entries above:
+  - The ReplicaSet spec failure was not a watch stall. Objects applied
+    from the live feed had no resourceVersion, so a controller's status
+    update was unconditional and a stale one overwrote labels written in
+    between. `packages/workloads/live.go` now sets the revision the object
+    was stored at (13 of 45 failing under load before, 0 of 45 after).
+  - Idle wake-ups of the Cluster object: the compaction alarm fired every
+    five minutes with nothing to compact, the constructor swept namespaces
+    on every start, and a progress alarm stayed booked with no deadline.
+    Fixed in `cluster.ts`; production still runs the old version.
+  - The wake tables are generated (`scripts/genwake`), and Role,
+    RoleBinding, LimitRange, NetworkPolicy and ResourceClaimTemplate
+    writes start a pass. `ipaddresses` stays withheld.
+  - A review of the node tunnel stream change found three defects (attach
+    to a missing slot, writes under a lock from js callbacks, stream
+    sockets surviving a rebind); fixed with one writer goroutine per
+    stream.
+  - The front worker yields to the socket poll at most every 200 ms for
+    internal requests. It exists for local workerd, where every worker
+    shares one thread; it ships to production too and costs a zero-delay
+    timer there.
+- Known and open:
+  - `ci/batch9` had one Conformance run where shard 4 failed with no
+    failed spec in its log. Not investigated; it did not repeat in the
+    six runs since.
+  - Namespace termination retries every 2 s without backoff; a namespace
+    that cannot finish keeps the Cluster object awake.
+  - A client disconnect does not end its watch (reproduced locally; the
+    abort is suspected never to reach the handler).
+  - `ci/batch11` (the admission swaps) failed Conformance 3 of 3 on every
+    spec that needs cluster DNS: upstream's Priority plugin refuses
+    `system-cluster-critical` until the scheduling API has created the
+    object, and CoreDNS is created first. Unit and E2E did not notice.
+    The fallback to the built-in list is back (ae337c4) as a known
+    difference; the rerun (69d206e) passed Unit, E2E and Conformance 3 of
+    3.

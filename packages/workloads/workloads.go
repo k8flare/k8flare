@@ -38,6 +38,7 @@ import (
 	rbaclisters "k8s.io/client-go/listers/rbac/v1"
 	"k8s.io/client-go/scale"
 	"k8s.io/client-go/tools/cache"
+	clientretry "k8s.io/client-go/util/retry"
 )
 
 const (
@@ -58,6 +59,7 @@ const (
 	maxEndpointsPerSlice = 100
 	daemonSetWorkers     = 2
 	unfinishedJobRecheck = 10 * time.Second
+	taintClearRetry      = 2 * time.Second
 	maxDelay             = 24 * time.Hour
 )
 
@@ -196,45 +198,6 @@ func sources(client kubernetes.Interface) []source {
 			return client.ResourceV1().DeviceClasses().List(ctx, o)
 		}},
 	}
-}
-
-var controllerNeeds = map[string][]string{
-	"replicaset":                {"pods", "replicasets"},
-	"replication":               {"pods", "replicationcontrollers"},
-	"deployment":                {"pods", "replicasets", "deployments"},
-	"endpoints":                 {"pods", "services", "endpoints"},
-	"endpointslice":             {"pods", "services", "endpointslices", "nodes"},
-	"servicecidr":               {"servicecidrs", "ipaddresses"},
-	"validatingadmissionpolicy": {"validatingadmissionpolicies"},
-	"endpointslicemirroring":    {"endpoints", "endpointslices", "services"},
-	"job":                       {"pods", "jobs"},
-	"ttlafterfinished":          {"jobs"},
-	"cronjob":                   {"jobs", "cronjobs"},
-	"statefulset":               {"pods", "statefulsets", "persistentvolumeclaims", "controllerrevisions"},
-	"daemonset":                 {"pods", "daemonsets", "controllerrevisions", "nodes"},
-	"serviceaccounts":           {"namespaces", "serviceaccounts"},
-	"serviceaccounttoken":       {"secrets", "serviceaccounts"},
-	"rootca":                    {"namespaces", "configmaps"},
-	"bootstrapsigner":           {"configmaps", "secrets"},
-	"tokencleaner":              {"secrets"},
-	"legacytoken":               {"secrets", "serviceaccounts", "pods"},
-	"resourcequota":             {"resourcequotas", "pods", "services", "persistentvolumeclaims", "secrets", "configmaps", "replicationcontrollers", "replicasets", "deployments", "statefulsets", "daemonsets", "jobs", "cronjobs", "poddisruptionbudgets", "serviceaccounts", "ingresses", "networkpolicies", "networking.k8s.io", "roles", "rolebindings", "endpoints", "limitranges"},
-	"disruption":                {"poddisruptionbudgets", "pods", "replicasets", "deployments", "replicationcontrollers", "statefulsets", "jobs"},
-	"persistentvolume":          {"pods", "persistentvolumes", "persistentvolumeclaims", "storageclasses", "nodes"},
-	"pvcprotection":             {"pods", "persistentvolumeclaims"},
-	"pvprotection":              {"persistentvolumes"},
-	"ephemeralvolume":           {"pods", "persistentvolumeclaims"},
-	"resourceclaim":             {"pods", "resourceclaims", "resourceclaimtemplates"},
-	"devicetainteviction":       {"pods", "resourceclaims", "resourceslices", "deviceclasses"},
-	"volumeexpand":              {"persistentvolumeclaims", "persistentvolumes"},
-	"tainteviction":             {"pods", "nodes"},
-	"nodeipam":                  {"nodes"},
-	"ttl":                       {"nodes"},
-	"podgc":                     {"pods", "nodes"},
-	"csrapproving":              {"certificatesigningrequests"},
-	"csrsigning":                {"certificatesigningrequests"},
-	"csrcleaner":                {"certificatesigningrequests"},
-	"clusterroleaggregation":    {"clusterroles"},
 }
 
 var controllerFollows = map[string][]string{
@@ -623,6 +586,7 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 
 	if err := clearRecoveredNodes(ctx, client, nodesOf(all)); err != nil {
 		println("workloads: clearing node taints failed:", err.Error())
+		result.NextMs = soonest(result.NextMs, taintClearRetry)
 	}
 	if controllers["tainteviction"] {
 		if err := evictTaintedPods(ctx, client, nodesOf(all), podsOf(all), time.Now()); err != nil {
@@ -932,14 +896,32 @@ func clearRecoveredNodes(ctx context.Context, client kubernetes.Interface, nodes
 		if !nodeReady(node) && !(held && known) {
 			continue
 		}
-		fresh := node.DeepCopy()
-		taints := removeUnreachableTaints(fresh)
-		ready := restoreReady(fresh)
-		if taints {
-			var err error
-			if fresh, err = client.CoreV1().Nodes().Update(ctx, fresh, metav1.UpdateOptions{}); err != nil {
+		stale := node.DeepCopy()
+		if !removeUnreachableTaints(stale) && !restoreReady(stale) {
+			continue
+		}
+		var fresh *v1.Node
+		ready := false
+		err := clientretry.RetryOnConflict(clientretry.DefaultRetry, func() error {
+			current, err := client.CoreV1().Nodes().Get(ctx, node.Name, metav1.GetOptions{})
+			if err != nil {
 				return err
 			}
+			fresh = current.DeepCopy()
+			taints := removeUnreachableTaints(fresh)
+			ready = restoreReady(fresh)
+			if !taints {
+				return nil
+			}
+			updated, err := client.CoreV1().Nodes().Update(ctx, fresh, metav1.UpdateOptions{})
+			if err != nil {
+				return err
+			}
+			fresh = updated
+			return nil
+		})
+		if err != nil {
+			return err
 		}
 		if ready {
 			if _, err := client.CoreV1().Nodes().UpdateStatus(ctx, fresh, metav1.UpdateOptions{}); err != nil {

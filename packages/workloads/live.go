@@ -116,6 +116,7 @@ func (f *liveFeed) apply(ev liveEvent) bool {
 	if err != nil {
 		return false
 	}
+	accessor.SetResourceVersion(strconv.FormatInt(ev.Rev, 10))
 	if ev.Type == "deleted" {
 		informer.forget(accessor.GetNamespace(), accessor.GetName())
 		return true

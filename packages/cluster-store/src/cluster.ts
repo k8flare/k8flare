@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { WORKLOAD_PREFIXES } from "./zz_generated_wake.ts";
 import { compactionTarget, nextAlarmAt, snapshotSchedule, snapshotsToPrune, type SnapshotVars } from "./schedule.ts";
 
 // Cluster holds one cluster's state: a kine-style revisioned key-value log
@@ -20,8 +21,8 @@ const LEASE_CHECK_EVERY_MS = 50_000;
 const OUTBOX_BATCH = 100;
 const MAX_DELAY_S = 86_400;
 
-type Target = "scheduler" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "metrics" | "containers" | "attachdetach" | "addons";
-const targets: Target[] = ["scheduler", "workloads", "crds", "gc", "accounts", "extensions", "metrics", "containers", "attachdetach", "addons"];
+type Target = "scheduler" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "containers" | "attachdetach" | "addons" | "hpa";
+const targets: Target[] = ["scheduler", "workloads", "crds", "gc", "accounts", "extensions", "containers", "attachdetach", "addons", "hpa"];
 const SCHEMA_VERSION = 1;
 const controllerAnnot = "k8flare.io/controller";
 const REGISTRY_PREFIX = "/registry/";
@@ -30,7 +31,6 @@ const ACCOUNT_PREFIXES = [NAMESPACE_PREFIX, "/registry/serviceaccounts/", "/regi
 const ADDON_PREFIX = "/registry/k3s.cattle.io/addons/";
 const HELM_PREFIXES = ["/registry/helm.cattle.io/helmcharts/", "/registry/helm.cattle.io/helmchartconfigs/"];
 const CRD_PREFIX = "/registry/apiextensions.k8s.io/customresourcedefinitions/";
-const WORKLOAD_PREFIXES = ["/registry/replicasets/", "/registry/deployments/", "/registry/replicationcontrollers/", "/registry/services/", "/registry/endpoints/", "/registry/endpointslices/", "/registry/jobs/", "/registry/statefulsets/", "/registry/daemonsets/", "/registry/controllerrevisions/", "/registry/persistentvolumeclaims/", "/registry/persistentvolumes/", "/registry/storage.k8s.io/", "/registry/storageclasses/", "/registry/volumeattributesclasses/", "/registry/certificatesigningrequests/", "/registry/certificates.k8s.io/", "/registry/clusterroles/", "/registry/rbac.authorization.k8s.io/", "/registry/cronjobs/", "/registry/horizontalpodautoscalers/", "/registry/gateway.networking.k8s.io/", "/registry/ingresses/", "/registry/ingressclasses/", "/registry/resourcequotas/", "/registry/secrets/", "/registry/configmaps/", "/registry/poddisruptionbudgets/", "/registry/servicecidrs/", "/registry/resourceclaims/", "/registry/resourceslices/"];
 const ATTACH_PREFIXES = ["/registry/pods/", "/registry/minions/", "/registry/nodes/", "/registry/persistentvolumeclaims/", "/registry/persistentvolumes/", "/registry/storage.k8s.io/", "/registry/storageclasses/"];
 const SCHEDULER_VOLUME_PREFIXES = ["/registry/persistentvolumeclaims/", "/registry/persistentvolumes/", "/registry/storageclasses/", "/registry/csinodes/", "/registry/csidrivers/", "/registry/csistoragecapacities/", "/registry/volumeattachments/", "/registry/storage.k8s.io/", "/registry/resourceclaims/", "/registry/resourceslices/", "/registry/deviceclasses/"];
 
@@ -73,6 +73,7 @@ export class Cluster extends DurableObject<Env> {
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, target TEXT NOT NULL, rev INTEGER NOT NULL, key TEXT NOT NULL, type TEXT NOT NULL)`);
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS passes (target TEXT PRIMARY KEY, triggered INTEGER NOT NULL, finished INTEGER NOT NULL)`);
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS lease_checks (node TEXT PRIMARY KEY, sent INTEGER NOT NULL, due INTEGER NOT NULL DEFAULT 0)`);
+      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS deadlines (target TEXT PRIMARY KEY, due INTEGER NOT NULL)`);
       if (!ctx.storage.sql.exec("PRAGMA table_info(lease_checks)").toArray().some((c) => c.name === "due")) {
         ctx.storage.sql.exec("ALTER TABLE lease_checks ADD COLUMN due INTEGER NOT NULL DEFAULT 0");
       }
@@ -83,28 +84,9 @@ export class Cluster extends DurableObject<Env> {
         `INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO NOTHING`,
         SCHEMA_VERSION,
       );
-      this.sweepNamespaces();
-      this.seedMetrics();
       this.seedAddons();
       ctx.waitUntil(this.armAlarm());
     });
-  }
-
-  private metricsServerDisabled(): boolean {
-    return (this.env.DISABLE ?? "").split(",").some((name) => name.trim() === "metrics-server");
-  }
-
-  private seedMetrics(): void {
-    if (this.metricsServerDisabled()) return;
-    const now = Date.now();
-    const rows = this.ctx.storage.sql.exec("SELECT value FROM meta WHERE key = 'metrics_seed'").toArray();
-    const last = rows.length === 0 ? 0 : (rows[0].value as number);
-    if (now - last < 15_000) return;
-    this.ctx.storage.sql.exec(
-      "INSERT INTO meta (key, value) VALUES ('metrics_seed', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-      now,
-    );
-    this.ctx.waitUntil(this.env.METRICS_Q.send({ kind: "retry" }));
   }
 
   private seedAddons(): void {
@@ -120,18 +102,6 @@ export class Cluster extends DurableObject<Env> {
         );
       })(),
     );
-  }
-
-  private sweepNamespaces(): void {
-    const now = Date.now();
-    const rows = this.ctx.storage.sql.exec("SELECT value FROM meta WHERE key = 'namespace_sweep'").toArray();
-    const last = rows.length === 0 ? 0 : (rows[0].value as number);
-    if (now - last < 60_000) return;
-    this.ctx.storage.sql.exec(
-      "INSERT INTO meta (key, value) VALUES ('namespace_sweep', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-      now,
-    );
-    this.ctx.waitUntil(this.env.ACCT_Q.send({ kind: "retry" }));
   }
 
   private schemaVersion(): number {
@@ -155,6 +125,19 @@ export class Cluster extends DurableObject<Env> {
 
   private setMeta(key: string, value: number): void {
     this.ctx.storage.sql.exec("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", key, value);
+  }
+
+  private compactDue(): number | null {
+    const rows = this.ctx.storage.sql.exec("SELECT value FROM meta WHERE key = 'compact_due'").toArray();
+    return rows.length === 0 ? null : (rows[0].value as number);
+  }
+
+  private bookCompaction(due: number): boolean {
+    const res = this.ctx.storage.sql.exec(
+      "INSERT INTO meta (key, value) VALUES ('compact_due', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE excluded.value < meta.value",
+      due,
+    );
+    return res.rowsWritten > 0;
   }
 
   private dueAt(key: string, intervalMs: number): number {
@@ -187,15 +170,39 @@ export class Cluster extends DurableObject<Env> {
     } while (removed >= COMPACT_BATCH);
   }
 
+  private nextCompactionDue(now: number): number | null {
+    const compactRev = this.compactRevision();
+    const rows = this.ctx.storage.sql.exec(`
+      SELECT MIN(due) AS next_due FROM (
+        SELECT old.ts + ?1 AS due
+        FROM kine AS old
+        WHERE old.deleted = 1
+        UNION ALL
+        SELECT CASE
+          WHEN old.id > ?2 THEN old.ts + ?1
+          ELSE (SELECT MAX(newer.ts) FROM kine AS newer WHERE newer.name = old.name AND newer.id > old.id) + ?1
+        END AS due
+        FROM kine AS old
+        WHERE EXISTS (SELECT 1 FROM kine AS newer WHERE newer.name = old.name AND newer.id > old.id)
+      )
+    `, COMPACT_RETAIN_MS, compactRev).toArray();
+    return rows.length > 0 && rows[0].next_due !== null ? (rows[0].next_due as number) : null;
+  }
+
   private compactByTime(now: number): void {
     const newest = this.ctx.storage.sql.exec("SELECT id FROM kine WHERE ts <= ? ORDER BY id DESC LIMIT 1", now - COMPACT_RETAIN_MS).toArray();
     this.compactTo(compactionTarget({ revision: this.revision(), timeTarget: newest.length === 0 ? 0 : (newest[0].id as number), maxRetained: MAX_RETAINED_REVISIONS }));
-    this.setMeta("compact_due", now + COMPACT_INTERVAL_MS);
+    const nextDue = this.nextCompactionDue(now);
+    if (nextDue !== null) {
+      this.setMeta("compact_due", Math.max(nextDue, now));
+    } else {
+      this.ctx.storage.sql.exec("DELETE FROM meta WHERE key = 'compact_due'");
+    }
   }
 
   private current(name: string): KV | null {
     const rows = this.ctx.storage.sql
-      .exec("SELECT id, name, deleted, value FROM kine WHERE id = (SELECT MAX(id) FROM kine WHERE name = ?)", name)
+      .exec("SELECT id, name, deleted, value, ts FROM kine WHERE id = (SELECT MAX(id) FROM kine WHERE name = ?)", name)
       .toArray();
     if (rows.length === 0 || rows[0].deleted) return null;
     return rowToKV(rows[0]);
@@ -284,9 +291,28 @@ export class Cluster extends DurableObject<Env> {
         return Response.json({ revision: this.insert(body.key, 1, cur.value, cur) });
       }
       case "POST /enqueue": {
-        const body = (await request.json()) as { target: Target; delayMs: number };
+        const body = (await request.json()) as { target: Target; delayMs: number; once?: boolean };
         if (!targets.includes(body.target)) return new Response("unknown target", { status: 400 });
         const delaySeconds = Math.min(MAX_DELAY_S, Math.max(0, Math.ceil(body.delayMs / 1000)));
+        if (body.once) {
+          const now = Date.now();
+          const rows = this.ctx.storage.sql.exec("SELECT due FROM deadlines WHERE target = ?", body.target).toArray();
+          if (rows.length > 0 && (rows[0].due as number) > now) {
+            return Response.json({ ok: true, booked: false });
+          }
+          this.ctx.storage.sql.exec(
+            "INSERT INTO deadlines (target, due) VALUES (?, ?) ON CONFLICT(target) DO UPDATE SET due = excluded.due",
+            body.target,
+            now + body.delayMs,
+          );
+          try {
+            await this.queue(body.target).send({ kind: "retry" } satisfies QueueMessage, { delaySeconds });
+          } catch (err) {
+            this.ctx.storage.sql.exec("DELETE FROM deadlines WHERE target = ?", body.target);
+            throw err;
+          }
+          return Response.json({ ok: true, booked: true });
+        }
         await this.queue(body.target).send({ kind: "retry" } satisfies QueueMessage, { delaySeconds });
         return Response.json({ ok: true });
       }
@@ -298,6 +324,7 @@ export class Cluster extends DurableObject<Env> {
       case "POST /progress": {
         this.restoreWatchers();
         this.sendProgressToAll();
+        this.ctx.waitUntil(this.armAlarm());
         return Response.json({ ok: true, watchers: this.watchers.size });
       }
       case "POST /restore": {
@@ -387,10 +414,27 @@ export class Cluster extends DurableObject<Env> {
         Date.now(),
       )
       .one().id as number;
-    if (rev - this.compactRevision() >= MAX_RETAINED_REVISIONS + COMPACT_SLACK_REVISIONS) this.compactTo(rev - MAX_RETAINED_REVISIONS);
+    let booked = false;
+    if (rev - this.compactRevision() >= MAX_RETAINED_REVISIONS + COMPACT_SLACK_REVISIONS) {
+      this.compactTo(rev - MAX_RETAINED_REVISIONS);
+      const nextDue = this.nextCompactionDue(Date.now());
+      if (nextDue !== null) {
+        this.setMeta("compact_due", nextDue);
+      } else {
+        this.ctx.storage.sql.exec("DELETE FROM meta WHERE key = 'compact_due'");
+      }
+      booked = true;
+    }
+    if (deleted || prev) {
+      const prevTs = prev?.ts ?? Date.now();
+      const due = (prev && this.compactRevision() < prev.modRevision)
+        ? Math.min(Date.now() + COMPACT_RETAIN_MS, prevTs + COMPACT_RETAIN_MS)
+        : Date.now() + COMPACT_RETAIN_MS;
+      if (this.bookCompaction(due)) booked = true;
+    }
     const type = deleted ? "deleted" : prev ? "modified" : "created";
     this.record(name, type, rev, value, prev);
-    this.restoreWatchers();
+    const restored = this.restoreWatchers();
     const notified = new Set<WebSocket>();
     const matched = [...this.watchers].filter(([, w]) => (w.exact ? name === w.prefix : name.startsWith(w.prefix)));
     if (matched.length > 0) {
@@ -415,7 +459,8 @@ export class Cluster extends DurableObject<Env> {
         if (!notified.has(ws)) this.sendProgress(ws, rev);
       }
     }
-    this.expireWatchers();
+    const expired = this.expireWatchers();
+    if (restored || expired || booked) this.ctx.waitUntil(this.armAlarm());
     return rev;
   }
 
@@ -474,16 +519,19 @@ export class Cluster extends DurableObject<Env> {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  private expireWatchers(): void {
+  private expireWatchers(): boolean {
     const cutoff = Date.now() - WATCH_LEASE_MS;
     const rev = this.revision();
+    let changed = false;
     for (const [ws, w] of this.watchers) {
       if (w.openedAt < cutoff) {
         this.watchers.delete(ws);
         this.sendProgress(ws, rev);
         closeQuietly(ws, "lease");
+        changed = true;
       }
     }
+    return changed;
   }
 
   private sendProgress(ws: WebSocket, rev: number): void {
@@ -507,25 +555,31 @@ export class Cluster extends DurableObject<Env> {
     this.restoreWatchers();
     this.expireWatchers();
     if (this.watchers.size > 0 && now >= this.progressDue) this.sendProgressToAll();
-    if (now >= this.dueAt("compact_due", COMPACT_INTERVAL_MS)) this.compactByTime(now);
+    const compactDue = this.compactDue();
+    if (compactDue !== null && now >= compactDue) this.compactByTime(now);
     await this.takeScheduledSnapshot(now);
     await this.armAlarm();
   }
 
   private async armAlarm(): Promise<void> {
     this.restoreWatchers();
+    this.expireWatchers();
     const schedule = snapshotSchedule(this.env as Env & SnapshotVars);
     const next = nextAlarmAt(
       [
         ...[...this.watchers.values()].map((w) => w.openedAt + WATCH_LEASE_MS),
         this.watchers.size > 0 ? this.progressDue : null,
-        this.dueAt("compact_due", COMPACT_INTERVAL_MS),
+        this.compactDue(),
         schedule && this.snapshotBucket() ? this.dueAt("snapshot_due", schedule.intervalMs) : null,
       ],
       Date.now(),
     );
     const existing = await this.ctx.storage.getAlarm();
-    if (next !== null && (existing === null || existing > next)) {
+    if (next === null) {
+      if (existing !== null) {
+        await this.ctx.storage.deleteAlarm();
+      }
+    } else if (existing !== next) {
       await this.ctx.storage.setAlarm(next);
     }
   }
@@ -584,13 +638,15 @@ export class Cluster extends DurableObject<Env> {
     }
   }
 
-  private restoreWatchers(): void {
+  private restoreWatchers(): boolean {
     const live = new Map<WebSocket, Watcher>();
     for (const ws of this.ctx.getWebSockets()) {
       const w = this.watchers.get(ws) ?? (ws.deserializeAttachment() as Watcher | null);
       if (w) live.set(ws, w);
     }
+    const changed = live.size !== this.watchers.size;
     this.watchers = live;
+    return changed;
   }
 
   private queue(target: Target): Queue<QueueMessage> {
@@ -600,10 +656,10 @@ export class Cluster extends DurableObject<Env> {
     if (target === "gc") return this.env.GC_Q;
     if (target === "accounts") return this.env.ACCT_Q;
     if (target === "extensions") return this.env.EXT_Q;
-    if (target === "metrics") return this.env.METRICS_Q;
     if (target === "containers") return this.env.CONTAINERS_Q;
     if (target === "attachdetach") return this.env.AD_Q;
     if (target === "addons") return this.env.ADDON_Q;
+    if (target === "hpa") return this.env.HPA_Q;
     return this.env.CTRL_Q;
   }
 
@@ -619,6 +675,9 @@ export class Cluster extends DurableObject<Env> {
       return;
     }
     const routes: Target[] = [];
+    if (name.startsWith("/registry/horizontalpodautoscalers/")) {
+      if (type !== "modified" || !prev || hpaSpecChanged(prev.value, value)) routes.push("hpa");
+    }
     if (name.startsWith("/registry/endpointslices/") || name.startsWith("/registry/endpoints/")) {
       if (type !== "modified" || !prev || endpointPublishChanged(prev.value, value)) routes.push("workloads");
     } else if (WORKLOAD_PREFIXES.some((p) => name.startsWith(p))) routes.push("workloads");
@@ -641,7 +700,6 @@ export class Cluster extends DurableObject<Env> {
     } else if (name.startsWith("/registry/minions/") || name.startsWith("/registry/nodes/")) {
       if (type !== "modified" || !prev || nodeChanged(prev.value, value)) {
         routes.push("scheduler", "workloads");
-        if (!this.metricsServerDisabled()) routes.push("metrics");
       }
     }
     for (const target of routes) {
@@ -720,12 +778,13 @@ export class Cluster extends DurableObject<Env> {
   async webSocketClose(ws: WebSocket): Promise<void> {
     this.watchers.delete(ws);
     closeQuietly(ws, "peer");
-    this.ctx.waitUntil(this.armAlarm());
+    await this.armAlarm();
   }
 
   async webSocketError(ws: WebSocket): Promise<void> {
     this.watchers.delete(ws);
     closeQuietly(ws, "error");
+    await this.armAlarm();
   }
 }
 
@@ -739,10 +798,11 @@ interface KV {
   key: string;
   value: Uint8Array;
   modRevision: number;
+  ts?: number;
 }
 
 function rowToKV(row: Record<string, SqlStorageValue>): KV {
-  return { key: row.name as string, value: new Uint8Array(row.value as ArrayBuffer), modRevision: row.id as number };
+  return { key: row.name as string, value: new Uint8Array(row.value as ArrayBuffer), modRevision: row.id as number, ts: row.ts as number | undefined };
 }
 
 function encodeKV(kv: KV) {
@@ -903,4 +963,11 @@ function nodeChanged(before: Uint8Array, after: Uint8Array): boolean {
     JSON.stringify(a.status?.allocatable ?? {}) !== JSON.stringify(b.status?.allocatable ?? {}) ||
     readyStatus(a) !== readyStatus(b)
   );
+}
+
+function hpaSpecChanged(before: Uint8Array, after: Uint8Array): boolean {
+  const a = decodeJSON(before);
+  const b = decodeJSON(after);
+  if (!a || !b) return true;
+  return JSON.stringify(a.spec ?? {}) !== JSON.stringify(b.spec ?? {});
 }

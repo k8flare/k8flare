@@ -55,7 +55,7 @@ func TestCertificateSubjectRestrictionDeniesMastersFromBase64(t *testing.T) {
 	t.Cleanup(kineSrv.Close)
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	pemReq := pemWithOrg("system:masters")
-	out := postAdmit(t, h, csrAdmitReq("pooh-b64", certificatesv1.KubeAPIServerClientSignerName, base64.StdEncoding.EncodeToString([]byte(pemReq))))
+	out := postAdmit(t, h, csrAdmitReq("pooh-b64", certificatesv1.KubeAPIServerClientSignerName, pemReq))
 	if out.Allowed {
 		t.Fatal("expected deny")
 	}
@@ -68,7 +68,7 @@ func TestCertificateSubjectRestrictionRejectsInvalidPEM(t *testing.T) {
 	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	t.Cleanup(kineSrv.Close)
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
-	out := postAdmit(t, h, csrAdmitReq("bear", certificatesv1.KubeAPIServerClientSignerName, "this is not a CSR"))
+	out := postAdmit(t, h, csrAdmitReq("bear", certificatesv1.KubeAPIServerClientSignerName, base64.StdEncoding.EncodeToString([]byte("this is not a CSR"))))
 	if out.Allowed {
 		t.Fatal("expected parse deny")
 	}
@@ -108,5 +108,5 @@ func pemWithOrg(org string) string {
 	if err != nil {
 		panic(err)
 	}
-	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}))
+	return base64.StdEncoding.EncodeToString(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}))
 }

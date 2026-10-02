@@ -9,6 +9,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
+const defaultTolerationSeconds = int64(300)
+
 func TestDefaultTolerationSecondsAddsBoth(t *testing.T) {
 	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
@@ -29,6 +31,7 @@ func TestDefaultTolerationSecondsRestoresDefaultsOnUpdate(t *testing.T) {
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := tolerationPodReq(nil)
 	req.Operation = "UPDATE"
+	req.OldObject = req.Object
 	out := postAdmit(t, h, req)
 	if !out.Allowed {
 		t.Fatalf("expected allow: %+v", out)
