@@ -406,5 +406,47 @@ test("constructing the object on an idle store sends nothing to any queue", asyn
   assert.deepEqual(sent, []);
 });
 
+test("alarms carry every deadline, so nothing polls: an idle cluster after compaction books no alarm and sends no queue messages", async (t) => {
+  const tick = clock(t);
+  const sent: { queue: string; body: any }[] = [];
+  const makeQueue = (name: string) => ({
+    send: async (body: any) => void sent.push({ queue: name, body }),
+    sendBatch: async (batch: any[]) => void sent.push(...batch.map((m) => ({ queue: name, body: m.body }))),
+  });
+  const queues = {
+    CTRL_Q: makeQueue("ctrl"),
+    SCHED_Q: makeQueue("sched"),
+    WL_Q: makeQueue("wl"),
+    CRD_Q: makeQueue("crd"),
+    GC_Q: makeQueue("gc"),
+    ACCT_Q: makeQueue("acct"),
+    EXT_Q: makeQueue("ext"),
+    CONTAINERS_Q: makeQueue("containers"),
+    AD_Q: makeQueue("ad"),
+    ADDON_Q: makeQueue("addon"),
+    HPA_Q: makeQueue("hpa"),
+  };
+  const r = rig({ SNAPSHOT_INTERVAL_HOURS: "0", ...queues });
+  await r.settle();
+
+  await r.put("/registry/pods/default/a", "v1");
+  await r.put("/registry/pods/default/b", "v1");
+  await r.put("/registry/pods/default/a", "v2", 2);
+  await r.remove("/registry/pods/default/b");
+  await r.settle();
+
+  assert.equal(r.alarm.at, start + 5 * MINUTE);
+  tick(5 * MINUTE + 1000);
+
+  sent.length = 0;
+  await r.fire();
+  await r.settle();
+
+  assert.equal(r.alarm.at, null);
+  assert.deepEqual(sent, []);
+  assert.equal((await r.get("/stats")).watchers, 0);
+});
+
+
 
 
