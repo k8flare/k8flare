@@ -220,6 +220,10 @@ func main() {
 	writePins := len(os.Args) > 1 && os.Args[1] == "-write-pins"
 	root, err := repoRoot()
 	check(err)
+	if len(os.Args) > 1 && os.Args[1] == "-check-keep" {
+		check(checkKeep(root))
+		return
+	}
 	for _, m := range mirrors {
 		m.version, err = upstream.VersionOf(m.module)
 		check(err)

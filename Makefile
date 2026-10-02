@@ -244,6 +244,7 @@ check:
 	pnpm exec tsc --noEmit
 
 vet: mirrors
+	cd scripts && go run ./mirror -check-keep
 	go vet ./packages/...
 	GOOS=js GOARCH=wasm go vet ./packages/...
 
