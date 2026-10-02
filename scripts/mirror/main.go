@@ -214,9 +214,12 @@ var mirrors = []mirror{
 	{
 		name:   "mount-utils",
 		module: "github.com/k3s-io/kubernetes/staging/src/k8s.io/mount-utils",
-		pins:   []string{"mount_helper_unix.go"},
 		ops: []op{
-			replaceJS("mount_helper_unix.go", "mount-utils/mount_helper_unix.go"),
+			patchJSAST("mount_helper_unix.go",
+				replaceBody("IsCorruptedMnt", "return false"),
+				replaceBody("PathExists", "_, err := os.Stat(path)\nif err == nil {\n\treturn true, nil\n}\nif errors.Is(err, fs.ErrNotExist) {\n\treturn false, nil\n}\nreturn false, err"),
+				keepOnly("IsCorruptedMnt", "PathExists"),
+			),
 		},
 	},
 }
