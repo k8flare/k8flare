@@ -10,30 +10,31 @@ import (
 	"k8s.io/kubernetes/plugin/pkg/admission/priority"
 )
 
-func newPriorityPlugin(ctx context.Context, s *store) (*priority.Plugin, error) {
+func newPriorityPlugin(ctx context.Context, s *store) (*priority.Plugin, *storeInformerFactory, error) {
 	p := priority.NewPlugin()
+	f := newStoreInformerFactory(ctx, s)
 	p.SetExternalKubeClientSet(&dummyClient{})
-	p.SetExternalKubeInformerFactory(newStoreInformerFactory(ctx, s))
+	p.SetExternalKubeInformerFactory(f)
 	if err := p.ValidateInitialization(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return p, nil
+	return p, f, nil
 }
 
 func applyPriority(ctx context.Context, s *store, req *admit.Request) error {
-	p, err := newPriorityPlugin(ctx, s)
+	p, f, err := newPriorityPlugin(ctx, s)
 	if err != nil {
 		return err
 	}
-	return runUpstreamPlugin(ctx, p, req)
+	return runWithFactory(ctx, p, f, req)
 }
 
 func validatePriorityClass(ctx context.Context, s *store, req *admit.Request) error {
-	p, err := newPriorityPlugin(ctx, s)
+	p, f, err := newPriorityPlugin(ctx, s)
 	if err != nil {
 		return err
 	}
-	return runUpstreamPlugin(ctx, p, req)
+	return runWithFactory(ctx, p, f, req)
 }
 
 func decodePod(obj map[string]any) (*corev1.Pod, error) {

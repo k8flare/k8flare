@@ -7,32 +7,32 @@ import (
 	"k8s.io/kubernetes/plugin/pkg/admission/limitranger"
 )
 
-func newLimitRangerPlugin(ctx context.Context, s *store) (*limitranger.LimitRanger, error) {
+func newLimitRangerPlugin(ctx context.Context, s *store) (*limitranger.LimitRanger, *storeInformerFactory, error) {
 	p, err := limitranger.NewLimitRanger(nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	f := newStoreInformerFactory(ctx, s)
 	p.SetExternalKubeClientSet(&limitRangeIndexerClient{indexer: f.limitRange})
 	p.SetExternalKubeInformerFactory(f)
 	if err := p.ValidateInitialization(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return p, nil
+	return p, f, nil
 }
 
 func applyLimitRanger(ctx context.Context, s *store, req *admit.Request) error {
-	p, err := newLimitRangerPlugin(ctx, s)
+	p, f, err := newLimitRangerPlugin(ctx, s)
 	if err != nil {
 		return err
 	}
-	return runUpstreamPlugin(ctx, p, req)
+	return runWithFactory(ctx, p, f, req)
 }
 
 func validateLimitRanger(ctx context.Context, s *store, req *admit.Request) error {
-	p, err := newLimitRangerPlugin(ctx, s)
+	p, f, err := newLimitRangerPlugin(ctx, s)
 	if err != nil {
 		return err
 	}
-	return runUpstreamPlugin(ctx, p, req)
+	return runWithFactory(ctx, p, f, req)
 }
