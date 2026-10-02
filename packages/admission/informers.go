@@ -8,6 +8,7 @@ import (
 
 	admit "github.com/k8flare/k8flare/packages/apiserver-admit"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -18,6 +19,7 @@ import (
 	"k8s.io/client-go/informers"
 	informerscore "k8s.io/client-go/informers/core"
 	"k8s.io/client-go/informers/internalinterfaces"
+	informersnetworking "k8s.io/client-go/informers/networking"
 	informersscheduling "k8s.io/client-go/informers/scheduling"
 	informersstorage "k8s.io/client-go/informers/storage"
 	"k8s.io/client-go/kubernetes"
@@ -343,6 +345,7 @@ type storeInformerFactory struct {
 	priorityClass cache.Indexer
 	limitRange    cache.Indexer
 	storageClass  cache.Indexer
+	ingressClass  cache.Indexer
 	failure       error
 }
 
@@ -355,6 +358,7 @@ func newStoreInformerFactory(ctx context.Context, s *store) *storeInformerFactor
 	f.priorityClass = newStoreIndexer[*schedulingv1.PriorityClass](ctx, s, "/registry/priorityclasses/", false, f.fail)
 	f.limitRange = newStoreIndexer[*corev1.LimitRange](ctx, s, "/registry/limitranges/", true, f.fail)
 	f.storageClass = newStoreIndexer[*storagev1.StorageClass](ctx, s, "/registry/storageclasses/", false, f.fail)
+	f.ingressClass = newStoreIndexer[*networkingv1.IngressClass](ctx, s, "/registry/ingressclasses/", false, f.fail)
 	return f
 }
 
@@ -400,6 +404,10 @@ func (f *storeInformerFactory) Storage() informersstorage.Interface {
 	return informersstorage.New(f, metav1.NamespaceAll, nil)
 }
 
+func (f *storeInformerFactory) Networking() informersnetworking.Interface {
+	return informersnetworking.New(f, metav1.NamespaceAll, nil)
+}
+
 func (f *storeInformerFactory) InformerName() *cache.InformerName { return nil }
 
 func (f *storeInformerFactory) InformerFor(obj runtime.Object, newFunc internalinterfaces.NewInformerFunc) cache.SharedIndexInformer {
@@ -410,6 +418,8 @@ func (f *storeInformerFactory) InformerFor(obj runtime.Object, newFunc internali
 		return storeInformer{indexer: f.limitRange}
 	case *storagev1.StorageClass:
 		return storeInformer{indexer: f.storageClass}
+	case *networkingv1.IngressClass:
+		return storeInformer{indexer: f.ingressClass}
 	default:
 		return f.SharedInformerFactory.InformerFor(obj, newFunc)
 	}

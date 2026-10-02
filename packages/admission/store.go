@@ -9,7 +9,6 @@ import (
 	admissionregv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
-	networkingv1 "k8s.io/api/networking/v1"
 	nodev1 "k8s.io/api/node/v1"
 	storagev1 "k8s.io/api/storage/v1"
 )
@@ -145,8 +144,4 @@ func (s *store) runtimeClass(ctx context.Context, name string) (nodev1.RuntimeCl
 
 func (s *store) storageClasses(ctx context.Context) ([]storagev1.StorageClass, error) {
 	return listPrefix[storagev1.StorageClass](ctx, s.client, "/registry/storageclasses/")
-}
-
-func (s *store) ingressClasses(ctx context.Context) ([]networkingv1.IngressClass, error) {
-	return listPrefix[networkingv1.IngressClass](ctx, s.client, "/registry/ingressclasses/")
 }

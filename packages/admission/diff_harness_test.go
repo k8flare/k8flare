@@ -99,7 +99,7 @@ var pluginPairs = map[string]pluginPair{
 	"DefaultTolerationSeconds":      {upstream: defaulttolerationseconds.PluginName, swapped: true, admit: storeOnly(applyDefaultTolerationSeconds)},
 	"LimitRanger":                   {upstream: limitranger.PluginName, swapped: true, admit: storeOnly(applyLimitRanger), validate: storeOnly(validateLimitRanger)},
 	"DefaultStorageClass":           {upstream: setdefault.PluginName, swapped: true, admit: storeOnly(applyDefaultStorageClass)},
-	"DefaultIngressClass":           {upstream: defaultingressclass.PluginName, admit: storeOnly(applyDefaultIngressClass)},
+	"DefaultIngressClass":           {upstream: defaultingressclass.PluginName, swapped: true, admit: storeOnly(applyDefaultIngressClass)},
 	"StorageObjectInUseProtection":  {upstream: storageobjectinuseprotection.PluginName, admit: storeOnly(applyStorageObjectInUseProtection)},
 	"RuntimeClass":                  {upstream: runtimeclass.PluginName, admit: storeOnly(applyRuntimeClass), validate: storeOnly(validateRuntimeClass)},
 	"TaintNodesByCondition":         {upstream: nodetaint.PluginName, swapped: true, admit: storeOnly(applyTaintNodesByCondition)},
