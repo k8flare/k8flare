@@ -22,7 +22,7 @@ var keptAPIs = []keptGroup{
 	{Name: "policy", Versions: []string{"v1"}, InformerFactory: true, NarrowInformer: true},
 	{Name: "rbac", Versions: []string{"v1"}},
 	{Name: "resource", Versions: []string{"v1", "v1beta2"}, InformerFactory: true, NarrowInformer: true},
-	{Name: "scheduling", Versions: []string{"v1alpha2"}, InformerFactory: true, NarrowInformer: true},
+	{Name: "scheduling", Versions: []string{"v1", "v1alpha2"}, InformerFactory: true, NarrowInformer: true},
 	{Name: "storage", Versions: []string{"v1"}, InformerFactory: true, NarrowInformer: true},
 }
 

@@ -113,7 +113,7 @@ var pluginPairs = map[string]pluginPair{
 	"ResourceQuota":                 {upstream: resourcequota.PluginName, validate: storeOnly(applyResourceQuota)},
 	"PodResize":                     {upstream: podresize.PluginName, validate: storeOnly(validatePodResize)},
 	"NodeDeclaredFeatures":          {upstream: nodedeclaredfeatures.PluginName, validate: storeOnly(validateNodeDeclaredFeatures)},
-	"Priority":                      {upstream: priority.PluginName, admit: storeOnly(applyPriority), validate: storeOnly(validatePriorityClass)},
+	"Priority":                      {upstream: priority.PluginName, swapped: true, admit: storeOnly(applyPriority), validate: storeOnly(validatePriorityClass)},
 }
 
 var upstreamPlugins = func() *admission.Plugins {

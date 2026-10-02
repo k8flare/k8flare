@@ -31,6 +31,7 @@ func TestDefaultTolerationSecondsRestoresDefaultsOnUpdate(t *testing.T) {
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := tolerationPodReq(nil)
 	req.Operation = "UPDATE"
+	req.OldObject = req.Object
 	out := postAdmit(t, h, req)
 	if !out.Allowed {
 		t.Fatalf("expected allow: %+v", out)
