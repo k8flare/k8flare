@@ -103,7 +103,7 @@ var pluginPairs = map[string]pluginPair{
 	"StorageObjectInUseProtection":  {upstream: storageobjectinuseprotection.PluginName, swapped: true, admit: storeOnly(applyStorageObjectInUseProtection)},
 	"RuntimeClass":                  {upstream: runtimeclass.PluginName, swapped: true, admit: storeOnly(applyRuntimeClass), validate: storeOnly(validateRuntimeClass)},
 	"TaintNodesByCondition":         {upstream: nodetaint.PluginName, swapped: true, admit: storeOnly(applyTaintNodesByCondition)},
-	"PodTopologyLabels":             {upstream: podtopologylabels.PluginName, admit: storeOnly(applyPodTopologyLabels)},
+	"PodTopologyLabels":             {upstream: podtopologylabels.PluginName, swapped: true, admit: storeOnly(applyPodTopologyLabels)},
 	"PersistentVolumeClaimResize":   {upstream: resize.PluginName, validate: storeOnly(applyPersistentVolumeClaimResize)},
 	"CertificateSubjectRestriction": {upstream: subjectrestriction.PluginName, swapped: true, validate: storeOnly(applyCertificateSubjectRestriction)},
 	"CertificateApproval":           {upstream: approval.PluginName, validate: authorizerOnly(applyCertificateApproval)},
@@ -693,31 +693,6 @@ func applyKnown(t *testing.T, cases []diffCase, known map[string]*knownDifferenc
 		}
 	}
 	return cases
-}
-
-func dropLabels(keys ...string) objectRewrite {
-	return func(obj runtime.Object) {
-		accessor, _ := meta.Accessor(obj)
-		labels := accessor.GetLabels()
-		for _, key := range keys {
-			delete(labels, key)
-		}
-		accessor.SetLabels(labels)
-	}
-}
-
-func addLabels(add map[string]string) objectRewrite {
-	return func(obj runtime.Object) {
-		accessor, _ := meta.Accessor(obj)
-		labels := accessor.GetLabels()
-		if labels == nil {
-			labels = map[string]string{}
-		}
-		for k, v := range add {
-			labels[k] = v
-		}
-		accessor.SetLabels(labels)
-	}
 }
 
 type allowSigners map[string]bool

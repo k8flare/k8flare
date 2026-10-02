@@ -17,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apiserver/pkg/admission"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/informers"
 	informerscore "k8s.io/client-go/informers/core"
 	"k8s.io/client-go/informers/internalinterfaces"
@@ -28,6 +29,7 @@ import (
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 	nodev1client "k8s.io/client-go/kubernetes/typed/node/v1"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/component-base/featuregate"
 )
 
 type dummyClient struct {
@@ -387,6 +389,7 @@ type storeInformerFactory struct {
 	storageClass  cache.Indexer
 	ingressClass  cache.Indexer
 	runtimeClass  cache.Indexer
+	node          cache.Indexer
 	failure       error
 }
 
@@ -399,6 +402,7 @@ func newStoreInformerFactory(ctx context.Context, s *store) *storeInformerFactor
 	f.priorityClass = newStoreIndexer[*schedulingv1.PriorityClass](ctx, s, "/registry/priorityclasses/", false, f.fail)
 	f.limitRange = newStoreIndexer[*corev1.LimitRange](ctx, s, "/registry/limitranges/", true, f.fail)
 	f.storageClass = newStoreIndexer[*storagev1.StorageClass](ctx, s, "/registry/storageclasses/", false, f.fail)
+	f.node = newStoreIndexer[*corev1.Node](ctx, s, "/registry/nodes/", false, f.fail)
 	f.runtimeClass = newStoreIndexer[*nodev1.RuntimeClass](ctx, s, "/registry/runtimeclasses/", false, f.fail)
 	f.ingressClass = newStoreIndexer[*networkingv1.IngressClass](ctx, s, "/registry/ingressclasses/", false, f.fail)
 	return f
@@ -413,6 +417,11 @@ func (f *storeInformerFactory) fail(err error) {
 type informerFactoryInitializer struct{ factory *storeInformerFactory }
 
 func (i informerFactoryInitializer) Initialize(plugin admission.Interface) {
+	if w, ok := plugin.(interface {
+		InspectFeatureGates(featuregate.FeatureGate)
+	}); ok {
+		w.InspectFeatureGates(utilfeature.DefaultFeatureGate)
+	}
 	if w, ok := plugin.(interface {
 		SetExternalKubeInformerFactory(informers.SharedInformerFactory)
 	}); ok {
@@ -464,6 +473,8 @@ func (f *storeInformerFactory) InformerFor(obj runtime.Object, newFunc internali
 		return storeInformer{indexer: f.limitRange}
 	case *storagev1.StorageClass:
 		return storeInformer{indexer: f.storageClass}
+	case *corev1.Node:
+		return storeInformer{indexer: f.node}
 	case *nodev1.RuntimeClass:
 		return storeInformer{indexer: f.runtimeClass}
 	case *networkingv1.IngressClass:

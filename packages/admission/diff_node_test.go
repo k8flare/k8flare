@@ -157,12 +157,6 @@ func TestDiffPodTopologyLabels(t *testing.T) {
 	status := podCase("status subresource", "UPDATE", scheduled("n1", nil), zoned)
 	status.subresource = "status"
 	cases = append(cases, status)
-	emptyLabel := &knownDifference{reason: "upstream copies a configured topology label even when its value is empty, ours skips empty values (podtopologylabels/admission.go topologyLabelsForNodeName)", rewrites: []objectRewrite{dropLabels(corev1.LabelTopologyZone)}}
-	cases = applyKnown(t, cases, map[string]*knownDifference{
-		"node label with an empty value":       emptyLabel,
-		"binding to a node with an empty zone": emptyLabel,
-		"update of a scheduled pod":            {reason: "upstream handles only Create so an update leaves the labels alone, ours also labels on UPDATE (podtopologylabels/admission.go NewPodTopologyPlugin)", rewrites: []objectRewrite{addLabels(map[string]string{corev1.LabelTopologyRegion: "r1", corev1.LabelTopologyZone: "z1"})}},
-	})
 	runDiffCases(t, cases)
 }
 
