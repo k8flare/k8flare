@@ -100,7 +100,7 @@ var pluginPairs = map[string]pluginPair{
 	"LimitRanger":                   {upstream: limitranger.PluginName, swapped: true, admit: storeOnly(applyLimitRanger), validate: storeOnly(validateLimitRanger)},
 	"DefaultStorageClass":           {upstream: setdefault.PluginName, swapped: true, admit: storeOnly(applyDefaultStorageClass)},
 	"DefaultIngressClass":           {upstream: defaultingressclass.PluginName, swapped: true, admit: storeOnly(applyDefaultIngressClass)},
-	"StorageObjectInUseProtection":  {upstream: storageobjectinuseprotection.PluginName, admit: storeOnly(applyStorageObjectInUseProtection)},
+	"StorageObjectInUseProtection":  {upstream: storageobjectinuseprotection.PluginName, swapped: true, admit: storeOnly(applyStorageObjectInUseProtection)},
 	"RuntimeClass":                  {upstream: runtimeclass.PluginName, swapped: true, admit: storeOnly(applyRuntimeClass), validate: storeOnly(validateRuntimeClass)},
 	"TaintNodesByCondition":         {upstream: nodetaint.PluginName, swapped: true, admit: storeOnly(applyTaintNodesByCondition)},
 	"PodTopologyLabels":             {upstream: podtopologylabels.PluginName, admit: storeOnly(applyPodTopologyLabels)},
