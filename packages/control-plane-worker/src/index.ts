@@ -106,10 +106,21 @@ function asAPIRequest(request: Request): Request {
   return new Request(request.url, { method: request.method, headers });
 }
 
+const socketPollIntervalMs = 200;
+let socketsPolledAt = 0;
+
+async function letSocketsBePolled(): Promise<void> {
+  if (Date.now() - socketsPolledAt < socketPollIntervalMs) return;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  socketsPolledAt = Date.now();
+}
+
 export default {
   async fetch(incoming: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const request = withClientCert(incoming);
-    const path = new URL(request.url).pathname;
+    const { pathname: path, hostname } = new URL(request.url);
+    if (hostname === "k8flare.internal") await letSocketsBePolled();
+    else socketsPolledAt = Date.now();
     console.log(`front iso=${isolateId()} ${request.method} ${path}`);
     if (path === "/v1-k3s/connect") return acceptTunnel(request, env);
     if (path === "/stats" && await isAdmin(request, env)) {
