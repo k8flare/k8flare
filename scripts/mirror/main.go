@@ -85,9 +85,11 @@ var mirrors = []mirror{
 	{
 		name:   "component-base",
 		module: "github.com/k3s-io/kubernetes/staging/src/k8s.io/component-base",
-		pins:   []string{"tracing/utils.go"},
 		ops: []op{
-			replaceJS("tracing/utils.go", "component-base/tracing_utils.go"),
+			patchJSAST("tracing/utils.go",
+				replaceBody("WrapperFor", "return func(rt http.RoundTripper) http.RoundTripper { return rt }"),
+				keepOnly("TracerProvider", "noopTracerProvider", "noopTracerProvider.Shutdown", "NewNoopTracerProvider", "Propagators", "WrapperFor"),
+			),
 		},
 	},
 	{
