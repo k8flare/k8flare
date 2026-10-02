@@ -344,6 +344,26 @@ func TestRemoveFieldOfInterfaceTakesTheMethodAndItsDoc(t *testing.T) {
 	wantError(t, err, "p/value.go", "Checker.Nope")
 }
 
+const structSource = `package p
+
+type Config struct {
+	A int
+	// Target doc line.
+	// Second doc line.
+	Target string
+	B int
+}
+`
+
+func TestRemoveFieldOfStructTakesFieldAndItsDoc(t *testing.T) {
+	out, err := runOn(t, structSource, removeField("Config", "Target"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantContains(t, out, "A int", "B int")
+	wantAbsent(t, out, "Target", "Target doc line", "Second doc line")
+}
+
 func TestAddImportToSingleLineImport(t *testing.T) {
 	src := "package p\n\nimport \"syscall\"\n\nvar s = syscall.SIGUSR2\n"
 	out, err := runOn(t, src, addImport("", "os"), replaceSelector("syscall", "SIGUSR2", "os.Interrupt"))

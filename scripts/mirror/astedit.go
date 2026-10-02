@@ -664,7 +664,7 @@ func removeField(typ, name string) edit {
 			return fmt.Errorf("%s: field %s.%s shares its declaration with other names", s.path, typ, name)
 		}
 		from := f.Pos()
-		if _, isMethod := f.Type.(*ast.FuncType); isMethod && f.Doc != nil {
+		if f.Doc != nil {
 			from = f.Doc.Pos()
 		}
 		start, end, _ := s.wholeLines(s.off(from), s.off(f.End()))
