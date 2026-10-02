@@ -72,7 +72,7 @@ func TestDiffPriorityPods(t *testing.T) {
 		withCluster(update(podDiffCase(plugin, "update with its own priority", priorityPod("high", ptr.To(int32(5)), nil)), priorityPod("high", ptr.To(int32(1000)), &never)), high),
 		withCluster(update(podDiffCase(plugin, "update of a pod that never had a priority", priorityPod("", nil, nil)), priorityPod("", nil, nil)), defaultLow),
 		withCluster(podDiffCase(plugin, "system class resolved from the cluster", priorityPod("system-node-critical", nil, nil)), priorityClass("system-node-critical", 2000001000, false, nil)),
-		podDiffCase(plugin, "system class absent from the cluster", priorityPod("system-node-critical", nil, nil)),
+		withKnown(podDiffCase(plugin, "system class absent from the cluster", priorityPod("system-node-critical", nil, nil)), "ours resolves system-node-critical and system-cluster-critical from the built-in list when the object is missing; upstream only reads the lister (priority/admission.go resolvePriorityClass)", "outcome: upstream denied 403 Forbidden; ours allowed"),
 	}
 	status := withCluster(podDiffCase(plugin, "status subresource is ignored", priorityPod("missing", nil, nil)), high)
 	status.subresource = "status"

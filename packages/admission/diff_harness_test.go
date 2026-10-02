@@ -150,6 +150,11 @@ type knownDifference struct {
 	rewrites    []objectRewrite
 }
 
+func withKnown(c diffCase, reason, signature string) diffCase {
+	c.known = &knownDifference{reason: reason, signature: signature}
+	return c
+}
+
 type diffCase struct {
 	name        string
 	plugin      string
