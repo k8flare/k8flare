@@ -22,6 +22,7 @@ import (
 	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
 	supervisor "github.com/k8flare/k8flare/packages/apiserver-supervisor"
 	"github.com/k8flare/k8flare/packages/edgehost"
+	"github.com/k8flare/k8flare/packages/kubeversion"
 	"github.com/k8flare/k8flare/packages/metricsapi"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -69,7 +70,7 @@ const (
 	workerHeader        = "X-K8flare-Worker"
 )
 
-var versionInfo = version.Info{Major: "1", Minor: "36", GitVersion: "v1.36.4+k8flare", Platform: "js/wasm", GoVersion: "go1.26", Compiler: "gc"}
+var versionInfo = version.Info{Major: kubeversion.Major, Minor: kubeversion.Minor, GitVersion: kubeversion.GitVersion, Platform: "js/wasm", GoVersion: kubeversion.GoVersion, Compiler: "gc"}
 
 func seedVaultTokens(ctx context.Context, v *supervisor.Vault, cfg Config) {
 	if cfg.ClusterUID != "" && cfg.ClusterUID != "default" {
