@@ -188,8 +188,6 @@ export default {
           return;
         }
         const headers = new Headers();
-        const auth = request.headers.get("Authorization");
-        if (auth) headers.set("Authorization", auth);
         if (loc.transport === "http") {
           // The kubelet serves logs as an ordinary read, so fetch the body and
           // relay it one way rather than dialling a socket that never opens.

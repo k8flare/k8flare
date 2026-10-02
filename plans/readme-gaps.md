@@ -1792,3 +1792,19 @@ Decided on 2026-10-01, with the owner:
     The fallback to the built-in list is back (ae337c4) as a known
     difference; the rerun (69d206e) passed Unit, E2E and Conformance 3 of
     3.
+  - A log read sent the caller's `Authorization` header on to the node:
+    the front worker copied it into the request the tunnel proxies to the
+    kubelet (`index.ts`, the HTTP log path only; exec, attach and
+    port-forward build a fresh header). Found by review, traced in the
+    code, not observed on a node. Fixed in 21ced4d: the front worker no
+    longer copies it and both node-bound requests drop it. Unit, E2E and
+    Conformance 3 of 3, the third after a rerun of one shard: "Garbage
+    collector should keep the rc around until all its pods are deleted"
+    timed out with 100 pods still terminating. Not investigated; it did
+    not fail in the other two runs or in the rerun.
+  - The audit of 2026-10-03 (`audit/readme-b`, `audit/security`) is not
+    folded into this file yet: 221 README claims, 152 with code and a
+    test, 9 the code contradicts, 5 with no implementation; the raw
+    `ADMIN_TOKEN` is the bearer of at least eleven internal calls and the
+    key of every component token. Its entries about this file being out
+    of date are unverified.
