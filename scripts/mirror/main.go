@@ -101,8 +101,10 @@ var mirrors = []mirror{
 			"pkg/controller/certificates/cleaner/pcrcleaner.go",
 		},
 		ops: []op{
-			addJS("pkg/securitycontext/util_js.go", "kubernetes/securitycontext_cpus.go"),
-			addJS("pkg/util/filesystem/util_js.go", "kubernetes/filesystem_js.go"),
+			keepDeclsJS("pkg/securitycontext/util_darwin.go", "possibleCPUs"),
+			patchJSAST("pkg/util/filesystem/util_unix.go",
+				replaceBody("IsUnixDomainSocket", "return false, fmt.Errorf(\"unix domain sockets are not available: %s\", filePath)"),
+			),
 			patchJSAST("pkg/scheduler/backend/cache/debugger/signal.go",
 				addImport("", "os"),
 				replaceSelector("syscall", "SIGUSR2", "os.Interrupt"),
