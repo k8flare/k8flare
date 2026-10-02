@@ -18,11 +18,12 @@ import (
 )
 
 type op struct {
-	kind    string
-	path    string
-	overlay string
-	astOps  []edit
-	decls   fileEdit
+	kind     string
+	path     string
+	overlay  string
+	astOps   []edit
+	decls    fileEdit
+	required []string
 }
 
 // hostOnly keeps the upstream file for every target but js.
@@ -360,6 +361,8 @@ func apply(dst, overlays string, o op) error {
 		return applyAST(dst, overlays, o)
 	case "astJS":
 		return applyDeclsAST(dst, o)
+	case "requireDecls":
+		return applyRequireDecls(dst, o)
 	case "narrowClientset", "narrowInformerFactory":
 		data, err := keepHostOnly(dst, o.path)
 		if err != nil {

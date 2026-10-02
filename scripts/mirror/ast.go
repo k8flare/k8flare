@@ -66,6 +66,14 @@ type posSpan struct{ from, to token.Pos }
 func (s posSpan) contains(p token.Pos) bool { return s.from <= p && p <= s.to }
 
 func rewrite(src []byte, e fileEdit) ([]byte, error) {
+	out, err := rewriteDecls(src, e)
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(jsTag), out...), nil
+}
+
+func rewriteDecls(src []byte, e fileEdit) ([]byte, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "upstream.go", src, parser.ParseComments)
 	if err != nil {
@@ -152,7 +160,7 @@ func rewrite(src []byte, e fileEdit) ([]byte, error) {
 			return nil, err
 		}
 	}
-	return append([]byte(jsTag), formatted...), nil
+	return formatted, nil
 }
 
 func toSet(names []string) map[string]bool {
