@@ -210,6 +210,19 @@ func TestLeanClientsetNamesGroupVersionMissingFromAConstructor(t *testing.T) {
 	}
 }
 
+func TestLeanClientsetFailsWhenDroppedAssignmentFollowedByNonStandardGuard(t *testing.T) {
+	_, err := leanClientset([]byte(clientsetSource), []groupVersion{{"apps", "v1"}})
+	if err == nil {
+		t.Fatal("expected error when dropped assignment is followed by non-standard guard")
+	}
+	if !strings.Contains(err.Error(), "NewForConfigAndClient") {
+		t.Errorf("error %q should name constructor NewForConfigAndClient", err)
+	}
+	if !strings.Contains(err.Error(), "core/v1") {
+		t.Errorf("error %q should name group-version core/v1", err)
+	}
+}
+
 const factorySource = `package informers
 
 import (

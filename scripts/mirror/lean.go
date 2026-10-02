@@ -441,11 +441,15 @@ func leanClientset(src []byte, keep []groupVersion) ([]byte, error) {
 				continue
 			}
 			p.dropNode(stmt)
-			if len(assign.Lhs) == 2 && i+1 < len(list) {
-				if guard, isIf := list[i+1].(*ast.IfStmt); isIf {
-					p.dropNode(guard)
-					i++
+			if len(assign.Lhs) == 2 {
+				errIdent, ok := assign.Lhs[1].(*ast.Ident)
+				if !ok || i+1 >= len(list) || !isErrReturnGuard(list[i+1], errIdent.Name) {
+					return nil, fmt.Errorf("%s: %s: expected err != nil guard following assignment", ctor.place, key)
 				}
+				p.dropNode(list[i+1])
+				i++
+			} else if len(assign.Lhs) != 1 {
+				return nil, fmt.Errorf("%s: %s: unexpected assignment shape with %d left-hand sides", ctor.place, key, len(assign.Lhs))
 			}
 		}
 		ctor.fn.Body.List = stmts
@@ -456,6 +460,36 @@ func leanClientset(src []byte, keep []groupVersion) ([]byte, error) {
 		return nil, err
 	}
 	return p.render()
+}
+
+func isErrReturnGuard(stmt ast.Stmt, errName string) bool {
+	guard, ok := stmt.(*ast.IfStmt)
+	if !ok || guard.Init != nil || guard.Else != nil {
+		return false
+	}
+	bin, ok := guard.Cond.(*ast.BinaryExpr)
+	if !ok || bin.Op != token.NEQ {
+		return false
+	}
+	if !(isIdent(bin.X, errName) && isIdent(bin.Y, "nil")) && !(isIdent(bin.X, "nil") && isIdent(bin.Y, errName)) {
+		return false
+	}
+	if guard.Body == nil || len(guard.Body.List) != 1 {
+		return false
+	}
+	ret, ok := guard.Body.List[0].(*ast.ReturnStmt)
+	if !ok || len(ret.Results) == 0 {
+		return false
+	}
+	if !isIdent(ret.Results[len(ret.Results)-1], errName) {
+		return false
+	}
+	for _, res := range ret.Results[:len(ret.Results)-1] {
+		if !isIdent(res, "nil") {
+			return false
+		}
+	}
+	return true
 }
 
 func leanInformerFactory(src []byte, keepGroups []string) ([]byte, error) {
