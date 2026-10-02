@@ -5,6 +5,7 @@ package apiserver_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -18,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/k8flare/k8flare/packages/addons"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -113,7 +116,55 @@ func startDevURL(t *testing.T) (string, *kubernetes.Clientset) {
 		t.Fatal(err)
 	}
 	waitForFirstControllerPass(t, cs, deadline)
+	waitForPackagedAddons(t, cs, deadline)
 	return base, cs
+}
+
+func waitForPackagedAddons(t *testing.T, cs *kubernetes.Clientset, deadline time.Time) {
+	t.Helper()
+	for {
+		err := packagedAddonsSettled(cs)
+		if err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the packaged add-ons did not settle: %v", err)
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+func packagedAddonsSettled(cs *kubernetes.Clientset) error {
+	c := cs.CoreV1().RESTClient()
+	for _, f := range addons.Packaged() {
+		name, _, _ := strings.Cut(f.Name, ".")
+		if _, err := c.Get().AbsPath("/apis/k3s.cattle.io/v1/namespaces/kube-system/addons/" + name).DoRaw(context.Background()); err != nil {
+			return fmt.Errorf("addon %s: %w", name, err)
+		}
+	}
+	raw, err := c.Get().AbsPath("/apis/apiextensions.k8s.io/v1/customresourcedefinitions").DoRaw(context.Background())
+	if err != nil {
+		return err
+	}
+	var crds apiextensionsv1.CustomResourceDefinitionList
+	if err := json.Unmarshal(raw, &crds); err != nil {
+		return err
+	}
+	for _, crd := range crds.Items {
+		if !established(crd) {
+			return fmt.Errorf("crd %s is not established", crd.Name)
+		}
+	}
+	return nil
+}
+
+func established(crd apiextensionsv1.CustomResourceDefinition) bool {
+	for _, cond := range crd.Status.Conditions {
+		if cond.Type == apiextensionsv1.Established {
+			return cond.Status == apiextensionsv1.ConditionTrue
+		}
+	}
+	return false
 }
 
 func waitForFirstControllerPass(t *testing.T, cs *kubernetes.Clientset, deadline time.Time) {
