@@ -23,7 +23,9 @@ var dynamicInformers = []dynamicSource{
 
 var routedElsewhere = []string{"namespaces", "nodes", "pods", "serviceaccounts"}
 
-var undeliveredWakes = []string{"deviceclasses", "ipaddresses", "limitranges", "networkpolicies", "resourceclaimtemplates", "rolebindings", "roles"}
+var listedWithoutEventHandler = []string{"deviceclasses"}
+
+var wakeWithheld = []string{"ipaddresses"}
 
 var extraWorkloadPrefixes = []string{
 	"/registry/certificates.k8s.io/",

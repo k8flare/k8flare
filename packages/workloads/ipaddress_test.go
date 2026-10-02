@@ -39,3 +39,15 @@ func TestEnsureServiceIPAddressesCreatesAndDeletes(t *testing.T) {
 		}
 	}
 }
+
+func TestEnsureServiceIPAddressesDeletesAnAddressWhoseServiceIsNotStoredYet(t *testing.T) {
+	client := fake.NewSimpleClientset(
+		&networkingv1.IPAddress{ObjectMeta: metav1.ObjectMeta{Name: "10.43.0.7"}, Spec: networkingv1.IPAddressSpec{ParentRef: &networkingv1.ParentReference{Resource: "services", Namespace: "default", Name: "new"}}},
+	)
+	if err := ensureServiceIPAddresses(context.Background(), client, []string{"ipaddresses"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.NetworkingV1().IPAddresses().Get(context.Background(), "10.43.0.7", metav1.GetOptions{}); err == nil {
+		t.Fatal("expected the claimed address to be deleted: this is why an ipaddress write must not start a pass")
+	}
+}

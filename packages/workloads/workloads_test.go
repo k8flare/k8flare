@@ -32,6 +32,23 @@ func TestWantedSelectsControllersForChangedResources(t *testing.T) {
 	}
 }
 
+func TestWantedSelectsTheControllerThatListsTheChangedResource(t *testing.T) {
+	for resource, controller := range map[string]string{
+		"roles":                  "resourcequota",
+		"rolebindings":           "resourcequota",
+		"limitranges":            "resourcequota",
+		"networkpolicies":        "resourcequota",
+		"resourceclaimtemplates": "resourceclaim",
+		"ipaddresses":            "servicecidr",
+		"deviceclasses":          "devicetainteviction",
+	} {
+		controllers, needed := wanted([]string{resource})
+		if !controllers[controller] || !needed[resource] {
+			t.Fatalf("%s selects %v, needs %v", resource, controllers, needed)
+		}
+	}
+}
+
 func TestWantedSelectsBootstrapSigner(t *testing.T) {
 	controllers, needed := wanted([]string{"configmaps"})
 	if !controllers["bootstrapsigner"] || !needed["configmaps"] || !needed["secrets"] {

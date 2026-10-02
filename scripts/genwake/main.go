@@ -32,7 +32,7 @@ func main() {
 		}
 	}
 	check(applyOutsideConstructors(derived, outsideConstructors))
-	prefixes, err := workloadPrefixes(derived, outsideConstructors, routedElsewhere, undeliveredWakes, extraWorkloadPrefixes)
+	prefixes, err := workloadPrefixes(derived, outsideConstructors, routedElsewhere, append(append([]string{}, listedWithoutEventHandler...), wakeWithheld...), extraWorkloadPrefixes)
 	check(err)
 	goNeeds, err := renderNeeds(derived)
 	check(err)
