@@ -86,6 +86,7 @@ func rewriteDecls(src []byte, e fileEdit) ([]byte, error) {
 	types := typeSpecs(file)
 	var dropped []posSpan
 	var kept []ast.Decl
+	var problems []string
 	needsErr := false
 
 	for _, d := range file.Decls {
@@ -110,7 +111,12 @@ func rewriteDecls(src []byte, e fileEdit) ([]byte, error) {
 			}
 			var specs []ast.Spec
 			for _, s := range d.Specs {
-				if !specMatches(s, wanted, found, stubSet, notFunc) {
+				matched, err := specMatches(s, wanted, found, stubSet, notFunc)
+				if err != nil {
+					problems = append(problems, err.Error())
+					continue
+				}
+				if !matched {
 					dropped = append(dropped, posSpan{specStart(s), s.End()})
 					continue
 				}
@@ -123,7 +129,6 @@ func rewriteDecls(src []byte, e fileEdit) ([]byte, error) {
 		}
 	}
 
-	var problems []string
 	if names := missing(wanted, found); len(names) > 0 {
 		problems = append(problems, "declaration not found in upstream file: "+strings.Join(names, ", "))
 	}
@@ -213,7 +218,7 @@ func receiverName(t ast.Expr) string {
 	return ""
 }
 
-func specMatches(s ast.Spec, wanted, found, stubs, notFunc map[string]bool) bool {
+func specMatches(s ast.Spec, wanted, found, stubs, notFunc map[string]bool) (bool, error) {
 	var names []string
 	switch s := s.(type) {
 	case *ast.TypeSpec:
@@ -223,17 +228,22 @@ func specMatches(s ast.Spec, wanted, found, stubs, notFunc map[string]bool) bool
 			names = append(names, n.Name)
 		}
 	}
-	matched := false
+	var kept, extra []string
 	for _, n := range names {
 		if wanted[n] {
 			found[n] = true
-			matched = true
+			kept = append(kept, n)
 			if stubs[n] {
 				notFunc[n] = true
 			}
+		} else {
+			extra = append(extra, n)
 		}
 	}
-	return matched
+	if len(kept) > 0 && len(extra) > 0 {
+		return false, fmt.Errorf("spec declaring %s also declares extra names: %s", strings.Join(names, ", "), strings.Join(extra, ", "))
+	}
+	return len(kept) > 0, nil
 }
 
 func specStart(s ast.Spec) token.Pos {
