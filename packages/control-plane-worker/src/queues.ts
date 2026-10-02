@@ -17,6 +17,7 @@ type FollowSend = {
   changed?: string[];
   names?: string[];
   node?: string;
+  once?: boolean;
 };
 
 function targetOf(queueName: string): Target | null {
@@ -60,6 +61,21 @@ function queueOf(env: Env, name: string): Queue | null {
   }
 }
 
+function targetForQueue(name: string): Target | null {
+  switch (name) {
+    case "sched": return "scheduler";
+    case "wl": return "workloads";
+    case "crd": return "crds";
+    case "gc": return "gc";
+    case "acct": return "accounts";
+    case "ext": return "extensions";
+    case "hpa": return "hpa";
+    case "containers": return "containers";
+    case "addons": return "addons";
+    default: return null;
+  }
+}
+
 async function applySends(env: Env, sends: FollowSend[]): Promise<void> {
   for (const send of sends) {
     if (send.kind === "lease-check") {
@@ -68,6 +84,16 @@ async function applySends(env: Env, sends: FollowSend[]): Promise<void> {
         body: JSON.stringify({ node: send.node ?? "", delayMs: (send.delaySeconds ?? 0) * 1000 }),
       });
       continue;
+    }
+    if (send.once) {
+      const target = targetForQueue(send.queue);
+      if (target) {
+        await clusterStub(env).fetch("https://cluster.internal/enqueue", {
+          method: "POST",
+          body: JSON.stringify({ target, delayMs: (send.delaySeconds ?? 0) * 1000, once: true }),
+        });
+        continue;
+      }
     }
     const queue = queueOf(env, send.queue);
     if (!queue) continue;

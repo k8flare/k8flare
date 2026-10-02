@@ -73,6 +73,7 @@ export class Cluster extends DurableObject<Env> {
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, target TEXT NOT NULL, rev INTEGER NOT NULL, key TEXT NOT NULL, type TEXT NOT NULL)`);
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS passes (target TEXT PRIMARY KEY, triggered INTEGER NOT NULL, finished INTEGER NOT NULL)`);
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS lease_checks (node TEXT PRIMARY KEY, sent INTEGER NOT NULL, due INTEGER NOT NULL DEFAULT 0)`);
+      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS deadlines (target TEXT PRIMARY KEY, due INTEGER NOT NULL)`);
       if (!ctx.storage.sql.exec("PRAGMA table_info(lease_checks)").toArray().some((c) => c.name === "due")) {
         ctx.storage.sql.exec("ALTER TABLE lease_checks ADD COLUMN due INTEGER NOT NULL DEFAULT 0");
       }
@@ -266,9 +267,23 @@ export class Cluster extends DurableObject<Env> {
         return Response.json({ revision: this.insert(body.key, 1, cur.value, cur) });
       }
       case "POST /enqueue": {
-        const body = (await request.json()) as { target: Target; delayMs: number };
+        const body = (await request.json()) as { target: Target; delayMs: number; once?: boolean };
         if (!targets.includes(body.target)) return new Response("unknown target", { status: 400 });
         const delaySeconds = Math.min(MAX_DELAY_S, Math.max(0, Math.ceil(body.delayMs / 1000)));
+        if (body.once) {
+          const now = Date.now();
+          const rows = this.ctx.storage.sql.exec("SELECT due FROM deadlines WHERE target = ?", body.target).toArray();
+          if (rows.length > 0 && (rows[0].due as number) > now) {
+            return Response.json({ ok: true, booked: false });
+          }
+          this.ctx.storage.sql.exec(
+            "INSERT INTO deadlines (target, due) VALUES (?, ?) ON CONFLICT(target) DO UPDATE SET due = excluded.due",
+            body.target,
+            now + body.delayMs,
+          );
+          await this.queue(body.target).send({ kind: "retry" } satisfies QueueMessage, { delaySeconds });
+          return Response.json({ ok: true, booked: true });
+        }
         await this.queue(body.target).send({ kind: "retry" } satisfies QueueMessage, { delaySeconds });
         return Response.json({ ok: true });
       }
@@ -601,7 +616,9 @@ export class Cluster extends DurableObject<Env> {
       return;
     }
     const routes: Target[] = [];
-    if (name.startsWith("/registry/horizontalpodautoscalers/")) routes.push("hpa");
+    if (name.startsWith("/registry/horizontalpodautoscalers/")) {
+      if (type !== "modified" || !prev || hpaSpecChanged(prev.value, value)) routes.push("hpa");
+    }
     if (name.startsWith("/registry/endpointslices/") || name.startsWith("/registry/endpoints/")) {
       if (type !== "modified" || !prev || endpointPublishChanged(prev.value, value)) routes.push("workloads");
     } else if (WORKLOAD_PREFIXES.some((p) => name.startsWith(p))) routes.push("workloads");
@@ -885,4 +902,11 @@ function nodeChanged(before: Uint8Array, after: Uint8Array): boolean {
     JSON.stringify(a.status?.allocatable ?? {}) !== JSON.stringify(b.status?.allocatable ?? {}) ||
     readyStatus(a) !== readyStatus(b)
   );
+}
+
+function hpaSpecChanged(before: Uint8Array, after: Uint8Array): boolean {
+  const a = decodeJSON(before);
+  const b = decodeJSON(after);
+  if (!a || !b) return true;
+  return JSON.stringify(a.spec ?? {}) !== JSON.stringify(b.spec ?? {});
 }

@@ -38,18 +38,29 @@ test("a message on the HPA queue scrapes metrics, calls the HPA controller entry
       if (url.pathname === "/internal/queue/followup") {
         const body = (await request.json()) as Record<string, unknown>;
         followUps.push(body);
-        return Response.json({ sends: [], stop: false });
+        return Response.json({ sends: [{ queue: "hpa", delaySeconds: 15, kind: "retry", once: true }], stop: false });
       }
       return new Response("{}", { status: 200 });
+    },
+    HPA_Q: {
+      send: async () => {
+        throw new Error("unexpected HPA_Q.send for once send");
+      },
     },
     CLUSTER: {
       idFromName: (name: string) => name,
       get: () => ({
         fetch: async (url: string, init?: RequestInit) => {
-          if (new URL(url).pathname === "/pass") {
+          const path = new URL(url).pathname;
+          if (path === "/pass") {
             const body = JSON.parse(String(init?.body ?? "{}"));
             passes.push(body.target);
             return Response.json({ ok: true });
+          }
+          if (path === "/enqueue") {
+            const body = JSON.parse(String(init?.body ?? "{}"));
+            enqueued.push(body);
+            return Response.json({ ok: true, booked: true });
           }
           return new Response("{}");
         },
@@ -57,6 +68,7 @@ test("a message on the HPA queue scrapes metrics, calls the HPA controller entry
     },
   };
 
+  const enqueued: Record<string, unknown>[] = [];
   const batch = batchOf([{ kind: "retry" }]);
   await consume(batch as any, env as any);
 
@@ -66,4 +78,6 @@ test("a message on the HPA queue scrapes metrics, calls the HPA controller entry
   assert.deepEqual(passes, ["hpa"]);
   assert.equal(followUps.length, 1);
   assert.deepEqual(followUps[0], { target: "hpa", hasResult: true, drained: true, hpas: 2 });
+  assert.equal(enqueued.length, 1);
+  assert.deepEqual(enqueued[0], { target: "hpa", delayMs: 15_000, once: true });
 });
