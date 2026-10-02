@@ -281,7 +281,12 @@ export class Cluster extends DurableObject<Env> {
             body.target,
             now + body.delayMs,
           );
-          await this.queue(body.target).send({ kind: "retry" } satisfies QueueMessage, { delaySeconds });
+          try {
+            await this.queue(body.target).send({ kind: "retry" } satisfies QueueMessage, { delaySeconds });
+          } catch (err) {
+            this.ctx.storage.sql.exec("DELETE FROM deadlines WHERE target = ?", body.target);
+            throw err;
+          }
           return Response.json({ ok: true, booked: true });
         }
         await this.queue(body.target).send({ kind: "retry" } satisfies QueueMessage, { delaySeconds });

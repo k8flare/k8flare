@@ -109,6 +109,11 @@ export class NodeTunnel extends DurableObject<Env> {
   private async rebind(): Promise<void> {
     const sockets = this.ctx.getWebSockets();
     if (sockets.length === 0) return;
+    for (const ws of sockets) {
+      if (sockKind(ws).kind === "stream") {
+        ws.close(1012, "no tunnel session, reconnect");
+      }
+    }
     const nodeName = (await this.ctx.storage.get<string>("node")) ?? "";
     if (!nodeName) {
       for (const ws of sockets) ws.close(1012, "no tunnel session, reconnect");

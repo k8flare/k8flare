@@ -1,12 +1,47 @@
 package nodetunnel
 
 import (
+	"errors"
 	"sync"
+
+	"github.com/gorilla/websocket"
 )
 
 type streamSlot struct {
+	mu      sync.Mutex
+	cond    sync.Cond
 	writer  StreamWriter
 	pending [][]byte
+	closed  bool
+}
+
+func newStreamSlot() *streamSlot {
+	s := &streamSlot{}
+	s.cond.L = &s.mu
+	return s
+}
+
+func (s *streamSlot) writeLoop(w StreamWriter) {
+	for {
+		s.mu.Lock()
+		for len(s.pending) == 0 && !s.closed {
+			s.cond.Wait()
+		}
+		if s.closed {
+			s.mu.Unlock()
+			return
+		}
+		msg := s.pending[0]
+		s.pending = s.pending[1:]
+		s.mu.Unlock()
+
+		if err := w.WriteMessage(websocket.BinaryMessage, msg); err != nil {
+			s.mu.Lock()
+			s.closed = true
+			s.mu.Unlock()
+			return
+		}
+	}
 }
 
 type StreamWriter interface {
@@ -29,56 +64,81 @@ func (r *StreamRegistry) Register(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, ok := r.slots[id]; !ok {
-		r.slots[id] = &streamSlot{}
+		r.slots[id] = newStreamSlot()
 	}
 }
 
-func (r *StreamRegistry) Attach(id string, w StreamWriter) [][]byte {
+func (r *StreamRegistry) Attach(id string, w StreamWriter) bool {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	slot, ok := r.slots[id]
 	if !ok {
-		slot = &streamSlot{}
-		r.slots[id] = slot
+		r.mu.Unlock()
+		return false
+	}
+	slot.mu.Lock()
+	r.mu.Unlock()
+	defer slot.mu.Unlock()
+
+	if slot.closed || slot.writer != nil {
+		return false
 	}
 	slot.writer = w
-	queued := slot.pending
-	slot.pending = nil
-	return queued
+	go slot.writeLoop(w)
+	return true
 }
 
-func (r *StreamRegistry) Send(id string, data []byte) (StreamWriter, bool) {
+func (r *StreamRegistry) Send(id string, data []byte) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	slot, ok := r.slots[id]
 	if !ok {
-		slot = &streamSlot{}
-		r.slots[id] = slot
+		r.mu.Unlock()
+		return errors.New("stream not found")
 	}
-	if slot.writer == nil {
-		slot.pending = append(slot.pending, data)
-		return nil, false
+	slot.mu.Lock()
+	r.mu.Unlock()
+	defer slot.mu.Unlock()
+
+	if slot.closed {
+		return errors.New("stream closed")
 	}
-	return slot.writer, true
+	slot.pending = append(slot.pending, append([]byte(nil), data...))
+	slot.cond.Signal()
+	return nil
 }
 
 func (r *StreamRegistry) Close(id string) StreamWriter {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	slot, ok := r.slots[id]
 	if !ok {
+		r.mu.Unlock()
 		return nil
 	}
 	delete(r.slots, id)
-	return slot.writer
+	slot.mu.Lock()
+	r.mu.Unlock()
+	defer slot.mu.Unlock()
+
+	slot.closed = true
+	slot.cond.Broadcast()
+	w := slot.writer
+	return w
 }
 
 func (r *StreamRegistry) Detach(id string, w StreamWriter) bool {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	slot, ok := r.slots[id]
-	if ok && slot.writer == w {
+	if !ok {
+		r.mu.Unlock()
+		return false
+	}
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	defer r.mu.Unlock()
+
+	if slot.writer == w {
 		delete(r.slots, id)
+		slot.closed = true
+		slot.cond.Broadcast()
 		return true
 	}
 	return false
