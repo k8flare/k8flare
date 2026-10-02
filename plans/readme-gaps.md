@@ -1612,3 +1612,42 @@ Decided on 2026-10-01, with the owner:
   replays and 13 to 256 502s in shard 4 against 1 to 17 and 0 to 1 on
   699ba58. Not merged. The CRDs stay out until the cost of a custom
   resource request and the wait of outside requests are understood.
+- Why a request from outside waits while requests between workers are
+  served (the open question of the two entries above). Reproduced on the
+  dev stack of this Mac on 3337b7e, no nodes: a probe GET of
+  `/api/v1/namespaces/default` every 250ms through port 18787 (p50 8ms
+  idle), then a Deployment with 1337 replicas. For the 68s of pod creates
+  273 probes had p50 60s, 221 took over 2s and 168 failed; in six of the
+  seven 10s windows no probe reached the front worker while it logged 270
+  to 370 in-process requests, and the once-a-minute `mem` lines came in
+  bursts when the creates paused. One run.
+  - Cause, from the source: kj's `waitImpl` (`kj/async.c++`) calls
+    `loop.wait()`, which is what reads sockets and fires timers, only when
+    `loop.turn()` finds the event queue empty, and polls in between only
+    every `busyPollInterval` turns, which defaults to `kj::maxValue`
+    ("if busyPollInterval is kj::maxValue, we never poll"); workerd's
+    server does not set it (the only `setBusyPollInterval` in its tree is
+    a test). Every worker of the dev stack is in one workerd on one
+    thread, a service-binding fetch between them is not socket I/O, and
+    the Durable Object's SQLite is synchronous, so a controller pass can
+    keep the queue non-empty for as long as it has work. Production runs
+    each of them in its own request context; this is the dev stack and CI
+    only.
+  - Done, 497255e on `ci/batch8`: the front worker makes a request whose
+    host is `k8flare.internal` (every component's client) await its own
+    `setTimeout(0)` when 50ms have passed since one last fired. With every
+    in-process chain passing the front worker, they all end up waiting on
+    a timer, the queue empties and the loop polls. Same procedure, one run
+    each: 297 probes during the creates, p50 232ms, max 3.2s, 7 over 2s,
+    none failed, creates 74s; for the 120s after the Deployment's delete
+    none failed against 466 of 480 without it. 10ms measured about the
+    same (p50 213ms, creates 69s), 0ms worse (p50 1.1s, creates 82s). A
+    first version that shared one promise between requests also removed
+    the failures but left p50 at 4s; a promise resolved from another
+    request's context is not something workerd promises outside the local
+    stack, so it was not used.
+  - What the probes failing in 256ms for minutes after the creates were:
+    wrangler's ProxyWorker gives up after three attempts at the user
+    worker (`failed after 3 attempts: Network connection lost`), and
+    recovers by itself when the user worker's queue empties (`recovered
+    on attempt 3`). CI's `devtls` talks to the user workerd directly.
