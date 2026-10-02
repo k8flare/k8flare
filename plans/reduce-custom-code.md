@@ -201,3 +201,29 @@ Step 2:
   built-in would have rejected. ComputeClass running first was not
   analysed. Moving to upstream's order is a step 3 item (behaviour
   change).
+- Admission, step 3 (`work/admission-upstream`): eleven plugins run
+  upstream's code through one adapter and a per-request informer factory
+  over the store: DefaultTolerationSeconds, TaintNodesByCondition,
+  CertificateSubjectRestriction, Priority, LimitRanger,
+  DefaultStorageClass, DefaultIngressClass, RuntimeClass,
+  StorageObjectInUseProtection, PodTopologyLabels,
+  PersistentVolumeClaimResize. The differential test compares status
+  exactly for them. Admission worker: 54,311,108 bytes, 35,310 functions
+  (80% of the cap; 50,377,283 and 32,511 before).
+  - One difference is kept on purpose: Priority resolves the two system
+    classes from the built-in list when the object is not stored yet.
+    Dropping it stopped CoreDNS from being created (`ci/batch11`, first
+    attempt). A swap can pass every differential case and still break
+    bootstrap; a known difference that exists for ordering reasons has to
+    be carried over, not deleted.
+  - Left: CertificateApproval and CertificateSigning (need an
+    authorizer), ServiceAccount, NodeRestriction, ResourceQuota,
+    PodSecurity, PodResize, NodeDeclaredFeatures, and the chain order.
+- Node authorizer (`work/nodeauth-upstream`): upstream's NodeAuthorizer
+  over a graph built per request from the node's own pods, the PVs and
+  the named VolumeAttachment or ResourceSlice. No known differences left
+  in 124,903 questions; `node.go` went from 736 lines to 160. A node may
+  now list endpoints: upstream has no opinion and RBAC allows it through
+  the k3s-controller role. Not merged: the customresources worker grew to
+  65,814,760 bytes and 45,461 functions (98% of the cap), three times the
+  growth of apiserver-core. Being measured.

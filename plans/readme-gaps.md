@@ -1754,3 +1754,40 @@ Decided on 2026-10-01, with the owner:
   not listed. What that leaves: a ServiceCIDR being deleted keeps its
   finalizer after its last IPAddress goes until another ServiceCIDR
   write.
+- State on 2026-10-02: main and `feat/minimal-rewrite` are at 9ecdff1
+  (`ci/batch10`: Unit, E2E, Conformance 3 of 3). What went in since the
+  entries above:
+  - The ReplicaSet spec failure was not a watch stall. Objects applied
+    from the live feed had no resourceVersion, so a controller's status
+    update was unconditional and a stale one overwrote labels written in
+    between. `packages/workloads/live.go` now sets the revision the object
+    was stored at (13 of 45 failing under load before, 0 of 45 after).
+  - Idle wake-ups of the Cluster object: the compaction alarm fired every
+    five minutes with nothing to compact, the constructor swept namespaces
+    on every start, and a progress alarm stayed booked with no deadline.
+    Fixed in `cluster.ts`; production still runs the old version.
+  - The wake tables are generated (`scripts/genwake`), and Role,
+    RoleBinding, LimitRange, NetworkPolicy and ResourceClaimTemplate
+    writes start a pass. `ipaddresses` stays withheld.
+  - A review of the node tunnel stream change found three defects (attach
+    to a missing slot, writes under a lock from js callbacks, stream
+    sockets surviving a rebind); fixed with one writer goroutine per
+    stream.
+  - The front worker yields to the socket poll at most every 200 ms for
+    internal requests. It exists for local workerd, where every worker
+    shares one thread; it ships to production too and costs a zero-delay
+    timer there.
+- Known and open:
+  - `ci/batch9` had one Conformance run where shard 4 failed with no
+    failed spec in its log. Not investigated; it did not repeat in the
+    six runs since.
+  - Namespace termination retries every 2 s without backoff; a namespace
+    that cannot finish keeps the Cluster object awake.
+  - A client disconnect does not end its watch (reproduced locally; the
+    abort is suspected never to reach the handler).
+  - `ci/batch11` (the admission swaps) failed Conformance 3 of 3 on every
+    spec that needs cluster DNS: upstream's Priority plugin refuses
+    `system-cluster-critical` until the scheduling API has created the
+    object, and CoreDNS is created first. Unit and E2E did not notice.
+    The fallback to the built-in list is back (ae337c4) as a known
+    difference; rerun pending.
