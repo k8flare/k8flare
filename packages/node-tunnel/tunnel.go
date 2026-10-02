@@ -302,14 +302,16 @@ func handler() http.Handler {
 	return mux
 }
 
+func rewriteForKubelet(pr *httputil.ProxyRequest) {
+	pr.SetURL(&url.URL{Scheme: "https", Host: "127.0.0.1:10250"})
+	pr.Out.URL.Path = pr.In.URL.Path
+	pr.Out.URL.RawPath = ""
+	pr.Out.Header.Del("Authorization")
+}
+
 func kubeletProxy() http.Handler {
-	target := &url.URL{Scheme: "https", Host: "127.0.0.1:10250"}
 	proxy := &httputil.ReverseProxy{
-		Rewrite: func(pr *httputil.ProxyRequest) {
-			pr.SetURL(target)
-			pr.Out.URL.Path = pr.In.URL.Path
-			pr.Out.URL.RawPath = ""
-		},
+		Rewrite:       rewriteForKubelet,
 		FlushInterval: -1,
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -406,6 +408,7 @@ func dialRequest(r *http.Request, host, port, path string) *http.Request {
 	outReq.Header.Del("X-Dial-TLS")
 	outReq.Header.Del("X-Dial-ServerName")
 	outReq.Header.Del("X-Dial-CA")
+	outReq.Header.Del("Authorization")
 	if groups := outReq.Header.Values("X-Remote-Group"); len(groups) > 0 {
 		outReq.Header["X-Remote-Group"] = splitJoinedHeaderValues(groups)
 	}
