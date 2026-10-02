@@ -1540,3 +1540,33 @@ Decided on 2026-10-01, with the owner:
     one of the run that passed (205 of 939 in shard 6). What made these
     two requests wait 10s and 18s inside workerd while others were served
     was not looked at.
+- Runs 36948221088, 36948227017 and 36948233022 on 699ba58 (the scheduler
+  flush-period retry, the Job pod events, network policy on the agents
+  and the admission policy wake): 446 of 446 in all three, the first
+  three consecutive full passes. Unit and E2E (live 16 of 16) pass on the
+  same tree; main is at 699ba58.
+- The batch before it (b804967: the same without the scheduler and Job
+  commits, plus the HPA consumer in the main Worker and the Gateway API
+  CRDs) failed `Watchers ... concurrent watches in same order` in all
+  three Conformance runs and in the required E2E set, and
+  CustomResourceFieldSelectors in all three. Each of the four changes
+  alone passed the Watchers spec once. What the failing shard shows
+  (E2E 36938910357, required 2):
+  - From 23:30:19.4 to 23:30:34.5 no request from outside reached the
+    front worker (`devtls` has the POST of a configmap waiting from
+    19.628 until the client gave up at 28.867; a node lease PUT and two
+    more requests waited 10 to 15s), while requests between workers in
+    the same isolate were served throughout: 334 in those 10s, all from
+    the namespace deleter walking three `netpol-*` namespaces. Timers
+    inside workers were late by the same amount (an HPA pass that sleeps
+    10s took 15.2s).
+  - Such windows exist without these changes too (52 requests released
+    together at 00:41:38 in the run with only the network policy
+    commits); the batch made them longer and more frequent. Two things
+    it added: an HPA pass that slept 10s every 15s with no HPA in the
+    cluster, and four more namespaced custom resource types for every
+    namespace deletion to DELETE and GET (250 to 450ms each through the
+    `customresources` worker, against about 20ms for a built-in type).
+  - Not established: why requests entering through the dev proxy starve
+    while in-process requests are served. Not looked at: why a custom
+    resource request costs ten times a built-in one.
