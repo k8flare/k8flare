@@ -56,83 +56,34 @@ var mirrors = []mirror{
 		name:    "k3s",
 		module:  "github.com/k3s-io/k3s",
 		version: "v1.36.5-0.20260821152713-4dedb15be780",
-		pins:    []string{"pkg/daemons/control/deps/deps.go", "pkg/agent/tunnel/tunnel.go"},
 		ops: []op{
-			patch("pkg/daemons/control/deps/deps.go",
-				"func KubeConfig(dest, url, caCert, clientCert, clientKey string) error {\n",
-				"func KubeConfig(dest, url, caCert, clientCert, clientKey string) error {\n\tif KubeConfigOverride != nil {\n\t\tif handled, err := KubeConfigOverride(dest, url, caCert, clientCert, clientKey); handled || err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n"),
-			appendText("pkg/daemons/control/deps/deps.go", `
-// KubeConfigOverride lets an embedding program write the agent's
-// kubeconfigs itself. k8flare's control plane sits behind a TLS terminator
-// that never sees client certificates, so packages/agent writes bearer-token
-// kubeconfigs instead of the certificate ones above. Added by scripts/mirror.
-var KubeConfigOverride func(dest, url, caCert, clientCert, clientKey string) (handled bool, err error)
-`),
-			patch("pkg/agent/tunnel/tunnel.go",
-				"import (\n\t\"context\"\n\t\"crypto/tls\"\n\t\"fmt\"\n\t\"net\"\n\t\"os\"\n\t\"strconv\"\n\t\"time\"\n",
-				"import (\n\t\"context\"\n\t\"crypto/tls\"\n\t\"fmt\"\n\t\"net\"\n\t\"net/http\"\n\t\"os\"\n\t\"strconv\"\n\t\"time\"\n"),
-			patch("pkg/agent/tunnel/tunnel.go",
-				"err := remotedialer.ConnectToProxyWithDialer(ctx, wsURL, nil, auth, ws, a.dialContext, onConnect)",
-				"err := remotedialer.ConnectToProxyWithDialer(ctx, wsURL, tunnelHeaders(), auth, ws, a.dialContext, onConnect)"),
-			patch("pkg/agent/tunnel/tunnel.go",
-				"\t\t\tsyncProxyAddresses(addresses)\n",
-				"\t\t\tif !TunnelIgnoreEndpointSlices {\n\t\t\t\tsyncProxyAddresses(addresses)\n\t\t\t}\n"),
-			appendText("pkg/agent/tunnel/tunnel.go", `
-// TunnelHeaderOverride lets an embedding program authenticate the
-// remotedialer connect request. k8flare's control plane never sees the
-// agent's TLS client certificate, so packages/agent sends the node's
-// bearer token here instead. Added by scripts/mirror.
-var TunnelHeaderOverride func() http.Header
-var TunnelIgnoreEndpointSlices bool
-
-func tunnelHeaders() http.Header {
-	if TunnelHeaderOverride != nil {
-		return TunnelHeaderOverride()
-	}
-	return nil
-}
-`),
+			patchAST("pkg/daemons/control/deps/deps.go",
+				insertAtStart("KubeConfig", "if KubeConfigOverride != nil {\n\tif handled, err := KubeConfigOverride(dest, url, caCert, clientCert, clientKey); handled || err != nil {\n\t\treturn err\n\t}\n}"),
+				appendDecls("k3s/append/kubeconfig_override.go"),
+			),
+			patchAST("pkg/agent/tunnel/tunnel.go",
+				replaceCallArg("agentTunnel.connect", "remotedialer.ConnectToProxyWithDialer", 2, "tunnelHeaders()"),
+				replaceNode("agentTunnel.watchEndpointSlices", "syncProxyAddresses(addresses)", "if !TunnelIgnoreEndpointSlices {\n\tsyncProxyAddresses(addresses)\n}"),
+				appendDecls("k3s/append/tunnel_overrides.go"),
+			),
 		},
 	},
 	{
 		name:    "remotedialer",
 		module:  "github.com/rancher/remotedialer",
 		version: "v0.6.0-rc.1.0.20250916111157-f160aa32568d",
-		pins:    []string{"server.go", "session.go", "session_sync.go"},
 		ops: []op{
-			patch("session.go",
-				"\tclient           bool\n}",
-				"\tclient           bool\n\tunconfirmedStale map[int64]bool\n}"),
-			patch("session_sync.go",
-				"\ttoClose := diffSortedSetsGetRemoved(serverIDs, clientIDs)\n\tif len(toClose) == 0 {\n\t\treturn\n\t}\n\n\ts.Lock()\n\tdefer s.Unlock()\n",
-				"\tmissing := diffSortedSetsGetRemoved(serverIDs, clientIDs)\n\n\ts.Lock()\n\tdefer s.Unlock()\n\tvar toClose []int64\n\tunconfirmed := map[int64]bool{}\n\tfor _, id := range missing {\n\t\tif s.unconfirmedStale[id] {\n\t\t\ttoClose = append(toClose, id)\n\t\t} else {\n\t\t\tunconfirmed[id] = true\n\t\t}\n\t}\n\ts.unconfirmedStale = unconfirmed\n"),
-			patch("server.go",
-				"import (\n\t\"net/http\"\n\t\"sync\"\n\t\"time\"\n",
-				"import (\n\t\"context\"\n\t\"math/rand\"\n\t\"net/http\"\n\t\"sync\"\n\t\"time\"\n"),
-			appendText("server.go", `
-// ServeConn registers clientKey's session from an already-open conn instead
-// of upgrading an *http.Request, which is what a Durable Object needs: the
-// socket comes from the Workers runtime's hibernatable WebSocket API, not
-// from an http.Hijacker. It runs the session (as ServeHTTP does after its
-// own upgrade) and removes it on exit. Added by scripts/mirror.
-func (s *Server) ServeConn(clientKey string, conn wsConn) error {
-	sessionKey := rand.Int63()
-	session := newSession(sessionKey, clientKey, conn)
-	session.auth = s.ClientConnectAuthorizer
-
-	s.sessions.Lock()
-	s.sessions.clients[clientKey] = append(s.sessions.clients[clientKey], session)
-	for l := range s.sessions.listeners {
-		l.sessionAdded(clientKey, session.sessionKey)
-	}
-	s.sessions.Unlock()
-
-	defer s.sessions.remove(session)
-
-	_, err := session.Serve(context.Background())
-	return err
-}
-`),
+			patchAST("session.go",
+				addField("Session", "unconfirmedStale map[int64]bool"),
+			),
+			patchAST("session_sync.go",
+				replaceNode("Session.compareAndCloseStaleConnections", "toClose := diffSortedSetsGetRemoved(serverIDs, clientIDs)", "missing := diffSortedSetsGetRemoved(serverIDs, clientIDs)"),
+				replaceNode("Session.compareAndCloseStaleConnections", "if len(toClose) == 0 {\n\treturn\n}", ""),
+				insertAfter("Session.compareAndCloseStaleConnections", "defer s.Unlock()", "var toClose []int64\nunconfirmed := map[int64]bool{}\nfor _, id := range missing {\n\tif s.unconfirmedStale[id] {\n\t\ttoClose = append(toClose, id)\n\t} else {\n\t\tunconfirmed[id] = true\n\t}\n}\ns.unconfirmedStale = unconfirmed"),
+			),
+			patchAST("server.go",
+				appendDecls("remotedialer/append/serve_conn.go"),
+			),
 		},
 	},
 	{
