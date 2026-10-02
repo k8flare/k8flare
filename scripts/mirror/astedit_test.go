@@ -436,3 +436,19 @@ func TestCheckDeclsNamesWhatIsGoneOrChanged(t *testing.T) {
 	err = checkDecls("p/generic.go", []byte(upstreamDecls), "func (f *other) ForResource(resource schema.GroupVersionResource) (GenericInformer, error)")
 	wantError(t, err, "other.ForResource", "not found")
 }
+
+func TestCheckDeclsDistinguishesTypeParameters(t *testing.T) {
+	src := "package p\n\nfunc F[P any](x int) {}\n"
+	err := checkDecls("p/generic.go", []byte(src), "func F(x int)")
+	wantError(t, err, "p/generic.go", "F", "changed")
+}
+
+func TestCheckDeclsDistinguishesTypeAlias(t *testing.T) {
+	src := "package p\n\ntype T = int\n"
+	err := checkDecls("p/generic.go", []byte(src), "type T int")
+	wantError(t, err, "p/generic.go", "T", "changed")
+
+	srcDef := "package p\n\ntype T int\n"
+	err = checkDecls("p/generic.go", []byte(srcDef), "type T = int")
+	wantError(t, err, "p/generic.go", "T", "changed")
+}

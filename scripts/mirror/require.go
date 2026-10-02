@@ -73,7 +73,11 @@ func declSignatures(path string, src []byte) (map[string]string, error) {
 			}
 			for _, s := range d.Specs {
 				ts := s.(*ast.TypeSpec)
-				sigs[ts.Name.Name] = typeSignature(fset, ts.Type)
+				sig := typeSignature(fset, ts.Type)
+				if ts.Assign.IsValid() {
+					sig = "= " + sig
+				}
+				sigs[ts.Name.Name] = sig
 			}
 		}
 	}
@@ -81,11 +85,34 @@ func declSignatures(path string, src []byte) (map[string]string, error) {
 }
 
 func funcSignature(fset *token.FileSet, ft *ast.FuncType) string {
-	sig := "func(" + fieldTypes(fset, ft.Params) + ")"
+	sig := "func"
+	if ft.TypeParams != nil && len(ft.TypeParams.List) > 0 {
+		sig += "[" + typeParams(fset, ft.TypeParams) + "]"
+	}
+	sig += "(" + fieldTypes(fset, ft.Params) + ")"
 	if ft.Results != nil && len(ft.Results.List) > 0 {
 		sig += " (" + fieldTypes(fset, ft.Results) + ")"
 	}
 	return sig
+}
+
+func typeParams(fset *token.FileSet, list *ast.FieldList) string {
+	if list == nil {
+		return ""
+	}
+	var params []string
+	for _, f := range list.List {
+		var names []string
+		for _, n := range f.Names {
+			names = append(names, n.Name)
+		}
+		param := typeSignature(fset, f.Type)
+		if len(names) > 0 {
+			param = strings.Join(names, ", ") + " " + param
+		}
+		params = append(params, param)
+	}
+	return strings.Join(params, ", ")
 }
 
 func fieldTypes(fset *token.FileSet, list *ast.FieldList) string {
