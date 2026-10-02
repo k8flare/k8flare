@@ -574,10 +574,12 @@ func normalizePod(obj runtime.Object) runtime.Object {
 	return pod
 }
 
-func compareOutcomes(upstream, ours outcome, checkDetails bool) comparison {
+func compareOutcomes(upstream, ours outcome, exact bool) comparison {
 	var cmpResult comparison
-	upstream.object = normalizePod(upstream.object)
-	ours.object = normalizePod(ours.object)
+	if !exact {
+		upstream.object = normalizePod(upstream.object)
+		ours.object = normalizePod(ours.object)
+	}
 	if upstream.summary() != ours.summary() {
 		cmpResult.outcomeDiff = fmt.Sprintf("upstream %s; ours %s", upstream.summary(), ours.summary())
 		cmpResult.messages = fmt.Sprintf("upstream %q; ours %q", upstream.message, ours.message)
@@ -591,11 +593,15 @@ func compareOutcomes(upstream, ours outcome, checkDetails bool) comparison {
 		}
 		return cmpResult
 	}
-	if normalizeForbiddenMessage(upstream.message) != normalizeForbiddenMessage(ours.message) {
+	upstreamMessage, oursMessage := upstream.message, ours.message
+	if !exact {
+		upstreamMessage, oursMessage = normalizeForbiddenMessage(upstreamMessage), normalizeForbiddenMessage(oursMessage)
+	}
+	if upstreamMessage != oursMessage {
 		cmpResult.messageDiff = "differs"
 		cmpResult.messages = fmt.Sprintf("upstream %q; ours %q", upstream.message, ours.message)
 	}
-	if checkDetails && !apiequality.Semantic.DeepEqual(upstream.details, ours.details) {
+	if exact && !apiequality.Semantic.DeepEqual(upstream.details, ours.details) {
 		cmpResult.outcomeDiff = "status.details (- upstream, + ours):\n" + changedLines(cmp.Diff(upstream.details, ours.details))
 	}
 	return cmpResult
