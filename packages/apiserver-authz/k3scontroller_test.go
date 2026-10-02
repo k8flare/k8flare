@@ -59,7 +59,7 @@ func TestNodeReadsWhatTheNetworkPolicyControllerWatches(t *testing.T) {
 		{"watch", "networking.k8s.io", "networkpolicies", "", true},
 		{"list", "", "secrets", "", false},
 		{"list", "", "configmaps", "", false},
-		{"list", "", "endpoints", "", false},
+		{"list", "", "endpoints", "", true},
 		{"update", "", "namespaces", "", false},
 		{"create", "networking.k8s.io", "networkpolicies", "", false},
 		{"delete", "networking.k8s.io", "networkpolicies", "", false},
