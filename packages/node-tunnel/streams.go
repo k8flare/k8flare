@@ -1,12 +1,17 @@
 package nodetunnel
 
 import (
+	"errors"
 	"sync"
+
+	"github.com/gorilla/websocket"
 )
 
 type streamSlot struct {
+	mu      sync.Mutex
 	writer  StreamWriter
 	pending [][]byte
+	closed  bool
 }
 
 type StreamWriter interface {
@@ -33,50 +38,82 @@ func (r *StreamRegistry) Register(id string) {
 	}
 }
 
-func (r *StreamRegistry) Attach(id string, w StreamWriter) ([][]byte, bool) {
+func (r *StreamRegistry) Attach(id string, w StreamWriter) bool {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	slot, ok := r.slots[id]
 	if !ok {
-		return nil, false
+		r.mu.Unlock()
+		return false
 	}
-	slot.writer = w
-	queued := slot.pending
+	slot.mu.Lock()
+	r.mu.Unlock()
+	defer slot.mu.Unlock()
+
+	if slot.closed {
+		return false
+	}
+	for _, data := range slot.pending {
+		_ = w.WriteMessage(websocket.BinaryMessage, data)
+	}
 	slot.pending = nil
-	return queued, true
+	slot.writer = w
+	return true
 }
 
-func (r *StreamRegistry) Send(id string, data []byte) (StreamWriter, bool) {
+func (r *StreamRegistry) Send(id string, data []byte) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	slot, ok := r.slots[id]
 	if !ok {
-		return nil, false
+		r.mu.Unlock()
+		return errors.New("stream not found")
+	}
+	slot.mu.Lock()
+	r.mu.Unlock()
+	defer slot.mu.Unlock()
+
+	if slot.closed {
+		return errors.New("stream closed")
 	}
 	if slot.writer == nil {
-		slot.pending = append(slot.pending, data)
-		return nil, false
+		slot.pending = append(slot.pending, append([]byte(nil), data...))
+		return nil
 	}
-	return slot.writer, true
+	return slot.writer.WriteMessage(websocket.BinaryMessage, data)
 }
 
 func (r *StreamRegistry) Close(id string) StreamWriter {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	slot, ok := r.slots[id]
 	if !ok {
+		r.mu.Unlock()
 		return nil
 	}
 	delete(r.slots, id)
-	return slot.writer
+	slot.mu.Lock()
+	r.mu.Unlock()
+	defer slot.mu.Unlock()
+
+	slot.closed = true
+	w := slot.writer
+	slot.writer = nil
+	return w
 }
 
 func (r *StreamRegistry) Detach(id string, w StreamWriter) bool {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	slot, ok := r.slots[id]
-	if ok && slot.writer == w {
+	if !ok {
+		r.mu.Unlock()
+		return false
+	}
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	defer r.mu.Unlock()
+
+	if slot.writer == w {
 		delete(r.slots, id)
+		slot.closed = true
+		slot.writer = nil
 		return true
 	}
 	return false

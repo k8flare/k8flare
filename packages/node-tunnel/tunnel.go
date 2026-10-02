@@ -167,9 +167,7 @@ func Serve() {
 		id := args[0].String()
 		data := make([]byte, args[1].Get("byteLength").Int())
 		js.CopyBytesToGo(data, args[1])
-		if w, sent := streamRegistry.Send(id, data); sent {
-			_ = w.WriteMessage(websocket.BinaryMessage, data)
-		}
+		_ = streamRegistry.Send(id, data)
 		return nil
 	}))
 	binding.Set("upgradeClosed", js.FuncOf(func(_ js.Value, args []js.Value) any {
@@ -269,13 +267,9 @@ func startKubeletStream(id string, rawURL string, header http.Header, send js.Va
 		return
 	}
 	println("kubelet dial ok")
-	queued, ok := streamRegistry.Attach(id, conn)
-	if !ok {
+	if !streamRegistry.Attach(id, conn) {
 		_ = conn.Close()
 		return
-	}
-	for _, data := range queued {
-		_ = conn.WriteMessage(websocket.BinaryMessage, data)
 	}
 	defer func() {
 		streamRegistry.Detach(id, conn)
