@@ -191,13 +191,14 @@ func packageSelector(file *ast.File, sel *ast.SelectorExpr, imported map[string]
 
 func (s *source) usesPackage(name string) bool {
 	used := false
+	imported := importedPackages(s.file)
 	for _, d := range s.file.Decls {
 		if g, ok := d.(*ast.GenDecl); ok && g.Tok == token.IMPORT {
 			continue
 		}
 		ast.Inspect(d, func(n ast.Node) bool {
 			if sel, ok := n.(*ast.SelectorExpr); ok {
-				if x, ok := sel.X.(*ast.Ident); ok && x.Name == name {
+				if pkg, isImport, _ := packageSelector(s.file, sel, imported); isImport && pkg == name {
 					used = true
 				}
 			}

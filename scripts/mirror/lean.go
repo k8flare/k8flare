@@ -210,14 +210,15 @@ func (p *pruned) dropComments() {
 
 func (p *pruned) pruneImports() {
 	referenced := make(map[string]bool)
+	imported := importedPackages(p.file)
 	for _, decl := range p.file.Decls {
 		if gen, ok := decl.(*ast.GenDecl); ok && gen.Tok == token.IMPORT {
 			continue
 		}
 		ast.Inspect(decl, func(n ast.Node) bool {
 			if sel, ok := n.(*ast.SelectorExpr); ok {
-				if id, ok := sel.X.(*ast.Ident); ok {
-					referenced[id.Name] = true
+				if pkg, isImport, _ := packageSelector(p.file, sel, imported); isImport {
+					referenced[pkg] = true
 				}
 			}
 			return true

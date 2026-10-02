@@ -367,6 +367,19 @@ func TestWithoutBuildConstraint(t *testing.T) {
 	}
 }
 
+func TestUnusedImportPrunedEvenWhenLocalVariableSharesPackageName(t *testing.T) {
+	src := "package p\n\nimport \"example.com/unused\"\n\ntype S struct {\n\tField int\n}\n\nfunc foo() {\n\tunused := S{}\n\t_ = unused.Field\n}\n"
+	got, err := runEdits("p/sample.go", t.TempDir(), []byte(src), []edit{
+		func(s *source) error {
+			return s.dropUnusedImports([]string{"unused"})
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantAbsent(t, string(got), "example.com/unused")
+}
+
 const upstreamDecls = `package p
 
 type GenericInformer interface {

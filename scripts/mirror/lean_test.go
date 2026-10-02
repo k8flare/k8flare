@@ -223,6 +223,63 @@ func TestLeanClientsetFailsWhenDroppedAssignmentFollowedByNonStandardGuard(t *te
 	}
 }
 
+func TestPruneImportsDropsImportWhenLocalVariableSharesPackageName(t *testing.T) {
+	src := `package kubernetes
+
+import (
+	discovery "k8s.io/client-go/discovery"
+	appsv1 "k8s.io/client-go/kubernetes/typed/apps/v1"
+	rest "k8s.io/client-go/rest"
+	flowcontrol "k8s.io/client-go/util/flowcontrol"
+)
+
+type Interface interface {
+	Discovery() discovery.DiscoveryInterface
+	AppsV1() appsv1.AppsV1Interface
+}
+
+type Clientset struct {
+	*discovery.DiscoveryClient
+	appsV1 *appsv1.AppsV1Client
+}
+
+func (c *Clientset) AppsV1() appsv1.AppsV1Interface { return c.appsV1 }
+func (c *Clientset) Discovery() discovery.DiscoveryInterface { return c.DiscoveryClient }
+
+func NewForConfigAndClient(c *rest.Config) (*Clientset, error) {
+	var cs Clientset
+	var err error
+	cs.appsV1, err = appsv1.NewForConfigAndClient(c, nil)
+	if err != nil {
+		return nil, err
+	}
+	cs.DiscoveryClient, err = discovery.NewDiscoveryClientForConfigAndClient(c, nil)
+	if err != nil {
+		return nil, err
+	}
+	type local struct{ RateLimiter int }
+	flowcontrol := local{}
+	_ = flowcontrol.RateLimiter
+	return &cs, nil
+}
+
+func New(c rest.Interface) *Clientset {
+	var cs Clientset
+	cs.appsV1 = appsv1.New(c)
+	cs.DiscoveryClient = discovery.NewDiscoveryClient(c)
+	return &cs
+}
+`
+	out, err := leanClientset([]byte(src), []groupVersion{{"apps", "v1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(out)
+	if strings.Contains(text, "k8s.io/client-go/util/flowcontrol") {
+		t.Errorf("flowcontrol import should be pruned even though a local variable shares its name:\n%s", text)
+	}
+}
+
 const factorySource = `package informers
 
 import (
