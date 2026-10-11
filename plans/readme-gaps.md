@@ -126,23 +126,72 @@ Decided on 2026-10-01, with the owner:
 
 - Every deadline is a row in the Cluster object's `deadlines` table and
   the alarm sends it; an idle cluster books none (`cluster-store`
-  `deadlines.test.ts`). "Nothing polls" holds only while nothing is
-  pending: these still re-book on a fixed period for as long as their
-  condition lasts, which can be for ever. `replicaGap` every 5 s while a
-  ReplicationController, ReplicaSet or Deployment has `status.replicas`
-  different from `spec.replicas`, and the StatefulSet 2 s re-run while a
-  set has not settled (`workloads.go`); failure and pending retries every
-  5 s without backoff (`followup.go`: workloads, accounts, crds, addons,
-  extensions, containers, leases, scheduler on error) and gc every 2 s
-  while it still deletes, patches or has pending items; HPA every 15 s
-  while an HPA exists (upstream's sync period); the scheduler every 5
-  minutes while a pod is unschedulable (upstream's flush); a namespace that
-  cannot finish once a minute. A pending Helm hook is not on a period: it
-  is one addons row at the earliest hook deadline, sent once when due and
-  deleted (`POST /cancel`) by a Helm pass that finds no hook pending
-  (`deadlines.test.ts`, `followup_test.go`). Since a booking keeps the
-  earlier due, a hook that finishes and is followed by another still wakes
-  one pass at the first hook's deadline.
+  `deadlines.test.ts`). What still books again while a condition lasts:
+  - Upstream's own deadlines, kept on purpose: HPA every 15 s while an HPA
+    exists (the HPA controller's sync period,
+    `pkg/controller/podautoscaler/config/v1alpha1/defaults.go`); the
+    scheduler every 5 minutes while a pod is unschedulable
+    (`DefaultPodMaxInUnschedulablePodsDuration`,
+    `pkg/scheduler/backend/queue/scheduling_queue.go`); a namespace that
+    cannot finish terminating, retried after as long as it has been
+    terminating, so from 2 s doubling to once a minute, which is upstream's
+    namespace controller cap (`nsControllerRateLimiter`, 5 ms to 60 s, "we
+    retry namespace deletion at least every minute, never longer",
+    `pkg/controller/namespace/namespace_controller.go`). The backoff is read
+    from the namespace's deletion time, so a new isolate keeps it.
+  - A retry after a failure backs off: a pass that threw or did not drain, a
+    plan, provision, CRD, extension, add-on, storage-migration, lease-check,
+    HPA or scheduler call that failed, a gc collect with failed syncs, a
+    NodeVM boot that threw. The delay doubles from 5 s (the delay used
+    before, so one failure is retried as fast) to 1000 s (upstream's default
+    controller rate limiter maximum), `failedRetryDelayS` in `followup.go`.
+    The count rides in the retry body, so it is kept in the deadlines row
+    and the message it sends and survives a new isolate; a booking of the
+    same work without a count, which is what a successful pass books,
+    clears it, and a later failure booking keeps the highest count
+    (`followup_test.go`, `deadlines.test.ts`, `followup.test.ts`). A CRD
+    whose names are never accepted stays pending and so backs off to
+    1000 s.
+  - A workloads or accounts sync turned away because another pass holds
+    the lock is retried in 5 s without counting a failure: it ends with the
+    running pass, which its budget bounds.
+  - Work known to remain now is resumed and ends with it: gc orphan event
+    and lease keys past the 200 one collect deletes, in 2 s (events route
+    to no queue); a storage migration with more to rewrite, in 5 s.
+  - No longer booked: `replicaGap` (5 s while a ReplicationController,
+    ReplicaSet or Deployment had `status.replicas` off `spec.replicas`),
+    the StatefulSet 2 s re-run, gc 2 s after a collect that deleted,
+    patched or saw a deleting owner, and the NodeVM scheduler 5 s while
+    any Containers pod or VM existed. Each waited for a write the Cluster
+    object routes: a pod created, Running, Ready or deleted and the owners'
+    own writes reach workloads; every gc delete and patch, and a waited-on
+    dependent's deletion, reach gc; a Containers pod's binding and deletion
+    reach containers (`cluster.test.ts`). Controller retries,
+    `minReadySeconds` and progress deadlines are `AddAfter` calls a pass
+    already books. Scenario tests on the fake client, one pass per batch of
+    writes until a pass writes nothing:
+    `TestAReplicationControllerScalingUpConvergesOnItsOwnWritesAndBooksNothing`,
+    `TestARolloutWaitingForANewPodBooksNothingBeforeItsProgressDeadlineAndFinishesOnThePodsReadyWrite`,
+    `TestAStatefulSetWaitingOnAnUnreadyPodBooksNothingAndThatPodsReadyWriteCreatesTheNext`,
+    `TestAForegroundDeletionFinishesOnTheWritesItsCollectsMakeAndThenNeedsNoRetry`.
+    The NodeVM scheduler books its 5-minute node-ready timeout once
+    (`TestPlanVMsBooksTheNodeReadyTimeoutOfTheOldestUnboundVMOnly`).
+  - Not fixed: a controller whose API call keeps failing re-books its own
+    rate-limited requeue, and since controllers are built anew for each
+    pass their rate limiter starts again at 5 ms every pass, so the
+    follow-up books the next pass in 1 s for as long as the call fails.
+    Seen with a fake client whose pod creates are all refused (`nextMs`
+    231, 241, 243 over three passes of a ReplicationController); not run on
+    a cluster.
+  - Not yet run in CI: Conformance with the backoff (four spec processes;
+    the first retry is unchanged, the second and later are 10 s, 20 s, ...)
+    and without the replica, StatefulSet, gc and containers re-books.
+  - A pending Helm hook is not on a period: it is one addons row at the
+    earliest hook deadline, sent once when due and deleted (`POST /cancel`)
+    by a Helm pass that finds no hook pending (`deadlines.test.ts`,
+    `followup_test.go`). Since a booking keeps the earlier due, a hook that
+    finishes and is followed by another still wakes one pass at the first
+    hook's deadline.
 - Without an HPA, only a `metrics.k8s.io` read scrapes kubelet metrics, when
   the stored snapshot is older than 30 s (`metricsapi`).
 - node-tunnel imports its wasm statically into the Durable Object instead
@@ -293,8 +342,9 @@ Decided on 2026-10-01, with the owner:
     failed release: `abort` holds it with the Failed condition and no retry,
     `reinstall` (default) uninstalls with delete hooks and installs revision
     1 again, `retry` re-runs the install or upgrade, updating the failed
-    revision in place when the spec is unchanged. A failure is retried every
-    5s by the addons follow-up; k3s retries through the Job's backoff.
+    revision in place when the spec is unchanged. A failure is retried by the
+    addons follow-up from 5s doubling to 1000s; k3s retries through the
+    Job's backoff.
     Deleting a HelmChart whose delete hook fails still removes the
     finalizer, as klipper-helm's `helm uninstall || true` does.
   - Ignored, needing an owner decision: `jobImage`, `backOffLimit`,
@@ -678,9 +728,9 @@ Decided on 2026-10-01, with the owner:
     with no node: 5 passes in the first 100s, none in the next 180s.
     Not fixed, same shape: the Job controller queues a Job 1s after every
     pod event of a pod it owns (`enqueueSyncJobBatched`), so a pod of a
-    Job, finished or not, keeps the pass running; `replicaGap` books 5s
-    for as long as a ReplicaSet or Deployment has `status.replicas` short
-    of `spec.replicas`. The 15s metrics message is gone since 1ebcd82 and
+    Job, finished or not, keeps the pass running; `replicaGap` booked 5s
+    for as long as a ReplicaSet or Deployment had `status.replicas` short
+    of `spec.replicas` (removed; see Architecture). The 15s metrics message is gone since 1ebcd82 and
     3337b7e: an HPA pass scrapes, and with an HPA in the cluster books the
     next one 15s out (upstream's sync period) in one `deadlines` slot of
     the Cluster object; with none it books nothing.
@@ -1962,8 +2012,8 @@ Decided on 2026-10-01, with the owner:
     that starts at 2 s and grows with the time since its deletion to once
     a minute (upstream's namespace controller cap), and a deletion inside
     a terminating namespace wakes the pass at once. Such a namespace still
-    wakes the Cluster object once a minute. Not yet run through
-    Conformance.
+    wakes the Cluster object once a minute, upstream's namespace
+    controller cap (see Architecture). Not yet run through Conformance.
   - A client disconnect does not end its watch (reproduced locally; the
     abort is suspected never to reach the handler).
   - `ci/batch11` (the admission swaps) failed Conformance 3 of 3 on every
