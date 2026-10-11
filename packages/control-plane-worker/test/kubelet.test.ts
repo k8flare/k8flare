@@ -298,8 +298,8 @@ async function harness(pod: Pod) {
     waitUntil: (p: Promise<unknown>) => waits.push(p),
   };
   const env = {
-    ADMIN_TOKEN: "admin",
     CLUSTER_UID: "",
+    CLUSTER: { idFromName: (n: string) => n, get: () => ({ fetch: async () => Response.json({ revision: 1, kv: { key: "/vault/component-key", value: btoa("component-key"), modRevision: 1 } }) }) },
     POD_KUBELET: {
       idFromName: (n: string) => n,
       get: (id: unknown) => ({

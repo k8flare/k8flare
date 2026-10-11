@@ -33,7 +33,6 @@ function rig(manifests: Record<string, string>) {
   const calls: Call[] = [];
   const internal: string[] = [];
   const env = {
-    ADMIN_TOKEN: "admin",
     DISABLE: "coredns",
     MANIFESTS_R2: bucket,
     LOADER: {
