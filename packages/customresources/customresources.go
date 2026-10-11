@@ -178,7 +178,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	mux.Handle("/openapi/v2", pub.serveV2(fresh))
 	mux.Handle("/openapi/v3", pub.handler(fresh, openAPIV3Mux))
 	mux.Handle("/openapi/v3/", pub.handler(fresh, openAPIV3Mux))
-	return handler, nil
+	return auth.WithForwardedAudit(handler), nil
 }
 
 func crdAdmit(client *http.Client) admission.Interface {
