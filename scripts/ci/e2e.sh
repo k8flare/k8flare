@@ -6,11 +6,13 @@ WORK=.build/ci
 LOGS=$WORK/logs
 REGISTRY=$WORK/registry
 API_PORT=16443
-API=127.0.0.1:$API_PORT
+API=localhost:$API_PORT
 CONTAINER_API=host.docker.internal:$API_PORT
 K3S_VERSION=${K3S_VERSION:-v1.36.2+k3s1}
 K3S_IMAGE=rancher/k3s:${K3S_VERSION/+/-}
 NODES=${NODES:-1}
+AGENT=${AGENT:-k3s}
+SERVICE_API=10.43.0.1
 KUBECONFIG_PATH=$PWD/$WORK/kubeconfig.yaml
 STATE=${STATE:-/dev/shm/k8flare-state}
 mkdir -p "$LOGS"
@@ -28,7 +30,8 @@ wait_for() {
     fi
     sleep "$delay"
   done
-  echo "timed out waiting for $what" >&2
+  echo "timed out waiting for $what; the last try of $1 printed:" >&2
+  "$@" >&2 || true
   return 1
 }
 
@@ -68,7 +71,7 @@ build_shard() {
 
 dev_vars() {
   [ -f .dev.vars ] && return 0
-  printf 'ADMIN_TOKEN=%s\nREADONLY_TOKEN=%s\nJOIN_TOKEN=%s\nSECRETS_ENCRYPTION_KEYS=ci:%s\nKUBELET_SCHEME=http\nKUBELET_PORT=10255\n' \
+  printf 'ADMIN_TOKEN=%s\nREADONLY_TOKEN=%s\nJOIN_TOKEN=%s\nSECRETS_ENCRYPTION_KEYS=ci:%s\n' \
     "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" "$(openssl rand -base64 32)" > .dev.vars
   chmod 600 .dev.vars
 }
@@ -87,8 +90,171 @@ node_proxy_ready() {
   [ "$(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s -n kube-system get ds k8flare-node-proxy -o jsonpath='{.status.numberReady}')" -ge "$NODES" ]
 }
 
+node_proxy_serves_anonymously() {
+  local body
+  body=$(curl -sS -m 10 --cacert .build/devtls/server-ca.crt "https://$SERVICE_API/api/v1/namespaces/kube-system/secrets") || return 1
+  if ! grep -qF 'system:anonymous' <<<"$body"; then
+    echo "https://$SERVICE_API answered without naming system:anonymous: $body"
+    return 1
+  fi
+}
+
+node_names() {
+  kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s get nodes -o jsonpath='{.items[*].metadata.name}'
+}
+
+kubelets_reachable() {
+  local node
+  for node in $(node_names); do
+    [ "$(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s get --raw "/api/v1/nodes/$node/proxy/healthz")" = ok ] || return 1
+  done
+}
+
+pinned_join() {
+  if grep -sE 'Token CA hash will not be validated|token does not include a CA hash' "$LOGS"/agent*.log; then
+    echo "an agent joined without checking the K10 token's CA hash" >&2
+    return 1
+  fi
+}
+
+node_identity() {
+  local node=$1 kubeconfig=$2 want=$3 got
+  local -a k3s=(docker exec "$node" k3s)
+  if [ "$node" = "$(hostname)" ]; then
+    k3s=(sudo /usr/local/bin/k3s)
+  fi
+  got=$("${k3s[@]}" kubectl --kubeconfig "/var/lib/rancher/k3s/agent/$kubeconfig" --request-timeout=15s auth whoami -o jsonpath='{.status.userInfo.username}') || true
+  if [ "$got" != "$want" ]; then
+    echo "$node: the client certificate in $kubeconfig authenticated as '$got' through https://$API, want '$want'" >&2
+    return 1
+  fi
+  echo "$node: the client certificate in $kubeconfig authenticates as $got"
+}
+
+certificate_identities() {
+  local node
+  for node in $(node_names); do
+    node_identity "$node" kubelet.kubeconfig "system:node:$node"
+    node_identity "$node" kubeproxy.kubeconfig system:kube-proxy
+  done
+}
+
 netpol_settled() {
   [ "$(grep -lsE 'Starting network policy controller version|Skipping network policy controller start' "$LOGS"/agent*.log | wc -l)" -ge "$NODES" ]
+}
+
+node_metrics_served() {
+  local body node
+  body=$(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s get --raw /apis/metrics.k8s.io/v1beta1/nodes) || return 1
+  for node in $(node_names); do
+    if ! jq -e --arg node "$node" 'any(.items[]; .metadata.name == $node and (.usage.cpu | rtrimstr("n") | tonumber) > 0 and (.usage.memory | tonumber) > 0)' <<<"$body" >/dev/null; then
+      echo "metrics.k8s.io has no CPU and memory usage for node $node: $body"
+      return 1
+    fi
+  done
+}
+
+pod_metrics_served() {
+  local running body
+  running=$(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s get pods -A --field-selector status.phase=Running -o json |
+    jq -c '[.items[] | .metadata.namespace + "/" + .metadata.name]') || return 1
+  body=$(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s get --raw /apis/metrics.k8s.io/v1beta1/pods) || return 1
+  if ! jq -e --argjson running "$running" 'any(.items[]; (.metadata.namespace + "/" + .metadata.name) as $pod | ($running | any(. == $pod)) and any(.containers[]; (.usage.memory | tonumber) > 0))' <<<"$body" >/dev/null; then
+    echo "metrics.k8s.io has memory usage for none of the running pods $running: $body"
+    return 1
+  fi
+}
+
+metrics_served() {
+  wait_for "node usage in metrics.k8s.io" 24 5 node_metrics_served
+  wait_for "pod usage in metrics.k8s.io" 24 5 pod_metrics_served
+  kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s top node
+}
+
+claim_state() {
+  kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s -n ci-volume get pvc data \
+    -o jsonpath='{.status.phase} volumeName={.spec.volumeName} storage-provisioner={.metadata.annotations.volume\.kubernetes\.io/storage-provisioner} selected-node={.metadata.annotations.volume\.kubernetes\.io/selected-node}'
+}
+
+claim_waits() {
+  local state
+  for _ in $(seq 1 6); do
+    state=$(claim_state) || return 1
+    if [ "$state" != "Pending volumeName= storage-provisioner= selected-node=" ]; then
+      echo "the WaitForFirstConsumer claim ci-volume/data moved before any pod used it: $state" >&2
+      return 1
+    fi
+    sleep 5
+  done
+  echo "the WaitForFirstConsumer claim ci-volume/data stayed unbound for 30s with no pod: $state"
+}
+
+volume_pod_ready() {
+  [ "$(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s -n ci-volume get pod writer -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')" = True ]
+}
+
+claim_bound_to_pod_node() {
+  local state node want
+  state=$(claim_state) || return 1
+  node=$(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s -n ci-volume get pod writer -o jsonpath='{.spec.nodeName}') || return 1
+  want="Bound volumeName=?* storage-provisioner=rancher.io/local-path selected-node=$node"
+  if [ -z "$node" ] || [[ $state != $want ]]; then
+    echo "the claim ci-volume/data is '$state' while its pod runs on '$node'"
+    return 1
+  fi
+  echo "the claim ci-volume/data is $state, the pod writer runs there and wrote to it"
+}
+
+volume_bound_on_first_consumer() {
+  local -a k=(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s)
+  local mode
+  mode=$("${k[@]}" get storageclass local-path -o jsonpath='{.volumeBindingMode}')
+  if [ "$mode" != WaitForFirstConsumer ]; then
+    echo "the local-path StorageClass binds '$mode', want WaitForFirstConsumer" >&2
+    return 1
+  fi
+  "${k[@]}" create namespace ci-volume
+  "${k[@]}" apply -f - <<'EOF'
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data
+  namespace: ci-volume
+spec:
+  storageClassName: local-path
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 16Mi
+EOF
+  claim_waits
+  "${k[@]}" apply -f - <<'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: writer
+  namespace: ci-volume
+spec:
+  terminationGracePeriodSeconds: 1
+  containers:
+  - name: writer
+    image: rancher/mirrored-library-busybox:1.37.0
+    command: [sh, -c, 'echo k8flare > /data/probe && exec sleep 3600']
+    readinessProbe:
+      exec:
+        command: [grep, -qx, k8flare, /data/probe]
+      periodSeconds: 2
+    volumeMounts:
+    - name: data
+      mountPath: /data
+  volumes:
+  - name: data
+    persistentVolumeClaim:
+      claimName: data
+EOF
+  wait_for "the pod writer to write to its claim" 60 5 volume_pod_ready
+  claim_bound_to_pod_node
+  "${k[@]}" delete namespace ci-volume --wait=false
 }
 
 write_accepted() {
@@ -187,16 +353,22 @@ sample_procs() {
 }
 
 join_token() {
-  if [ "${AGENT:-k8flare}" = k8flare ]; then
+  if [ "$AGENT" = k8flare ]; then
     sed -n 's/^JOIN_TOKEN=//p' .dev.vars
     return 0
   fi
-  "$WORK/k8flare" token create --kubeconfig "$KUBECONFIG_PATH" --ttl 1h --description ci
+  local token
+  token=$("$WORK/k8flare" token create --kubeconfig "$KUBECONFIG_PATH" --description ci)
+  if [[ ! $token =~ ^K10[0-9a-f]{64}:: ]]; then
+    echo "k8flare token create printed no K10 token with a CA hash (${#token} characters, starting ${token:0:3})" >&2
+    return 1
+  fi
+  echo "$token"
 }
 
 join_node() {
   local token=$1
-  if [ "${AGENT:-k8flare}" = k8flare ]; then
+  if [ "$AGENT" = k8flare ]; then
     sudo install -m 0644 .build/devtls/server-ca.crt /usr/local/share/ca-certificates/k8flare-dev-ca.crt
     sudo update-ca-certificates >/dev/null
     sudo nohup "$WORK/k8flare-agent" --server "https://$API" --token "$token" --node-name "$(hostname)" \
@@ -206,8 +378,9 @@ join_node() {
   docker build -t ghcr.io/k8flare/node-proxy:latest packages/node-proxy
   sudo mkdir -p /var/lib/rancher/k3s/agent/images
   docker save ghcr.io/k8flare/node-proxy:latest | sudo tee /var/lib/rancher/k3s/agent/images/node-proxy.tar >/dev/null
-  sudo nohup /usr/local/bin/k3s agent --server "https://$API" --token "$token" --node-name "$(hostname)" --disable-apiserver-lb \
-    > "$LOGS/agent.log" 2>&1 < /dev/null &
+  nohup sudo journalctl -u k3s-agent -f -o short-precise > "$LOGS/agent.log" 2>&1 < /dev/null &
+  curl -sfL https://get.k3s.io |
+    INSTALL_K3S_SKIP_DOWNLOAD=true K3S_URL="https://$API" K3S_TOKEN="$token" timeout 600 sh -s - agent --disable-apiserver-lb --node-name "$(hostname)"
 }
 
 CGROUP_EVACUATE='if [ -f /sys/fs/cgroup/cgroup.controllers ]; then mkdir -p /sys/fs/cgroup/init && xargs -rn1 < /sys/fs/cgroup/cgroup.procs > /sys/fs/cgroup/init/cgroup.procs || :; sed -e "s/ / +/g" -e "s/^/+/" < /sys/fs/cgroup/cgroup.controllers > /sys/fs/cgroup/cgroup.subtree_control; fi; exec "$@"'
@@ -217,7 +390,7 @@ join_container_node() {
   name=$(hostname)-$index
   local -a run=(docker run -d --name "$name" --hostname "$name" --privileged --cgroupns=private --tmpfs /run --tmpfs /var/run
     --add-host "${CONTAINER_API%%:*}:host-gateway" --entrypoint /bin/sh)
-  if [ "${AGENT:-k8flare}" = k8flare ]; then
+  if [ "$AGENT" = k8flare ]; then
     "${run[@]}" \
       -v /var/lib/rancher/k3s/data:/var/lib/rancher/k3s/data:ro \
       -v "$PWD/$WORK/k8flare-agent:/k8flare-agent:ro" \
@@ -228,8 +401,9 @@ join_container_node() {
   else
     "${run[@]}" \
       -v /var/lib/rancher/k3s/agent/images:/var/lib/rancher/k3s/agent/images:ro \
+      -e K3S_URL="https://$CONTAINER_API" -e K3S_TOKEN="$token" \
       "$K3S_IMAGE" -c "$CGROUP_EVACUATE" sh /bin/k3s \
-      agent --server "https://$CONTAINER_API" --token "$token" --node-name "$name" --disable-apiserver-lb >/dev/null
+      agent --node-name "$name" --disable-apiserver-lb >/dev/null
   fi
   nohup docker logs -f "$name" > "$LOGS/agent-$index.log" 2>&1 < /dev/null &
 }
@@ -255,7 +429,7 @@ up() {
     < /dev/null 2>&1 | stamped "$LOGS/procs.log" &
   worker=$(user_worker_port "$admin" "$runtime")
   echo "user worker $runtime listens on 127.0.0.1:$worker"
-  nohup "$WORK/devtls" -listen ":$API_PORT" -upstream "http://127.0.0.1:$worker" -dir .build/devtls -hosts "localhost,${CONTAINER_API%%:*}" -admin-token "$admin" \
+  nohup "$WORK/devtls" -listen ":$API_PORT" -upstream "http://127.0.0.1:$worker" -dir .build/devtls -hosts "${API%%:*},${CONTAINER_API%%:*}" -admin-token "$admin" -strict-edge \
     < /dev/null 2>&1 | stamped "$LOGS/devtls.log" &
   wait_for "devtls" 180 1 curl -sf -m 10 --cacert .build/devtls/server-ca.crt -o /dev/null -H "Authorization: Bearer $admin" "https://$API/livez"
 
@@ -281,11 +455,17 @@ up() {
     return 1
   fi
   wait_for "the API to accept a write" 60 5 write_accepted
-  if [ "${AGENT:-k8flare}" = k3s ]; then
+  wait_for "every kubelet through the node tunnel" 60 5 kubelets_reachable
+  if [ "$AGENT" = k3s ]; then
+    pinned_join
+    certificate_identities
     wait_for "the node proxy" 60 5 node_proxy_ready
+    wait_for "the node proxy to serve $SERVICE_API" 30 5 node_proxy_serves_anonymously
   fi
   kubectl --kubeconfig "$KUBECONFIG_PATH" get nodes -o wide
   node_cost
+  metrics_served
+  volume_bound_on_first_consumer
 }
 
 node_cost() {
@@ -329,11 +509,42 @@ run_e2e() {
   return "$status"
 }
 
+join_evidence() {
+  local status=$? log
+  [ "$status" -eq 0 ] && return 0
+  local -a k=(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s)
+  for log in "$LOGS"/agent*.log "$LOGS/devtls.log"; do
+    [ -f "$log" ] || continue
+    echo "::group::last 300 lines of $log"
+    tail -n 300 "$log" || true
+    echo "::endgroup::"
+  done
+  echo "::group::nodes, kube-system pods, events and the node proxy"
+  if [ "$AGENT" = k3s ]; then
+    sudo systemctl status k3s-agent --no-pager || true
+  fi
+  "${k[@]}" get nodes -o wide || true
+  "${k[@]}" -n kube-system get pods -o wide || true
+  "${k[@]}" get events -A --sort-by=.lastTimestamp || true
+  "${k[@]}" -n kube-system describe ds k8flare-node-proxy || true
+  "${k[@]}" -n kube-system logs -l k8s-app=k8flare-node-proxy --all-containers --prefix --tail=200 || true
+  echo "::endgroup::"
+  echo "::group::metrics.k8s.io, the claim, its volume and local-path"
+  "${k[@]}" get --raw /apis/metrics.k8s.io/v1beta1/nodes || true
+  "${k[@]}" get --raw /apis/metrics.k8s.io/v1beta1/pods || true
+  "${k[@]}" get storageclass,pv -o wide || true
+  "${k[@]}" -n ci-volume describe pvc,pod || true
+  "${k[@]}" -n kube-system logs -l app=local-path-provisioner --tail=200 || true
+  grep -E 'metrics|hpa:' "$LOGS/dev.log" | tail -n 100 || true
+  echo "::endgroup::"
+  exit "$status"
+}
+
 case "${1:-all}" in
   build) build ;;
   shard) build_shard "$2" "$3" ;;
-  up) up ;;
+  up) trap join_evidence EXIT; up ;;
   test) run_e2e ;;
-  all) build; up; run_e2e ;;
+  all) build; trap join_evidence EXIT; up; trap - EXIT; run_e2e ;;
   *) echo "usage: $0 [build|shard N OF|up|test|all]" >&2; exit 2 ;;
 esac
