@@ -9,6 +9,17 @@ func TestFollowUpSchedulerFailure(t *testing.T) {
 	}
 }
 
+func TestFollowUpSchedulerBooksOnlyTheUnschedulableFlush(t *testing.T) {
+	idle := followUp(followIn{Target: "scheduler", OK: true})
+	if len(idle.Sends) != 0 {
+		t.Fatal(idle)
+	}
+	waiting := followUp(followIn{Target: "scheduler", OK: true, Attempt: 2, RetryAfterS: 300})
+	if len(waiting.Sends) != 1 || waiting.Sends[0].Queue != "sched" || waiting.Sends[0].DelaySeconds != 300 {
+		t.Fatal(waiting)
+	}
+}
+
 func TestFollowUpGCSettles(t *testing.T) {
 	got := followUp(followIn{Target: "gc", HasResult: true, Deleted: 1})
 	if len(got.Sends) != 1 || got.Sends[0].DelaySeconds != 2 {

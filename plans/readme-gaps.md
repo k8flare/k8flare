@@ -105,8 +105,7 @@ Decided on 2026-10-01, with the owner:
 ## Architecture
 
 - Things poll: the metrics scrape re-sends itself every 15 s whatever it
-  found (`followup.go`, case `metrics`) and wakes HPA each time;
-  unschedulable pods are retried within 60 s.
+  found (`followup.go`, case `metrics`) and wakes HPA each time.
 - node-tunnel imports its wasm statically into the Durable Object instead
   of loading it through the Worker Loader.
 
