@@ -802,7 +802,7 @@ func TestDeleteTerminatingFinishesWithinTheBudgetWhateverTheNumberOfEmptyCustomR
 
 func TestDeleteTerminatingDoesNotSweepACustomResourceTypeAnEarlierPassEmptied(t *testing.T) {
 	saved := namespaceBudget
-	namespaceBudget = 1200 * time.Millisecond
+	namespaceBudget = 800 * time.Millisecond
 	defer func() { namespaceBudget = saved }()
 	var objects []runtime.Object
 	for i := range 40 {
