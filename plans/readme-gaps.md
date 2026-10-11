@@ -127,8 +127,9 @@ Decided on 2026-10-01, with the owner:
     resync, CoreDNS and local-path started, a pod reached
     `https://10.43.0.1` and `kubernetes.default.svc` with the SA `ca.crt`
     (bearer tokens passed through, no token stayed anonymous), a watch
-    streamed, `kubectl logs` and `exec` worked. Not run: the e2e spec set
-    with `AGENT=k3s`, so CI still defaults to k8flare-agent.
+    streamed, `kubectl logs` and `exec` worked. CI now runs the e2e and
+    Conformance sets on stock agents (below); not yet observed on GitHub
+    Actions.
   - Unverified: the workflow has not run; the package must be public.
   - A Ready node without a running proxy is still published, so a pod
     hitting `10.43.0.1` can be sent to it and fail once per attempt.
@@ -137,16 +138,33 @@ Decided on 2026-10-01, with the owner:
     `kube-system` is what protects it.
   - The image tag is `latest` with `IfNotPresent`; nodes do not pick up a
     newer image on their own.
-- CI still joins k8flare-agent by default; `AGENT=k3s
-  scripts/ci/e2e.sh up` joins the stock agent with the node-proxy image
-  built and preloaded from `packages/node-proxy`.
+- CI joins stock k3s agents by default (`scripts/ci/e2e.sh up`, which the
+  E2E `required` shards and every Conformance shard run). The host node
+  runs README's line: `curl -sfL https://get.k3s.io |
+  INSTALL_K3S_SKIP_DOWNLOAD=true K3S_URL=https://localhost:16443
+  K3S_TOKEN=<K10> sh -s - agent --disable-apiserver-lb` (plus
+  `--node-name`), so it runs as the `k3s-agent` systemd unit; the binary
+  is the pinned `K3S_VERSION` already in `/usr/local/bin`. Container nodes
+  pass `K3S_URL` and `K3S_TOKEN` to the image's `k3s agent`. The token is
+  printed by `k8flare token create`, and the server CA is not in any host
+  trust store, so k3s compares the token's hash. devtls runs
+  `-admin-token -strict-edge` with `-hosts localhost,host.docker.internal`.
+  The node-proxy image is built and preloaded from `packages/node-proxy`.
+  After the write check `up` fails unless: no agent logged k3s's
+  "Token CA hash will not be validated" or "does not include a CA hash"
+  warning; on every node `k3s kubectl auth whoami` with the agent's own
+  `kubelet.kubeconfig` and `kubeproxy.kubeconfig` (client certificates
+  only) answers `system:node:<name>` and `system:kube-proxy` through
+  devtls; `nodes/<name>/proxy/healthz` answers `ok` for every node (the
+  node tunnel only dials the kubelet's TLS port 10250); the DaemonSet is
+  Ready on every node; and `https://10.43.0.1` from the host, verified
+  against the server CA, answers a request without credentials as
+  `system:anonymous`. A failing `up` prints the agent logs, the
+  `k3s-agent` unit, nodes, kube-system pods, events and node-proxy logs.
+  `AGENT=k8flare` still joins k8flare-agent, which sends the bearer
+  `node:<name>:<password>` (`packages/agent/main.go`) and joins with the
+  raw `JOIN_TOKEN`. None of this has run on GitHub Actions yet.
 - The agent must run with `--disable-apiserver-lb`.
-- CI nodes do not authenticate with certificates: `k8flare-agent` sends
-  the bearer `node:<name>:<password>` (`packages/agent/main.go`) and joins
-  with the raw `JOIN_TOKEN`, so CA pinning from a `K10` token and
-  `k8flare token create` are never exercised by a join in CI.
-  `control-plane-worker/src/clientcert_test.ts` (the `tlsClientAuth`
-  forwarding) is outside the `unit.yml` test glob.
 - The stock agent needs `--disable-apiserver-lb`, and README's one-line
   install now passes it (the owner's decision, 2026-10-02). No change here
   could have removed the need: with the load balancer on, the agent's
@@ -158,11 +176,12 @@ Decided on 2026-10-01, with the owner:
   `Host: 127.0.0.1:6444`, and is asked for a certificate valid for
   `127.0.0.1`. No server response arrives, so the supervisor cannot switch
   it off, and the flag has no environment variable
-  (`pkg/cli/cmds/agent.go`, `DisableAgentLBFlag`). Still open: no CI run
-  joins a stock agent with that line.
+  (`pkg/cli/cmds/agent.go`, `DisableAgentLBFlag`). CI now joins with that
+  line; not yet observed on GitHub Actions.
   - `devtls -strict-edge` refuses what the edge refuses (a handshake
-    without SNI, a Host outside `-hosts`, IP SANs); CI does not run with it
-    yet, and `scripts/ci/e2e.sh` still dials `127.0.0.1:16443`.
+    without SNI, a Host outside `-hosts`, IP SANs). CI runs devtls with it,
+    and every CI client dials `localhost:16443` or
+    `host.docker.internal:16443` by name.
   - Read, not run: `publicHost` (`apiserver-supervisor/supervisor.go`)
     echoes the request Host, so through the balancer `/v1-k3s/apiservers`
     would answer `127.0.0.1:6444`.
@@ -610,11 +629,11 @@ Decided on 2026-10-01, with the owner:
   version (`--tmpfs /run --tmpfs /var/run`, the k3d shape) on the default
   Docker bridge, reaching devtls at `host.docker.internal:16443` (devtls now
   listens on every interface and has that name as a SAN). With the default
-  `AGENT=k8flare` the container runs the CI-built `k8flare-agent` with the
-  host's unpacked `/var/lib/rancher/k3s/data` mounted read-only (it needs
-  `data/current/bin`) and `SSL_CERT_FILE` pointing at the devtls CA; with
-  `AGENT=k3s` it runs the image's `k3s agent` with the host's
-  `agent/images` (the node-proxy tar) mounted. Each node has its own
+  `AGENT=k3s` the container runs the image's `k3s agent` with the host's
+  `agent/images` (the node-proxy tar) mounted; with `AGENT=k8flare` it
+  runs the CI-built `k8flare-agent` with the host's unpacked
+  `/var/lib/rancher/k3s/data` mounted read-only (it needs
+  `data/current/bin`) and `SSL_CERT_FILE` pointing at the devtls CA. Each node has its own
   network namespace, so kubelet 10250, flannel VXLAN 8472 and NodePorts do
   not collide; the host reaches the container's node IP over `docker0`
   and the container reaches the host's over its default route. `up` waits
