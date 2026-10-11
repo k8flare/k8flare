@@ -29,8 +29,7 @@ type followIn struct {
 	Drained         bool     `json:"drained"`
 	HasResult       bool     `json:"hasResult"`
 	HPAs            int      `json:"hpas"`
-	Deleted         int      `json:"deleted"`
-	Patched         int      `json:"patched"`
+	Failed          int      `json:"failed"`
 	Pending         int      `json:"pending"`
 	Status          int      `json:"status"`
 	HasWork         bool     `json:"hasWork"`
@@ -104,9 +103,9 @@ func followUp(in followIn) followResult {
 			out.Sends = append(out.Sends, backoff("crd", nil, nil, nil, "", in.Failures))
 		}
 	case "gc":
-		if !in.HasResult {
+		if !in.HasResult || in.Failed > 0 {
 			out.Sends = append(out.Sends, backoff("gc", nil, nil, nil, "", in.Failures))
-		} else if in.Deleted > 0 || in.Patched > 0 || in.Pending > 0 {
+		} else if in.Remaining > 0 {
 			out.Sends = append(out.Sends, retry("gc", nil, nil, nil, "", gcSettleS))
 		}
 	case "accounts":

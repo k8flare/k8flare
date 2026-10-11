@@ -248,13 +248,12 @@ async function consumeCRDs(batch: MessageBatch<QueueMessage>, env: Env): Promise
 
 async function consumeGC(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
   const result = await env.GC.collect();
-  if (result) console.log(`gc: items=${result.items} deleted=${result.deleted} patched=${result.patched} pending=${result.pending}`);
+  if (result) console.log(`gc: items=${result.items} deleted=${result.deleted} patched=${result.patched} pending=${result.pending} failed=${result.failed} remaining=${result.remaining}`);
   await applySends(env, (await followUp(env, {
     target: "gc",
     hasResult: Boolean(result),
-    deleted: result?.deleted ?? 0,
-    patched: result?.patched ?? 0,
-    pending: result?.pending ?? 0,
+    failed: result?.failed ?? 0,
+    remaining: result?.remaining ?? 0,
     failures: failuresOf(batch.messages),
   })).sends);
   batch.ackAll();

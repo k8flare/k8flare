@@ -7,6 +7,8 @@ export interface CollectResult {
   deleted: number;
   patched: number;
   pending: number;
+  failed: number;
+  remaining: number;
 }
 
 export class GarbageCollector extends WorkerEntrypoint<Env> {

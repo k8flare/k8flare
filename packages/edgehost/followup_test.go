@@ -23,14 +23,18 @@ func TestFollowUpSchedulerBooksOnlyTheUnschedulableFlush(t *testing.T) {
 	}
 }
 
-func TestFollowUpGCSettles(t *testing.T) {
-	got := followUp(followIn{Target: "gc", HasResult: true, Deleted: 1})
-	if len(got.Sends) != 1 || got.Sends[0].DelaySeconds != 2 {
+func TestFollowUpGCResumesOnlyTheKeysPastItsBatch(t *testing.T) {
+	got := followUp(followIn{Target: "gc", HasResult: true, Remaining: 50})
+	if len(got.Sends) != 1 || got.Sends[0].DelaySeconds != 2 || got.Sends[0].Failures != 0 {
 		t.Fatal(got)
 	}
-	idle := followUp(followIn{Target: "gc", HasResult: true})
-	if len(idle.Sends) != 0 {
-		t.Fatal(idle)
+	for _, waiting := range []followIn{
+		{Target: "gc", HasResult: true},
+		{Target: "gc", HasResult: true, Pending: 3},
+	} {
+		if idle := followUp(waiting); len(idle.Sends) != 0 {
+			t.Fatalf("%+v: sends = %+v, want none: its deletes, patches and the dependents it waits on are writes that wake it", waiting, idle.Sends)
+		}
 	}
 }
 
@@ -120,6 +124,7 @@ func TestFollowUpBacksOffAFailureRetryFrom5sTo1000s(t *testing.T) {
 		{Target: "crds", Status: 500},
 		{Target: "crds", Status: 200, Pending: 1},
 		{Target: "gc"},
+		{Target: "gc", HasResult: true, Failed: 1, Pending: 1},
 		{Target: "accounts", Phase: "sync"},
 		{Target: "accounts", Phase: "sync", HasResult: true},
 		{Target: "accounts", Names: []string{"gone"}},
