@@ -10,7 +10,11 @@ function rig(bindings: string[]) {
       return new Response(worker);
     },
   });
-  const env: Record<string, unknown> = { ADMIN_TOKEN: "admin", LOADER: { load: fetcher } };
+  const cluster = {
+    idFromName: (name: string) => name,
+    get: () => ({ fetch: async () => Response.json({ kv: { value: btoa("stored-component-key") } }) }),
+  };
+  const env: Record<string, unknown> = { ADMIN_TOKEN: "admin", CLUSTER: cluster, LOADER: { load: fetcher } };
   for (const name of bindings) env[name] = fetcher(name);
   return { hooks: new Hooks({} as never, env as never), calls };
 }
