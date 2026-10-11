@@ -34,7 +34,7 @@ define OPTIMIZE
 	if [ -f $@ ] && [ "$$(cat $@.sha256 2>/dev/null)" = "$$raw" ]; then touch $@; echo "$(notdir $@): unchanged"; exit 0; fi; \
 	$(WASM_OPT) $< -o $@ && \
 	size=$$(wc -c < $@ | tr -d ' '); echo "$(notdir $@): $$size bytes (cap $(CAP))"; \
-		[ "$$size" -lt $(CAP) ] || { echo "exceeds the Worker Loader cap" >&2; exit 1; }; \
+		[ "$$size" -lt $(CAP) ] || { rm -f $@ $@.sha256; echo "exceeds the Worker Loader cap" >&2; exit 1; }; \
 	echo "$$raw" > $@.sha256
 endef
 
