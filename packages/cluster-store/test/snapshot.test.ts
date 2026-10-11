@@ -309,3 +309,39 @@ test("list returns snapshots in lexicographic key order, on-demand before schedu
   assert.deepEqual(keys, [snap1.key, snap2.key]);
   assert.ok(keys[0] < keys[1]);
 });
+
+test("restore accepts a snapshot saved under another cluster's prefix into a new cluster", async () => {
+  const old = rig({ CLUSTER_UID: "old" });
+  await old.settle();
+  await old.put("/registry/configmaps/default/cfg", "cfg-data");
+  const save = await (await old.post("/snapshot")).json();
+  assert.ok(save.key.startsWith("clusters/old/snapshots/"));
+
+  const fresh = rig({ CLUSTER_UID: "new", PODS_R2: old.bucket } as any);
+  await fresh.settle();
+  assert.equal((await fresh.get("/snapshots")).items.length, 0);
+
+  const res = await fresh.post("/snapshot/restore", { key: save.key });
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).written, 1);
+  assert.equal(decode((await fresh.get("/kv?key=/registry/configmaps/default/cfg")).kv.value), "cfg-data");
+});
+
+test("point-in-time restore books a bookmark within the last 30 days and refuses an older time", async (t) => {
+  clock(t);
+  const r = rig();
+  await r.settle();
+  const day = 24 * 3600_000;
+
+  const tooOld = await r.post(`/restore?to=${start - 30 * day - 1}`);
+  assert.equal(tooOld.status, 400);
+  assert.equal(r.bookmark.next, null);
+
+  const at = start - 29 * day;
+  const res = await r.post(`/restore?to=${new Date(at).toISOString()}`);
+  assert.equal(res.status, 200);
+  const data = await res.json();
+  assert.equal(data.bookmark, `bookmark-${at}`);
+  assert.equal(data.to, new Date(at).toISOString());
+  assert.equal(r.bookmark.next, data.bookmark);
+});

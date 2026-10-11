@@ -83,6 +83,7 @@ export interface Rig {
   bucket: FakeBucket;
   sockets: FakeSocket[];
   alarm: { at: number | null };
+  bookmark: { next: string | null };
   settle(): Promise<void>;
   fire(): Promise<void>;
   put(key: string, value: string, revision?: number): Promise<Response>;
@@ -95,6 +96,7 @@ export interface Rig {
 export function rig(vars: Record<string, string> = {}): Rig {
   const sql = new FakeSql();
   const alarm: { at: number | null } = { at: null };
+  const bookmark: { next: string | null } = { next: null };
   const pending: Promise<unknown>[] = [];
   const sockets: FakeSocket[] = [];
   const queue = { send: async () => {}, sendBatch: async () => {} };
@@ -105,6 +107,8 @@ export function rig(vars: Record<string, string> = {}): Rig {
       getAlarm: async () => alarm.at,
       setAlarm: async (at: number) => void (alarm.at = at),
       deleteAlarm: async () => void (alarm.at = null),
+      getBookmarkForTime: async (at: number) => `bookmark-${at}`,
+      onNextSessionRestoreBookmark: async (b: string) => void (bookmark.next = b),
     },
     waitUntil: (p: Promise<unknown>) => void pending.push(p),
     blockConcurrencyWhile: (fn: () => Promise<void>) => fn(),
@@ -122,6 +126,7 @@ export function rig(vars: Record<string, string> = {}): Rig {
     bucket,
     sockets,
     alarm,
+    bookmark,
     fire: async () => {
       alarm.at = null;
       await cluster.alarm();
