@@ -225,7 +225,7 @@ jobs:
       - name: Build
         run: scripts/ci/e2e.sh build
 
-      - name: Run the wrangler-backed apiserver tests
+      - name: Run the package tests, the wrangler-backed apiserver tests among them
         shell: bash
         env:
           CGO_ENABLED: "0"
@@ -234,9 +234,7 @@ jobs:
           TMPDIR: ${{ github.workspace }}/.build/ci/tmp
         run: |
           mkdir -p .build/ci/logs .build/ci/tmp
-          go test -count=1 -timeout 70m \
-            -run '^(TestAdmissionExtensions|TestCompaction|TestConfigMapVerbs|TestControllers|TestCustomResources|TestInformerWatchList|TestOpenAPI|TestNodePodCIDRAndPodLifecycle|TestRBAC|TestScheduler|TestSchedulerWakesOnNode|TestSupervisorJoin|TestTables|TestWatch|TestWatchSelectorTransitions|TestNodeFieldSelectorDefaults)$' \
-            ./packages/apiserver/... 2>&1 | tee .build/ci/logs/live.log
+          make test-packages 2>&1 | tee .build/ci/logs/live.log
 
       - name: Upload logs
         if: failure()
