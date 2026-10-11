@@ -1,11 +1,16 @@
 package customresources
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
+	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -117,5 +122,39 @@ func TestSplitServiceHost(t *testing.T) {
 	}
 	if _, _, _, err := splitServiceHost("no-port"); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestServiceConversionDialsTheEndpointThroughTheNodeTunnel(t *testing.T) {
+	node := "node-a"
+	ep, err := json.Marshal(corev1.Endpoints{Subsets: []corev1.EndpointSubset{{
+		Addresses: []corev1.EndpointAddress{{IP: "10.42.0.7", NodeName: &node}},
+		Ports:     []corev1.EndpointPort{{Port: 9444}},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &memoryKine{data: map[string]memoryEntry{
+		"/registry/endpoints/ns-a/convert": {value: base64.StdEncoding.EncodeToString(ep), rev: 1},
+	}}
+	srv := httptest.NewServer(store)
+	defer srv.Close()
+	var got string
+	tunnel := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		got = req.URL.String()
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("{}")), Header: make(http.Header)}, nil
+	})
+	transport := &serviceDialTransport{kine: &kine.Client{HTTP: &http.Client{Transport: rewriteTo{srv.URL}}}, next: tunnel}
+	req, err := http.NewRequest(http.MethodPost, "https://convert.ns-a.svc:443/crdconvert", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got != "https://nodetunnel.internal/dial/node-a/10.42.0.7/9444/crdconvert" {
+		t.Fatalf("dialed %s", got)
 	}
 }

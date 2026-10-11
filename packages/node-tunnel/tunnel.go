@@ -361,12 +361,14 @@ func dialProxy() http.Handler {
 			return
 		}
 		dial := server.Dialer(node)
+		start := time.Now()
 		conn, err := dial(r.Context(), "tcp", net.JoinHostPort(host, port))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
 		defer conn.Close()
+		connected := time.Now()
 		if r.Header.Get("X-Dial-TLS") == "1" {
 			cfg, err := dialTLSConfig(r.Header.Get("X-Dial-ServerName"), r.Header.Get("X-Dial-CA"), bridge.Getenv("PROXY_CLIENT_CERT"), bridge.Getenv("PROXY_CLIENT_KEY"))
 			if err != nil {
@@ -380,6 +382,7 @@ func dialProxy() http.Handler {
 			}
 			conn = tconn
 		}
+		secured := time.Now()
 		outReq := dialRequest(r, host, port, path)
 		if err := outReq.Write(conn); err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
@@ -391,6 +394,7 @@ func dialProxy() http.Handler {
 			return
 		}
 		defer resp.Body.Close()
+		println("tunnel dial", node, net.JoinHostPort(host, port), "connect", connected.Sub(start).String(), "tls", secured.Sub(connected).String(), "exchange", time.Since(secured).String(), "status", resp.StatusCode)
 		for k, v := range resp.Header {
 			w.Header()[k] = v
 		}

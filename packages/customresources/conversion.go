@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	corev1 "k8s.io/api/core/v1"
@@ -146,10 +147,12 @@ func (t *serviceDialTransport) RoundTrip(req *http.Request) (*http.Response, err
 	if err != nil {
 		return nil, err
 	}
+	start := time.Now()
 	target, node, err := resolveService(req.Context(), t.kine, ns, name, port)
 	if err != nil {
 		return nil, err
 	}
+	resolved := time.Now()
 	out := req.Clone(req.Context())
 	out.RequestURI = ""
 	u := *req.URL
@@ -158,7 +161,13 @@ func (t *serviceDialTransport) RoundTrip(req *http.Request) (*http.Response, err
 	u.Path = "/dial/" + node + "/" + target.host + "/" + target.port + req.URL.Path
 	u.RawPath = ""
 	out.URL = &u
-	return t.next.RoundTrip(out)
+	resp, err := t.next.RoundTrip(out)
+	status := "error"
+	if err == nil {
+		status = strconv.Itoa(resp.StatusCode)
+	}
+	println("customresources: conversion", ns+"/"+name, "resolve", resolved.Sub(start).String(), "dial", time.Since(resolved).String(), "status", status)
+	return resp, err
 }
 
 type dialTarget struct{ host, port string }
