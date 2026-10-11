@@ -2,6 +2,7 @@ package addons
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"regexp"
 	"strings"
@@ -575,7 +576,12 @@ func TestIngressClassIsTheEdgeDefault(t *testing.T) {
 
 func TestGatewayCRDsAreCorrect(t *testing.T) {
 	const upstreamVersion = "v1.5.1"
-	const upstreamSha256 = "751002b3b91a87f7ae3bd2517c79a47a8d7ed6702901808a1cf9bd97d284f9b8"
+	upstreamSha256 := map[string]string{
+		"config/crd/standard/gateway.networking.k8s.io_gatewayclasses.yaml":  "234ad4b2757ee1b3596a4187bb98df071c5bbdd9e1806f692f2dbf8387e6bef4",
+		"config/crd/standard/gateway.networking.k8s.io_gateways.yaml":        "7416e8300eb4d8c0a71a23445609075bbacbe8bc80104584b019cfe1ebe77c31",
+		"config/crd/standard/gateway.networking.k8s.io_httproutes.yaml":      "682203b109baecb18d38073a578f7bc2c17d22fe9b0c27bf030850abe014c370",
+		"config/crd/standard/gateway.networking.k8s.io_referencegrants.yaml": "a8902c486eed0b7339f5bb8a476ccaba0918eb038048402bdc01cbb69b0fbb51",
+	}
 
 	var file File
 	for _, f := range Packaged() {
@@ -593,9 +599,9 @@ func TestGatewayCRDsAreCorrect(t *testing.T) {
 	}
 
 	expectedCRDs := map[string]bool{
-		"gatewayclasses.gateway.networking.k8s.io": false,
-		"gateways.gateway.networking.k8s.io":       false,
-		"httproutes.gateway.networking.k8s.io":     false,
+		"gatewayclasses.gateway.networking.k8s.io":  false,
+		"gateways.gateway.networking.k8s.io":        false,
+		"httproutes.gateway.networking.k8s.io":      false,
 		"referencegrants.gateway.networking.k8s.io": false,
 	}
 
@@ -626,6 +632,9 @@ func TestGatewayCRDsAreCorrect(t *testing.T) {
 		if len(servedVersions) == 0 {
 			t.Fatalf("CRD %s has no served versions", name)
 		}
+		if got := obj.GetAnnotations()["gateway.networking.k8s.io/bundle-version"]; got != upstreamVersion {
+			t.Errorf("CRD %s bundle-version = %q, want %q", name, got, upstreamVersion)
+		}
 	}
 
 	for name, found := range expectedCRDs {
@@ -634,8 +643,28 @@ func TestGatewayCRDsAreCorrect(t *testing.T) {
 		}
 	}
 
-	_ = upstreamVersion
-	_ = upstreamSha256
+	docs := strings.Split(string(file.Content), "\n---\n")
+	if len(docs) != len(upstreamSha256) {
+		t.Fatalf("expected %d documents, got %d", len(upstreamSha256), len(docs))
+	}
+	for i, doc := range docs {
+		if i < len(docs)-1 {
+			doc += "\n"
+		}
+		lines := strings.SplitN(doc, "\n", 4)
+		if len(lines) != 4 || lines[0] != "#" || lines[2] != "#" || !strings.HasPrefix(lines[1], "# ") {
+			t.Fatalf("document %d does not start with the upstream file header: %q", i, lines[:min(len(lines), 3)])
+		}
+		path := strings.TrimPrefix(lines[1], "# ")
+		want, ok := upstreamSha256[path]
+		if !ok {
+			t.Fatalf("document %d comes from %s, not one of the pinned upstream files", i, path)
+		}
+		if got := fmt.Sprintf("%x", sha256.Sum256([]byte(lines[3]))); got != want {
+			t.Errorf("%s: sha256 %s, upstream %s %s", path, got, upstreamVersion, want)
+		}
+		delete(upstreamSha256, path)
+	}
 }
 
 func TestParseDisableEdgeRoutingAlsoDisablesGatewayCRDs(t *testing.T) {
