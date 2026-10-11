@@ -454,14 +454,11 @@ Decided on 2026-10-01, with the owner:
 
 ## Conformance
 
-- Conformance does not run on every change: `conformance.yml` runs on a
-  daily cron and on dispatch; push and pull request run the 21 required
-  specs.
-- The nightly run is green whatever fails: the cron runs the default
-  branch, and main's `scripts/e2e/main.go` exits non-zero for the
-  `required` set only. Run 36839051306 (65cd7e8) ended success with
-  `101 Passed | 345 Failed`. This branch fails the job for the set it was
-  asked to run.
+- `conformance.yml` runs the full suite on push to main, on every pull
+  request, nightly and on dispatch, and `release.yml` runs it on a `v*`
+  tag and creates the GitHub Release only if every shard passes. Not yet
+  observed on GitHub Actions: no push, pull request or tag has run these
+  triggers, and no `v*` tag or release exists.
 - Production (`k8flare.kooffice.workers.dev`, account KOOFFICE) runs
   b9fff9a plus the observability change since 2026-10-01T17:49Z, deployed
   with `cf` from `packages/control-plane-worker` (branch `work/deploy`,
