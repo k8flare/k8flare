@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"reflect"
@@ -13,6 +12,9 @@ import (
 	admit "github.com/k8flare/k8flare/packages/apiserver-admit"
 	certificatesv1 "k8s.io/api/certificates/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/kubernetes/pkg/auth/nodeidentifier"
 )
@@ -281,29 +283,30 @@ func restrictNodePVC(nodeName string, req *admit.Request) error {
 }
 
 func pvcStatusOnly(oldObj, newObj map[string]any) bool {
-	return reflect.DeepEqual(stripPVCStatusExtras(oldObj), stripPVCStatusExtras(newObj))
+	oldPVC, err := pvcWithoutStatusExtras(oldObj)
+	if err != nil {
+		return false
+	}
+	newPVC, err := pvcWithoutStatusExtras(newObj)
+	if err != nil {
+		return false
+	}
+	return apiequality.Semantic.DeepEqual(oldPVC, newPVC)
 }
 
-func stripPVCStatusExtras(obj map[string]any) map[string]any {
-	if obj == nil {
-		return nil
+func pvcWithoutStatusExtras(obj map[string]any) (*corev1.PersistentVolumeClaim, error) {
+	pvc := &corev1.PersistentVolumeClaim{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj, pvc); err != nil {
+		return nil, err
 	}
-	var clone map[string]any
-	raw, err := json.Marshal(obj)
-	if err != nil || json.Unmarshal(raw, &clone) != nil {
-		return obj
-	}
-	if meta, ok := clone["metadata"].(map[string]any); ok {
-		delete(meta, "resourceVersion")
-		delete(meta, "managedFields")
-	}
-	if st, ok := clone["status"].(map[string]any); ok {
-		delete(st, "capacity")
-		delete(st, "conditions")
-		delete(st, "allocatedResourceStatuses")
-		delete(st, "allocatedResources")
-	}
-	return clone
+	pvc.TypeMeta = metav1.TypeMeta{}
+	pvc.ResourceVersion = ""
+	pvc.ManagedFields = nil
+	pvc.Status.Capacity = nil
+	pvc.Status.Conditions = nil
+	pvc.Status.AllocatedResourceStatuses = nil
+	pvc.Status.AllocatedResources = nil
+	return pvc, nil
 }
 
 func restrictResourceSlice(nodeName string, req *admit.Request) error {
