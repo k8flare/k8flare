@@ -57,19 +57,24 @@ type seen struct {
 }
 
 type fakeCluster struct {
-	server  *httptest.Server
-	calls   []seen
-	status  int
-	respond map[string]string
+	server   *httptest.Server
+	calls    []seen
+	status   int
+	statuses map[string]int
+	respond  map[string]string
 }
 
 func newFakeCluster(t *testing.T) *fakeCluster {
 	t.Helper()
-	f := &fakeCluster{status: http.StatusOK, respond: map[string]string{"GET /cacerts": testCAPEM(t)}}
+	f := &fakeCluster{status: http.StatusOK, statuses: map[string]int{}, respond: map[string]string{"GET /cacerts": testCAPEM(t)}}
 	f.server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		f.calls = append(f.calls, seen{r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization"), string(body)})
-		w.WriteHeader(f.status)
+		status := f.status
+		if s, ok := f.statuses[r.Method+" "+r.URL.Path]; ok {
+			status = s
+		}
+		w.WriteHeader(status)
 		_, _ = io.WriteString(w, f.respond[r.Method+" "+r.URL.Path])
 	}))
 	t.Cleanup(f.server.Close)
@@ -141,6 +146,7 @@ func TestTokenCreateTTLDefaultsToADayAndZeroMeansNever(t *testing.T) {
 func TestTokenListPrintsATable(t *testing.T) {
 	f := newFakeCluster(t)
 	f.respond["GET /internal/tokens"] = `{"items":[{"id":"abc123","description":"ci","createdAt":"2026-01-01T00:00:00Z","expiresAt":"2999-01-01T00:00:00Z"},{"id":"def456","createdAt":"2026-01-01T00:00:00Z"}]}`
+	f.respond["GET /api/v1/namespaces/kube-system/secrets"] = `{"items":[]}`
 	out, err := f.run(t, "token", "list")
 	if err != nil {
 		t.Fatal(err)
@@ -159,10 +165,18 @@ func TestTokenListPrintsATable(t *testing.T) {
 
 func TestTokenDeleteAcceptsIDsAndFullTokens(t *testing.T) {
 	f := newFakeCluster(t)
+	f.statuses["DELETE /api/v1/namespaces/kube-system/secrets/bootstrap-token-abc123"] = http.StatusNotFound
+	f.statuses["DELETE /api/v1/namespaces/kube-system/secrets/bootstrap-token-def456"] = http.StatusNotFound
 	if _, err := f.run(t, "token", "delete", "abc123", "def456.0123456789abcdef"); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.calls) != 2 || f.calls[0].method != "DELETE" || f.calls[0].path != "/internal/tokens/abc123" || f.calls[1].path != "/internal/tokens/def456" {
+	var vault []string
+	for _, c := range f.calls {
+		if c.method == "DELETE" && strings.HasPrefix(c.path, "/internal/tokens/") {
+			vault = append(vault, c.path)
+		}
+	}
+	if !slices.Equal(vault, []string{"/internal/tokens/abc123", "/internal/tokens/def456"}) {
 		t.Fatalf("%+v", f.calls)
 	}
 	if _, err := f.run(t, "token", "delete"); err == nil {
@@ -181,11 +195,12 @@ func TestTokenRotatePrintsTheNewToken(t *testing.T) {
 
 func TestTokenRevokeDeletesTheToken(t *testing.T) {
 	f := newFakeCluster(t)
+	f.statuses["DELETE /api/v1/namespaces/kube-system/secrets/bootstrap-token-abc123"] = http.StatusNotFound
 	out, err := f.run(t, "token", "revoke", "abc123")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(f.calls) != 1 || f.calls[0].method != "DELETE" || f.calls[0].path != "/internal/tokens/abc123" || out != "token abc123 deleted\n" {
+	if f.calls[0].method != "DELETE" || f.calls[0].path != "/internal/tokens/abc123" || out != "token abc123 deleted\n" {
 		t.Fatalf("%q %+v", out, f.calls)
 	}
 }
@@ -194,17 +209,127 @@ func TestTokenDeleteAndRotateAcceptThePrintedK10Token(t *testing.T) {
 	f := newFakeCluster(t)
 	printed := k10Of(t, f.respond["GET /cacerts"], "abc123.0123456789abcdef")
 	f.respond["POST /internal/tokens/abc123/rotate"] = `{"id":"abc123","token":"abc123.newnewnewnewnew0"}`
+	f.statuses["DELETE /api/v1/namespaces/kube-system/secrets/bootstrap-token-abc123"] = http.StatusNotFound
 	if _, err := f.run(t, "token", "delete", printed); err != nil {
 		t.Fatal(err)
 	}
-	if f.last().method != "DELETE" || f.last().path != "/internal/tokens/abc123" {
-		t.Fatalf("delete %+v", f.last())
+	if f.calls[0].method != "DELETE" || f.calls[0].path != "/internal/tokens/abc123" {
+		t.Fatalf("delete %+v", f.calls)
 	}
 	if _, err := f.run(t, "token", "rotate", printed); err != nil {
 		t.Fatal(err)
 	}
 	if f.last().method != "POST" || f.last().path != "/internal/tokens/abc123/rotate" {
 		t.Fatalf("rotate %+v", f.last())
+	}
+}
+
+func TestTokenRevokeRemovesALeakedBootstrapToken(t *testing.T) {
+	f := newFakeCluster(t)
+	printed, err := f.run(t, "token", "create", "--bootstrap", "--ttl", "1h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var secret corev1.Secret
+	if err := json.Unmarshal([]byte(f.last().body), &secret); err != nil {
+		t.Fatal(err)
+	}
+	id := string(secret.Data[bootstrapapi.BootstrapTokenIDKey])
+	secretPath := "/api/v1/namespaces/kube-system/secrets/bootstrap-token-" + id
+	f.statuses["DELETE /internal/tokens/"+id] = http.StatusNotFound
+	f.respond["DELETE /internal/tokens/"+id] = "join token not found"
+	f.calls = nil
+	out, err := f.run(t, "token", "revoke", strings.TrimSpace(printed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(f.calls, func(c seen) bool { return c.method == "DELETE" && c.path == secretPath }) {
+		t.Fatalf("bootstrap Secret not deleted: %+v", f.calls)
+	}
+	if out != "bootstrap token "+id+" deleted\n" {
+		t.Fatalf("output %q", out)
+	}
+}
+
+func TestTokenRevokeFailsWhileTheBootstrapSecretRemains(t *testing.T) {
+	f := newFakeCluster(t)
+	f.statuses["DELETE /api/v1/namespaces/kube-system/secrets/bootstrap-token-abc123"] = http.StatusForbidden
+	f.respond["DELETE /api/v1/namespaces/kube-system/secrets/bootstrap-token-abc123"] = "forbidden"
+	out, err := f.run(t, "token", "revoke", "abc123")
+	if err == nil || !strings.Contains(err.Error(), "bootstrap-token-abc123") {
+		t.Fatalf("revoke reported success while the Secret remains: %q %v", out, err)
+	}
+	if strings.Contains(out, "bootstrap token abc123 deleted") {
+		t.Fatalf("output %q", out)
+	}
+}
+
+func TestTokenRevokeFailsWhenTheTokenExistsNowhere(t *testing.T) {
+	f := newFakeCluster(t)
+	f.statuses["DELETE /internal/tokens/abc123"] = http.StatusNotFound
+	f.statuses["DELETE /api/v1/namespaces/kube-system/secrets/bootstrap-token-abc123"] = http.StatusNotFound
+	out, err := f.run(t, "token", "revoke", "abc123")
+	if err == nil || !strings.Contains(err.Error(), "abc123") || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("%q %v", out, err)
+	}
+	if out != "" {
+		t.Fatalf("output %q", out)
+	}
+}
+
+func TestTokenListIncludesBootstrapTokens(t *testing.T) {
+	f := newFakeCluster(t)
+	f.respond["GET /internal/tokens"] = `{"items":[{"id":"abc123","description":"ci","createdAt":"2026-01-01T00:00:00Z","expiresAt":"2999-01-01T00:00:00Z"}]}`
+	list := corev1.SecretList{Items: []corev1.Secret{
+		{Type: bootstrapapi.SecretTypeBootstrapToken, Data: map[string][]byte{
+			bootstrapapi.BootstrapTokenIDKey:          []byte("bt0001"),
+			bootstrapapi.BootstrapTokenExpirationKey:  []byte("2999-02-01T00:00:00Z"),
+			bootstrapapi.BootstrapTokenDescriptionKey: []byte("join node"),
+		}},
+		{Type: bootstrapapi.SecretTypeBootstrapToken, Data: map[string][]byte{
+			bootstrapapi.BootstrapTokenIDKey: []byte("bt0002"),
+		}},
+	}}
+	data, err := json.Marshal(list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.respond["GET /api/v1/namespaces/kube-system/secrets"] = string(data)
+	out, err := f.run(t, "token", "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listCall := slices.IndexFunc(f.calls, func(c seen) bool { return c.path == "/api/v1/namespaces/kube-system/secrets" })
+	if listCall < 0 || f.calls[listCall].query != "fieldSelector=type%3Dbootstrap.kubernetes.io%2Ftoken" {
+		t.Fatalf("%+v", f.calls)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("output:\n%s", out)
+	}
+	for i, want := range [][]string{{"abc123", "vault", "2999-01-01T00:00:00Z", "ci"}, {"bt0001", "bootstrap", "2999-02-01T00:00:00Z", "join node"}, {"bt0002", "bootstrap", "<never>", "<none>"}} {
+		for _, field := range want {
+			if !strings.Contains(lines[i+1], field) {
+				t.Fatalf("row %d %q lacks %q", i+1, lines[i+1], field)
+			}
+		}
+	}
+}
+
+func TestTokenRotateRefusesABootstrapToken(t *testing.T) {
+	f := newFakeCluster(t)
+	f.statuses["POST /internal/tokens/abc123/rotate"] = http.StatusNotFound
+	f.respond["POST /internal/tokens/abc123/rotate"] = "join token not found"
+	out, err := f.run(t, "token", "rotate", "abc123")
+	if err == nil || !strings.Contains(err.Error(), "token create --bootstrap") || !strings.Contains(err.Error(), "token revoke abc123") {
+		t.Fatalf("%q %v", out, err)
+	}
+	if f.last().method != "GET" || f.last().path != "/api/v1/namespaces/kube-system/secrets/bootstrap-token-abc123" {
+		t.Fatalf("%+v", f.last())
+	}
+	f.statuses["GET /api/v1/namespaces/kube-system/secrets/bootstrap-token-abc123"] = http.StatusNotFound
+	if _, err := f.run(t, "token", "rotate", "abc123"); err == nil || !strings.Contains(err.Error(), "join token not found") {
+		t.Fatalf("missing token: %v", err)
 	}
 }
 
@@ -367,6 +492,7 @@ func TestServerErrorsSurfaceStatusAndBody(t *testing.T) {
 func TestConnectionFromKubeconfig(t *testing.T) {
 	f := newFakeCluster(t)
 	f.respond["GET /internal/tokens"] = `{"items":[]}`
+	f.respond["GET /api/v1/namespaces/kube-system/secrets"] = `{"items":[]}`
 	path := filepath.Join(t.TempDir(), "kubeconfig")
 	config := fmt.Sprintf(`apiVersion: v1
 kind: Config

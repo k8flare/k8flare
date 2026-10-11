@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -120,20 +121,40 @@ func tokenList(args []string, out io.Writer) error {
 	if err := c.call("GET", "/internal/tokens", nil, nil, &listed); err != nil {
 		return err
 	}
+	var secrets corev1.SecretList
+	selector := url.Values{"fieldSelector": {"type=" + string(bootstrapapi.SecretTypeBootstrapToken)}}
+	if err := c.call("GET", "/api/v1/namespaces/"+metav1.NamespaceSystem+"/secrets", selector, nil, &secrets); err != nil {
+		return err
+	}
 	w := tabwriter.NewWriter(out, 10, 4, 3, ' ', 0)
-	fmt.Fprintf(w, "ID\tEXPIRES\tDESCRIPTION\n")
+	fmt.Fprintf(w, "ID\tTYPE\tEXPIRES\tDESCRIPTION\n")
 	for _, t := range listed.Items {
 		expires := "<never>"
 		if t.ExpiresAt != nil {
 			expires = t.ExpiresAt.Format(time.RFC3339)
 		}
-		description := t.Description
-		if description == "" {
-			description = "<none>"
+		fmt.Fprintf(w, "%s\tvault\t%s\t%s\n", t.ID, expires, orNone(t.Description))
+	}
+	for _, secret := range secrets.Items {
+		expires := string(secret.Data[bootstrapapi.BootstrapTokenExpirationKey])
+		if expires == "" {
+			expires = "<never>"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\n", t.ID, expires, description)
+		description := string(secret.Data[bootstrapapi.BootstrapTokenDescriptionKey])
+		fmt.Fprintf(w, "%s\tbootstrap\t%s\t%s\n", secret.Data[bootstrapapi.BootstrapTokenIDKey], expires, orNone(description))
 	}
 	return w.Flush()
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "<none>"
+	}
+	return s
+}
+
+func bootstrapSecretPath(id string) string {
+	return "/api/v1/namespaces/" + metav1.NamespaceSystem + "/secrets/" + bootstraputil.BootstrapTokenSecretName(id)
 }
 
 func (c *client) serverCAHash() (string, error) {
@@ -172,10 +193,23 @@ func tokenDelete(args []string, out io.Writer) error {
 	}
 	for _, arg := range ids {
 		id := tokenID(arg)
-		if err := c.call("DELETE", "/internal/tokens/"+id, nil, nil, nil); err != nil {
-			return err
+		vaultErr := c.call("DELETE", "/internal/tokens/"+id, nil, nil, nil)
+		if vaultErr != nil && !isNotFound(vaultErr) {
+			return vaultErr
 		}
-		fmt.Fprintf(out, "token %s deleted\n", id)
+		if vaultErr == nil {
+			fmt.Fprintf(out, "token %s deleted\n", id)
+		}
+		bootstrapErr := c.call("DELETE", bootstrapSecretPath(id), nil, nil, nil)
+		if bootstrapErr != nil && !isNotFound(bootstrapErr) {
+			return bootstrapErr
+		}
+		if bootstrapErr == nil {
+			fmt.Fprintf(out, "bootstrap token %s deleted\n", id)
+		}
+		if vaultErr != nil && bootstrapErr != nil {
+			return fmt.Errorf("token %s not found: no vault token and no %s Secret in %s", id, bootstraputil.BootstrapTokenSecretName(id), metav1.NamespaceSystem)
+		}
 	}
 	return nil
 }
@@ -197,8 +231,17 @@ func tokenRotate(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	id := tokenID(ids[0])
 	var rotated tokenRecord
-	if err := c.call("POST", "/internal/tokens/"+tokenID(ids[0])+"/rotate", nil, nil, &rotated); err != nil {
+	if err := c.call("POST", "/internal/tokens/"+id+"/rotate", nil, nil, &rotated); err != nil {
+		if !isNotFound(err) {
+			return err
+		}
+		if _, getErr := c.do("GET", bootstrapSecretPath(id), nil, nil); getErr == nil {
+			return fmt.Errorf("token %s is a bootstrap token, whose secret cannot be rotated in place; run `k8flare token create --bootstrap`, then `k8flare token revoke %s`", id, id)
+		} else if !isNotFound(getErr) {
+			return getErr
+		}
 		return err
 	}
 	fmt.Fprintln(out, k10Token(caHash, rotated.Token))

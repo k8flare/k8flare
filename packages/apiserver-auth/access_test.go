@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -37,6 +39,7 @@ func newAccessTeam(t *testing.T) (*httptest.Server, *rsa.PrivateKey) {
 	t.Cleanup(team.Close)
 	jwksMu.Lock()
 	jwksCache = map[string]jwksEntry{}
+	jwksRefetchStarted = map[string]time.Time{}
 	jwksMu.Unlock()
 	return team, key
 }
@@ -133,6 +136,90 @@ func TestAccessAuthenticateRequest(t *testing.T) {
 	}
 	if _, ok, err := a.AuthenticateToken(t.Context(), "not-a-jwt"); err != nil || ok {
 		t.Fatalf("junk bearer: ok=%v err=%v", ok, err)
+	}
+}
+
+type countingTransport struct {
+	next  http.RoundTripper
+	count atomic.Int32
+}
+
+func (c *countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	c.count.Add(1)
+	return c.next.RoundTrip(r)
+}
+
+type gatheringTransport struct {
+	countingTransport
+	want int32
+	all  chan struct{}
+}
+
+func (g *gatheringTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if g.count.Add(1) == g.want {
+		close(g.all)
+	}
+	select {
+	case <-g.all:
+	case <-time.After(5 * time.Second):
+	}
+	return g.next.RoundTrip(r)
+}
+
+func signAccessToken(t *testing.T, team *httptest.Server, key *rsa.PrivateKey, kid string) string {
+	t.Helper()
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, accessClaims{
+		Email: "ada@kooffice.jp",
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    team.URL,
+			Audience:  jwt.ClaimStrings{"app-aud"},
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+		},
+	})
+	tok.Header["kid"] = kid
+	raw, err := tok.SignedString(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func TestAccessRejectsUnknownKidFromCacheWithoutFetching(t *testing.T) {
+	team, key := newAccessTeam(t)
+	transport := &countingTransport{next: team.Client().Transport}
+	a := Access{Team: strings.TrimPrefix(team.URL, "https://"), Audience: "app-aud", HTTP: &http.Client{Transport: transport}}
+	if _, ok, err := a.AuthenticateToken(t.Context(), signAccessToken(t, team, key, "k1")); !ok || err != nil {
+		t.Fatalf("known kid: ok=%v err=%v", ok, err)
+	}
+	for _, kid := range []string{"k2", "k3", "k4"} {
+		if _, ok, _ := a.AuthenticateToken(t.Context(), signAccessToken(t, team, key, kid)); ok {
+			t.Fatalf("accepted unknown kid %s", kid)
+		}
+	}
+	if got := transport.count.Load(); got != 1 {
+		t.Fatalf("certs fetched %d times, want 1", got)
+	}
+}
+
+func TestAccessColdCacheCallersEachFetch(t *testing.T) {
+	team, key := newAccessTeam(t)
+	const callers = 5
+	transport := &gatheringTransport{countingTransport: countingTransport{next: team.Client().Transport}, want: callers, all: make(chan struct{})}
+	a := Access{Team: strings.TrimPrefix(team.URL, "https://"), Audience: "app-aud", HTTP: &http.Client{Transport: transport}}
+	raw := signAccessToken(t, team, key, "k1")
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, ok, err := a.AuthenticateToken(t.Context(), raw); !ok || err != nil {
+				t.Errorf("known kid: ok=%v err=%v", ok, err)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := transport.count.Load(); got != callers {
+		t.Fatalf("certs fetched %d times by %d cold-cache callers, want %d", got, callers, callers)
 	}
 }
 

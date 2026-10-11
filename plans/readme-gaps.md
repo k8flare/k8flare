@@ -359,10 +359,11 @@ Decided on 2026-10-01, with the owner:
   cluster can only restore an old one's snapshot if it binds the same
   bucket, and `snapshot list` shows only its own `CLUSTER_UID` prefix, so
   the key has to come from the old cluster. Point-in-time restore refuses a
-  `to` more than 30 days back; `getBookmarkForTime` and
+  `to` more than 30 days back, in the future, or that does not parse;
+  `getBookmarkForTime` and
   `onNextSessionRestoreBookmark` are fakes in the tests, `/restore/apply`
-  (`ctx.abort`) has no test, none of them has run against a deployed
-  Durable Object, and the behaviour for a `to` in the future is unknown. It rewinds the whole Durable Object,
+  (`ctx.abort`) has no test, and none of them has run against a deployed
+  Durable Object. It rewinds the whole Durable Object,
   `/vault/` included. Snapshots go to `PODS_R2`, the bucket pods use. No
   Logpush is configured.
 - Bootstrap-token Secrets now authenticate API bearer requests and k3s agent
@@ -371,8 +372,12 @@ Decided on 2026-10-01, with the owner:
   k3s agent under workerd. `k8flare token create --bootstrap` writes the
   `bootstrap-token-<id>` Secret through the API; the CLI test checks the Secret
   against the upstream authenticator but not against the running apiserver.
-  `token list`, `rotate` and `revoke` still manage only vault-backed tokens: a
-  bootstrap token is neither listed nor revoked by `k8flare token`.
+  `token list` adds the `bootstrap.kubernetes.io/token` Secrets in
+  `kube-system` (type `bootstrap`, with expiry); `revoke`/`delete` deletes
+  both the vault token and the `bootstrap-token-<id>` Secret for the id and
+  fails when neither exists; `rotate` refuses a bootstrap token and says to
+  create a new one and revoke the old one, as k3s has no in-place rotation
+  for them. The CLI tests use a fake HTTP server, not the running apiserver.
 
 ## Security
 
@@ -386,9 +391,18 @@ Decided on 2026-10-01, with the owner:
     `system:` groups from claims, and has no CEL claim rules or
     `--oidc-signing-algs`. Like upstream it rejects an `email_verified`
     that is present but not `true`, and refetches keys on an unknown
-    `kid`; upstream's go-oidc skips that refetch while the JWKS
-    response's Cache-Control lifetime lasts, this verifier refetches
-    every time. Next: match upstream's algorithm and `system:` rules,
+    `kid`. Upstream's go-oidc (v2.5.0) refetches only within 30 s
+    (`keysExpiryDelta`) of the JWKS response's Cache-Control expiry, or
+    on every such token when there is no Cache-Control, and shares one
+    in-flight fetch. This verifier ignores Cache-Control and keeps keys
+    10 minutes. While those keys are fresh, an unknown `kid` starts a
+    refetch at most once per 30 s per JWKS URL and isolate, counted from
+    the start of the last fetch whether it finished, failed or is still
+    running; other requests in that window are rejected instead of
+    waiting on another request's fetch, so a key rotated in right after
+    a fetch is accepted up to 30 s late. When the keys are missing or
+    expired every request fetches, as the Access verifier does, so
+    concurrent cold requests each fetch once. Next: match upstream's algorithm and `system:` rules,
     and serve
     `AuthenticationConfiguration` CEL (claimMappings,
     claimValidationRules, userValidationRules) by delegating expression
