@@ -1,8 +1,12 @@
 name: Conformance
 
 on:
+  push:
+    branches: [main]
+  pull_request:
   schedule:
     - cron: "17 2 * * *"
+  workflow_call:
   workflow_dispatch:
     inputs:
       focus:
@@ -25,8 +29,8 @@ env:
   CONFORMANCE_SHARDS: 8
 
 concurrency:
-  group: ${{ github.event_name == 'schedule' && 'conformance-nightly' || format('conformance-{0}', github.run_id) }}
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'schedule' && 'conformance-nightly' || github.event_name == 'pull_request' && format('conformance-pr-{0}', github.event.pull_request.number) || format('conformance-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   plan:
