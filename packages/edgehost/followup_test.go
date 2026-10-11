@@ -9,6 +9,17 @@ func TestFollowUpSchedulerFailure(t *testing.T) {
 	}
 }
 
+func TestFollowUpSchedulerBooksOnlyTheUnschedulableFlush(t *testing.T) {
+	idle := followUp(followIn{Target: "scheduler", OK: true})
+	if len(idle.Sends) != 0 {
+		t.Fatal(idle)
+	}
+	waiting := followUp(followIn{Target: "scheduler", OK: true, Attempt: 2, RetryAfterS: 300})
+	if len(waiting.Sends) != 1 || waiting.Sends[0].Queue != "sched" || waiting.Sends[0].DelaySeconds != 300 {
+		t.Fatal(waiting)
+	}
+}
+
 func TestFollowUpGCSettles(t *testing.T) {
 	got := followUp(followIn{Target: "gc", HasResult: true, Deleted: 1})
 	if len(got.Sends) != 1 || got.Sends[0].DelaySeconds != 2 {
@@ -47,14 +58,14 @@ func TestFollowUpAddonsResumesAPendingStorageMigrationAlone(t *testing.T) {
 
 func TestFollowUpAddonsBooksOneWakeAtTheHelmHookDeadline(t *testing.T) {
 	got := followUp(followIn{Target: "addons", OK: true, NextMs: 299_001})
-	if len(got.Sends) != 1 || got.Sends[0].Queue != "addons" || got.Sends[0].DelaySeconds != 300 || !got.Sends[0].Once || len(got.Sends[0].Names) != 0 {
+	if len(got.Sends) != 1 || got.Sends[0].Queue != "addons" || got.Sends[0].DelaySeconds != 300 || len(got.Sends[0].Names) != 0 {
 		t.Fatal(got)
 	}
 }
 
 func TestFollowUpHPAReschedulesWhenHPAsExist(t *testing.T) {
 	got := followUp(followIn{Target: "hpa", HasResult: true, HPAs: 2})
-	if len(got.Sends) != 1 || got.Sends[0].Queue != "hpa" || got.Sends[0].DelaySeconds != 15 || !got.Sends[0].Once {
+	if len(got.Sends) != 1 || got.Sends[0].Queue != "hpa" || got.Sends[0].DelaySeconds != 15 {
 		t.Fatal(got)
 	}
 }
@@ -68,7 +79,7 @@ func TestFollowUpHPADoesNotRescheduleWhenZeroHPAs(t *testing.T) {
 
 func TestFollowUpHPARetriesOnFailure(t *testing.T) {
 	got := followUp(followIn{Target: "hpa", HasResult: false})
-	if len(got.Sends) != 1 || got.Sends[0].Queue != "hpa" || got.Sends[0].DelaySeconds != 5 || got.Sends[0].Once {
+	if len(got.Sends) != 1 || got.Sends[0].Queue != "hpa" || got.Sends[0].DelaySeconds != 5 {
 		t.Fatal(got)
 	}
 }

@@ -150,6 +150,27 @@ test("VolumeAttributesClass writes reach the workloads queue so its protection f
   assert.deepEqual(sent, ["/registry/volumeattributesclasses/e2e-1", "/registry/volumeattributesclasses/e2e-1"]);
 });
 
+test("deleting an object in a terminating namespace wakes the namespace pass, and nothing else does", async () => {
+  const sent: string[] = [];
+  const accounts = { send: async () => {}, sendBatch: async (batch: { body: { key: string; type: string } }[]) => void sent.push(...batch.map((m) => `${m.body.type} ${m.body.key}`)) };
+  const r = rig({ ACCT_Q: accounts } as any);
+  await r.settle();
+  await r.put("/registry/namespaces/live", `{"metadata":{"name":"live"}}`);
+  await r.put("/registry/namespaces/ending", `{"metadata":{"name":"ending","deletionTimestamp":"2026-10-11T00:00:00Z"}}`);
+  await r.put("/registry/pods/live/a", "{}");
+  await r.put("/registry/pods/ending/a", `{"metadata":{"finalizers":["e2e"]}}`);
+  await r.put("/registry/example.com/widgets/ending/w", "{}");
+  await r.put("/registry/clusterroles/ending", "{}");
+  await r.settle();
+  sent.length = 0;
+  await r.remove("/registry/pods/live/a");
+  await r.remove("/registry/pods/ending/a");
+  await r.remove("/registry/example.com/widgets/ending/w");
+  await r.remove("/registry/clusterroles/ending");
+  await r.settle();
+  assert.deepEqual(sent, ["deleted /registry/pods/ending/a", "deleted /registry/example.com/widgets/ending/w"]);
+});
+
 test("ServiceCIDR, ValidatingAdmissionPolicy, ResourceClaim and ResourceSlice writes reach the workloads queue", async () => {
   const sent: string[] = [];
   const workloads = { send: async () => {}, sendBatch: async (batch: { body: { key: string } }[]) => void sent.push(...batch.map((m) => m.body.key)) };
@@ -260,20 +281,24 @@ test("a Secret named in a HelmChart's or HelmChartConfig's valuesSecrets reaches
   assert.deepEqual(sent, ["/registry/secrets/kube-system/tracked", "/registry/secrets/kube-system/from-config", "/registry/secrets/kube-system/tracked"]);
 });
 
-test("POST /enqueue with once books an earlier deadline over a later one", async () => {
+test("POST /enqueue books an earlier addons deadline over a later one and keeps one row", async (t) => {
+  clock(t);
   const sent: { delaySeconds?: number }[] = [];
   const queue = {
     send: async (_body: unknown, opts?: { delaySeconds?: number }) => void sent.push({ delaySeconds: opts?.delaySeconds }),
     sendBatch: async () => {},
   };
-  const r = rig({ ADDON_Q: queue } as any);
+  const r = rig({ SNAPSHOT_INTERVAL_HOURS: "0", ADDON_Q: queue } as any);
   await r.settle();
   sent.length = 0;
 
-  assert.deepEqual(await (await r.post("/enqueue", { target: "addons", delayMs: 300_000, once: true })).json(), { ok: true, booked: true });
-  assert.deepEqual(await (await r.post("/enqueue", { target: "addons", delayMs: 30_000, once: true })).json(), { ok: true, booked: true });
-  assert.deepEqual(await (await r.post("/enqueue", { target: "addons", delayMs: 60_000, once: true })).json(), { ok: true, booked: false });
-  assert.deepEqual(sent.map((s) => s.delaySeconds), [300, 30]);
+  await r.post("/enqueue", { target: "addons", delayMs: 300_000 });
+  assert.equal(r.alarm.at, start + 300_000);
+  await r.post("/enqueue", { target: "addons", delayMs: 30_000 });
+  await r.post("/enqueue", { target: "addons", delayMs: 60_000 });
+  assert.deepEqual(r.sql.exec("SELECT target, due FROM deadlines").toArray().map((row) => ({ ...row })), [{ target: "addons", due: start + 30_000 }]);
+  assert.equal(r.alarm.at, start + 30_000);
+  assert.deepEqual(sent, []);
 });
 
 function targetQueue() {
@@ -307,61 +332,6 @@ test("HorizontalPodAutoscaler status writes do not reach hpa queue, spec changes
   assert.equal(hpaSent.length, 3);
 });
 
-test("POST /enqueue with once deduplicates within delay and reschedules after due", async () => {
-  const sent: { delaySeconds?: number }[] = [];
-  const queue = {
-    send: async (_body: unknown, opts?: { delaySeconds?: number }) => void sent.push({ delaySeconds: opts?.delaySeconds }),
-    sendBatch: async () => {},
-  };
-  const r = rig({ HPA_Q: queue } as any);
-  await r.settle();
-
-  const res1 = await (await r.post("/enqueue", { target: "hpa", delayMs: 15_000, once: true })).json();
-  assert.deepEqual(res1, { ok: true, booked: true });
-  assert.equal(sent.length, 1);
-  assert.equal(sent[0].delaySeconds, 15);
-
-  const res2 = await (await r.post("/enqueue", { target: "hpa", delayMs: 15_000, once: true })).json();
-  assert.deepEqual(res2, { ok: true, booked: false });
-  assert.equal(sent.length, 1);
-
-  r.sql.exec("UPDATE deadlines SET due = ? WHERE target = 'hpa'", Date.now() - 1000);
-
-  const res3 = await (await r.post("/enqueue", { target: "hpa", delayMs: 15_000, once: true })).json();
-  assert.deepEqual(res3, { ok: true, booked: true });
-  assert.equal(sent.length, 2);
-
-  const resPlain1 = await (await r.post("/enqueue", { target: "hpa", delayMs: 5_000 })).json();
-  const resPlain2 = await (await r.post("/enqueue", { target: "hpa", delayMs: 5_000 })).json();
-  assert.deepEqual(resPlain1, { ok: true });
-  assert.deepEqual(resPlain2, { ok: true });
-  assert.equal(sent.length, 4);
-});
-
-test("POST /enqueue with once clears booking if queue send fails so retry can book", async () => {
-  let shouldFail = true;
-  const sent: { delaySeconds?: number }[] = [];
-  const queue = {
-    send: async (_body: unknown, opts?: { delaySeconds?: number }) => {
-      if (shouldFail) {
-        shouldFail = false;
-        throw new Error("queue send failed");
-      }
-      sent.push({ delaySeconds: opts?.delaySeconds });
-    },
-    sendBatch: async () => {},
-  };
-  const r = rig({ HPA_Q: queue } as any);
-  await r.settle();
-
-  await assert.rejects(r.post("/enqueue", { target: "hpa", delayMs: 15_000, once: true }), /queue send failed/);
-  assert.equal(sent.length, 0);
-
-  const res = await (await r.post("/enqueue", { target: "hpa", delayMs: 15_000, once: true })).json();
-  assert.deepEqual(res, { ok: true, booked: true });
-  assert.equal(sent.length, 1);
-});
-
 test("the garbage collector hears about ownership and deletion, not every status write of an owned object", async () => {
   const sent: string[] = [];
   const gc = { send: async () => {}, sendBatch: async (batch: { body: { key: string; type: string } }[]) => void sent.push(...batch.map((m) => `${m.body.type} ${m.body.key}`)) };
@@ -381,32 +351,6 @@ test("the garbage collector hears about ownership and deletion, not every status
     "modified /registry/pods/default/b",
     "deleted /registry/pods/default/a",
   ]);
-});
-
-test("a node keeps exactly one pending lease check: lease writes and follow-ups only schedule once the pending one is due", async (t) => {
-  const tick = clock(t);
-  const sent: { node: string; delaySeconds?: number }[] = [];
-  const ctrl = { send: async (body: { node: string }, opts?: { delaySeconds?: number }) => void sent.push({ node: body.node, delaySeconds: opts?.delaySeconds }), sendBatch: async () => {} };
-  const r = rig({ CTRL_Q: ctrl } as any);
-  await r.settle();
-  await r.put("/registry/leases/kube-node-lease/n1", "v1");
-  await r.settle();
-  assert.deepEqual(sent, [{ node: "n1", delaySeconds: 60 }]);
-  tick(10_000);
-  await r.put("/registry/leases/kube-node-lease/n1", "v2", 2);
-  await r.settle();
-  assert.equal((await (await r.post("/lease-check", { node: "n1", delayMs: 30_000 })).json()).scheduled, false);
-  assert.equal(sent.length, 1);
-  tick(51_000);
-  assert.equal((await (await r.post("/lease-check", { node: "n1", delayMs: 30_000 })).json()).scheduled, true);
-  assert.deepEqual(sent[1], { node: "n1", delaySeconds: 30 });
-  await r.put("/registry/leases/kube-node-lease/n1", "v3", 3);
-  await r.settle();
-  assert.equal(sent.length, 2);
-  tick(51_000);
-  await r.put("/registry/leases/kube-node-lease/n1", "v4", 4);
-  await r.settle();
-  assert.equal(sent.length, 3);
 });
 
 test("closing a watcher updates or clears alarm when nothing else is due", async (t) => {

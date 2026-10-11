@@ -18,7 +18,6 @@ type FollowSend = {
   changed?: string[];
   names?: string[];
   node?: string;
-  once?: boolean;
 };
 
 function targetOf(queueName: string): Target | null {
@@ -46,22 +45,6 @@ async function followUp(env: Env, body: Record<string, unknown>): Promise<{ send
   return resp.json() as Promise<{ sends: FollowSend[]; stop: boolean }>;
 }
 
-function queueOf(env: Env, name: string): Queue | null {
-  switch (name) {
-    case "sched": return env.SCHED_Q;
-    case "wl": return env.WL_Q;
-    case "crd": return env.CRD_Q;
-    case "gc": return env.GC_Q;
-    case "acct": return env.ACCT_Q;
-    case "ext": return env.EXT_Q;
-    case "hpa": return env.HPA_Q;
-    case "containers": return env.CONTAINERS_Q;
-    case "addons": return env.ADDON_Q;
-    case "ctrl": return env.CTRL_Q;
-    default: return null;
-  }
-}
-
 function targetForQueue(name: string): Target | null {
   switch (name) {
     case "sched": return "scheduler";
@@ -79,27 +62,20 @@ function targetForQueue(name: string): Target | null {
 
 async function applySends(env: Env, sends: FollowSend[]): Promise<void> {
   for (const send of sends) {
+    const delayMs = (send.delaySeconds ?? 0) * 1000;
     if (send.kind === "lease-check") {
       await clusterStub(env).fetch("https://cluster.internal/lease-check", {
         method: "POST",
-        body: JSON.stringify({ node: send.node ?? "", delayMs: (send.delaySeconds ?? 0) * 1000 }),
+        body: JSON.stringify({ node: send.node ?? "", delayMs }),
       });
       continue;
     }
-    if (send.once) {
-      const target = targetForQueue(send.queue);
-      if (target) {
-        await clusterStub(env).fetch("https://cluster.internal/enqueue", {
-          method: "POST",
-          body: JSON.stringify({ target, delayMs: (send.delaySeconds ?? 0) * 1000, once: true }),
-        });
-        continue;
-      }
-    }
-    const queue = queueOf(env, send.queue);
-    if (!queue) continue;
-    const body: QueueMessage = { kind: "retry", attempt: send.attempt, changed: send.changed, names: send.names };
-    await queue.send(body, send.delaySeconds ? { delaySeconds: send.delaySeconds } : undefined);
+    const target = targetForQueue(send.queue);
+    if (!target) continue;
+    await clusterStub(env).fetch("https://cluster.internal/enqueue", {
+      method: "POST",
+      body: JSON.stringify({ target, delayMs, attempt: send.attempt, changed: send.changed, names: send.names }),
+    });
   }
 }
 

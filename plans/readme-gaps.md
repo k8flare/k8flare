@@ -114,19 +114,30 @@ Decided on 2026-10-01, with the owner:
     `tolerationSeconds`: `tolerationWait` (`workloads/nodehealth.go`)
     returns not-tolerated for it. Upstream never evicts such a pod. Read,
     not run; no test.
-  - Job backoff has no test that a delay is booked; the 10 s recheck of
-    unfinished Jobs (`workloads.go`) would hide a missing one.
+  - The Job controller is built anew for each pass, so its pod failure
+    backoff record (`podBackoffStore`) lasts one pass. A pass books the
+    10 s backoff (`TestSyncBooksThePodFailureBackoffOfAJob`), but in a
+    fake-client run the second of two back-to-back passes created the
+    replacement pod at once. Read, not traced: `newBackoffRecord` counts
+    only failures not yet in the Job status, and the first pass counted
+    it. Not observed on a cluster.
 
 ## Architecture
 
-- Controller deadlines ride on Queues `delaySeconds`
-  (`control-plane-worker/src/queues.ts`, `edgehost/followup.go`), not on
-  Durable Object alarms; the Cluster DO alarm only does store housekeeping.
-  They do fire with no further write.
-- Things poll: the metrics scrape re-sends itself every 15 s whatever it
-  found (`followup.go`, case `metrics`) and wakes HPA each time; an
-  unfinished Job re-books a workloads pass every 10 s; each node gets a
-  lease check about every 60 s; unschedulable pods are retried within 60 s.
+- Every deadline is a row in the Cluster object's `deadlines` table and
+  the alarm sends it; an idle cluster books none (`cluster-store`
+  `deadlines.test.ts`). "Nothing polls" holds only while nothing is
+  pending: these still re-book on a fixed period for as long as their
+  condition lasts, which can be for ever. `replicaGap` every 5 s while a
+  ReplicationController, ReplicaSet or Deployment has `status.replicas`
+  different from `spec.replicas`, and the StatefulSet 2 s re-run while a
+  set has not settled (`workloads.go`); failure and pending retries every
+  5 s without backoff (`followup.go`: workloads, accounts, crds, addons,
+  extensions, containers, leases, scheduler on error) and gc every 2 s
+  while it still deletes, patches or has pending items; HPA every 15 s
+  while an HPA exists (upstream's sync period); the scheduler every 5
+  minutes while a pod is unschedulable (upstream's flush); a namespace that
+  cannot finish once a minute.
 - node-tunnel imports its wasm statically into the Durable Object instead
   of loading it through the Worker Loader.
 
@@ -234,8 +245,9 @@ Decided on 2026-10-01, with the owner:
     `pending-install`/`pending-upgrade`/`uninstalling` across passes. The
     Cluster Durable Object routes a write of a Job or Pod carrying
     `helm.sh/hook` to the addons queue only when it finishes or is deleted,
-    and `/helm` returns the earliest hook deadline as `nextMs`, booked once
-    through `POST /enqueue` (`once` now keeps the earliest deadline).
+    and `/helm` returns the earliest hook deadline as `nextMs`, booked
+    through `POST /enqueue` as the addons row of the Cluster object's
+    `deadlines` table, which keeps the earliest due.
     `spec.timeout` (default 300s, Helm's `--timeout`) bounds each hook wait.
     Not covered: `helm test` hooks, `helm.sh/hook-output-log-policy`, and a
     deadline while waiting for a previous hook object that is still
@@ -1909,8 +1921,12 @@ Decided on 2026-10-01, with the owner:
   - `ci/batch9` had one Conformance run where shard 4 failed with no
     failed spec in its log. Not investigated; it did not repeat in the
     six runs since.
-  - Namespace termination retries every 2 s without backoff; a namespace
-    that cannot finish keeps the Cluster object awake.
+  - A namespace that cannot finish terminating is retried on a backoff
+    that starts at 2 s and grows with the time since its deletion to once
+    a minute (upstream's namespace controller cap), and a deletion inside
+    a terminating namespace wakes the pass at once. Such a namespace still
+    wakes the Cluster object once a minute. Not yet run through
+    Conformance.
   - A client disconnect does not end its watch (reproduced locally; the
     abort is suspected never to reach the handler).
   - `ci/batch11` (the admission swaps) failed Conformance 3 of 3 on every

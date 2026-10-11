@@ -219,6 +219,41 @@ func TestDeleteTerminatingKeepsNamespaceWhilePDBRemains(t *testing.T) {
 	}
 }
 
+func stuckNamespaceRetry(t *testing.T, deletedAgo time.Duration) time.Duration {
+	t.Helper()
+	at := metav1.NewTime(time.Now().Add(-deletedAgo))
+	client := fake.NewSimpleClientset(
+		&v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "stuck", DeletionTimestamp: &at}, Spec: v1.NamespaceSpec{Finalizers: []v1.FinalizerName{v1.FinalizerKubernetes}}},
+		&v1.Service{ObjectMeta: metav1.ObjectMeta{Name: "held", Namespace: "stuck"}},
+	)
+	client.PrependReactor("delete", "services", func(clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, nil
+	})
+	result, err := NewDeleter(context.Background(), client, nil).DeleteTerminating(context.Background(), client, []string{"stuck"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Deleted != 0 || result.Remaining != 1 {
+		t.Fatalf("result=%+v", result)
+	}
+	return time.Duration(result.NextMs) * time.Millisecond
+}
+
+func TestDeleteTerminatingRetriesAJustDeletedNamespaceIn2s(t *testing.T) {
+	if got := stuckNamespaceRetry(t, 0); got != namespaceRetry {
+		t.Fatalf("retry in %s, want %s", got, namespaceRetry)
+	}
+}
+
+func TestDeleteTerminatingBacksOffANamespaceThatCannotFinishToOncePerMinute(t *testing.T) {
+	if got := stuckNamespaceRetry(t, 20*time.Second); got < 19*time.Second || got > 20*time.Second {
+		t.Fatalf("retry in %s after 20s of trying, want about 20s", got)
+	}
+	if got := stuckNamespaceRetry(t, 10*time.Minute); got != time.Minute {
+		t.Fatalf("retry in %s after 10m of trying, want 1m", got)
+	}
+}
+
 func TestDeleteTerminatingKeepsNamespaceWhileEndpointSliceRemains(t *testing.T) {
 	now := metav1.Now()
 	client := fake.NewSimpleClientset(
