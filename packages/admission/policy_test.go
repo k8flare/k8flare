@@ -400,8 +400,10 @@ func runOurPolicy(t *testing.T, phase string, cluster []runtime.Object, params [
 		Operation: string(admission.Create), Object: toMapObject(t, withKind(versioned, kind)), User: admitUser(diffCase{}.userInfo()),
 	})
 	var err error
-	if !resp.Allowed {
+	if !resp.Allowed && resp.Status != nil {
 		err = &apierrors.StatusError{ErrStatus: *resp.Status}
+	} else if !resp.Allowed {
+		err = errors.New(resp.Reason + ": " + resp.Message)
 	}
 	out := policyOutcomeFrom(err, resp.Warnings, resp.AuditAnnotations)
 	if err == nil && phase == "admit" {
