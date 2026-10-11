@@ -371,12 +371,12 @@ async function migrateStorage(env: Env): Promise<{ done: boolean; rewritten: num
 async function consumeAddons(batch: MessageBatch<QueueMessage | BucketChange>, env: Env): Promise<void> {
   const migrateOnly = batch.messages.every((m) => m.body.kind === "retry" && m.body.names?.includes("storage-migrate"));
   const addonsOK = migrateOnly || (await deployAddons(env));
-  const helmOK = migrateOnly || (await reconcileHelm(env));
-  const ok = addonsOK && helmOK;
+  const helm = migrateOnly ? { ok: true, nextMs: 0 } : await reconcileHelm(env);
+  const ok = addonsOK && helm.ok;
   const migration = await migrateStorage(env);
   const pending = migration ? migration.pending.length : 1;
-  console.log(`addons: ok=${ok} addons=${addonsOK} helm=${helmOK} storage-migrate rewritten=${migration?.rewritten ?? 0} pending=${pending} msgs=${batch.messages.length}`);
-  await applySends(env, (await followUp(env, { target: "addons", ok, pending })).sends);
+  console.log(`addons: ok=${ok} addons=${addonsOK} helm=${helm.ok} nextMs=${helm.nextMs} storage-migrate rewritten=${migration?.rewritten ?? 0} pending=${pending} msgs=${batch.messages.length}`);
+  await applySends(env, (await followUp(env, { target: "addons", ok, pending, nextMs: helm.nextMs })).sends);
   batch.ackAll();
 }
 

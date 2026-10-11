@@ -134,6 +134,11 @@ func followUp(in followIn) followResult {
 		} else if in.Pending > 0 {
 			out.Sends = append(out.Sends, retry("addons", nil, nil, []string{storageMigrateOnly}, "", refusedRetryS))
 		}
+		if in.OK && in.NextMs > 0 {
+			send := retry("addons", nil, nil, nil, "", ceilSeconds(in.NextMs))
+			send.Once = true
+			out.Sends = append(out.Sends, send)
+		}
 	case "leases":
 		delayMs := in.NextMs
 		if !in.HasResult {

@@ -52,36 +52,41 @@ type Controller struct {
 	Now          func() time.Time
 }
 
-func (c *Controller) Reconcile(ctx context.Context) error {
+func (c *Controller) Reconcile(ctx context.Context) (time.Time, error) {
 	charts, err := c.Client.Resource(helmChartsGVR).Namespace(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
 	if apierrors.IsNotFound(err) {
-		return nil
+		return time.Time{}, nil
 	}
 	if err != nil {
-		return err
+		return time.Time{}, err
 	}
 	configs := map[string]*helmv1.HelmChartConfig{}
 	list, err := c.Client.Resource(helmConfigsGVR).Namespace(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {
-		return err
+		return time.Time{}, err
 	}
 	if list != nil {
 		for i := range list.Items {
 			var config helmv1.HelmChartConfig
 			if err := runtime.DefaultUnstructuredConverter.FromUnstructured(list.Items[i].Object, &config); err != nil {
-				return err
+				return time.Time{}, err
 			}
 			configs[config.Namespace+"/"+config.Name] = &config
 		}
 	}
 	var errs []error
+	var wake time.Time
 	for i := range charts.Items {
 		u := &charts.Items[i]
-		if err := c.reconcileChart(ctx, u, configs[u.GetNamespace()+"/"+u.GetName()]); err != nil {
+		until, err := c.reconcileChart(ctx, u, configs[u.GetNamespace()+"/"+u.GetName()])
+		if err != nil {
 			errs = append(errs, fmt.Errorf("HelmChart %s/%s: %w", u.GetNamespace(), u.GetName(), err))
 		}
+		if !until.IsZero() && (wake.IsZero() || until.Before(wake)) {
+			wake = until
+		}
 	}
-	return errors.Join(errs...)
+	return wake, errors.Join(errs...)
 }
 
 func (c *Controller) now() time.Time {
@@ -134,33 +139,61 @@ func targetNamespace(chart *helmv1.HelmChart) string {
 	return chart.Namespace
 }
 
-func (c *Controller) reconcileChart(ctx context.Context, u *unstructured.Unstructured, config *helmv1.HelmChartConfig) error {
+type held struct {
+	message string
+}
+
+func (h *held) Error() string {
+	return h.message
+}
+
+func waitingUntil(err error) (time.Time, bool) {
+	var w *waiting
+	if errors.As(err, &w) {
+		return w.until, true
+	}
+	return time.Time{}, false
+}
+
+func (c *Controller) reconcileChart(ctx context.Context, u *unstructured.Unstructured, config *helmv1.HelmChartConfig) (time.Time, error) {
 	var chart helmv1.HelmChart
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &chart); err != nil {
-		return err
+		return time.Time{}, err
 	}
 	if !manages(&chart) {
-		return nil
+		return time.Time{}, nil
 	}
 	if chart.DeletionTimestamp != nil {
-		return c.uninstall(ctx, u, &chart)
+		err := c.uninstall(ctx, u, &chart)
+		if until, ok := waitingUntil(err); ok {
+			return until, nil
+		}
+		return time.Time{}, err
 	}
 	u, err := c.claim(ctx, u)
 	if err != nil {
-		return err
+		return time.Time{}, err
 	}
 	switch chart.Spec.HelmVersion {
 	case "", "v3":
 	default:
-		return c.setStatus(ctx, u, "Unsupported version", "Only Helm v3 charts are supported")
+		return time.Time{}, c.setStatus(ctx, u, "Unsupported version", "Only Helm v3 charts are supported")
 	}
-	if err := c.install(ctx, &chart, config); err != nil {
+	err = c.install(ctx, &chart, config)
+	if until, ok := waitingUntil(err); ok {
+		return until, c.setStatus(ctx, u, "", "")
+	}
+	var hold *held
+	if errors.As(err, &hold) {
+		return time.Time{}, c.setStatus(ctx, u, "Install failed", hold.message)
+	}
+	if err != nil {
 		if statusErr := c.setStatus(ctx, u, "Install failed", err.Error()); statusErr != nil {
-			return errors.Join(err, statusErr)
+			return time.Time{}, errors.Join(err, statusErr)
 		}
-		return err
+		return time.Time{}, err
 	}
-	return c.setStatus(ctx, u, "", "")
+	return time.Time{}, c.setStatus(ctx, u, "", "")
 }
 
 func (c *Controller) claim(ctx context.Context, u *unstructured.Unstructured) (*unstructured.Unstructured, error) {
@@ -203,11 +236,34 @@ func (c *Controller) setStatus(ctx context.Context, u *unstructured.Unstructured
 	return err
 }
 
-func configHash(chart *helmv1.HelmChart, config *helmv1.HelmChartConfig) (string, error) {
+func (c *Controller) trackedSecrets(ctx context.Context, chart *helmv1.HelmChart, config *helmv1.HelmChartConfig) ([]map[string][]byte, error) {
+	refs := chart.Spec.ValuesSecrets
+	if config != nil {
+		refs = append(refs[:len(refs):len(refs)], config.Spec.ValuesSecrets...)
+	}
+	var tracked []map[string][]byte
+	for _, ref := range refs {
+		if ref.IgnoreUpdates || ref.Name == "chart-values-"+chart.Name {
+			continue
+		}
+		data, err := c.secrets(ctx, chart.Namespace, ref.Name)
+		if apierrors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("valuesSecrets %s: %w", ref.Name, err)
+		}
+		tracked = append(tracked, data)
+	}
+	return tracked, nil
+}
+
+func configHash(chart *helmv1.HelmChart, config *helmv1.HelmChartConfig, secrets []map[string][]byte) (string, error) {
 	input := struct {
-		Chart  helmv1.HelmChartSpec        `json:"chart"`
-		Config *helmv1.HelmChartConfigSpec `json:"config,omitempty"`
-	}{Chart: chart.Spec}
+		Chart   helmv1.HelmChartSpec        `json:"chart"`
+		Config  *helmv1.HelmChartConfigSpec `json:"config,omitempty"`
+		Secrets []map[string][]byte         `json:"secrets,omitempty"`
+	}{Chart: chart.Spec, Secrets: secrets}
 	if config != nil {
 		input.Config = &config.Spec
 	}
@@ -228,9 +284,24 @@ func latestDeployed(history []*record) *record {
 	return nil
 }
 
+func failurePolicy(chart *helmv1.HelmChart, config *helmv1.HelmChartConfig) helmv1.FailurePolicy {
+	policy := helmv1.FailurePolicyReinstall
+	if chart.Spec.FailurePolicy != "" {
+		policy = chart.Spec.FailurePolicy
+	}
+	if config != nil && config.Spec.FailurePolicy != "" {
+		policy = config.Spec.FailurePolicy
+	}
+	return policy
+}
+
 func (c *Controller) install(ctx context.Context, chart *helmv1.HelmChart, config *helmv1.HelmChartConfig) error {
 	name, namespace := chart.Name, targetNamespace(chart)
-	hash, err := configHash(chart, config)
+	tracked, err := c.trackedSecrets(ctx, chart, config)
+	if err != nil {
+		return err
+	}
+	hash, err := configHash(chart, config, tracked)
 	if err != nil {
 		return err
 	}
@@ -239,11 +310,32 @@ func (c *Controller) install(ctx context.Context, chart *helmv1.HelmChart, confi
 	if err != nil {
 		return err
 	}
+	timeout := hookTimeout(chart)
 	var latest *record
 	if len(history) > 0 {
 		latest = history[len(history)-1]
-		if latest.release.Info.Status == release.StatusDeployed && latest.configHash() == hash {
-			return nil
+		switch latest.release.Info.Status {
+		case release.StatusPendingInstall, release.StatusPendingUpgrade:
+			return c.resume(ctx, chart, latest, history, timeout)
+		case release.StatusUninstalling:
+			if err := c.runUninstall(ctx, history, timeout); err != nil {
+				return err
+			}
+			history, latest = nil, nil
+		case release.StatusDeployed:
+			if latest.configHash() == hash {
+				return nil
+			}
+		case release.StatusFailed:
+			switch failurePolicy(chart, config) {
+			case helmv1.FailurePolicyAbort:
+				return &held{message: "Release status is 'failed' and failure policy is 'abort', not 'reinstall'; waiting for operator intervention"}
+			case helmv1.FailurePolicyReinstall:
+				if err := c.runUninstall(ctx, history, timeout); err != nil {
+					return err
+				}
+				history, latest = nil, nil
+			}
 		}
 	}
 	values, err := MergedValues(ctx, chart, config, c.secrets)
@@ -267,17 +359,21 @@ func (c *Controller) install(ctx context.Context, chart *helmv1.HelmChart, confi
 			revision, retry = latest.release.Version, true
 		}
 	}
+	upgrade := latestDeployed(history) != nil
 	rendered, err := Render(RenderInput{
 		Archive:      archive,
 		ReleaseName:  name,
 		Namespace:    namespace,
 		Revision:     revision,
-		IsUpgrade:    latestDeployed(history) != nil,
+		IsUpgrade:    upgrade,
 		Values:       values,
 		Capabilities: caps,
 		Lookup:       c.Lookup,
 	})
 	if err != nil {
+		return err
+	}
+	if err := c.prepare(ctx, chart, rendered); err != nil {
 		return err
 	}
 	now := helmtime.Time{Time: c.now()}
@@ -289,25 +385,33 @@ func (c *Controller) install(ctx context.Context, chart *helmv1.HelmChart, confi
 		Config:    rendered.Values,
 		Manifest:  rendered.Manifest,
 		Hooks:     rendered.Hooks,
-		Info:      &release.Info{FirstDeployed: now, LastDeployed: now, Status: release.StatusDeployed, Description: "Install complete", Notes: rendered.Notes},
+		Info:      &release.Info{FirstDeployed: now, LastDeployed: now, Status: release.StatusPendingInstall, Description: "Initial install underway", Notes: rendered.Notes},
 		Labels:    map[string]string{KeyConfigHash: hash},
+	}
+	if upgrade {
+		rel.Info.Status = release.StatusPendingUpgrade
+		rel.Info.Description = "Preparing upgrade"
 	}
 	if latest != nil {
 		rel.Info.FirstDeployed = latest.release.Info.FirstDeployed
-		rel.Info.Description = "Upgrade complete"
 	}
-	if applyErr := c.applyRelease(ctx, chart, rendered, history); applyErr != nil {
-		rel.Info.Status = release.StatusFailed
-		rel.Info.Description = fmt.Sprintf("failed: %v", applyErr)
-		if err := c.saveFailed(ctx, rel, latest, retry); err != nil {
-			return errors.Join(applyErr, err)
+	var rec *record
+	if retry {
+		latest.release = rel
+		if err := releases.update(ctx, latest); err != nil {
+			return err
 		}
-		return applyErr
+		rec = latest
+	} else {
+		if rec, err = releases.create(ctx, rel); err != nil {
+			return err
+		}
+		history = append(history[:len(history):len(history)], rec)
 	}
-	return c.saveDeployed(ctx, rel, history, latest, retry)
+	return c.resume(ctx, chart, rec, history, timeout)
 }
 
-func (c *Controller) applyRelease(ctx context.Context, chart *helmv1.HelmChart, rendered *Rendered, history []*record) error {
+func (c *Controller) prepare(ctx context.Context, chart *helmv1.HelmChart, rendered *Rendered) error {
 	name, namespace := chart.Name, targetNamespace(chart)
 	cl := c.cluster()
 	if chart.Spec.CreateNamespace {
@@ -328,28 +432,97 @@ func (c *Controller) applyRelease(ctx context.Context, chart *helmv1.HelmChart, 
 			}
 		}
 	}
+	if chart.Spec.TakeOwnership {
+		return nil
+	}
+	objs, err := addons.Decode([]byte(rendered.Manifest))
+	if err != nil {
+		return fmt.Errorf("decode release manifest: %w", err)
+	}
+	return cl.checkOwnership(ctx, objs, name, namespace)
+}
+
+func (c *Controller) resume(ctx context.Context, chart *helmv1.HelmChart, rec *record, history []*record, timeout time.Duration) error {
+	rel := rec.release
+	pre, post, description := release.HookPreInstall, release.HookPostInstall, "Install complete"
+	if rel.Info.Status == release.StatusPendingUpgrade {
+		pre, post, description = release.HookPreUpgrade, release.HookPostUpgrade, "Upgrade complete"
+	}
+	hooks := c.hookRun(rec, timeout)
+	if err := hooks.event(ctx, pre); err != nil {
+		return c.failOnHook(ctx, rec, err)
+	}
+	if !hooks.started(post) {
+		if err := c.applyRelease(ctx, chart, rel, others(history, rec)); err != nil {
+			return c.failRelease(ctx, rec, err)
+		}
+	}
+	if err := hooks.event(ctx, post); err != nil {
+		return c.failOnHook(ctx, rec, err)
+	}
+	rel.Info.Status = release.StatusDeployed
+	rel.Info.Description = description
+	rel.Info.LastDeployed = helmtime.Time{Time: c.now()}
+	return c.saveDeployed(ctx, rec, history)
+}
+
+func (c *Controller) failOnHook(ctx context.Context, rec *record, err error) error {
+	var failure *hookFailure
+	if errors.As(err, &failure) {
+		return c.failRelease(ctx, rec, err)
+	}
+	return err
+}
+
+func (c *Controller) failRelease(ctx context.Context, rec *record, cause error) error {
+	rec.release.Info.Status = release.StatusFailed
+	rec.release.Info.Description = fmt.Sprintf("failed: %v", cause)
+	if err := c.store().update(ctx, rec); err != nil {
+		return errors.Join(cause, err)
+	}
+	return cause
+}
+
+func others(history []*record, current *record) []*record {
+	var rest []*record
+	for _, rec := range history {
+		if rec.release.Version != current.release.Version {
+			rest = append(rest, rec)
+		}
+	}
+	return rest
+}
+
+func (c *Controller) applyRelease(ctx context.Context, chart *helmv1.HelmChart, rel *release.Release, history []*record) error {
+	cl := c.cluster()
+	objs, err := addons.Decode([]byte(rel.Manifest))
+	if err != nil {
+		return fmt.Errorf("decode release manifest: %w", err)
+	}
 	keep := map[string]bool{}
-	for _, m := range rendered.Manifests {
-		objs, err := addons.Decode([]byte(m.Content))
-		if err != nil {
-			return fmt.Errorf("decode %s: %w", m.Name, err)
+	for _, obj := range objs {
+		if err := cl.applyOwned(ctx, obj, rel.Name, rel.Namespace); err != nil {
+			return err
 		}
-		for _, obj := range objs {
-			if err := cl.applyOwned(ctx, obj, name, namespace, chart.Spec.TakeOwnership); err != nil {
-				return err
-			}
-			keep[objectKey(obj)] = true
-		}
+		keep[objectKey(obj)] = true
 	}
-	var previous []*unstructured.Unstructured
+	previous, err := releaseObjects(history)
+	if err != nil {
+		return err
+	}
+	return cl.remove(ctx, previous, rel.Namespace, keep)
+}
+
+func releaseObjects(history []*record) ([]*unstructured.Unstructured, error) {
+	var objs []*unstructured.Unstructured
 	for _, rec := range previousManifests(history) {
-		objs, err := addons.Decode([]byte(rec.release.Manifest))
+		decoded, err := addons.Decode([]byte(rec.release.Manifest))
 		if err != nil {
-			return fmt.Errorf("decode release %d: %w", rec.release.Version, err)
+			return nil, fmt.Errorf("decode release %d: %w", rec.release.Version, err)
 		}
-		previous = append(previous, objs...)
+		objs = append(objs, decoded...)
 	}
-	return cl.remove(ctx, previous, namespace, keep)
+	return objs, nil
 }
 
 func previousManifests(history []*record) []*record {
@@ -363,61 +536,68 @@ func previousManifests(history []*record) []*record {
 	return records
 }
 
-func (c *Controller) saveFailed(ctx context.Context, rel *release.Release, latest *record, retry bool) error {
+func (c *Controller) saveDeployed(ctx context.Context, rec *record, history []*record) error {
 	releases := c.store()
-	if retry {
-		latest.release = rel
-		return releases.update(ctx, latest)
-	}
-	return releases.create(ctx, rel)
-}
-
-func (c *Controller) saveDeployed(ctx context.Context, rel *release.Release, history []*record, latest *record, retry bool) error {
-	releases := c.store()
-	if retry {
-		latest.release = rel
-		if err := releases.update(ctx, latest); err != nil {
-			return err
-		}
-	} else if err := releases.create(ctx, rel); err != nil {
+	if err := releases.update(ctx, rec); err != nil {
 		return err
 	}
-	for _, rec := range history {
-		if rec.release.Info.Status == release.StatusDeployed && rec.release.Version != rel.Version {
-			if err := releases.supersede(ctx, rec); err != nil {
+	for _, other := range history {
+		if other != rec && other.release.Info.Status == release.StatusDeployed {
+			if err := releases.supersede(ctx, other); err != nil {
 				return err
 			}
 		}
 	}
-	if !retry {
-		history = append(history[:len(history):len(history)], &record{release: rel})
-	}
 	return releases.trim(ctx, history)
+}
+
+func (c *Controller) runUninstall(ctx context.Context, history []*record, timeout time.Duration) error {
+	rec := history[len(history)-1]
+	releases := c.store()
+	if rec.release.Info.Status != release.StatusUninstalling {
+		rec.release.Info.Status = release.StatusUninstalling
+		rec.release.Info.Deleted = helmtime.Time{Time: c.now()}
+		rec.release.Info.Description = "Deletion in progress (or silently failed)"
+		if err := releases.update(ctx, rec); err != nil {
+			return err
+		}
+	}
+	hooks := c.hookRun(rec, timeout)
+	if err := hooks.event(ctx, release.HookPreDelete); err != nil {
+		return err
+	}
+	if !hooks.started(release.HookPostDelete) {
+		objs, err := releaseObjects(history)
+		if err != nil {
+			return err
+		}
+		if err := c.cluster().remove(ctx, objs, rec.release.Namespace, nil); err != nil && !apierrors.HasStatusCause(err, corev1.NamespaceTerminatingCause) {
+			return err
+		}
+	}
+	postErr := hooks.event(ctx, release.HookPostDelete)
+	if _, ok := waitingUntil(postErr); ok {
+		return postErr
+	}
+	for _, rec := range history {
+		if err := releases.delete(ctx, rec); err != nil {
+			return err
+		}
+	}
+	return postErr
 }
 
 func (c *Controller) uninstall(ctx context.Context, u *unstructured.Unstructured, chart *helmv1.HelmChart) error {
 	if !slices.Contains(u.GetFinalizers(), Finalizer) {
 		return nil
 	}
-	namespace := targetNamespace(chart)
-	releases := c.store()
-	history, err := releases.history(ctx, namespace, chart.Name)
+	history, err := c.store().history(ctx, targetNamespace(chart), chart.Name)
 	if err != nil {
 		return err
 	}
-	var objs []*unstructured.Unstructured
-	for _, rec := range previousManifests(history) {
-		decoded, err := addons.Decode([]byte(rec.release.Manifest))
-		if err != nil {
-			return fmt.Errorf("decode release %d: %w", rec.release.Version, err)
-		}
-		objs = append(objs, decoded...)
-	}
-	if err := c.cluster().remove(ctx, objs, namespace, nil); err != nil && !apierrors.HasStatusCause(err, corev1.NamespaceTerminatingCause) {
-		return err
-	}
-	for _, rec := range history {
-		if err := releases.delete(ctx, rec); err != nil {
+	if len(history) > 0 {
+		var failure *hookFailure
+		if err := c.runUninstall(ctx, history, hookTimeout(chart)); err != nil && !errors.As(err, &failure) {
 			return err
 		}
 	}

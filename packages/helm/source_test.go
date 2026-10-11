@@ -3,6 +3,7 @@ package helm
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -152,6 +153,43 @@ func TestFetchFromOCIRegistryWithBearerToken(t *testing.T) {
 		}
 		if string(got) != string(archive) {
 			t.Fatalf("version %q: archive differs", version)
+		}
+	}
+}
+
+func TestFetchFromOCIRegistryWithDockerRegistrySecret(t *testing.T) {
+	archive := readTestdata(t, "demo-0.1.0.tgz")
+	registry := ociRegistry(t, archive)
+	host := strings.TrimPrefix(registry.URL, "http://")
+	basic := func(user, password string) string { return base64.StdEncoding.EncodeToString([]byte(user + ":" + password)) }
+	configs := map[string]map[string]map[string]string{
+		"auth":          {"other.example": {"auth": basic("nobody", "x")}, host: {"auth": basic("puller", "pw")}},
+		"legacy key":    {"https://" + host + "/v1/": {"username": "puller", "password": "pw"}},
+		"registrytoken": {host: {"registrytoken": "t0k"}},
+	}
+	for name, auths := range configs {
+		config, _ := json.Marshal(map[string]any{"auths": auths})
+		secrets := func(_ context.Context, namespace, secret string) (map[string][]byte, error) {
+			if namespace != "kube-system" || secret != "regcred" {
+				t.Fatalf("secret %s/%s", namespace, secret)
+			}
+			return map[string][]byte{".dockerconfigjson": config}, nil
+		}
+		chart := &helmv1.HelmChart{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system"},
+			Spec: helmv1.HelmChartSpec{
+				Chart:                "oci://" + host + "/charts/demo",
+				Version:              "0.1.0",
+				PlainHTTP:            true,
+				DockerRegistrySecret: &corev1.LocalObjectReference{Name: "regcred"},
+			},
+		}
+		got, err := (&Source{HTTP: http.DefaultClient, Secrets: secrets}).Fetch(context.Background(), chart)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if string(got) != string(archive) {
+			t.Fatalf("%s: archive differs", name)
 		}
 	}
 }

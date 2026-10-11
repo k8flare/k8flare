@@ -31,7 +31,7 @@ type Source struct {
 }
 
 type credentials struct {
-	username, password string
+	username, password, token string
 }
 
 func (s *Source) Fetch(ctx context.Context, chart *helmv1.HelmChart) ([]byte, error) {
@@ -45,6 +45,13 @@ func (s *Source) Fetch(ctx context.Context, chart *helmv1.HelmChart) ([]byte, er
 	}
 	switch {
 	case strings.HasPrefix(spec.Chart, "oci://"):
+		registryCreds, found, err := s.dockerCredentials(ctx, chart)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			creds = registryCreds
+		}
 		return s.pullOCI(ctx, spec, creds)
 	case strings.Contains(spec.Chart, "://"):
 		return s.download(ctx, spec.Chart, creds)
@@ -66,6 +73,67 @@ func (s *Source) credentials(ctx context.Context, chart *helmv1.HelmChart) (cred
 		return credentials{}, fmt.Errorf("authSecret %s: %w", chart.Spec.AuthSecret.Name, err)
 	}
 	return credentials{username: string(data["username"]), password: string(data["password"])}, nil
+}
+
+func (s *Source) dockerCredentials(ctx context.Context, chart *helmv1.HelmChart) (credentials, bool, error) {
+	ref := chart.Spec.DockerRegistrySecret
+	if ref == nil {
+		return credentials{}, false, nil
+	}
+	if s.Secrets == nil {
+		return credentials{}, false, fmt.Errorf("dockerRegistrySecret %s: no secret reader", ref.Name)
+	}
+	data, err := s.Secrets(ctx, chart.Namespace, ref.Name)
+	if err != nil {
+		return credentials{}, false, fmt.Errorf("dockerRegistrySecret %s: %w", ref.Name, err)
+	}
+	var config struct {
+		Auths map[string]struct {
+			Auth          string `json:"auth"`
+			Username      string `json:"username"`
+			Password      string `json:"password"`
+			RegistryToken string `json:"registrytoken"`
+		} `json:"auths"`
+	}
+	if err := json.Unmarshal(data[".dockerconfigjson"], &config); err != nil {
+		return credentials{}, false, fmt.Errorf("dockerRegistrySecret %s: %w", ref.Name, err)
+	}
+	ociRef, err := url.Parse(chart.Spec.Chart)
+	if err != nil {
+		return credentials{}, false, err
+	}
+	entry, found := config.Auths[ociRef.Host]
+	if !found {
+		for addr, candidate := range config.Auths {
+			if dockerHostname(addr) == ociRef.Host {
+				entry, found = candidate, true
+				break
+			}
+		}
+	}
+	if !found {
+		return credentials{}, false, nil
+	}
+	creds := credentials{username: entry.Username, password: entry.Password, token: entry.RegistryToken}
+	if entry.Auth != "" {
+		decoded, err := base64.StdEncoding.DecodeString(entry.Auth)
+		if err != nil {
+			return credentials{}, false, fmt.Errorf("dockerRegistrySecret %s: auth for %s: %w", ref.Name, ociRef.Host, err)
+		}
+		username, password, ok := strings.Cut(string(decoded), ":")
+		if !ok {
+			return credentials{}, false, fmt.Errorf("dockerRegistrySecret %s: auth for %s is not base64(username:password)", ref.Name, ociRef.Host)
+		}
+		creds.username, creds.password = username, password
+	}
+	return creds, true, nil
+}
+
+func dockerHostname(addr string) string {
+	addr = strings.TrimPrefix(addr, "http://")
+	addr = strings.TrimPrefix(addr, "https://")
+	addr, _, _ = strings.Cut(addr, "/")
+	return addr
 }
 
 func (s *Source) get(ctx context.Context, target string, creds credentials, limit int64, headers map[string]string) ([]byte, *http.Response, error) {
@@ -213,7 +281,7 @@ func (s *Source) pullOCI(ctx context.Context, spec helmv1.HelmChartSpec, creds c
 		scheme = "http"
 	}
 	repository := strings.TrimPrefix(ref.Path, "/")
-	registry := &registryClient{source: s, base: scheme + "://" + ref.Host + "/v2/" + repository, creds: creds}
+	registry := &registryClient{source: s, base: scheme + "://" + ref.Host + "/v2/" + repository, creds: creds, token: creds.token}
 	tag := strings.ReplaceAll(spec.Version, "+", "_")
 	if _, err := semver.StrictNewVersion(spec.Version); err != nil {
 		tags, err := registry.tags(ctx)

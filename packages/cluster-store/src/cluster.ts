@@ -31,6 +31,8 @@ const NAMESPACE_PREFIX = "/registry/namespaces/";
 const ACCOUNT_PREFIXES = [NAMESPACE_PREFIX, "/registry/serviceaccounts/", "/registry/configmaps/"];
 const ADDON_PREFIX = "/registry/k3s.cattle.io/addons/";
 const HELM_PREFIXES = ["/registry/helm.cattle.io/helmcharts/", "/registry/helm.cattle.io/helmchartconfigs/"];
+const HELM_HOOK_PREFIXES = ["/registry/jobs/", "/registry/pods/"];
+const SECRET_PREFIX = "/registry/secrets/";
 const CRD_PREFIX = "/registry/apiextensions.k8s.io/customresourcedefinitions/";
 const ATTACH_PREFIXES = ["/registry/pods/", "/registry/minions/", "/registry/nodes/", "/registry/persistentvolumeclaims/", "/registry/persistentvolumes/", "/registry/storage.k8s.io/", "/registry/storageclasses/"];
 const SCHEDULER_VOLUME_PREFIXES = ["/registry/persistentvolumeclaims/", "/registry/persistentvolumes/", "/registry/storageclasses/", "/registry/csinodes/", "/registry/csidrivers/", "/registry/csistoragecapacities/", "/registry/volumeattachments/", "/registry/storage.k8s.io/", "/registry/resourceclaims/", "/registry/resourceslices/", "/registry/deviceclasses/"];
@@ -298,7 +300,7 @@ export class Cluster extends DurableObject<Env> {
         if (body.once) {
           const now = Date.now();
           const rows = this.ctx.storage.sql.exec("SELECT due FROM deadlines WHERE target = ?", body.target).toArray();
-          if (rows.length > 0 && (rows[0].due as number) > now) {
+          if (rows.length > 0 && (rows[0].due as number) > now && (rows[0].due as number) <= now + body.delayMs) {
             return Response.json({ ok: true, booked: false });
           }
           this.ctx.storage.sql.exec(
@@ -694,6 +696,8 @@ export class Cluster extends DurableObject<Env> {
     if (name.startsWith(CRD_PREFIX)) routes.push("crds");
     if (name.startsWith(ADDON_PREFIX) && type === "deleted") routes.push("addons");
     if (HELM_PREFIXES.some((p) => name.startsWith(p))) routes.push("addons");
+    if (HELM_HOOK_PREFIXES.some((p) => name.startsWith(p)) && helmHookSettledOrGone(type, value, prev)) routes.push("addons");
+    if (name.startsWith(SECRET_PREFIX) && this.namedInHelmValues(name)) routes.push("addons");
     if (isExtensionKey(name, value, type)) routes.push("extensions");
     if (type === "deleted" || collectable(value, type === "modified" && prev ? prev.value : null)) routes.push("gc");
     if (name.startsWith("/registry/pods/")) {
@@ -709,6 +713,16 @@ export class Cluster extends DurableObject<Env> {
       this.ctx.storage.sql.exec("INSERT INTO outbox (target, rev, key, type) VALUES (?, ?, ?, ?)", target, rev, name, type);
     }
     if (routes.length > 0) this.ctx.waitUntil(this.flushOutbox());
+  }
+
+  private namedInHelmValues(name: string): boolean {
+    const [namespace, secret] = name.slice(SECRET_PREFIX.length).split("/");
+    return HELM_PREFIXES.some((prefix) =>
+      this.latest(`${prefix}${namespace}/`, false, "", Number.MAX_SAFE_INTEGER).some((kv) => {
+        const obj = decodeJSON(kv.value);
+        return (obj?.spec?.valuesSecrets ?? []).some((ref: any) => ref.name === secret && !ref.ignoreUpdates && ref.name !== `chart-values-${obj?.metadata?.name}`);
+      }),
+    );
   }
 
   private async checkLeaseLater(node: string): Promise<void> {
@@ -896,6 +910,19 @@ function ownerMeta(value: Uint8Array): { ownerReferences?: unknown[]; finalizers
 function wantsContainers(value: Uint8Array): boolean {
   const pod = decodeJSON(value);
   return pod?.metadata?.annotations?.["k8flare.com/compute"] === "containers" || pod?.spec?.nodeSelector?.["k8flare.com/backend"] === "containers" || pod?.spec?.nodeName === "cloudflare" || pod?.spec?.schedulerName === "k8flare-containers";
+}
+
+function helmHookSettled(obj: Record<string, any>): boolean {
+  if (obj.status?.phase === "Succeeded" || obj.status?.phase === "Failed") return true;
+  return (obj.status?.conditions ?? []).some((c: any) => (c.type === "Complete" || c.type === "Failed") && c.status === "True");
+}
+
+function helmHookSettledOrGone(type: string, value: Uint8Array, prev: KV | null): boolean {
+  const obj = decodeJSON(value);
+  if (!obj?.metadata?.annotations?.["helm.sh/hook"]) return false;
+  if (type === "deleted") return true;
+  const before = prev ? decodeJSON(prev.value) : null;
+  return helmHookSettled(obj) !== Boolean(before && helmHookSettled(before));
 }
 
 function podBound(value: Uint8Array): boolean {
