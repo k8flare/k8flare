@@ -332,6 +332,7 @@ export class Cluster extends DurableObject<Env> {
         const at = parseRestoreTime(url.searchParams.get("to") ?? "");
         if (at === null) return new Response("invalid to", { status: 400 });
         if (at < Date.now() - PITR_WINDOW_MS) return new Response("to is more than 30 days ago", { status: 400 });
+        if (at > Date.now()) return new Response("to is in the future", { status: 400 });
         const bookmark = await this.ctx.storage.getBookmarkForTime(at);
         await this.ctx.storage.onNextSessionRestoreBookmark(bookmark);
         return Response.json({ ok: true, bookmark, to: new Date(at).toISOString() });

@@ -345,3 +345,25 @@ test("point-in-time restore books a bookmark within the last 30 days and refuses
   assert.equal(data.to, new Date(at).toISOString());
   assert.equal(r.bookmark.next, data.bookmark);
 });
+
+test("point-in-time restore refuses a time in the future and a time that does not parse", async (t) => {
+  clock(t);
+  const r = rig();
+  await r.settle();
+
+  const future = await r.post(`/restore?to=${start + 1}`);
+  assert.equal(future.status, 400);
+  assert.equal(await future.text(), "to is in the future");
+  assert.equal(r.bookmark.next, null);
+
+  for (const to of ["yesterday", "", "2026-13-45T00:00:00Z"]) {
+    const res = await r.post(`/restore?to=${encodeURIComponent(to)}`);
+    assert.equal(res.status, 400, to);
+    assert.equal(await res.text(), "invalid to", to);
+  }
+  assert.equal(r.bookmark.next, null);
+
+  const now = await r.post(`/restore?to=${start}`);
+  assert.equal(now.status, 200);
+  assert.equal((await now.json()).bookmark, `bookmark-${start}`);
+});

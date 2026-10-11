@@ -359,10 +359,11 @@ Decided on 2026-10-01, with the owner:
   cluster can only restore an old one's snapshot if it binds the same
   bucket, and `snapshot list` shows only its own `CLUSTER_UID` prefix, so
   the key has to come from the old cluster. Point-in-time restore refuses a
-  `to` more than 30 days back; `getBookmarkForTime` and
+  `to` more than 30 days back, in the future, or that does not parse;
+  `getBookmarkForTime` and
   `onNextSessionRestoreBookmark` are fakes in the tests, `/restore/apply`
-  (`ctx.abort`) has no test, none of them has run against a deployed
-  Durable Object, and the behaviour for a `to` in the future is unknown. It rewinds the whole Durable Object,
+  (`ctx.abort`) has no test, and none of them has run against a deployed
+  Durable Object. It rewinds the whole Durable Object,
   `/vault/` included. Snapshots go to `PODS_R2`, the bucket pods use. No
   Logpush is configured.
 - Bootstrap-token Secrets now authenticate API bearer requests and k3s agent
