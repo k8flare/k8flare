@@ -3,6 +3,7 @@ package workloads
 import (
 	"context"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -646,7 +647,8 @@ func builtinNamespacedResources() []*metav1.APIResourceList {
 var builtinKinds = testrestmapper.TestOnlyStaticRESTMapper(scheme.Scheme)
 
 type clientsetMetadata struct {
-	client *fake.Clientset
+	client                 *fake.Clientset
+	beforeDeleteCollection func(schema.GroupVersionResource)
 }
 
 func (m *clientsetMetadata) Resource(gvr schema.GroupVersionResource) metadata.Getter {
@@ -690,6 +692,9 @@ func (r clientsetMetadataResource) List(ctx context.Context, opts metav1.ListOpt
 }
 
 func (r clientsetMetadataResource) DeleteCollection(ctx context.Context, opts metav1.DeleteOptions, listOpts metav1.ListOptions) error {
+	if r.m.beforeDeleteCollection != nil {
+		r.m.beforeDeleteCollection(r.gvr)
+	}
 	_, err := r.m.client.Invokes(clienttesting.NewDeleteCollectionActionWithOptions(r.gvr, r.ns, opts, listOpts), nil)
 	return err
 }
@@ -860,5 +865,56 @@ func TestDeleteTerminatingSendsAsManyRequestsForFourHundredObjectsAsForTen(t *te
 	t.Logf("requests to delete a namespace holding 10 pod templates: %d, holding 400: %d", few, many)
 	if many != few {
 		t.Fatalf("%d requests for 400 pod templates, %d for 10, want the same", many, few)
+	}
+}
+
+func TestDeleteTerminatingLeavesANamespaceToThePassAlreadyDeletingIt(t *testing.T) {
+	now := metav1.Now()
+	client, meta := sharedCluster(t,
+		&v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "gone", DeletionTimestamp: &now}, Spec: v1.NamespaceSpec{Finalizers: []v1.FinalizerName{v1.FinalizerKubernetes}}},
+		&v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "gone"}},
+		&v1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "test-configmap", Namespace: "gone"}},
+	)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var held atomic.Bool
+	meta.beforeDeleteCollection = func(schema.GroupVersionResource) {
+		if held.CompareAndSwap(false, true) {
+			close(entered)
+			<-release
+		}
+	}
+	d := NewDeleter(client, meta)
+	firstDone := make(chan *NamespaceResult, 1)
+	go func() {
+		result, err := d.DeleteTerminating(context.Background(), client, []string{"gone"})
+		if err != nil {
+			t.Error(err)
+		}
+		firstDone <- result
+	}()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first pass never swept the namespace")
+	}
+	second, err := d.DeleteTerminating(context.Background(), client, []string{"gone"})
+	close(release)
+	first := <-firstDone
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Deleted != 1 || second.Deleted != 0 || second.Remaining != 1 || second.NextMs <= 0 {
+		t.Fatalf("first=%+v second=%+v", first, second)
+	}
+	sweeps := map[string]int{}
+	for _, action := range client.Actions() {
+		if action.GetVerb() == "delete-collection" {
+			sweeps[action.GetResource().Resource]++
+		}
+	}
+	for resource, n := range sweeps {
+		if n != 1 {
+			t.Fatalf("%s swept %d times by two overlapping passes, want once: %v", resource, n, sweeps)
+		}
 	}
 }

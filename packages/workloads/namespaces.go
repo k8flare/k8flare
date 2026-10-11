@@ -87,10 +87,28 @@ func NamespaceNames(msgs []NamespaceMessage) []string {
 type Deleter struct {
 	client kubernetes.Interface
 	meta   metadata.Interface
+	mu     sync.Mutex
+	busy   map[string]bool
 }
 
 func NewDeleter(client kubernetes.Interface, meta metadata.Interface) *Deleter {
-	return &Deleter{client: client, meta: meta}
+	return &Deleter{client: client, meta: meta, busy: map[string]bool{}}
+}
+
+func (d *Deleter) claim(name string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.busy[name] {
+		return false
+	}
+	d.busy[name] = true
+	return true
+}
+
+func (d *Deleter) release(name string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.busy, name)
 }
 
 func (d *Deleter) deleteContent(ctx context.Context, name string) error {
@@ -268,6 +286,10 @@ func (d *Deleter) deleteOne(ctx context.Context, client kubernetes.Interface, na
 	if ns.DeletionTimestamp == nil {
 		return deleteOutcome{}
 	}
+	if !d.claim(ns.Name) {
+		return remainingAfter(namespaceBackoff(ns))
+	}
+	defer d.release(ns.Name)
 	if err := d.deleteContent(ctx, ns.Name); err != nil {
 		var remain *deletion.ResourcesRemainingError
 		if errors.As(err, &remain) {
