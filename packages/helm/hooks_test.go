@@ -6,11 +6,13 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/base64"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"helm.sh/helm/v3/pkg/release"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -233,6 +235,22 @@ func TestInstallHooksRunInWeightOrderAndWaitAcrossPasses(t *testing.T) {
 	}
 	if !exists(client, podsGVR, "apps", "hooked-post") || !exists(client, configMapsGVR, "apps", "hooked-pre-config") {
 		t.Fatal("hooks without a delete policy were removed")
+	}
+}
+
+func TestAnAPIErrorWhileCheckingAHookLeavesTheReleasePending(t *testing.T) {
+	client := newFakeClient(hookedChart(t, map[string]string{"app.yaml": appTemplate, "pre-job.yaml": preJobTemplate}, nil))
+	c, _ := newHookController(client)
+	reconcile(t, c)
+	client.PrependReactor("get", "jobs", func(clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewInternalError(errors.New("etcd hiccup"))
+	})
+	if _, err := c.Reconcile(context.Background()); err == nil || !strings.Contains(err.Error(), "etcd hiccup") {
+		t.Fatalf("err = %v, want the API error", err)
+	}
+	rel := lastRelease(t, c)
+	if rel.Info.Status != release.StatusPendingInstall || rel.Hooks[0].LastRun.Phase != release.HookPhaseRunning {
+		t.Fatalf("release = %v, hook = %v; want the hook still running", rel.Info.Status, rel.Hooks[0].LastRun.Phase)
 	}
 }
 

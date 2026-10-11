@@ -103,25 +103,31 @@ func (r *hookRun) event(ctx context.Context, event release.HookEvent) error {
 			if len(h.DeletePolicies) == 0 {
 				h.DeletePolicies = []release.HookDeletePolicy{release.HookBeforeHookCreation}
 			}
-			created, err := r.start(ctx, h)
+			created, createErr, err := r.start(ctx, h)
 			if err != nil {
-				return r.fail(ctx, hooks, i, event, err)
+				return r.keep(ctx, progressed, err)
+			}
+			if createErr != nil {
+				return r.fail(ctx, hooks, i, event, createErr)
 			}
 			if !created {
-				return r.wait(ctx, progressed, time.Time{})
+				return r.keep(ctx, progressed, &waiting{})
 			}
 			progressed = true
 		}
-		done, err := r.done(ctx, h)
-		deadline := h.LastRun.StartedAt.Time.Add(r.timeout)
-		if err == nil && !done && !r.now().Before(deadline) {
-			err = errHookTimeout
-		}
+		done, failed, err := r.done(ctx, h)
 		if err != nil {
-			return r.fail(ctx, hooks, i, event, err)
+			return r.keep(ctx, progressed, err)
+		}
+		deadline := h.LastRun.StartedAt.Time.Add(r.timeout)
+		if failed == nil && !done && !r.now().Before(deadline) {
+			failed = errHookTimeout
+		}
+		if failed != nil {
+			return r.fail(ctx, hooks, i, event, failed)
 		}
 		if !done {
-			return r.wait(ctx, progressed, deadline)
+			return r.keep(ctx, progressed, &waiting{until: deadline})
 		}
 		h.LastRun.CompletedAt = helmtime.Time{Time: r.now()}
 		h.LastRun.Phase = release.HookPhaseSucceeded
@@ -141,13 +147,13 @@ func (r *hookRun) event(ctx context.Context, event release.HookEvent) error {
 	return nil
 }
 
-func (r *hookRun) wait(ctx context.Context, progressed bool, until time.Time) error {
+func (r *hookRun) keep(ctx context.Context, progressed bool, result error) error {
 	if progressed {
 		if err := r.store.update(ctx, r.rec); err != nil {
-			return err
+			return errors.Join(result, err)
 		}
 	}
-	return &waiting{until: until}
+	return result
 }
 
 func (r *hookRun) fail(ctx context.Context, hooks []*release.Hook, i int, event release.HookEvent, cause error) error {
@@ -189,46 +195,46 @@ func (r *hookRun) object(ctx context.Context, h *release.Hook) (*unstructured.Un
 	return obj, mapping, nil
 }
 
-func (r *hookRun) start(ctx context.Context, h *release.Hook) (bool, error) {
+func (r *hookRun) start(ctx context.Context, h *release.Hook) (bool, error, error) {
 	if err := r.deleteByPolicy(ctx, h, release.HookBeforeHookCreation); err != nil {
-		return false, err
+		return false, nil, err
 	}
 	obj, mapping, err := r.object(ctx, h)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	h.LastRun = release.HookExecution{StartedAt: helmtime.Time{Time: r.now()}, Phase: release.HookPhaseRunning}
 	_, err = r.cluster.resource(mapping, obj.GetNamespace()).Create(ctx, obj, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) && slices.Contains(h.DeletePolicies, release.HookBeforeHookCreation) {
 		h.LastRun = release.HookExecution{}
-		return false, nil
+		return false, nil, nil
 	}
-	return err == nil, err
+	return err == nil, err, nil
 }
 
-func (r *hookRun) done(ctx context.Context, h *release.Hook) (bool, error) {
+func (r *hookRun) done(ctx context.Context, h *release.Hook) (bool, error, error) {
 	if h.Kind != "Job" && h.Kind != "Pod" {
-		return true, nil
+		return true, nil, nil
 	}
 	obj, mapping, err := r.object(ctx, h)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	current, err := r.cluster.resource(mapping, obj.GetNamespace()).Get(ctx, obj.GetName(), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		return true, nil
+		return true, nil, nil
 	}
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	if h.Kind == "Pod" {
 		switch phase, _, _ := unstructured.NestedString(current.Object, "status", "phase"); phase {
 		case "Succeeded":
-			return true, nil
+			return true, nil, nil
 		case "Failed":
-			return false, fmt.Errorf("pod %s failed", h.Name)
+			return false, fmt.Errorf("pod %s failed", h.Name), nil
 		}
-		return false, nil
+		return false, nil, nil
 	}
 	conditions, _, _ := unstructured.NestedSlice(current.Object, "status", "conditions")
 	for _, c := range conditions {
@@ -238,12 +244,12 @@ func (r *hookRun) done(ctx context.Context, h *release.Hook) (bool, error) {
 		}
 		switch condition["type"] {
 		case "Complete":
-			return true, nil
+			return true, nil, nil
 		case "Failed":
-			return false, fmt.Errorf("job %s failed: %v", h.Name, condition["reason"])
+			return false, fmt.Errorf("job %s failed: %v", h.Name, condition["reason"]), nil
 		}
 	}
-	return false, nil
+	return false, nil, nil
 }
 
 func (r *hookRun) deleteByPolicy(ctx context.Context, h *release.Hook, policy release.HookDeletePolicy) error {

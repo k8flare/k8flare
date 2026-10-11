@@ -450,7 +450,7 @@ func (c *Controller) resume(ctx context.Context, chart *helmv1.HelmChart, rec *r
 	}
 	hooks := c.hookRun(rec, timeout)
 	if err := hooks.event(ctx, pre); err != nil {
-		return c.failRelease(ctx, rec, err)
+		return c.failOnHook(ctx, rec, err)
 	}
 	if !hooks.started(post) {
 		if err := c.applyRelease(ctx, chart, rel, others(history, rec)); err != nil {
@@ -458,7 +458,7 @@ func (c *Controller) resume(ctx context.Context, chart *helmv1.HelmChart, rec *r
 		}
 	}
 	if err := hooks.event(ctx, post); err != nil {
-		return c.failRelease(ctx, rec, err)
+		return c.failOnHook(ctx, rec, err)
 	}
 	rel.Info.Status = release.StatusDeployed
 	rel.Info.Description = description
@@ -466,10 +466,15 @@ func (c *Controller) resume(ctx context.Context, chart *helmv1.HelmChart, rec *r
 	return c.saveDeployed(ctx, rec, history)
 }
 
-func (c *Controller) failRelease(ctx context.Context, rec *record, cause error) error {
-	if _, ok := waitingUntil(cause); ok {
-		return cause
+func (c *Controller) failOnHook(ctx context.Context, rec *record, err error) error {
+	var failure *hookFailure
+	if errors.As(err, &failure) {
+		return c.failRelease(ctx, rec, err)
 	}
+	return err
+}
+
+func (c *Controller) failRelease(ctx context.Context, rec *record, cause error) error {
 	rec.release.Info.Status = release.StatusFailed
 	rec.release.Info.Description = fmt.Sprintf("failed: %v", cause)
 	if err := c.store().update(ctx, rec); err != nil {
