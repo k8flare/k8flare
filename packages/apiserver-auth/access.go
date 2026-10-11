@@ -135,28 +135,13 @@ type jwk struct {
 type jwksEntry struct {
 	keys    map[string]any
 	expires time.Time
-}
-
-type jwksFetch struct {
 	started time.Time
-	done    chan struct{}
-	keys    map[string]any
-	err     error
-}
-
-func (f *jwksFetch) running() bool {
-	select {
-	case <-f.done:
-		return false
-	default:
-		return true
-	}
 }
 
 var (
-	jwksMu      sync.Mutex
-	jwksCache   = map[string]jwksEntry{}
-	jwksFetches = map[string]*jwksFetch{}
+	jwksMu             sync.Mutex
+	jwksCache          = map[string]jwksEntry{}
+	jwksRefetchStarted = map[string]time.Time{}
 )
 
 func lookupKey(client *http.Client, jwksURL, kid string) (any, error) {
@@ -166,12 +151,16 @@ func lookupKey(client *http.Client, jwksURL, kid string) (any, error) {
 		}
 		return key, nil
 	}
-	return fetchKey(client, jwksURL, kid, 0)
+	return fetchKey(client, jwksURL, kid)
 }
 
 func cachedKey(jwksURL, kid string) (key any, cached, found bool) {
 	jwksMu.Lock()
 	defer jwksMu.Unlock()
+	return cachedKeyLocked(jwksURL, kid)
+}
+
+func cachedKeyLocked(jwksURL, kid string) (key any, cached, found bool) {
 	entry, ok := jwksCache[jwksURL]
 	if !ok || !time.Now().Before(entry.expires) {
 		return nil, false, false
@@ -180,37 +169,49 @@ func cachedKey(jwksURL, kid string) (key any, cached, found bool) {
 	return key, true, found
 }
 
-func fetchKey(client *http.Client, jwksURL, kid string, reuseFor time.Duration) (any, error) {
-	keys, err := sharedJWKS(client, jwksURL, reuseFor)
+func fetchKey(client *http.Client, jwksURL, kid string) (any, error) {
+	keys, err := fetchJWKS(client, jwksURL)
 	if err != nil {
 		return nil, err
 	}
+	jwksMu.Lock()
+	jwksCache[jwksURL] = jwksEntry{keys: keys, expires: time.Now().Add(10 * time.Minute)}
 	key, found := keys[kid]
+	jwksMu.Unlock()
 	if !found {
 		return nil, fmt.Errorf("unknown kid")
 	}
 	return key, nil
 }
 
-func sharedJWKS(client *http.Client, jwksURL string, reuseFor time.Duration) (map[string]any, error) {
+func refetchKey(client *http.Client, jwksURL, kid string, interval time.Duration) (any, error) {
 	jwksMu.Lock()
-	f := jwksFetches[jwksURL]
-	if f != nil && (f.running() || time.Since(f.started) < reuseFor) {
+	key, cached, found := cachedKeyLocked(jwksURL, kid)
+	if found {
 		jwksMu.Unlock()
-		<-f.done
-		return f.keys, f.err
+		return key, nil
 	}
-	f = &jwksFetch{started: time.Now(), done: make(chan struct{})}
-	jwksFetches[jwksURL] = f
+	if cached && time.Since(jwksRefetchStarted[jwksURL]) < interval {
+		jwksMu.Unlock()
+		return nil, fmt.Errorf("unknown kid")
+	}
+	started := time.Now()
+	jwksRefetchStarted[jwksURL] = started
 	jwksMu.Unlock()
-	f.keys, f.err = fetchJWKS(client, jwksURL)
-	if f.err == nil {
-		jwksMu.Lock()
-		jwksCache[jwksURL] = jwksEntry{keys: f.keys, expires: time.Now().Add(10 * time.Minute)}
-		jwksMu.Unlock()
+	keys, err := fetchJWKS(client, jwksURL)
+	if err != nil {
+		return nil, err
 	}
-	close(f.done)
-	return f.keys, f.err
+	jwksMu.Lock()
+	if entry, ok := jwksCache[jwksURL]; !ok || !entry.started.After(started) {
+		jwksCache[jwksURL] = jwksEntry{keys: keys, expires: time.Now().Add(10 * time.Minute), started: started}
+	}
+	jwksMu.Unlock()
+	key, found = keys[kid]
+	if !found {
+		return nil, fmt.Errorf("unknown kid")
+	}
+	return key, nil
 }
 
 func fetchJWKS(client *http.Client, jwksURL string) (map[string]any, error) {

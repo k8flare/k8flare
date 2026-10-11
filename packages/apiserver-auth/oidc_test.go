@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -27,6 +28,9 @@ type oidcIssuer struct {
 	ec      *ecdsa.PrivateKey
 	next    *rsa.PrivateKey
 	delay   time.Duration
+	fail    atomic.Bool
+	stall   int32
+	release chan struct{}
 	hits    atomic.Int32
 	keyHits atomic.Int32
 }
@@ -48,14 +52,20 @@ func newOIDCIssuer(t *testing.T) *oidcIssuer {
 		case "/.well-known/openid-configuration":
 			_ = json.NewEncoder(w).Encode(map[string]string{"issuer": i.server.URL, "jwks_uri": i.server.URL + "/keys"})
 		case "/keys":
-			i.keyHits.Add(1)
-			time.Sleep(i.delay)
 			keys := []jwk{
 				{Kid: "r1", Kty: "RSA", N: base64.RawURLEncoding.EncodeToString(rsaKey.N.Bytes()), E: base64.RawURLEncoding.EncodeToString(big.NewInt(int64(rsaKey.E)).Bytes())},
 				{Kid: "e1", Kty: "EC", Crv: "P-256", X: base64.RawURLEncoding.EncodeToString(ecKey.X.Bytes()), Y: base64.RawURLEncoding.EncodeToString(ecKey.Y.Bytes())},
 			}
 			if i.next != nil {
 				keys = append(keys, jwk{Kid: "r2", Kty: "RSA", N: base64.RawURLEncoding.EncodeToString(i.next.N.Bytes()), E: base64.RawURLEncoding.EncodeToString(big.NewInt(int64(i.next.E)).Bytes())})
+			}
+			if i.keyHits.Add(1) == i.stall {
+				<-i.release
+			}
+			time.Sleep(i.delay)
+			if i.fail.Load() {
+				http.Error(w, "unavailable", http.StatusServiceUnavailable)
+				return
 			}
 			_ = json.NewEncoder(w).Encode(jwkSet{Keys: keys})
 		default:
@@ -65,7 +75,7 @@ func newOIDCIssuer(t *testing.T) *oidcIssuer {
 	t.Cleanup(i.server.Close)
 	jwksMu.Lock()
 	jwksCache = map[string]jwksEntry{}
-	jwksFetches = map[string]*jwksFetch{}
+	jwksRefetchStarted = map[string]time.Time{}
 	jwksMu.Unlock()
 	return i
 }
@@ -73,8 +83,56 @@ func newOIDCIssuer(t *testing.T) *oidcIssuer {
 func (i *oidcIssuer) expireRefetchInterval() {
 	jwksMu.Lock()
 	defer jwksMu.Unlock()
-	for _, f := range jwksFetches {
-		f.started = f.started.Add(-oidcKeyRefetchInterval)
+	for url, started := range jwksRefetchStarted {
+		jwksRefetchStarted[url] = started.Add(-oidcKeyRefetchInterval)
+	}
+}
+
+func (i *oidcIssuer) expireCache() {
+	jwksMu.Lock()
+	defer jwksMu.Unlock()
+	for url, entry := range jwksCache {
+		entry.expires = time.Now().Add(-time.Second)
+		jwksCache[url] = entry
+	}
+}
+
+func (i *oidcIssuer) stallKeyHit(t *testing.T, hit int32) func() {
+	t.Helper()
+	i.stall, i.release = hit, make(chan struct{})
+	release := sync.OnceFunc(func() { close(i.release) })
+	t.Cleanup(release)
+	return release
+}
+
+func (i *oidcIssuer) waitForKeyHits(t *testing.T, want int32) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for i.keyHits.Load() < want {
+		if time.Now().After(deadline) {
+			t.Fatalf("key set fetched %d times, waited for %d", i.keyHits.Load(), want)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func authenticateAsync(ctx context.Context, o OIDC, raw string) <-chan bool {
+	result := make(chan bool, 1)
+	go func() {
+		_, ok, _ := o.AuthenticateToken(ctx, raw)
+		result <- ok
+	}()
+	return result
+}
+
+func awaitAuthentication(t *testing.T, result <-chan bool, what string) bool {
+	t.Helper()
+	select {
+	case ok := <-result:
+		return ok
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s waited for another caller's key fetch", what)
+		return false
 	}
 }
 
@@ -256,6 +314,85 @@ func TestOIDCRandomKidsFetchKeysOncePerInterval(t *testing.T) {
 	}
 	if _, ok, err := o.AuthenticateToken(t.Context(), i.sign(t, jwt.MapClaims{"sub": "u1"})); !ok || err != nil {
 		t.Fatalf("known kid after refetch: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestOIDCUnknownKidDoesNotWaitForAnotherCallersRefetch(t *testing.T) {
+	i := newOIDCIssuer(t)
+	o := i.options()
+	if _, ok, err := o.AuthenticateToken(t.Context(), i.sign(t, jwt.MapClaims{"sub": "u1"})); !ok || err != nil {
+		t.Fatalf("warm up: ok=%v err=%v", ok, err)
+	}
+	i.expireRefetchInterval()
+	release := i.stallKeyHit(t, 2)
+	first := authenticateAsync(t.Context(), o, i.signWithKid(t, "random-a", i.rsa))
+	i.waitForKeyHits(t, 2)
+	if awaitAuthentication(t, authenticateAsync(t.Context(), o, i.signWithKid(t, "random-b", i.rsa)), "an unknown kid") {
+		t.Fatal("accepted a token with an unknown kid")
+	}
+	if got := i.keyHits.Load(); got != 2 {
+		t.Fatalf("key set fetched %d times, want 2", got)
+	}
+	release()
+	if awaitAuthentication(t, first, "the refetching caller") {
+		t.Fatal("accepted a token with an unknown kid")
+	}
+}
+
+func TestOIDCExpiredCacheIsRefreshedInsideRefetchInterval(t *testing.T) {
+	for _, refetchFails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("refetch fails=%v", refetchFails), func(t *testing.T) {
+			i := newOIDCIssuer(t)
+			o := i.options()
+			if _, ok, err := o.AuthenticateToken(t.Context(), i.sign(t, jwt.MapClaims{"sub": "u1"})); !ok || err != nil {
+				t.Fatalf("warm up: ok=%v err=%v", ok, err)
+			}
+			i.expireRefetchInterval()
+			i.fail.Store(refetchFails)
+			if _, ok, _ := o.AuthenticateToken(t.Context(), i.signWithKid(t, "random", i.rsa)); ok {
+				t.Fatal("accepted a token with an unknown kid")
+			}
+			i.fail.Store(false)
+			i.expireCache()
+			if _, ok, err := o.AuthenticateToken(t.Context(), i.sign(t, jwt.MapClaims{"sub": "u1"})); !ok || err != nil {
+				t.Fatalf("known kid after the cache expired: ok=%v err=%v", ok, err)
+			}
+			if got := i.keyHits.Load(); got != 3 {
+				t.Fatalf("key set fetched %d times, want 3 (warm up, refetch, refresh of the expired cache)", got)
+			}
+		})
+	}
+}
+
+func TestOIDCOlderFetchDoesNotReplaceNewerKeys(t *testing.T) {
+	i := newOIDCIssuer(t)
+	o := i.options()
+	if _, ok, err := o.AuthenticateToken(t.Context(), i.sign(t, jwt.MapClaims{"sub": "u1"})); !ok || err != nil {
+		t.Fatalf("warm up: ok=%v err=%v", ok, err)
+	}
+	i.expireRefetchInterval()
+	release := i.stallKeyHit(t, 2)
+	older := authenticateAsync(t.Context(), o, i.signWithKid(t, "random", i.rsa))
+	i.waitForKeyHits(t, 2)
+	next, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i.next = next
+	i.expireCache()
+	rotated := i.signWithKid(t, "r2", next)
+	if !awaitAuthentication(t, authenticateAsync(t.Context(), o, rotated), "a known kid with an expired cache") {
+		t.Fatal("rejected the rotated key after refreshing the expired cache")
+	}
+	release()
+	if awaitAuthentication(t, older, "the older refetch") {
+		t.Fatal("accepted a token with an unknown kid")
+	}
+	if _, ok, err := o.AuthenticateToken(t.Context(), rotated); !ok || err != nil {
+		t.Fatalf("rotated key after the older fetch landed: ok=%v err=%v", ok, err)
+	}
+	if got := i.keyHits.Load(); got != 3 {
+		t.Fatalf("key set fetched %d times, want 3", got)
 	}
 }
 

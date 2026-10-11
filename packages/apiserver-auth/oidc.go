@@ -58,7 +58,7 @@ func (o OIDC) AuthenticateToken(_ context.Context, raw string) (*authenticator.R
 		if key, _, found := cachedKey(jwksURL, kid); found {
 			return key, nil
 		}
-		return fetchKey(o.client(), jwksURL, kid, oidcKeyRefetchInterval)
+		return refetchKey(o.client(), jwksURL, kid, oidcKeyRefetchInterval)
 	}, jwt.WithIssuer(o.IssuerURL), jwt.WithAudience(o.ClientID), jwt.WithValidMethods(oidcSigningMethods), jwt.WithExpirationRequired())
 	if err != nil || !tok.Valid {
 		return nil, false, nil
