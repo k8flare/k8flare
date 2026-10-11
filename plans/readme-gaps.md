@@ -267,15 +267,14 @@ Decided on 2026-10-01, with the owner:
     Services); backends are looked up per ref rather than listed.
 - local-path runs as a resident Deployment, not helper pods only.
 - CoreDNS NodeHosts is never written.
-- Network policy is off: the supervisor config answers `DisableNPC: true`
-  (`apiserver-supervisor/supervisor.go`), so the agent skips `netpol.Run`
-  (`k3s/pkg/executor/embed/embed.go`). It has been so since fb37662, with
-  no reason recorded.
 - The manifests bucket is not bound: `addons.ts` reads `MANIFESTS_R2` and
   no wrangler config declares it. An edit to the bucket does not start a
   pass, and `bucket.list()` reads one page.
-- `DISABLE` covers manifest names and `helm-controller` only; metrics,
-  the Service load balancer and edge routing cannot be turned off.
+- `DISABLE` covers manifest names, `helm-controller`, `metrics-server`,
+  `servicelb`, `edge-routing` and `network-policy` (the supervisor config
+  answers `DisableNPC`, so the agent skips `netpol.Run`). The
+  `helm-controller` switch (`addons/cmd/addons-wasm/main.go`) is js-only
+  and no CI test exercises it.
 - The LoadBalancer hostname suffix is the constant `.k8flare.com`
   (`edgehost/host.go`), not the cluster domain.
 - Nothing measures what the platform costs a node.

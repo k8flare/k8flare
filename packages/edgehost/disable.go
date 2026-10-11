@@ -6,6 +6,7 @@ const (
 	MetricsServer = "metrics-server"
 	ServiceLB     = "servicelb"
 	EdgeRouting   = "edge-routing"
+	NetworkPolicy = "network-policy"
 )
 
 var disabled = map[string]bool{}

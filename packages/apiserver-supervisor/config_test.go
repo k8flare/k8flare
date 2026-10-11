@@ -9,9 +9,11 @@ import (
 	"testing"
 
 	"github.com/k3s-io/k3s/pkg/daemons/config"
+	"github.com/k8flare/k8flare/packages/edgehost"
 )
 
-func TestConfigLetsTheAgentStartTheNetworkPolicyController(t *testing.T) {
+func agentConfig(t *testing.T) config.Control {
+	t.Helper()
 	s := New(NewVault(fakeKine(t)), "join")
 	mux := http.NewServeMux()
 	s.Register(mux)
@@ -23,6 +25,21 @@ func TestConfigLetsTheAgentStartTheNetworkPolicyController(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &control); err != nil || rr.Code != http.StatusOK {
 		t.Fatalf("config: %d %v %s", rr.Code, err, rr.Body.String())
 	}
+	return control
+}
+
+func TestConfigTurnsTheNetworkPolicyControllerOffWhenDisabled(t *testing.T) {
+	edgehost.SetDisabled("servicelb, network-policy")
+	t.Cleanup(func() { edgehost.SetDisabled("") })
+	if !agentConfig(t).DisableNPC {
+		t.Fatal("DISABLE=network-policy left the network policy controller on")
+	}
+}
+
+func TestConfigLetsTheAgentStartTheNetworkPolicyController(t *testing.T) {
+	edgehost.SetDisabled("servicelb,edge-routing,metrics-server,helm-controller")
+	t.Cleanup(func() { edgehost.SetDisabled("") })
+	control := agentConfig(t)
 	if control.DisableNPC {
 		t.Fatal("the network policy controller is disabled")
 	}
