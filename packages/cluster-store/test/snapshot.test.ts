@@ -309,3 +309,20 @@ test("list returns snapshots in lexicographic key order, on-demand before schedu
   assert.deepEqual(keys, [snap1.key, snap2.key]);
   assert.ok(keys[0] < keys[1]);
 });
+
+test("restore accepts a snapshot saved under another cluster's prefix into a new cluster", async () => {
+  const old = rig({ CLUSTER_UID: "old" });
+  await old.settle();
+  await old.put("/registry/configmaps/default/cfg", "cfg-data");
+  const save = await (await old.post("/snapshot")).json();
+  assert.ok(save.key.startsWith("clusters/old/snapshots/"));
+
+  const fresh = rig({ CLUSTER_UID: "new", PODS_R2: old.bucket } as any);
+  await fresh.settle();
+  assert.equal((await fresh.get("/snapshots")).items.length, 0);
+
+  const res = await fresh.post("/snapshot/restore", { key: save.key });
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).written, 1);
+  assert.equal(decode((await fresh.get("/kv?key=/registry/configmaps/default/cfg")).kv.value), "cfg-data");
+});
