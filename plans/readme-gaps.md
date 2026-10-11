@@ -1950,14 +1950,99 @@ Decided on 2026-10-01, with the owner:
     longer copies it and both node-bound requests drop it. Unit, E2E and
     Conformance 3 of 3, the third after a rerun of one shard: "Garbage
     collector should keep the rc around until all its pods are deleted"
-    timed out with 100 pods still terminating. Not investigated; it did
-    not fail in the other two runs or in the rerun.
+    timed out with 100 pods still terminating. It did not fail in the
+    other two runs or in the rerun; a later occurrence is read in the
+    entry on the five failed shards of 2026-10-06 to 10-11 below.
   - The audit of 2026-10-03 (`audit/readme-b`, `audit/security`) is not
     folded into this file yet: 221 README claims, 152 with code and a
     test, 9 the code contradicts, 5 with no implementation; the raw
     `ADMIN_TOKEN` is the bearer of at least eleven internal calls and the
     key of every component token. Its entries about this file being out
     of date are unverified.
+- Five failed shards of 2026-10-06 to 10-11: four nightly runs on main,
+  all at 5e01405 (main did not move in those days), and one on
+  `ci/batch14` (d670ba0). `packages/workloads` is the same at both and on
+  this branch. Read from `dev.log`, `devtls.log`, `procs.log`, the agent
+  logs and the spec sources. Four causes, not one.
+  - Daemon set "should retry creating failed daemon pods" (38125949771
+    and 38141232272, shard 3 both). The spec sets one pod's phase to
+    Failed with `UpdateStatus` (09:05:21.938, 13:35:46.321) and the
+    kubelet puts it back 0.7 s and 0.9 s later (node GET, then `PATCH
+    .../status` at 09:05:22.631 and 13:35:47.239). A change to status
+    alone is a reconcile in the kubelet's pod config
+    (`checkAndUpdatePod`), not a sync, so no teardown starts, and the
+    status manager's next `syncBatch` merges the kubelet's own Running
+    phase over it (`mergePodStatus`; the terminal-phase guard in
+    `generateAPIPodStatus` only runs on a sync). The workloads pass the
+    write started listed after that (consume 09:05:22.688 and
+    13:35:47.294, the queue's `max_batch_timeout` being 1 s; lists done
+    at 22.938 and 47.598), so the DaemonSet controller never saw a Failed
+    pod: no `FailedDaemonPod` event, no `Killing` until the namespace was
+    torn down, and the spec waited five minutes for a delete nobody asked
+    for. Upstream's controller sees the watch event within milliseconds
+    and deletes the pod at once (a Failed pod's grace period is 0), so it
+    wins the same race. In the first run a pass was running at the write
+    and its live feed applied the event, but that pass had 6 controllers
+    and not the DaemonSet one. Not fixed: a state that lives shorter than
+    a pass takes to start (the 1 s batch timeout plus the lists) never
+    reaches a controller. The revert is read from the upstream source and
+    the timing; the audit level is Metadata, so the patch body is not in
+    the log.
+  - ServiceAccounts "should guarantee kube-root-ca.crt exist in any
+    namespace" (38141232272 shard 3). The spec's update to `ca.crt: ""`
+    (13:32:15.674) was reconciled at 13:32:57.423, 11 s after its 30 s
+    wait ended. Both workloads consumes that carried the configmap change
+    (13:32:18.464 and 32.427) waited 10 s on `syncMu` and answered busy
+    (29.950, 43.991), as did the accounts consume (17.276). The lock was
+    held by the previous consume's pass: lists at 20.949, 18 controllers
+    and no root CA publisher, `drain gave up after 30.076s with
+    endpoint_slice=1/0`, live feed applied 468. Past its 10 s deadline
+    `drain` stops only at a poll with nothing in flight, and a live pass
+    ignores the yield (`TestDrainIgnoresYieldWhileLive`) because it sees
+    what a new pass would list, but it only runs the controllers it
+    started with. Not fixed; a yield would not have ended this pass
+    either, since a handler was in flight at every poll for 20 s. Which
+    consume a pass belonged to was inferred from controller counts
+    (`wanted` gives 19 for the 13:32:15.684 consume, 18 with a run), so
+    each pass now prints `workloads: pass changed <list>` when it starts.
+  - VolumeAttributesClass lifecycle (38037926030 shard 0). Releasing
+    `vac-protection` after the DELETE at 08:51:37.607 needs a workloads
+    consume, and none came until 08:52:10.140, after the 30 s wait. The
+    queue's one consumer was still in the previous sync: its pass ended at
+    08:51:34.585, then `replicationGap`'s `GET
+    /api/v1/replicationcontrollers` never reached the front and timed out
+    with `syncMu` held (`bridge: fetch timed out kind=hold age=43s
+    waited=38s binding=APISERVER inflight=1 pending=0 turn=true`,
+    08:52:12.135; the same line again at 08:57:33.354). A dispatch window
+    closed on `drain timeout` at 08:51:34.621, within the log's timestamp
+    noise of the fetch being issued. A mechanism that fits, found in the
+    bridge and not proven to be this occurrence: a Go runtime timer
+    resumes Go from the stock `wasm_exec.js` `setTimeout` callback, which
+    tags no window, so `currentTurn` still named the last tagged entry and
+    a goroutine woken by a timer issued its fetch inline on a JS entry
+    that may belong to another request, whose end cancels it. Fixed in
+    a5ce665: every tagged entry queues a microtask that clears the turn,
+    so an untagged entry owns nothing and the fetch waits for its own pump
+    (`TestRunWokenByAGoTimerWaitsForItsOwnPump`, failing before). To
+    watch: `bridge: fetch timed out ... turn=true` should not appear; if
+    it does, the fetch was issued on a tagged entry and this was not the
+    cause. `TestFetchWithoutAWindowUsesTheRequestWhoseEventWokeIt` fails
+    or hangs under `-count` above 1, with and without the fix (windows
+    left from the first iteration); `-count=1` passes.
+  - CustomResourceFieldSelectors (37594852228 shard 5) and Garbage
+    collector "should keep the rc around until all its pods are deleted"
+    (37439510537 shard 0): the saturated main thread of the earlier
+    entries (`main_ms` 1000 or more in 28 of the 33 samples of the
+    FieldSelectors window and in most of the GC window's, with dips to
+    350).
+    FieldSelectors: the informers get 30 s from 08:48:28.386; the
+    DeleteCollection took 7.8 s and the update's PUT, at the front at
+    08:48:57.578, answered about 08:49:02, after they had stopped. GC: the
+    first collect after the foreground delete ran 56 s (`deleted=100`);
+    the pods were gone by 09:18:24, but the collect that would drop the
+    RC's finalizer had started at 09:18:05 from a list that still held
+    them and ran 47 s, past the spec's deadline at 09:18:37.751. The
+    spec's own GETs waited 9 to 31 s in `devtls.log`.
 
 ## Local development
 
