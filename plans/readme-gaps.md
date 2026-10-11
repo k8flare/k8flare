@@ -437,9 +437,27 @@ Decided on 2026-10-01, with the owner:
     the pins were taken from the embedded bytes: no upstream file was
     fetched to compare them. The E2E apply of a Gateway and an HTTPRoute
     is the first check that `customresources` accepts their CEL
-    validations. Every namespace deletion now also walks three namespaced
-    custom resource types, at the unexplained cost of a custom resource
-    request recorded under Conformance.
+    validations. Under Conformance (shard 6 of the batch that added them)
+    namespace deletion stopped fitting its 60 s pass: every request to
+    `customresources` listed the stored CRDs and decoded all of them three
+    times, so its cost grew with the CRD bytes (43 KB to 566 KB with these
+    four; 0.9 ms to 17.6 ms of decoding per request on the host, more in
+    wasm), custom resource requests took 1-2 s, the eight concurrent
+    deletions advanced in step with the slowest of them, and the upstream
+    deleter's one-type-at-a-time sweep (a delete-collection and a list per
+    type) ran out of budget and restarted from the first type on every
+    pass. The gate now decodes only when a CRD's revision changes or work
+    is pending, and the deleter lists every namespaced type concurrently
+    (eight at a time) and hands upstream's deleter only the types that
+    still hold content, plus pods. On the host, with 10 ms per request, a
+    pass went from 1.6 s to 1.0 s with no custom types and from 2.5 s to
+    1.0 s with 40 empty ones, and a type emptied by a pass the budget cut
+    is not swept again
+    (`TestDeleteTerminatingFinishesWithinTheBudgetWhateverTheNumberOfEmptyCustomResourceTypes`,
+    `TestDeleteTerminatingDoesNotSweepACustomResourceTypeAnEarlierPassEmptied`,
+    `TestGateDoesNotDecodeAnUnchangedCRDSetAgain`).
+    Not yet run in Conformance; the lockstep between concurrent deletions
+    was seen in `wrangler dev` and is not explained.
   - Requests that match no rule fall through to the API, so a
     hostless catch-all Ingress does not shadow `k8flare.com`,
     `api.k8flare.com`, `*.workers.dev`, `*.internal`, `localhost`, IP
@@ -1278,7 +1296,9 @@ Decided on 2026-10-01, with the owner:
     workloads Go program (`Go program has already exited` on every later
     RPC until the isolate is replaced); it happened on the dev stack when
     the deleter's first discovery got 401 from mismatched assets, not in
-    CI.
+    CI. The deleter is now built on every pass from that pass's discovery
+    and returns an error instead of building it when discovery leaves no
+    type to sweep; a host test does not cover that branch.
   - Open: the 7-20 s (CI) and 4-5 s (local) stalls inside an isolate
     between consecutive requests; the scheduler's per-pass retry of pods
     whose bind is refused; the memory the mem lines will attribute.
