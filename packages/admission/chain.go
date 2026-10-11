@@ -57,6 +57,16 @@ func withAuthorizer(f func(context.Context, authorizer.Authorizer, *admit.Reques
 }
 
 func (h *Handler) run(ctx context.Context, req admit.Request) (admit.Response, error) {
+	ctx, rec := withAdmissionRecord(ctx)
+	out := h.runChain(ctx, &req)
+	out.Warnings = rec.warnings
+	if len(rec.annotations) > 0 {
+		out.AuditAnnotations = rec.annotations
+	}
+	return out, nil
+}
+
+func (h *Handler) runChain(ctx context.Context, req *admit.Request) admit.Response {
 	mutating := req.Phase == "admit"
 	for _, p := range chain {
 		f := p.validate
@@ -66,14 +76,14 @@ func (h *Handler) run(ctx context.Context, req admit.Request) (admit.Response, e
 		if f == nil {
 			continue
 		}
-		if err := f(h, ctx, &req); err != nil {
-			return denyResponse(err), nil
+		if err := f(h, ctx, req); err != nil {
+			return denyResponse(err)
 		}
 	}
 	if mutating {
-		return admit.Response{Allowed: true, Object: req.Object}, nil
+		return admit.Response{Allowed: true, Object: req.Object}
 	}
-	return admit.Response{Allowed: true}, nil
+	return admit.Response{Allowed: true}
 }
 
 func (h *Handler) admitMAP(ctx context.Context, req *admit.Request) error {
@@ -195,10 +205,7 @@ func denyResponse(err error) admit.Response {
 		}
 	}
 	out := admit.Response{Allowed: false, Message: err.Error()}
-	switch err.(type) {
-	case invalidError:
-		out.Reason = "Invalid"
-	case internalError:
+	if _, ok := err.(internalError); ok {
 		out.Reason = "InternalError"
 	}
 	return out

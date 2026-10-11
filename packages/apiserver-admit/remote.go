@@ -41,11 +41,13 @@ type User struct {
 }
 
 type Response struct {
-	Allowed bool           `json:"allowed"`
-	Message string         `json:"message"`
-	Reason  string         `json:"reason,omitempty"`
-	Status  *metav1.Status `json:"status,omitempty"`
-	Object  map[string]any `json:"object"`
+	Allowed          bool              `json:"allowed"`
+	Message          string            `json:"message"`
+	Reason           string            `json:"reason,omitempty"`
+	Status           *metav1.Status    `json:"status,omitempty"`
+	Object           map[string]any    `json:"object"`
+	Warnings         []string          `json:"warnings,omitempty"`
+	AuditAnnotations map[string]string `json:"auditAnnotations,omitempty"`
 }
 
 type remote struct {

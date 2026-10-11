@@ -32,7 +32,7 @@ func TestHandlerLimitRangeAndVAPAndWebhook(t *testing.T) {
 				DefaultRequest: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(cpu)},
 			}}},
 		}),
-		"/registry/validatingadmissionpolicies/deny-label": mustJSON(t, admissionregv1.ValidatingAdmissionPolicy{
+		"/registry/validatingadmissionpolicies/deny-label": mustJSON(t, defaulted(&admissionregv1.ValidatingAdmissionPolicy{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "admissionregistration.k8s.io/v1", Kind: "ValidatingAdmissionPolicy"},
 			ObjectMeta: metav1.ObjectMeta{Name: "deny-label"},
 			Spec: admissionregv1.ValidatingAdmissionPolicySpec{
@@ -44,15 +44,15 @@ func TestHandlerLimitRangeAndVAPAndWebhook(t *testing.T) {
 				}}},
 				Validations: []admissionregv1.Validation{{Expression: `!(has(object.metadata.labels) && object.metadata.labels["k8flare.io/deny"] == "true")`}},
 			},
-		}),
-		"/registry/validatingadmissionpolicybindings/deny-label": mustJSON(t, admissionregv1.ValidatingAdmissionPolicyBinding{
+		})),
+		"/registry/validatingadmissionpolicybindings/deny-label": mustJSON(t, defaulted(&admissionregv1.ValidatingAdmissionPolicyBinding{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "admissionregistration.k8s.io/v1", Kind: "ValidatingAdmissionPolicyBinding"},
 			ObjectMeta: metav1.ObjectMeta{Name: "deny-label"},
 			Spec: admissionregv1.ValidatingAdmissionPolicyBindingSpec{
 				PolicyName:        "deny-label",
 				ValidationActions: []admissionregv1.ValidationAction{admissionregv1.Deny},
 			},
-		}),
+		})),
 		"/registry/validatingwebhookconfigurations/echo": mustJSON(t, admissionregv1.ValidatingWebhookConfiguration{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "admissionregistration.k8s.io/v1", Kind: "ValidatingWebhookConfiguration"},
 			ObjectMeta: metav1.ObjectMeta{Name: "echo"},
@@ -324,7 +324,8 @@ func TestMAPApplyConfiguration(t *testing.T) {
 	fail := admissionregv1.Fail
 	never := admissionregv1.NeverReinvocationPolicy
 	store := &memStore{data: map[string][]byte{
-		"/registry/mutatingadmissionpolicies/label": mustJSON(t, admissionregv1.MutatingAdmissionPolicy{
+		"/registry/namespaces/default": mustJSON(t, corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}),
+		"/registry/mutatingadmissionpolicies/label": mustJSON(t, defaulted(&admissionregv1.MutatingAdmissionPolicy{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "admissionregistration.k8s.io/v1", Kind: "MutatingAdmissionPolicy"},
 			ObjectMeta: metav1.ObjectMeta{Name: "label"},
 			Spec: admissionregv1.MutatingAdmissionPolicySpec{
@@ -343,16 +344,16 @@ func TestMAPApplyConfiguration(t *testing.T) {
 				}},
 				ReinvocationPolicy: never,
 			},
-		}),
-		"/registry/mutatingadmissionpolicybindings/label": mustJSON(t, admissionregv1.MutatingAdmissionPolicyBinding{
+		})),
+		"/registry/mutatingadmissionpolicybindings/label": mustJSON(t, defaulted(&admissionregv1.MutatingAdmissionPolicyBinding{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "admissionregistration.k8s.io/v1", Kind: "MutatingAdmissionPolicyBinding"},
 			ObjectMeta: metav1.ObjectMeta{Name: "label"},
 			Spec:       admissionregv1.MutatingAdmissionPolicyBindingSpec{PolicyName: "label"},
-		}),
+		})),
 	}}
 	kineSrv := httptest.NewServer(store)
 	defer kineSrv.Close()
-	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
+	h := NewHandler(Config{Kine: rewriteClient(kineSrv), API: rewriteClient(newPolicyAPI(t, nil))})
 	out := postAdmit(t, h, admit.Request{
 		Phase:     "admit",
 		Name:      "cm",

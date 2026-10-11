@@ -10,24 +10,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-func TestEvalVariables(t *testing.T) {
-	vars := celVars(admit.Request{Object: map[string]any{"spec": map[string]any{"replicas": float64(3)}}})
-	got := evalVariables([]admissionregv1.Variable{
-		{Name: "replicas", Expression: "object.spec.replicas"},
-		{Name: "oddReplicas", Expression: "variables.replicas % 2 == 1"},
-	}, vars)
-	if got["replicas"] != int64(3) {
-		t.Fatalf("replicas: %v (%T)", got["replicas"], got["replicas"])
-	}
-	if got["oddReplicas"] != true {
-		t.Fatalf("oddReplicas: %v", got["oddReplicas"])
-	}
-	ok, err := evalBool("variables.oddReplicas", vars)
-	if err != nil || !ok {
-		t.Fatalf("variables.oddReplicas: ok=%v err=%v", ok, err)
-	}
-}
-
 func TestExemptAdmissionConfig(t *testing.T) {
 	if !exemptAdmissionConfig(admit.Request{Kind: schema.GroupVersionKind{Group: "admissionregistration.k8s.io", Kind: "MutatingWebhookConfiguration"}}) {
 		t.Fatal("mutating webhook config should be exempt")
@@ -46,13 +28,6 @@ func TestDenyMessageUsesReason(t *testing.T) {
 	}
 	if got := denyMessage(nil); got != "without explanation" {
 		t.Fatalf("nil: %q", got)
-	}
-}
-
-func TestVAPDenyIsInvalid(t *testing.T) {
-	out := denyResponse(invalidError{msg: "ValidatingAdmissionPolicy example denied the request"})
-	if out.Allowed || out.Reason != "Invalid" {
-		t.Fatalf("%+v", out)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	admit "github.com/k8flare/k8flare/packages/apiserver-admit"
 	admissionregv1 "k8s.io/api/admissionregistration/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/admission"
@@ -104,7 +105,8 @@ func TestBuiltInValidatorsRunBeforeValidatingWebhooks(t *testing.T) {
 
 func TestValidatingAdmissionPolicyRunsBeforeValidatingWebhooks(t *testing.T) {
 	h, calls := newWebhookHandler(t, map[string][]byte{
-		"/registry/validatingadmissionpolicies/deny-all": mustJSON(t, admissionregv1.ValidatingAdmissionPolicy{
+		"/registry/namespaces/default": mustJSON(t, corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}),
+		"/registry/validatingadmissionpolicies/deny-all": mustJSON(t, defaulted(&admissionregv1.ValidatingAdmissionPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: "deny-all"},
 			Spec: admissionregv1.ValidatingAdmissionPolicySpec{
 				MatchConstraints: &admissionregv1.MatchResources{ResourceRules: []admissionregv1.NamedRuleWithOperations{{
@@ -115,14 +117,14 @@ func TestValidatingAdmissionPolicyRunsBeforeValidatingWebhooks(t *testing.T) {
 				}}},
 				Validations: []admissionregv1.Validation{{Expression: "false", Message: "denied by policy"}},
 			},
-		}),
-		"/registry/validatingadmissionpolicybindings/deny-all": mustJSON(t, admissionregv1.ValidatingAdmissionPolicyBinding{
+		})),
+		"/registry/validatingadmissionpolicybindings/deny-all": mustJSON(t, defaulted(&admissionregv1.ValidatingAdmissionPolicyBinding{
 			ObjectMeta: metav1.ObjectMeta{Name: "deny-all"},
 			Spec: admissionregv1.ValidatingAdmissionPolicyBindingSpec{
 				PolicyName:        "deny-all",
 				ValidationActions: []admissionregv1.ValidationAction{admissionregv1.Deny},
 			},
-		}),
+		})),
 		"/registry/validatingwebhookconfigurations/deny-configmaps": mustJSON(t, validatingWebhookFor("deny-configmaps", "configmaps")),
 	}, hookDeny)
 	out := postAdmit(t, h, admit.Request{
@@ -137,7 +139,7 @@ func TestValidatingAdmissionPolicyRunsBeforeValidatingWebhooks(t *testing.T) {
 	if out.Allowed {
 		t.Fatal("expected a denial")
 	}
-	if out.Message != "denied by policy" {
+	if out.Message != `configmaps "cm" is forbidden: ValidatingAdmissionPolicy 'deny-all' with binding 'deny-all' denied request: denied by policy` {
 		t.Fatalf("message = %q, want the policy's denial", out.Message)
 	}
 	if n := calls.Load(); n != 0 {

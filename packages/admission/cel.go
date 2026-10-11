@@ -6,7 +6,6 @@ import (
 
 	"github.com/google/cel-go/cel"
 	admit "github.com/k8flare/k8flare/packages/apiserver-admit"
-	admissionregv1 "k8s.io/api/admissionregistration/v1"
 )
 
 var (
@@ -105,66 +104,6 @@ func evalBool(expr string, vars map[string]any) (bool, error) {
 		return false, fmt.Errorf("expression %q returned %T", expr, out.Value())
 	}
 	return b, nil
-}
-
-func evalAny(expr string, vars map[string]any) (any, error) {
-	e, err := env()
-	if err != nil {
-		return nil, err
-	}
-	ast, iss := e.Compile(expr)
-	if iss != nil && iss.Err() != nil {
-		return nil, iss.Err()
-	}
-	prg, err := e.Program(ast)
-	if err != nil {
-		return nil, err
-	}
-	out, _, err := prg.Eval(vars)
-	if err != nil {
-		return nil, err
-	}
-	if out == nil {
-		return nil, nil
-	}
-	return out.Value(), nil
-}
-
-func evalVariables(defs []admissionregv1.Variable, vars map[string]any) map[string]any {
-	out := map[string]any{}
-	vars["variables"] = out
-	for _, d := range defs {
-		v, err := evalAny(d.Expression, vars)
-		if err != nil {
-			continue
-		}
-		out[d.Name] = v
-	}
-	return out
-}
-
-func evalString(expr string, vars map[string]any) (string, error) {
-	e, err := env()
-	if err != nil {
-		return "", err
-	}
-	ast, iss := e.Compile(expr)
-	if iss != nil && iss.Err() != nil {
-		return "", iss.Err()
-	}
-	prg, err := e.Program(ast)
-	if err != nil {
-		return "", err
-	}
-	out, _, err := prg.Eval(vars)
-	if err != nil {
-		return "", err
-	}
-	s, ok := out.Value().(string)
-	if !ok {
-		return "", fmt.Errorf("expression %q returned %T", expr, out.Value())
-	}
-	return s, nil
 }
 
 func compileExpr(expr string) error {

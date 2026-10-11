@@ -11,7 +11,10 @@ import (
 	"k8s.io/apiserver/pkg/authorization/authorizer"
 )
 
-const sarPath = "https://apiserver.internal/apis/authorization.k8s.io/v1/subjectaccessreviews"
+const (
+	apiHost = "https://apiserver.internal"
+	sarPath = apiHost + "/apis/authorization.k8s.io/v1/subjectaccessreviews"
+)
 
 type sarAuthorizer struct {
 	client *http.Client
