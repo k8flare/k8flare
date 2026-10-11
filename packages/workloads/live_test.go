@@ -142,7 +142,7 @@ func TestDrainIgnoresYieldWhileLive(t *testing.T) {
 	yieldRequested.Store(true)
 	defer yieldRequested.Store(false)
 	started := time.Now()
-	if drain(func(string) bool { return true }, 300*time.Millisecond, time.Millisecond, time.Time{}, func() bool { return true }) {
+	if drain(func(string) bool { return true }, 300*time.Millisecond, time.Millisecond, time.Time{}, func() bool { return true }, nil) {
 		t.Fatal("queued work reported drained")
 	}
 	if time.Since(started) < 250*time.Millisecond {
@@ -175,5 +175,37 @@ func TestLiveFeedGivesAnObjectTheRevisionItWasStoredAt(t *testing.T) {
 	}
 	if got := held.(*corev1.Endpoints).ResourceVersion; got != "11" {
 		t.Fatalf("resourceVersion %q, want the stored revision 11", got)
+	}
+}
+
+func TestDrainAdoptsAnOfferedChangeOnlyWhileLive(t *testing.T) {
+	work.reset(workloadQueue)
+	defer work.reset(workloadQueue)
+	work.of("replicationmanager").depth.Store(1)
+	for _, live := range []bool{false, true} {
+		adopted := make(chan []string, 1)
+		drained := make(chan struct{})
+		go func() {
+			drain(workloadQueue, 300*time.Millisecond, time.Millisecond, time.Time{}, func() bool { return live }, func(a *adoption) { adopted <- a.changed })
+			close(drained)
+		}()
+		var handed *adoption
+		for deadline := time.Now().Add(250 * time.Millisecond); handed == nil && time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+			handed = offer([]string{"configmaps"})
+		}
+		<-drained
+		if live != (handed != nil) {
+			t.Fatalf("live=%v: offer accepted=%v", live, handed != nil)
+		}
+		select {
+		case got := <-adopted:
+			if !live || len(got) != 1 || got[0] != "configmaps" {
+				t.Fatalf("live=%v: adopted %v", live, got)
+			}
+		default:
+			if live {
+				t.Fatal("a live pass accepted the offer without adopting it")
+			}
+		}
 	}
 }

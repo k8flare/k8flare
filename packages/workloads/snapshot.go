@@ -16,6 +16,7 @@ type snapshotInformer struct {
 	example  runtime.Object
 	mu       sync.Mutex
 	handlers []cache.ResourceEventHandler
+	replayed int
 	stale    atomic.Bool
 	list     func(context.Context) ([]runtime.Object, error)
 	passCtx  context.Context
@@ -77,7 +78,8 @@ func (s *snapshotInformer) fill(objs []runtime.Object) {
 
 func (s *snapshotInformer) replay(objs []runtime.Object) {
 	s.mu.Lock()
-	handlers := append([]cache.ResourceEventHandler(nil), s.handlers...)
+	handlers := append([]cache.ResourceEventHandler(nil), s.handlers[s.replayed:]...)
+	s.replayed = len(s.handlers)
 	s.mu.Unlock()
 	s.deliver(func() {
 		for _, o := range objs {
@@ -86,6 +88,15 @@ func (s *snapshotInformer) replay(objs []runtime.Object) {
 			}
 		}
 	})
+}
+
+func (s *snapshotInformer) held() []runtime.Object {
+	items := s.SharedIndexInformer.GetIndexer().List()
+	objs := make([]runtime.Object, 0, len(items))
+	for _, item := range items {
+		objs = append(objs, item.(runtime.Object))
+	}
+	return objs
 }
 
 func (s *snapshotInformer) note(obj runtime.Object) {

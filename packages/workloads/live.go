@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -28,6 +29,7 @@ type liveEvent struct {
 }
 
 type liveFeed struct {
+	mu        sync.Mutex
 	informers map[reflect.Type]*snapshotInformer
 	listed    map[reflect.Type]int64
 	connected atomic.Bool
@@ -60,6 +62,14 @@ func followWrites(ctx context.Context, all []loadedSource, revisions []int64) *l
 	}
 	go f.run(ctx, since)
 	return f
+}
+
+func (f *liveFeed) follow(informer *snapshotInformer, listed int64) {
+	t := reflect.TypeOf(informer.example)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.informers[t] = informer
+	f.listed[t] = listed
 }
 
 func (f *liveFeed) run(ctx context.Context, since int64) {
@@ -108,8 +118,10 @@ func (f *liveFeed) apply(ev liveEvent) bool {
 	if err != nil {
 		return false
 	}
-	informer := f.informers[reflect.TypeOf(obj)]
-	if informer == nil || ev.Rev <= f.listed[reflect.TypeOf(obj)] {
+	f.mu.Lock()
+	informer, listed := f.informers[reflect.TypeOf(obj)], f.listed[reflect.TypeOf(obj)]
+	f.mu.Unlock()
+	if informer == nil || ev.Rev <= listed {
 		return false
 	}
 	accessor, err := meta.Accessor(obj)
