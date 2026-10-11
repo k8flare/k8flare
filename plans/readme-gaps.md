@@ -419,11 +419,15 @@ Decided on 2026-10-01, with the owner:
   lean client-go (no FlowControl informers) and its controller needs
   goroutines and informers the Workers do not keep; no Workers Rate
   Limiting binding is wired.
-- Admission order: LimitRanger, ServiceAccount, Priority and the other
-  built-ins of the `admit` phase run before the mutating webhooks and are
-  not run again in the validate phase (`admission/chain.go`), so what a
-  webhook changes is not rechecked by them. PodSecurity and NodeRestriction
-  run in the validate phase.
+- Admission order: `admission/chain.go` runs the plugins in upstream's
+  `AllOrderedPlugins` order, each in the phase its upstream plugin
+  implements (NodeRestriction in `admit`, before the mutating webhooks),
+  with ComputeClass first because it turns off the token ServiceAccount
+  would mount (`TestChainRunsTheEnabledPluginsInUpstreamOrder`). Not yet
+  through Conformance. Left: the remote plugin's `Admit` also runs the
+  validating plugins, as the `check` phase (`apiserver-admit/remote.go`),
+  so a validating webhook is called twice per write, the first time before
+  the registry's validation; upstream calls it once.
 - Admission: every default-on upstream plugin that acts under upstream's
   default feature gates is present. Default-on but inert here, so not
   added: ClusterTrustBundleAttest (needs the `ClusterTrustBundle` gate, off
