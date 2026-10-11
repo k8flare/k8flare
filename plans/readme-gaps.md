@@ -1819,3 +1819,34 @@ Decided on 2026-10-01, with the owner:
     `ADMIN_TOKEN` is the bearer of at least eleven internal calls and the
     key of every component token. Its entries about this file being out
     of date are unverified.
+
+## Local development
+
+- CI now calls the README's commands: Unit runs `make gen` and fails on
+  any changed or new file; E2E's `local-dev` job runs `pnpm install`,
+  `make mirrors`, `make wasm`, `make dev`, `make devtls` and
+  `make kubeconfig` on a fresh checkout and writes a namespace through
+  the kubeconfig it prints; the `required` shards run
+  `make e2e SET=required` (the target now passes `SHARD` and `SHARDS`
+  on); the `live` job runs `make test-packages`. None of this has run on
+  GitHub Actions yet.
+- `make dev` now builds the node image's agent first (ffd1123). Without
+  it a fresh checkout has no `images/node/k8flare-agent`, the node
+  Dockerfile's `COPY` fails, and wrangler dev fails while preparing the
+  container images, before it starts the worker. Read from the Dockerfile
+  and wrangler's dev code, not observed; the `local-dev` job is the
+  check.
+- `make test-packages` now has a 70m timeout (524c579), the one the
+  `live` job gave the sixteen wrangler-backed tests. Whether they fit in
+  the old 20m was never measured.
+- `make test` is not what CI runs. `conformance.yml` runs
+  `scripts/ci/e2e.sh test` with `SET=conformance`, and switching it is
+  more than one line: the target takes no shard and reads
+  `.build/kubeconfig.yaml`, while CI writes `.build/ci/kubeconfig.yaml`.
+- `make test` and `make e2e` need a Ready node, and the README's
+  sequence joins none. `make devtls` serves its own CA and asks for no
+  client certificate, so a stock agent pinning the `K10` hash cannot join
+  through it. CI's `required` shards run `make e2e` against the cluster
+  `scripts/ci/e2e.sh up` starts (the server-CA edge on :16443, kubeconfig
+  copied to `.build/kubeconfig.yaml`), not against `make dev` and
+  `make devtls`.
