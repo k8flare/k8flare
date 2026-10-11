@@ -353,11 +353,19 @@ Decided on 2026-10-01, with the owner:
   a deploy is one cutover. Nothing tests that nodes keep running across one.
 - `/livez` is ping only (`apiserver/health.go`); `/readyz` and `/healthz`
   carry the datastore, queue and controller checks.
-- Snapshots: the Durable Object side of `save`, `list`, `restore` and
-  `--force`, and the `/vault/` exclusion, have no test (the CLI and the
-  front's forwarding do). Point-in-time restore rewinds the whole Durable
-  Object, `/vault/` included. Snapshots go to `PODS_R2`, the bucket pods
-  use. No Logpush is configured.
+- Snapshots: the Durable Object side of `save`, `list`, `restore`,
+  `--force`, the `/vault/` exclusion and restoring another cluster's
+  snapshot is tested on node:sqlite against a fake R2
+  (`cluster-store/test/snapshot.test.ts`), not against workerd. A new
+  cluster can only restore an old one's snapshot if it binds the same
+  bucket, and `snapshot list` shows only its own `CLUSTER_UID` prefix, so
+  the key has to come from the old cluster. Point-in-time restore refuses a
+  `to` more than 30 days back; `getBookmarkForTime` and
+  `onNextSessionRestoreBookmark` are fakes in the tests, `/restore/apply`
+  (`ctx.abort`) has no test, none of them has run against a deployed
+  Durable Object, and the behaviour for a `to` in the future is unknown. It rewinds the whole Durable Object,
+  `/vault/` included. Snapshots go to `PODS_R2`, the bucket pods use. No
+  Logpush is configured.
 - Bootstrap-token Secrets now authenticate API bearer requests and k3s agent
   joins through the upstream bootstrap authenticator. Unit tests cover validation
   and supervisor access; a Secret-backed join has not been exercised with a live
