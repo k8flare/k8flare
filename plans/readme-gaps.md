@@ -81,9 +81,6 @@ Decided on 2026-10-01, with the owner:
     not run; no test.
   - Job backoff has no test that a delay is booked; the 10 s recheck of
     unfinished Jobs (`workloads.go`) would hide a missing one.
-  - Read, not run: the scheduler fills no ReplicationController,
-    ReplicaSet or StatefulSet lister (`scheduler/scheduler.go`), which
-    PodTopologySpread's default selectors read.
 
 ## Architecture
 
