@@ -1857,8 +1857,12 @@ Decided on 2026-10-01, with the owner:
   - `ci/batch9` had one Conformance run where shard 4 failed with no
     failed spec in its log. Not investigated; it did not repeat in the
     six runs since.
-  - Namespace termination retries every 2 s without backoff; a namespace
-    that cannot finish keeps the Cluster object awake.
+  - A namespace that cannot finish terminating is retried on a backoff
+    that starts at 2 s and grows with the time since its deletion to once
+    a minute (upstream's namespace controller cap), and a deletion inside
+    a terminating namespace wakes the pass at once. Such a namespace still
+    wakes the Cluster object once a minute. Not yet run through
+    Conformance.
   - A client disconnect does not end its watch (reproduced locally; the
     abort is suspected never to reach the handler).
   - `ci/batch11` (the admission swaps) failed Conformance 3 of 3 on every

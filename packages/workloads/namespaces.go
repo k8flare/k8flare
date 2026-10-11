@@ -17,9 +17,10 @@ import (
 )
 
 const (
-	namespaceRetry   = 2 * time.Second
-	namespaceBatch   = 40
-	namespaceWorkers = 8
+	namespaceRetry    = 2 * time.Second
+	namespaceMaxRetry = time.Minute
+	namespaceBatch    = 40
+	namespaceWorkers  = 8
 )
 
 var namespaceBudget = 60 * time.Second
@@ -36,6 +37,10 @@ func remainingAfter(wait time.Duration) deleteOutcome {
 		wait = namespaceRetry
 	}
 	return deleteOutcome{terminating: true, remaining: true, retry: wait}
+}
+
+func namespaceBackoff(ns *v1.Namespace) time.Duration {
+	return min(max(time.Since(ns.DeletionTimestamp.Time), namespaceRetry), namespaceMaxRetry)
 }
 
 type NamespaceResult struct {
@@ -828,8 +833,10 @@ func (d *Deleter) DeleteTerminating(ctx context.Context, client kubernetes.Inter
 		}()
 	}
 	wg.Wait()
-	if more || result.Remaining > 0 {
+	if more {
 		result.NextMs = soonest(result.NextMs, namespaceRetry)
+	}
+	if more || result.Remaining > 0 {
 		for _, name := range listed {
 			if !done[name] {
 				result.Names = append(result.Names, name)
@@ -853,7 +860,7 @@ func (d *Deleter) deleteOne(ctx context.Context, client kubernetes.Interface, na
 	}
 	if err := clearCore(ctx, client, ns.Name); err != nil {
 		println("namespaces: clear", ns.Name, "failed:", err.Error())
-		return remainingAfter(namespaceRetry)
+		return remainingAfter(namespaceBackoff(ns))
 	}
 	if podsGone, _ := namespacePodsGone(ctx, client, ns.Name); !podsGone {
 		if err := reportDeletionConditions(ctx, client, ns); err != nil {
@@ -861,22 +868,22 @@ func (d *Deleter) deleteOne(ctx context.Context, client kubernetes.Interface, na
 		}
 	}
 	if gone, _ := namespaceContentGone(ctx, client, ns.Name); !gone {
-		return remainingAfter(namespaceRetry)
+		return remainingAfter(namespaceBackoff(ns))
 	}
 	if d.inner != nil {
 		if err := d.inner.Delete(ctx, ns.Name); err != nil {
 			var remain *deletion.ResourcesRemainingError
 			if errors.As(err, &remain) {
-				return remainingAfter(time.Duration(remain.Estimate) * time.Second)
+				return remainingAfter(max(time.Duration(remain.Estimate)*time.Second, namespaceBackoff(ns)))
 			}
 			println("namespaces: delete", ns.Name, "failed:", err.Error())
-			return remainingAfter(namespaceRetry)
+			return remainingAfter(namespaceBackoff(ns))
 		}
 		return deleteOutcome{terminating: true, deleted: true}
 	}
 	if err := finalizeKubernetes(ctx, client, ns); err != nil {
 		println("namespaces: finalize", ns.Name, "failed:", err.Error())
-		return remainingAfter(namespaceRetry)
+		return remainingAfter(namespaceBackoff(ns))
 	}
 	return deleteOutcome{terminating: true, deleted: true}
 }

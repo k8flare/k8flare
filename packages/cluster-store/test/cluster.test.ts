@@ -150,6 +150,27 @@ test("VolumeAttributesClass writes reach the workloads queue so its protection f
   assert.deepEqual(sent, ["/registry/volumeattributesclasses/e2e-1", "/registry/volumeattributesclasses/e2e-1"]);
 });
 
+test("deleting an object in a terminating namespace wakes the namespace pass, and nothing else does", async () => {
+  const sent: string[] = [];
+  const accounts = { send: async () => {}, sendBatch: async (batch: { body: { key: string; type: string } }[]) => void sent.push(...batch.map((m) => `${m.body.type} ${m.body.key}`)) };
+  const r = rig({ ACCT_Q: accounts } as any);
+  await r.settle();
+  await r.put("/registry/namespaces/live", `{"metadata":{"name":"live"}}`);
+  await r.put("/registry/namespaces/ending", `{"metadata":{"name":"ending","deletionTimestamp":"2026-10-11T00:00:00Z"}}`);
+  await r.put("/registry/pods/live/a", "{}");
+  await r.put("/registry/pods/ending/a", `{"metadata":{"finalizers":["e2e"]}}`);
+  await r.put("/registry/example.com/widgets/ending/w", "{}");
+  await r.put("/registry/clusterroles/ending", "{}");
+  await r.settle();
+  sent.length = 0;
+  await r.remove("/registry/pods/live/a");
+  await r.remove("/registry/pods/ending/a");
+  await r.remove("/registry/example.com/widgets/ending/w");
+  await r.remove("/registry/clusterroles/ending");
+  await r.settle();
+  assert.deepEqual(sent, ["deleted /registry/pods/ending/a", "deleted /registry/example.com/widgets/ending/w"]);
+});
+
 test("ServiceCIDR, ValidatingAdmissionPolicy, ResourceClaim and ResourceSlice writes reach the workloads queue", async () => {
   const sent: string[] = [];
   const workloads = { send: async () => {}, sendBatch: async (batch: { body: { key: string } }[]) => void sent.push(...batch.map((m) => m.body.key)) };

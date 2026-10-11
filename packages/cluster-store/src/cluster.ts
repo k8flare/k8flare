@@ -713,6 +713,7 @@ export class Cluster extends DurableObject<Env> {
     } else if (ATTACH_PREFIXES.some((p) => name.startsWith(p))) routes.push("attachdetach");
     if (SCHEDULER_VOLUME_PREFIXES.some((p) => name.startsWith(p))) routes.push("scheduler");
     if (ACCOUNT_PREFIXES.some((p) => name.startsWith(p))) routes.push("accounts");
+    else if (type === "deleted" && this.inTerminatingNamespace(name)) routes.push("accounts");
     if (name.startsWith(CRD_PREFIX)) routes.push("crds");
     if (name.startsWith(ADDON_PREFIX) && type === "deleted") routes.push("addons");
     if (HELM_PREFIXES.some((p) => name.startsWith(p))) routes.push("addons");
@@ -731,6 +732,13 @@ export class Cluster extends DurableObject<Env> {
       this.ctx.storage.sql.exec("INSERT INTO outbox (target, rev, key, type) VALUES (?, ?, ?, ?)", target, rev, name, type);
     }
     if (routes.length > 0) this.ctx.waitUntil(this.flushOutbox());
+  }
+
+  private inTerminatingNamespace(name: string): boolean {
+    const parts = name.split("/");
+    if (parts.length < 5) return false;
+    const ns = this.current(NAMESPACE_PREFIX + parts[parts.length - 2]);
+    return Boolean(ns && decodeJSON(ns.value)?.metadata?.deletionTimestamp);
   }
 
   private leaseWritten(node: string, type: string, value: Uint8Array): void {
