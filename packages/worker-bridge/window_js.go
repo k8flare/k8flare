@@ -346,8 +346,14 @@ var liveSockets atomic.Int64
 // fetch issued for another window can be reported instead of hanging.
 var currentTurn atomic.Pointer[Window]
 
+var leaveTurn = js.FuncOf(func(js.Value, []js.Value) any {
+	currentTurn.Store(nil)
+	return nil
+})
+
 func EnterTurn(w *Window) {
 	currentTurn.Store(w)
+	js.Global().Get("Promise").Call("resolve").Call("then", leaveTurn)
 }
 
 func turnOwner() *Window { return currentTurn.Load() }

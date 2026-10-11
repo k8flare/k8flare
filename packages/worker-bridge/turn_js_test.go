@@ -70,3 +70,32 @@ func TestRunWokenOnAnotherRequestsEntryWaitsForItsOwnPump(t *testing.T) {
 		t.Fatal("request 1's job did not run when request 1 pumped")
 	}
 }
+
+func TestRunWokenByAGoTimerWaitsForItsOwnPump(t *testing.T) {
+	ran := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/sleep", func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		if err := windowFrom(r.Context()).Run(func() { close(ran) }); err != nil {
+			t.Errorf("Run: %v", err)
+		}
+	})
+	binding := serveForTest(t, mux)
+	env := js.ValueOf(map[string]any{})
+
+	binding.Call("handleRequest", requestObject(11, "/sleep"), env, js.Undefined(), 11)
+	binding.Call("pump", 11)
+
+	select {
+	case <-ran:
+		t.Fatal("request 11's job ran on the JS entry of a Go runtime timer, which belongs to whichever request armed it, instead of waiting for request 11's pump")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	binding.Call("pump", 11)
+	select {
+	case <-ran:
+	case <-time.After(time.Second):
+		t.Fatal("request 11's job did not run when request 11 pumped")
+	}
+}
