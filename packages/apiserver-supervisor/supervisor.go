@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/k8flare/k8flare/packages/edgehost"
 	apinet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/user"
@@ -96,7 +97,7 @@ func (s *Supervisor) config(r *http.Request) k3sControlConfig {
 		ClusterIPRange: ClusterCIDR, ServiceIPRange: ServiceCIDR,
 		ClusterIPRanges: []*net.IPNet{ClusterCIDR}, ServiceIPRanges: []*net.IPNet{ServiceCIDR}, ServiceNodePortRange: &ServiceNodePortRange,
 		ClusterDNS: ClusterDNS, ClusterDNSs: []net.IP{ClusterDNS}, ClusterDomain: ClusterDomain,
-		FlannelBackend: "vxlan", DisableCCM: true,
+		FlannelBackend: "vxlan", DisableNPC: edgehost.Disabled(edgehost.NetworkPolicy), DisableCCM: true,
 		EgressSelectorMode: "cluster",
 	}
 }
