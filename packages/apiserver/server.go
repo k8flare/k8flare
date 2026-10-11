@@ -426,6 +426,7 @@ func forwardTo(client *http.Client, base, worker string) http.Handler {
 		req.Header.Del("Accept-Encoding")
 		req.ContentLength = r.ContentLength
 		auth.ForwardRemoteUser(r.Context(), req.Header)
+		forwardAuditConfig(r, req.Header)
 		if worker != "" {
 			req.Header.Set(workerHeader, worker)
 		}
@@ -441,6 +442,7 @@ func forwardTo(client *http.Client, base, worker string) http.Handler {
 		w.Header().Del("Content-Encoding")
 		w.Header().Del("Content-Length")
 		logForwardedResponseStatus(r, resp)
+		logForwardedObjects(r, w.Header())
 		w.WriteHeader(resp.StatusCode)
 		flusher, _ := w.(http.Flusher)
 		if flusher != nil {

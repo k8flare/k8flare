@@ -49,7 +49,7 @@ func NewHandler(gv schema.GroupVersion, cfg Config) (http.Handler, error) {
 	for _, wrap := range registry.Middleware {
 		handler = wrap(installed.Stores)(handler)
 	}
-	handler = auth.WithRemoteUser(handler)
+	handler = auth.WithForwardedAudit(auth.WithRemoteUser(handler))
 	var ready atomic.Bool
 	return filters.WithRequestReceivedTimestamp(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !ready.Load() {

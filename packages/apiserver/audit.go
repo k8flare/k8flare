@@ -2,11 +2,13 @@ package apiserver
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 
 	auth "github.com/k8flare/k8flare/packages/apiserver-auth"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 	"k8s.io/apiserver/pkg/audit"
 	"k8s.io/apiserver/pkg/audit/policy"
@@ -84,7 +86,7 @@ func newAuditor(policyYAML string, out io.Writer) (*auditor, error) {
 
 func withFrontFilters(inner http.Handler, authn authenticator.Request, authorization authorizer.Authorizer, a *auditor, nonMutating, mutating int) http.Handler {
 	authorized := withInflightLimit(auth.WithAuthorization(inner, authorization), nonMutating, mutating)
-	audited := filters.WithAudit(auth.WithImpersonation(authorized), a.sink, a.policy, longRunningRequest)
+	audited := filters.WithAudit(withAuditConfig(auth.WithImpersonation(authorized), a.policy), a.sink, a.policy, longRunningRequest)
 	authenticated := auth.WithAuthentication(audited, authn, func(failed http.Handler) http.Handler {
 		preserveFailure := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ac := audit.AuditContextFrom(r.Context())
@@ -98,6 +100,34 @@ func withFrontFilters(inner http.Handler, authn authenticator.Request, authoriza
 		return filters.WithFailedAuthenticationAudit(preserveFailure, a.sink, a.policy)
 	})
 	return filters.WithAuditInit(auth.WithRequestInfo(authenticated))
+}
+
+type auditConfigKey struct{}
+
+func withAuditConfig(next http.Handler, evaluator audit.PolicyRuleEvaluator) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attribs, _ := filters.GetAuthorizerAttributes(r.Context())
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), auditConfigKey{}, evaluator.EvaluatePolicyRule(attribs))))
+	})
+}
+
+func forwardAuditConfig(r *http.Request, h http.Header) {
+	rac, _ := r.Context().Value(auditConfigKey{}).(audit.RequestAuditConfig)
+	auth.ForwardAuditConfig(h, rac)
+}
+
+func logForwardedObjects(r *http.Request, h http.Header) {
+	request, response := auth.TakeForwardedAuditObjects(h)
+	ac := audit.AuditContextFrom(r.Context())
+	if !ac.Enabled() {
+		return
+	}
+	if len(request) > 0 {
+		ac.LogRequestPatch(request)
+	}
+	if len(response) > 0 {
+		ac.LogResponseObject(nil, &runtime.Unknown{Raw: response, ContentType: runtime.ContentTypeJSON})
+	}
 }
 
 func withBypassAudit(inner http.Handler, a *auditor) http.Handler {
