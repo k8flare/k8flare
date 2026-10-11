@@ -390,6 +390,7 @@ type storeInformerFactory struct {
 	ingressClass  cache.Indexer
 	runtimeClass  cache.Indexer
 	node          cache.Indexer
+	namespace     cache.Indexer
 	failure       error
 }
 
@@ -403,6 +404,7 @@ func newStoreInformerFactory(ctx context.Context, s *store) *storeInformerFactor
 	f.limitRange = newStoreIndexer[*corev1.LimitRange](ctx, s, "/registry/limitranges/", true, f.fail)
 	f.storageClass = newStoreIndexer[*storagev1.StorageClass](ctx, s, "/registry/storageclasses/", false, f.fail)
 	f.node = newStoreIndexer[*corev1.Node](ctx, s, "/registry/nodes/", false, f.fail)
+	f.namespace = newStoreIndexer[*corev1.Namespace](ctx, s, "/registry/namespaces/", false, f.fail)
 	f.runtimeClass = newStoreIndexer[*nodev1.RuntimeClass](ctx, s, "/registry/runtimeclasses/", false, f.fail)
 	f.ingressClass = newStoreIndexer[*networkingv1.IngressClass](ctx, s, "/registry/ingressclasses/", false, f.fail)
 	return f
@@ -475,6 +477,8 @@ func (f *storeInformerFactory) InformerFor(obj runtime.Object, newFunc internali
 		return storeInformer{indexer: f.storageClass}
 	case *corev1.Node:
 		return storeInformer{indexer: f.node}
+	case *corev1.Namespace:
+		return storeInformer{indexer: f.namespace}
 	case *nodev1.RuntimeClass:
 		return storeInformer{indexer: f.runtimeClass}
 	case *networkingv1.IngressClass:

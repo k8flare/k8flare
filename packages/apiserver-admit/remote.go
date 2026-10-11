@@ -14,7 +14,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apiserver/pkg/admission"
+	"k8s.io/apiserver/pkg/audit"
 	"k8s.io/apiserver/pkg/authentication/user"
+	"k8s.io/apiserver/pkg/warning"
 )
 
 const Endpoint = "https://admission.internal/admit"
@@ -41,11 +43,13 @@ type User struct {
 }
 
 type Response struct {
-	Allowed bool           `json:"allowed"`
-	Message string         `json:"message"`
-	Reason  string         `json:"reason,omitempty"`
-	Status  *metav1.Status `json:"status,omitempty"`
-	Object  map[string]any `json:"object"`
+	Allowed          bool              `json:"allowed"`
+	Message          string            `json:"message"`
+	Reason           string            `json:"reason,omitempty"`
+	Status           *metav1.Status    `json:"status,omitempty"`
+	Object           map[string]any    `json:"object"`
+	Warnings         []string          `json:"warnings,omitempty"`
+	AuditAnnotations map[string]string `json:"auditAnnotations,omitempty"`
 }
 
 type remote struct {
@@ -124,6 +128,12 @@ func (r *remote) call(ctx context.Context, a admission.Attributes, phase string)
 	var out Response
 	if err := json.Unmarshal(data, &out); err != nil {
 		return admission.NewForbidden(a, fmt.Errorf("admission: %w", err))
+	}
+	for _, w := range out.Warnings {
+		warning.AddWarning(ctx, "", w)
+	}
+	for key, value := range out.AuditAnnotations {
+		audit.AddAuditAnnotation(ctx, key, value)
 	}
 	if !out.Allowed {
 		if out.Status != nil {

@@ -9,8 +9,12 @@ import (
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apiserver/pkg/admission/plugin/policy/mutating/patch"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
+	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 )
 
 type Config struct {
@@ -24,11 +28,13 @@ type Config struct {
 }
 
 type Handler struct {
-	store    *store
-	tunnel   *http.Client
-	hooks    *http.Client
-	outbound *http.Client
-	authz    authorizer.Authorizer
+	store          *store
+	tunnel         *http.Client
+	hooks          *http.Client
+	outbound       *http.Client
+	authz          authorizer.Authorizer
+	api            *rest.Config
+	typeConverters patch.TypeConverterManager
 }
 
 func NewHandler(cfg Config) http.Handler {
@@ -43,6 +49,8 @@ func NewHandler(cfg Config) http.Handler {
 	}
 	if cfg.API != nil {
 		h.authz = &sarAuthorizer{client: cfg.API, token: cfg.Token}
+		h.api = &rest.Config{Host: apiHost, BearerToken: cfg.Token, Transport: cfg.API.Transport, ContentConfig: rest.ContentConfig{ContentType: runtime.ContentTypeJSON}}
+		h.typeConverters = patch.NewTypeConverterManager(nil, discovery.NewDiscoveryClientForConfigOrDie(h.api).OpenAPIV3())
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /admit", h.admit)
