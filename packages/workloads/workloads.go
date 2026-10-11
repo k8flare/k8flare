@@ -58,7 +58,6 @@ const (
 	shutdownGrace        = 5 * time.Second
 	maxEndpointsPerSlice = 100
 	daemonSetWorkers     = 2
-	unfinishedJobRecheck = 10 * time.Second
 	taintClearRetry      = 2 * time.Second
 	maxDelay             = 24 * time.Hour
 )
@@ -540,9 +539,6 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 	for i, s := range src {
 		objs := loaded[i]
 		if s.name == "jobs" {
-			if anyUnfinished(objs) {
-				result.NextMs = unfinishedJobRecheck.Milliseconds()
-			}
 			if next, ok := nextJobTTL(objs); ok {
 				result.NextMs = soonest(result.NextMs, next)
 			}
@@ -751,22 +747,6 @@ func nextJobTTL(objs []runtime.Object) (time.Duration, bool) {
 		}
 	}
 	return soonestRun, found
-}
-
-func anyUnfinished(objs []runtime.Object) bool {
-	for _, o := range objs {
-		j := o.(*batchv1.Job)
-		finished := false
-		for _, c := range j.Status.Conditions {
-			if (c.Type == batchv1.JobComplete || c.Type == batchv1.JobFailed) && c.Status == v1.ConditionTrue {
-				finished = true
-			}
-		}
-		if !finished && j.DeletionTimestamp == nil {
-			return true
-		}
-	}
-	return false
 }
 
 func drain(owned func(string) bool, limit, grace time.Duration, budgetBy time.Time, live func() bool) bool {

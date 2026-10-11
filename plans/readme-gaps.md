@@ -94,15 +94,20 @@ Decided on 2026-10-01, with the owner:
     `tolerationSeconds`: `tolerationWait` (`workloads/nodehealth.go`)
     returns not-tolerated for it. Upstream never evicts such a pod. Read,
     not run; no test.
-  - Job backoff has no test that a delay is booked; the 10 s recheck of
-    unfinished Jobs (`workloads.go`) would hide a missing one.
+  - The Job controller is built anew for each pass, so its pod failure
+    backoff record (`podBackoffStore`) lasts one pass. A pass books the
+    10 s backoff (`TestSyncBooksThePodFailureBackoffOfAJob`), but in a
+    fake-client run the second of two back-to-back passes created the
+    replacement pod at once. Read, not traced: `newBackoffRecord` counts
+    only failures not yet in the Job status, and the first pass counted
+    it. Not observed on a cluster.
 
 ## Architecture
 
 - Things poll: the metrics scrape re-sends itself every 15 s whatever it
-  found (`followup.go`, case `metrics`) and wakes HPA each time; an
-  unfinished Job re-books a workloads pass every 10 s; each node gets a
-  lease check about every 60 s; unschedulable pods are retried within 60 s.
+  found (`followup.go`, case `metrics`) and wakes HPA each time; each node
+  gets a lease check about every 60 s; unschedulable pods are retried
+  within 60 s.
 - node-tunnel imports its wasm statically into the Durable Object instead
   of loading it through the Worker Loader.
 
