@@ -15,6 +15,7 @@ import (
 	"time"
 
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
+	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -287,6 +288,22 @@ func TestCustomResources(t *testing.T) {
 	_, err = widgets.Update(c, scaleObj, metav1.UpdateOptions{}, "scale")
 	wantInvalid(t, err, `Widget.test.k8flare.dev "s1" is invalid: .spec.replicas: Invalid value: -1: should be a non-negative integer`,
 		metav1.StatusCause{Type: metav1.CauseTypeFieldValueInvalid, Message: "Invalid value: -1: should be a non-negative integer", Field: ".spec.replicas"})
+
+	held := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "widgets-terminating", Finalizers: []string{"test.k8flare.dev/hold"}}}
+	if _, err := cs.CoreV1().Namespaces().Create(c, held, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cs.CoreV1().Namespaces().Delete(c, held.Name, metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = dyn.Resource(widgetGVR).Namespace(held.Name).Create(c, widget("late", 3), metav1.CreateOptions{})
+	if !apierrors.IsForbidden(err) || !apierrors.HasStatusCause(err, corev1.NamespaceTerminatingCause) {
+		t.Errorf("create in a terminating namespace: want 403 with cause %s, got %v", corev1.NamespaceTerminatingCause, err)
+	}
+	_, err = dyn.Resource(widgetGVR).Namespace("widgets-missing").Create(c, widget("stray", 3), metav1.CreateOptions{})
+	if !apierrors.IsNotFound(err) {
+		t.Errorf("create in a missing namespace: want 404, got %v", err)
+	}
 
 	if err := ext.ApiextensionsV1().CustomResourceDefinitions().Delete(c, "widgets.test.k8flare.dev", metav1.DeleteOptions{}); err != nil {
 		t.Fatal(err)
