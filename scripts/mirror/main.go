@@ -211,6 +211,8 @@ var mirrors = []mirror{
 				appendDecls("apiserver/append/policy_admission_resources.go"),
 			),
 			hostOnly("pkg/admission/plugin/policy/generic/policy_test_context.go"),
+			keepDeclsJS("pkg/endpoints/filters/authentication.go", "audiencesAreAcceptable"),
+			hostOnly("pkg/endpoints/filters/traces.go"),
 		},
 	},
 	{
