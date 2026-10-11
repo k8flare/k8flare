@@ -29,6 +29,8 @@ import (
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
+	"k8s.io/apiserver/pkg/endpoints/filters"
+	"k8s.io/apiserver/pkg/warning"
 	"k8s.io/client-go/kubernetes/scheme"
 )
 
@@ -649,6 +651,38 @@ func TestAuditGroupWorkerObjectBudget(t *testing.T) {
 				t.Fatalf("over-budget objects were not dropped with the truncated annotation: %.300s", rig.out.String())
 			}
 		})
+	}
+}
+
+func TestAuditForwardsWorkerAnnotationsAndWarningsAtMetadata(t *testing.T) {
+	worker := httptest.NewServer(filters.WithWarningRecorder(auth.WithForwardedAudit(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		audit.AddAuditAnnotation(r.Context(), "validation.policy.admission.k8s.io/validation_failure", `[{"message":"audited"}]`)
+		warning.AddWarning(r.Context(), "", "Validation failed for ValidatingAdmissionPolicy 'p' with binding 'b': careful")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"kind":"ConfigMap","apiVersion":"v1","metadata":{"name":"cm"}}`)
+	}))))
+	defer worker.Close()
+	rig := newAuditRig(t, "", forwardTo(worker.Client(), worker.URL, ""))
+	rec := rig.do(http.MethodPost, "/api/v1/namespaces/default/configmaps", "admin-token", `{"kind":"ConfigMap","apiVersion":"v1","metadata":{"name":"cm"}}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Warning"); !strings.Contains(got, "careful") {
+		t.Fatalf("Warning header = %q", got)
+	}
+	for name := range rec.Header() {
+		if strings.HasPrefix(name, "X-K8flare-Audit") {
+			t.Fatalf("audit header %s reached the client", name)
+		}
+	}
+	events := rig.events(t)
+	if len(events) == 0 {
+		t.Fatal("no audit events")
+	}
+	last := events[len(events)-1]
+	if last.Level != auditv1.LevelMetadata || last.Annotations["validation.policy.admission.k8s.io/validation_failure"] != `[{"message":"audited"}]` {
+		t.Fatalf("event: %s", rig.out.String())
 	}
 }
 

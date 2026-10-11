@@ -14,7 +14,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apiserver/pkg/admission"
+	"k8s.io/apiserver/pkg/audit"
 	"k8s.io/apiserver/pkg/authentication/user"
+	"k8s.io/apiserver/pkg/warning"
 )
 
 const Endpoint = "https://admission.internal/admit"
@@ -126,6 +128,12 @@ func (r *remote) call(ctx context.Context, a admission.Attributes, phase string)
 	var out Response
 	if err := json.Unmarshal(data, &out); err != nil {
 		return admission.NewForbidden(a, fmt.Errorf("admission: %w", err))
+	}
+	for _, w := range out.Warnings {
+		warning.AddWarning(ctx, "", w)
+	}
+	for key, value := range out.AuditAnnotations {
+		audit.AddAuditAnnotation(ctx, key, value)
 	}
 	if !out.Allowed {
 		if out.Status != nil {

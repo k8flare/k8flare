@@ -33,6 +33,7 @@ import (
 	"k8s.io/apiserver/pkg/admission"
 	"k8s.io/apiserver/pkg/endpoints"
 	"k8s.io/apiserver/pkg/endpoints/discovery"
+	"k8s.io/apiserver/pkg/endpoints/filters"
 	"k8s.io/apiserver/pkg/endpoints/handlers/negotiation"
 	"k8s.io/apiserver/pkg/endpoints/handlers/responsewriters"
 	openapinamer "k8s.io/apiserver/pkg/endpoints/openapi"
@@ -178,7 +179,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	mux.Handle("/openapi/v2", pub.serveV2(fresh))
 	mux.Handle("/openapi/v3", pub.handler(fresh, openAPIV3Mux))
 	mux.Handle("/openapi/v3/", pub.handler(fresh, openAPIV3Mux))
-	return auth.WithForwardedAudit(handler), nil
+	return filters.WithWarningRecorder(auth.WithForwardedAudit(handler)), nil
 }
 
 func crdAdmit(client *http.Client) admission.Interface {

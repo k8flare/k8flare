@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -17,13 +18,14 @@ const (
 	auditRequestObjectHeader     = "X-K8flare-Audit-Request-Object"
 	auditResponseObjectHeader    = "X-K8flare-Audit-Response-Object"
 	auditTruncatedHeader         = "X-K8flare-Audit-Truncated"
+	auditAnnotationsHeader       = "X-K8flare-Audit-Annotations"
 	maxAuditObjectHeaderBytes    = 64 << 10
 )
 
 func ForwardAuditConfig(h http.Header, rac audit.RequestAuditConfig) {
 	h.Del(auditLevelHeader)
 	h.Del(auditOmitManagedFieldsHeader)
-	if rac.Level.Less(auditinternal.LevelRequest) {
+	if rac.Level.Less(auditinternal.LevelMetadata) {
 		return
 	}
 	h.Set(auditLevelHeader, string(rac.Level))
@@ -42,13 +44,22 @@ func TakeForwardedAuditObjects(h http.Header) (request, response []byte, truncat
 	return request, response, truncated
 }
 
+func TakeForwardedAuditAnnotations(h http.Header) map[string]string {
+	var annotations map[string]string
+	if raw, err := base64.StdEncoding.DecodeString(h.Get(auditAnnotationsHeader)); err == nil && len(raw) > 0 {
+		_ = json.Unmarshal(raw, &annotations)
+	}
+	h.Del(auditAnnotationsHeader)
+	return annotations
+}
+
 func WithForwardedAudit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rac := audit.RequestAuditConfig{
 			Level:             auditinternal.Level(r.Header.Get(auditLevelHeader)),
 			OmitManagedFields: r.Header.Get(auditOmitManagedFieldsHeader) == "true",
 		}
-		if rac.Level.Less(auditinternal.LevelRequest) {
+		if rac.Level.Less(auditinternal.LevelMetadata) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -87,6 +98,9 @@ func (w *auditObjectsWriter) start() {
 
 func (w *auditObjectsWriter) ProcessEvents(events ...*auditinternal.Event) bool {
 	for _, ev := range events {
+		if raw, err := json.Marshal(ev.Annotations); err == nil && len(ev.Annotations) > 0 {
+			w.Header().Set(auditAnnotationsHeader, base64.StdEncoding.EncodeToString(raw))
+		}
 		if encodedLen(ev.RequestObject)+encodedLen(ev.ResponseObject) > maxAuditObjectHeaderBytes {
 			w.Header().Set(auditTruncatedHeader, "true")
 			continue

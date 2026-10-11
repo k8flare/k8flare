@@ -122,10 +122,12 @@ func forwardAuditConfig(r *http.Request, h http.Header) {
 
 func logForwardedObjects(r *http.Request, h http.Header) {
 	request, response, truncated := auth.TakeForwardedAuditObjects(h)
+	annotations := auth.TakeForwardedAuditAnnotations(h)
 	ac := audit.AuditContextFrom(r.Context())
 	if !ac.Enabled() {
 		return
 	}
+	audit.AddAuditAnnotationsMap(r.Context(), annotations)
 	if truncated {
 		audit.AddAuditAnnotation(r.Context(), "audit.k8s.io/truncated", "true")
 	}

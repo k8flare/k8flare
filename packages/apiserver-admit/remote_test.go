@@ -13,7 +13,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/admission"
+	auditinternal "k8s.io/apiserver/pkg/apis/audit"
+	"k8s.io/apiserver/pkg/audit"
 	"k8s.io/apiserver/pkg/authentication/user"
+	"k8s.io/apiserver/pkg/warning"
 	k8scorev1 "k8s.io/kubernetes/pkg/apis/core/v1"
 )
 
@@ -141,5 +144,39 @@ func TestRemoteRunsTheValidatePhaseOncePerRequest(t *testing.T) {
 	}
 	if validates != 1 || phases[0] != "admit" || phases[len(phases)-1] != "validate" {
 		t.Fatalf("phases = %v, want admit first, validate last and only once", phases)
+	}
+}
+
+type warningList []string
+
+func (w *warningList) AddWarning(_, text string) { *w = append(*w, text) }
+
+func TestRemoteReplaysWarningsAndAuditAnnotations(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(Response{
+			Allowed:          false,
+			Message:          "denied",
+			Warnings:         []string{"Validation failed for ValidatingAdmissionPolicy 'p' with binding 'b': careful"},
+			AuditAnnotations: map[string]string{"p/key": "value"},
+		})
+	}))
+	defer srv.Close()
+	client := srv.Client()
+	client.Transport = rewrite{next: client.Transport, host: srv.URL}
+	warnings := &warningList{}
+	ctx := audit.WithAuditContext(warning.WithWarningRecorder(context.Background(), warnings))
+	if err := audit.AuditContextFrom(ctx).Init(audit.RequestAuditConfig{Level: auditinternal.LevelMetadata}, nil); err != nil {
+		t.Fatal(err)
+	}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "default"}}
+	attrs := admission.NewAttributesRecord(pod, nil, schema.GroupVersionKind{Version: "v1", Kind: "Pod"}, "default", "p", schema.GroupVersionResource{Version: "v1", Resource: "pods"}, "", admission.Create, nil, false, &user.DefaultInfo{Name: "admin"})
+	if err := New(client).(admission.ValidationInterface).Validate(ctx, attrs, nil); err == nil {
+		t.Fatal("expected deny")
+	}
+	if len(*warnings) != 1 || (*warnings)[0] != "Validation failed for ValidatingAdmissionPolicy 'p' with binding 'b': careful" {
+		t.Fatalf("warnings = %q", *warnings)
+	}
+	if got, _ := audit.AuditContextFrom(ctx).GetEventAnnotation("p/key"); got != "value" {
+		t.Fatalf("audit annotation = %q", got)
 	}
 }
