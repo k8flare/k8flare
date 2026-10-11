@@ -9,6 +9,11 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	bootstrapapi "k8s.io/cluster-bootstrap/token/api"
+	bootstraputil "k8s.io/cluster-bootstrap/token/util"
 )
 
 type tokenRecord struct {
@@ -20,14 +25,14 @@ type tokenRecord struct {
 
 func runToken(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: k8flare token create|list|delete|rotate")
+		return errors.New("usage: k8flare token create|list|delete|revoke|rotate")
 	}
 	switch args[0] {
 	case "create":
 		return tokenCreate(args[1:], out)
 	case "list":
 		return tokenList(args[1:], out)
-	case "delete":
+	case "delete", "revoke":
 		return tokenDelete(args[1:], out)
 	case "rotate":
 		return tokenRotate(args[1:], out)
@@ -39,6 +44,7 @@ func tokenCreate(args []string, out io.Writer) error {
 	cmd := newCommand("token create")
 	ttl := cmd.fs.Duration("ttl", 24*time.Hour, "time before the token expires; 0 never expires")
 	description := cmd.fs.String("description", "", "what the token is for")
+	bootstrap := cmd.fs.Bool("bootstrap", false, "write a bootstrap-token Secret instead of a vault token")
 	if _, err := cmd.parse(args); err != nil {
 		return err
 	}
@@ -53,6 +59,14 @@ func tokenCreate(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if *bootstrap {
+		token, err := c.createBootstrapToken(*description, *ttl)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(out, k10Token(caHash, token))
+		return nil
+	}
 	var created tokenRecord
 	body := map[string]any{"description": *description, "ttlSeconds": int64(ttl.Seconds())}
 	if err := c.call("POST", "/internal/tokens", nil, body, &created); err != nil {
@@ -60,6 +74,35 @@ func tokenCreate(args []string, out io.Writer) error {
 	}
 	fmt.Fprintln(out, k10Token(caHash, created.Token))
 	return nil
+}
+
+func (c *client) createBootstrapToken(description string, ttl time.Duration) (string, error) {
+	token, err := bootstraputil.GenerateBootstrapToken()
+	if err != nil {
+		return "", err
+	}
+	id, secret, _ := strings.Cut(token, ".")
+	data := map[string][]byte{
+		bootstrapapi.BootstrapTokenIDKey:               []byte(id),
+		bootstrapapi.BootstrapTokenSecretKey:           []byte(secret),
+		bootstrapapi.BootstrapTokenUsageAuthentication: []byte("true"),
+	}
+	if description != "" {
+		data[bootstrapapi.BootstrapTokenDescriptionKey] = []byte(description)
+	}
+	if ttl > 0 {
+		data[bootstrapapi.BootstrapTokenExpirationKey] = []byte(time.Now().Add(ttl).UTC().Format(time.RFC3339))
+	}
+	body := corev1.Secret{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
+		ObjectMeta: metav1.ObjectMeta{Name: bootstraputil.BootstrapTokenSecretName(id), Namespace: metav1.NamespaceSystem},
+		Type:       bootstrapapi.SecretTypeBootstrapToken,
+		Data:       data,
+	}
+	if err := c.call("POST", "/api/v1/namespaces/"+metav1.NamespaceSystem+"/secrets", nil, body, nil); err != nil {
+		return "", err
+	}
+	return token, nil
 }
 
 func tokenList(args []string, out io.Writer) error {
@@ -107,6 +150,9 @@ func k10Token(caHash, token string) string {
 }
 
 func tokenID(arg string) string {
+	if _, creds, ok := strings.Cut(arg, "::"); ok {
+		arg = creds
+	}
 	id, _, _ := strings.Cut(arg, ".")
 	return id
 }
