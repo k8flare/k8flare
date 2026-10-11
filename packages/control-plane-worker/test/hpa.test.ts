@@ -37,13 +37,13 @@ test("a message on the HPA queue scrapes metrics, calls the HPA controller entry
       if (url.pathname === "/internal/queue/followup") {
         const body = (await request.json()) as Record<string, unknown>;
         followUps.push(body);
-        return Response.json({ sends: [{ queue: "hpa", delaySeconds: 15, kind: "retry", once: true }], stop: false });
+        return Response.json({ sends: [{ queue: "hpa", delaySeconds: 15, kind: "retry" }], stop: false });
       }
       return new Response("{}", { status: 200 });
     },
     HPA_Q: {
       send: async () => {
-        throw new Error("unexpected HPA_Q.send for once send");
+        throw new Error("unexpected HPA_Q.send for a deadline");
       },
     },
     CLUSTER: {
@@ -59,7 +59,7 @@ test("a message on the HPA queue scrapes metrics, calls the HPA controller entry
           if (path === "/enqueue") {
             const body = JSON.parse(String(init?.body ?? "{}"));
             enqueued.push(body);
-            return Response.json({ ok: true, booked: true });
+            return Response.json({ ok: true });
           }
           return new Response("{}");
         },
@@ -78,5 +78,5 @@ test("a message on the HPA queue scrapes metrics, calls the HPA controller entry
   assert.equal(followUps.length, 1);
   assert.deepEqual(followUps[0], { target: "hpa", hasResult: true, drained: true, hpas: 2 });
   assert.equal(enqueued.length, 1);
-  assert.deepEqual(enqueued[0], { target: "hpa", delayMs: 15_000, once: true });
+  assert.deepEqual(enqueued[0], { target: "hpa", delayMs: 15_000 });
 });

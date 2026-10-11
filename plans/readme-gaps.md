@@ -99,10 +99,6 @@ Decided on 2026-10-01, with the owner:
 
 ## Architecture
 
-- Controller deadlines ride on Queues `delaySeconds`
-  (`control-plane-worker/src/queues.ts`, `edgehost/followup.go`), not on
-  Durable Object alarms; the Cluster DO alarm only does store housekeeping.
-  They do fire with no further write.
 - Things poll: the metrics scrape re-sends itself every 15 s whatever it
   found (`followup.go`, case `metrics`) and wakes HPA each time; an
   unfinished Job re-books a workloads pass every 10 s; each node gets a

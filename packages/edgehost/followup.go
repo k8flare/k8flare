@@ -46,7 +46,6 @@ type followSend struct {
 	Changed      []string `json:"changed,omitempty"`
 	Names        []string `json:"names,omitempty"`
 	Node         string   `json:"node,omitempty"`
-	Once         bool     `json:"once,omitempty"`
 }
 
 type followResult struct {
@@ -146,9 +145,7 @@ func followUp(in followIn) followResult {
 		if !in.HasResult {
 			out.Sends = append(out.Sends, retry("hpa", nil, nil, nil, "", refusedRetryS))
 		} else if in.HPAs > 0 {
-			send := retry("hpa", nil, nil, nil, "", horizontalPodAutoscalerSyncPeriod)
-			send.Once = true
-			out.Sends = append(out.Sends, send)
+			out.Sends = append(out.Sends, retry("hpa", nil, nil, nil, "", horizontalPodAutoscalerSyncPeriod))
 		}
 	case "containers":
 		if in.HasWork {

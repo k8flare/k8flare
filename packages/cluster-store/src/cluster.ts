@@ -20,7 +20,7 @@ const NODE_LEASE_PREFIX = "/registry/leases/kube-node-lease/";
 const LEASE_CHECK_DELAY_S = 60;
 const LEASE_CHECK_EVERY_MS = 50_000;
 const OUTBOX_BATCH = 100;
-const MAX_DELAY_S = 86_400;
+const DEADLINE_RETRY_MS = 5_000;
 
 type Target = "scheduler" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "containers" | "attachdetach" | "addons" | "hpa";
 const targets: Target[] = ["scheduler", "workloads", "crds", "gc", "accounts", "extensions", "containers", "attachdetach", "addons", "hpa"];
@@ -39,6 +39,8 @@ export type QueueMessage =
   | { kind: "change"; key: string; type: string; rev: number }
   | { kind: "lease-check"; node: string }
   | { kind: "retry"; attempt?: number; changed?: string[]; names?: string[] };
+
+type Deferred = Extract<QueueMessage, { kind: "retry" | "lease-check" }>;
 
 function versionStamp(version: string): number {
   let hash = 2166136261;
@@ -73,11 +75,11 @@ export class Cluster extends DurableObject<Env> {
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)`);
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, target TEXT NOT NULL, rev INTEGER NOT NULL, key TEXT NOT NULL, type TEXT NOT NULL)`);
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS passes (target TEXT PRIMARY KEY, triggered INTEGER NOT NULL, finished INTEGER NOT NULL)`);
-      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS lease_checks (node TEXT PRIMARY KEY, sent INTEGER NOT NULL, due INTEGER NOT NULL DEFAULT 0)`);
-      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS deadlines (target TEXT PRIMARY KEY, due INTEGER NOT NULL)`);
-      if (!ctx.storage.sql.exec("PRAGMA table_info(lease_checks)").toArray().some((c) => c.name === "due")) {
-        ctx.storage.sql.exec("ALTER TABLE lease_checks ADD COLUMN due INTEGER NOT NULL DEFAULT 0");
+      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS lease_checks (node TEXT PRIMARY KEY, sent INTEGER NOT NULL)`);
+      if (!ctx.storage.sql.exec("PRAGMA table_info(deadlines)").toArray().some((c) => c.name === "key")) {
+        ctx.storage.sql.exec("DROP TABLE IF EXISTS deadlines");
       }
+      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS deadlines (key TEXT PRIMARY KEY, target TEXT NOT NULL, due INTEGER NOT NULL, body TEXT NOT NULL)`);
       ctx.storage.sql.exec(
         `INSERT INTO kine (name, deleted, value) SELECT '/k8flare/bootstrap', 0, X'' WHERE NOT EXISTS (SELECT 1 FROM kine)`,
       );
@@ -268,8 +270,9 @@ export class Cluster extends DurableObject<Env> {
       case "POST /lease-check": {
         const body = (await request.json()) as { node: string; delayMs: number };
         if (!body.node) return new Response("missing node", { status: 400 });
-        const scheduled = await this.scheduleLeaseCheck(body.node, Math.max(0, body.delayMs ?? 0));
-        return Response.json({ scheduled });
+        this.scheduleLeaseCheck(body.node, Math.max(0, body.delayMs ?? 0));
+        await this.armAlarm();
+        return Response.json({ ok: true });
       }
       case "GET /kv": {
         const kv = this.current(url.searchParams.get("key") ?? "");
@@ -292,29 +295,10 @@ export class Cluster extends DurableObject<Env> {
         return Response.json({ revision: this.insert(body.key, 1, cur.value, cur) });
       }
       case "POST /enqueue": {
-        const body = (await request.json()) as { target: Target; delayMs: number; once?: boolean };
+        const body = (await request.json()) as { target: Target; delayMs: number; attempt?: number; changed?: string[]; names?: string[] };
         if (!targets.includes(body.target)) return new Response("unknown target", { status: 400 });
-        const delaySeconds = Math.min(MAX_DELAY_S, Math.max(0, Math.ceil(body.delayMs / 1000)));
-        if (body.once) {
-          const now = Date.now();
-          const rows = this.ctx.storage.sql.exec("SELECT due FROM deadlines WHERE target = ?", body.target).toArray();
-          if (rows.length > 0 && (rows[0].due as number) > now) {
-            return Response.json({ ok: true, booked: false });
-          }
-          this.ctx.storage.sql.exec(
-            "INSERT INTO deadlines (target, due) VALUES (?, ?) ON CONFLICT(target) DO UPDATE SET due = excluded.due",
-            body.target,
-            now + body.delayMs,
-          );
-          try {
-            await this.queue(body.target).send({ kind: "retry" } satisfies QueueMessage, { delaySeconds });
-          } catch (err) {
-            this.ctx.storage.sql.exec("DELETE FROM deadlines WHERE target = ?", body.target);
-            throw err;
-          }
-          return Response.json({ ok: true, booked: true });
-        }
-        await this.queue(body.target).send({ kind: "retry" } satisfies QueueMessage, { delaySeconds });
+        this.book(body.target, { kind: "retry", attempt: body.attempt, changed: body.changed, names: body.names }, Date.now() + Math.max(0, body.delayMs ?? 0));
+        await this.armAlarm();
         return Response.json({ ok: true });
       }
       case "POST /snapshot": {
@@ -560,8 +544,40 @@ export class Cluster extends DurableObject<Env> {
     if (this.watchers.size > 0 && now >= this.progressDue) this.sendProgressToAll();
     const compactDue = this.compactDue();
     if (compactDue !== null && now >= compactDue) this.compactByTime(now);
+    await this.fireDeadlines(now);
     await this.takeScheduledSnapshot(now);
     await this.armAlarm();
+  }
+
+  private book(target: string, body: Deferred, due: number): void {
+    this.ctx.storage.sql.exec(
+      `INSERT INTO deadlines (key, target, due, body) VALUES (?1, ?2, ?3, ?4)
+       ON CONFLICT(key) DO UPDATE SET body = excluded.body,
+         due = CASE WHEN deadlines.due <= ?5 THEN excluded.due ELSE MIN(deadlines.due, excluded.due) END`,
+      deadlineKey(target, body),
+      target,
+      due,
+      JSON.stringify(body),
+      Date.now(),
+    );
+  }
+
+  private nextDeadline(): number | null {
+    return this.ctx.storage.sql.exec("SELECT MIN(due) AS due FROM deadlines").one().due as number | null;
+  }
+
+  private async fireDeadlines(now: number): Promise<void> {
+    const rows = this.ctx.storage.sql.exec("SELECT key, target, due, body FROM deadlines WHERE due <= ? ORDER BY due", now).toArray();
+    for (const row of rows) {
+      const body = JSON.parse(row.body as string) as Deferred;
+      try {
+        await (body.kind === "lease-check" ? this.env.CTRL_Q : this.queue(row.target as Target)).send(body);
+        this.ctx.storage.sql.exec("DELETE FROM deadlines WHERE key = ? AND due = ?", row.key, row.due);
+      } catch (err) {
+        console.error(`deadline ${row.key}:`, err);
+        this.ctx.storage.sql.exec("UPDATE deadlines SET due = ? WHERE key = ? AND due = ?", Date.now() + DEADLINE_RETRY_MS, row.key, row.due);
+      }
+    }
   }
 
   private async armAlarm(): Promise<void> {
@@ -573,6 +589,7 @@ export class Cluster extends DurableObject<Env> {
         ...[...this.watchers.values()].map((w) => w.openedAt + WATCH_LEASE_MS),
         this.watchers.size > 0 ? this.progressDue : null,
         this.compactDue(),
+        this.nextDeadline(),
         schedule && this.snapshotBucket() ? this.dueAt("snapshot_due", schedule.intervalMs) : null,
       ],
       Date.now(),
@@ -715,21 +732,14 @@ export class Cluster extends DurableObject<Env> {
     const now = Date.now();
     const rows = this.ctx.storage.sql.exec("SELECT sent FROM lease_checks WHERE node = ?", node).toArray();
     if (rows.length > 0 && now - (rows[0].sent as number) < LEASE_CHECK_EVERY_MS) return;
-    await this.scheduleLeaseCheck(node, LEASE_CHECK_DELAY_S * 1000);
+    this.scheduleLeaseCheck(node, LEASE_CHECK_DELAY_S * 1000);
+    await this.armAlarm();
   }
 
-  private async scheduleLeaseCheck(node: string, delayMs: number): Promise<boolean> {
+  private scheduleLeaseCheck(node: string, delayMs: number): void {
     const now = Date.now();
-    const rows = this.ctx.storage.sql.exec("SELECT due FROM lease_checks WHERE node = ?", node).toArray();
-    if (rows.length > 0 && (rows[0].due as number) > now) return false;
-    this.ctx.storage.sql.exec(
-      "INSERT INTO lease_checks (node, sent, due) VALUES (?, ?, ?) ON CONFLICT(node) DO UPDATE SET sent = excluded.sent, due = excluded.due",
-      node,
-      now,
-      now + delayMs,
-    );
-    await this.env.CTRL_Q.send({ kind: "lease-check", node } satisfies QueueMessage, { delaySeconds: Math.ceil(delayMs / 1000) });
-    return true;
+    this.ctx.storage.sql.exec("INSERT INTO lease_checks (node, sent) VALUES (?, ?) ON CONFLICT(node) DO UPDATE SET sent = excluded.sent", node, now);
+    this.book("leases", { kind: "lease-check", node }, now + delayMs);
   }
 
   private markTriggered(target: Target): void {
@@ -802,6 +812,11 @@ interface KV {
   value: Uint8Array;
   modRevision: number;
   ts?: number;
+}
+
+function deadlineKey(target: string, body: Deferred): string {
+  if (body.kind === "lease-check") return `${target}/${body.node}`;
+  return `${target}/${JSON.stringify([[...(body.changed ?? [])].sort(), [...(body.names ?? [])].sort()])}`;
 }
 
 function rowToKV(row: Record<string, SqlStorageValue>): KV {

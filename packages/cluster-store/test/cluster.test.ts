@@ -254,61 +254,6 @@ test("HorizontalPodAutoscaler status writes do not reach hpa queue, spec changes
   assert.equal(hpaSent.length, 3);
 });
 
-test("POST /enqueue with once deduplicates within delay and reschedules after due", async () => {
-  const sent: { delaySeconds?: number }[] = [];
-  const queue = {
-    send: async (_body: unknown, opts?: { delaySeconds?: number }) => void sent.push({ delaySeconds: opts?.delaySeconds }),
-    sendBatch: async () => {},
-  };
-  const r = rig({ HPA_Q: queue } as any);
-  await r.settle();
-
-  const res1 = await (await r.post("/enqueue", { target: "hpa", delayMs: 15_000, once: true })).json();
-  assert.deepEqual(res1, { ok: true, booked: true });
-  assert.equal(sent.length, 1);
-  assert.equal(sent[0].delaySeconds, 15);
-
-  const res2 = await (await r.post("/enqueue", { target: "hpa", delayMs: 15_000, once: true })).json();
-  assert.deepEqual(res2, { ok: true, booked: false });
-  assert.equal(sent.length, 1);
-
-  r.sql.exec("UPDATE deadlines SET due = ? WHERE target = 'hpa'", Date.now() - 1000);
-
-  const res3 = await (await r.post("/enqueue", { target: "hpa", delayMs: 15_000, once: true })).json();
-  assert.deepEqual(res3, { ok: true, booked: true });
-  assert.equal(sent.length, 2);
-
-  const resPlain1 = await (await r.post("/enqueue", { target: "hpa", delayMs: 5_000 })).json();
-  const resPlain2 = await (await r.post("/enqueue", { target: "hpa", delayMs: 5_000 })).json();
-  assert.deepEqual(resPlain1, { ok: true });
-  assert.deepEqual(resPlain2, { ok: true });
-  assert.equal(sent.length, 4);
-});
-
-test("POST /enqueue with once clears booking if queue send fails so retry can book", async () => {
-  let shouldFail = true;
-  const sent: { delaySeconds?: number }[] = [];
-  const queue = {
-    send: async (_body: unknown, opts?: { delaySeconds?: number }) => {
-      if (shouldFail) {
-        shouldFail = false;
-        throw new Error("queue send failed");
-      }
-      sent.push({ delaySeconds: opts?.delaySeconds });
-    },
-    sendBatch: async () => {},
-  };
-  const r = rig({ HPA_Q: queue } as any);
-  await r.settle();
-
-  await assert.rejects(r.post("/enqueue", { target: "hpa", delayMs: 15_000, once: true }), /queue send failed/);
-  assert.equal(sent.length, 0);
-
-  const res = await (await r.post("/enqueue", { target: "hpa", delayMs: 15_000, once: true })).json();
-  assert.deepEqual(res, { ok: true, booked: true });
-  assert.equal(sent.length, 1);
-});
-
 test("the garbage collector hears about ownership and deletion, not every status write of an owned object", async () => {
   const sent: string[] = [];
   const gc = { send: async () => {}, sendBatch: async (batch: { body: { key: string; type: string } }[]) => void sent.push(...batch.map((m) => `${m.body.type} ${m.body.key}`)) };
@@ -328,32 +273,6 @@ test("the garbage collector hears about ownership and deletion, not every status
     "modified /registry/pods/default/b",
     "deleted /registry/pods/default/a",
   ]);
-});
-
-test("a node keeps exactly one pending lease check: lease writes and follow-ups only schedule once the pending one is due", async (t) => {
-  const tick = clock(t);
-  const sent: { node: string; delaySeconds?: number }[] = [];
-  const ctrl = { send: async (body: { node: string }, opts?: { delaySeconds?: number }) => void sent.push({ node: body.node, delaySeconds: opts?.delaySeconds }), sendBatch: async () => {} };
-  const r = rig({ CTRL_Q: ctrl } as any);
-  await r.settle();
-  await r.put("/registry/leases/kube-node-lease/n1", "v1");
-  await r.settle();
-  assert.deepEqual(sent, [{ node: "n1", delaySeconds: 60 }]);
-  tick(10_000);
-  await r.put("/registry/leases/kube-node-lease/n1", "v2", 2);
-  await r.settle();
-  assert.equal((await (await r.post("/lease-check", { node: "n1", delayMs: 30_000 })).json()).scheduled, false);
-  assert.equal(sent.length, 1);
-  tick(51_000);
-  assert.equal((await (await r.post("/lease-check", { node: "n1", delayMs: 30_000 })).json()).scheduled, true);
-  assert.deepEqual(sent[1], { node: "n1", delaySeconds: 30 });
-  await r.put("/registry/leases/kube-node-lease/n1", "v3", 3);
-  await r.settle();
-  assert.equal(sent.length, 2);
-  tick(51_000);
-  await r.put("/registry/leases/kube-node-lease/n1", "v4", 4);
-  await r.settle();
-  assert.equal(sent.length, 3);
 });
 
 test("closing a watcher updates or clears alarm when nothing else is due", async (t) => {
