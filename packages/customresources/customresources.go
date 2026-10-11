@@ -293,21 +293,26 @@ func (f freshCRDs) gate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-CRD-Instance", instanceID)
 		kvs, _, _, err := f.client.List(r.Context(), crdStoragePrefix, "", 0)
-		if err == nil && f.reconciler.run(r.Context(), decodeCRDs(kvs)) {
-			kvs, _, _, err = f.client.List(r.Context(), crdStoragePrefix, "", 0)
-		}
-		if err == nil {
-			n := f.informer.refill(kvs)
-			if n > 0 {
-				settleDiscovery(r.Context())
+		if err == nil && f.informer.settled(kvs) {
+			refillHeader(w, 0)
+			w.Header().Set("X-CRD-Pending", "0")
+		} else if err == nil {
+			if f.reconciler.run(r.Context(), decodeCRDs(kvs)) {
+				kvs, _, _, err = f.client.List(r.Context(), crdStoragePrefix, "", 0)
 			}
-			refillHeader(w, n)
-			pending, finalize := pendingWork(decodeCRDs(kvs))
-			count := len(finalize)
-			if pending {
-				count++
+			if err == nil {
+				n := f.informer.refill(kvs)
+				if n > 0 {
+					settleDiscovery(r.Context())
+				}
+				refillHeader(w, n)
+				pending, finalize := pendingWork(decodeCRDs(kvs))
+				count := len(finalize)
+				if pending {
+					count++
+				}
+				w.Header().Set("X-CRD-Pending", strconv.Itoa(count))
 			}
-			w.Header().Set("X-CRD-Pending", strconv.Itoa(count))
 		}
 		if name := crdNameForPath(r.URL.Path); name != "" {
 			if obj, exists, _ := f.informer.GetIndexer().GetByKey(name); exists {

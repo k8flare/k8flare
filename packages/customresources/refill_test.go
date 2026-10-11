@@ -1,8 +1,12 @@
 package customresources
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
@@ -43,6 +47,52 @@ func TestRefillDeliversChangesToHandlers(t *testing.T) {
 	got, err := crds.Lister().Get("a.example.com")
 	if err != nil || got.ResourceVersion != "3" {
 		t.Fatalf("lister a = %v %v", got, err)
+	}
+}
+
+func establishedCRDKV(t *testing.T, name string, rev int64) kine.KV {
+	crd := &apiextensionsv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	crd.Status.Conditions = []apiextensionsv1.CustomResourceDefinitionCondition{{Type: apiextensionsv1.Established, Status: apiextensionsv1.ConditionTrue}}
+	data, err := json.Marshal(crd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return kine.KV{Key: crdStoragePrefix + name, Value: base64.StdEncoding.EncodeToString(data), ModRevision: rev}
+}
+
+func TestGateDoesNotDecodeAnUnchangedCRDSetAgain(t *testing.T) {
+	kvs := []kine.KV{establishedCRDKV(t, "widgets.example.com", 1)}
+	client := &kine.Client{HTTP: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		body, err := json.Marshal(map[string]any{"revision": 1, "kvs": kvs})
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(bytes.NewReader(body))}, nil
+	})}}
+	factory := informers.NewSharedInformerFactory(fake.NewSimpleClientset(), 0)
+	fresh := freshCRDs{client: client, informer: registerRefillable(factory), reconciler: &reconciler{}}
+	refilled := func() string {
+		rec := httptest.NewRecorder()
+		fresh.gate(http.NotFoundHandler()).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/apis/example.com/v1/widgets", nil))
+		return rec.Header().Get("X-CRD-Refill") + "/" + rec.Header().Get("X-CRD-Pending")
+	}
+	if got := refilled(); got != "1/0" {
+		t.Fatalf("first request refill/pending = %s", got)
+	}
+	kvs[0].Value = "not a stored CRD"
+	if got := refilled(); got != "0/0" {
+		t.Fatalf("unchanged revisions were decoded again: refill/pending = %s", got)
+	}
+	if _, err := factory.Apiextensions().V1().CustomResourceDefinitions().Lister().Get("widgets.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	kvs = []kine.KV{establishedCRDKV(t, "widgets.example.com", 2)}
+	if got := refilled(); got != "1/0" {
+		t.Fatalf("changed revision refill/pending = %s", got)
+	}
+	fresh.informer.refill([]kine.KV{establishedCRDKV(t, "widgets.example.com", 1)})
+	if got := refilled(); got != "1/0" {
+		t.Fatalf("informer behind the store was taken as settled: refill/pending = %s", got)
 	}
 }
 

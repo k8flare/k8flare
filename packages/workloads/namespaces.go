@@ -3,6 +3,8 @@ package workloads
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -11,6 +13,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/metadata"
 	"k8s.io/kubernetes/pkg/controller/namespace/deletion"
@@ -21,6 +24,7 @@ const (
 	namespaceMaxRetry = time.Minute
 	namespaceBatch    = 40
 	namespaceWorkers  = 8
+	namespaceProbes   = 8
 )
 
 var namespaceBudget = 60 * time.Second
@@ -81,22 +85,66 @@ func NamespaceNames(msgs []NamespaceMessage) []string {
 }
 
 type Deleter struct {
-	inner deletion.NamespacedResourcesDeleterInterface
+	client kubernetes.Interface
+	meta   metadata.Interface
 }
 
-func NewDeleter(ctx context.Context, client kubernetes.Interface, meta metadata.Interface) *Deleter {
-	d := &Deleter{}
-	if client != nil && meta != nil {
-		d.inner = deletion.NewNamespacedResourcesDeleter(
-			ctx,
-			client.CoreV1().Namespaces(),
-			meta,
-			client.CoreV1(),
-			client.Discovery().ServerPreferredNamespacedResources,
-			v1.FinalizerKubernetes,
-		)
+func NewDeleter(client kubernetes.Interface, meta metadata.Interface) *Deleter {
+	return &Deleter{client: client, meta: meta}
+}
+
+func (d *Deleter) deleteContent(ctx context.Context, name string) error {
+	resources, discoveryErr := d.client.Discovery().ServerPreferredNamespacedResources()
+	sweep := resourcesWithContent(ctx, d.meta, name, resources)
+	if len(sweep) == 0 {
+		return fmt.Errorf("no namespaced resources discovered: %v", discoveryErr)
 	}
-	return d
+	return deletion.NewNamespacedResourcesDeleter(
+		ctx,
+		d.client.CoreV1().Namespaces(),
+		d.meta,
+		d.client.CoreV1(),
+		func() ([]*metav1.APIResourceList, error) { return sweep, discoveryErr },
+		v1.FinalizerKubernetes,
+	).Delete(ctx, name)
+}
+
+func resourcesWithContent(ctx context.Context, meta metadata.Interface, ns string, lists []*metav1.APIResourceList) []*metav1.APIResourceList {
+	keep := make([][]bool, len(lists))
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, namespaceProbes)
+	for i, list := range lists {
+		keep[i] = make([]bool, len(list.APIResources))
+		gv, err := schema.ParseGroupVersion(list.GroupVersion)
+		for j, resource := range list.APIResources {
+			if err != nil || (gv.Group == "" && resource.Name == "pods") || !slices.Contains(resource.Verbs, "list") {
+				keep[i][j] = true
+				continue
+			}
+			slots <- struct{}{}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				defer func() { <-slots }()
+				items, err := meta.Resource(gv.WithResource(resource.Name)).Namespace(ns).List(ctx, metav1.ListOptions{Limit: 1})
+				keep[i][j] = err != nil || len(items.Items) > 0
+			}()
+		}
+	}
+	wg.Wait()
+	var sweep []*metav1.APIResourceList
+	for i, list := range lists {
+		kept := &metav1.APIResourceList{TypeMeta: list.TypeMeta, GroupVersion: list.GroupVersion}
+		for j, resource := range list.APIResources {
+			if keep[i][j] {
+				kept.APIResources = append(kept.APIResources, resource)
+			}
+		}
+		if len(kept.APIResources) > 0 {
+			sweep = append(sweep, kept)
+		}
+	}
+	return sweep
 }
 
 func listTerminating(ctx context.Context, client kubernetes.Interface) ([]string, error) {
@@ -870,8 +918,8 @@ func (d *Deleter) deleteOne(ctx context.Context, client kubernetes.Interface, na
 	if gone, _ := namespaceContentGone(ctx, client, ns.Name); !gone {
 		return remainingAfter(namespaceBackoff(ns))
 	}
-	if d.inner != nil {
-		if err := d.inner.Delete(ctx, ns.Name); err != nil {
+	if d.meta != nil {
+		if err := d.deleteContent(ctx, ns.Name); err != nil {
 			var remain *deletion.ResourcesRemainingError
 			if errors.As(err, &remain) {
 				return remainingAfter(max(time.Duration(remain.Estimate)*time.Second, namespaceBackoff(ns)))

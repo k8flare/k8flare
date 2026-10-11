@@ -2,6 +2,7 @@ package workloads
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -15,7 +16,12 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
+	fakediscovery "k8s.io/client-go/discovery/fake"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/metadata"
+	metadatafake "k8s.io/client-go/metadata/fake"
 	clienttesting "k8s.io/client-go/testing"
 )
 
@@ -89,7 +95,7 @@ func TestDeleteTerminatingTakesHintedThenListed(t *testing.T) {
 		&v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "fresh"}},
 		&v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "old-pod", Namespace: "stale"}},
 	)
-	d := NewDeleter(context.Background(), client, nil)
+	d := NewDeleter(client, nil)
 	result, err := d.DeleteTerminating(context.Background(), client, []string{"fresh"})
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +116,7 @@ func TestDeleteTerminatingRemovesPods(t *testing.T) {
 		&v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "gone", DeletionTimestamp: &now}, Spec: v1.NamespaceSpec{Finalizers: []v1.FinalizerName{v1.FinalizerKubernetes}}},
 		&v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "gone"}},
 	)
-	d := NewDeleter(context.Background(), client, nil)
+	d := NewDeleter(client, nil)
 	result, err := d.DeleteTerminating(context.Background(), client, []string{"gone"})
 	if err != nil {
 		t.Fatal(err)
@@ -132,7 +138,7 @@ func TestDeleteTerminatingFinalizesEmpty(t *testing.T) {
 		&v1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "kube-root-ca.crt", Namespace: "gone"}},
 		&v1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "gone"}},
 	)
-	d := NewDeleter(context.Background(), client, nil)
+	d := NewDeleter(client, nil)
 	result, err := d.DeleteTerminating(context.Background(), client, []string{"gone"})
 	if err != nil {
 		t.Fatal(err)
@@ -159,7 +165,7 @@ func TestDeleteTerminatingClearsUnhintedInTheSameCall(t *testing.T) {
 		&v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "gone", DeletionTimestamp: &now}, Spec: v1.NamespaceSpec{Finalizers: []v1.FinalizerName{v1.FinalizerKubernetes}}},
 		&v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "left", DeletionTimestamp: &now}, Spec: v1.NamespaceSpec{Finalizers: []v1.FinalizerName{v1.FinalizerKubernetes}}},
 	)
-	d := NewDeleter(context.Background(), client, nil)
+	d := NewDeleter(client, nil)
 	result, err := d.DeleteTerminating(context.Background(), client, []string{"gone"})
 	if err != nil {
 		t.Fatal(err)
@@ -178,7 +184,7 @@ func TestDeleteTerminatingStopsAtTheBudgetAndReportsTheRest(t *testing.T) {
 		&v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "a", DeletionTimestamp: &now}, Spec: v1.NamespaceSpec{Finalizers: []v1.FinalizerName{v1.FinalizerKubernetes}}},
 		&v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "b", DeletionTimestamp: &now}, Spec: v1.NamespaceSpec{Finalizers: []v1.FinalizerName{v1.FinalizerKubernetes}}},
 	)
-	d := NewDeleter(context.Background(), client, nil)
+	d := NewDeleter(client, nil)
 	result, err := d.DeleteTerminating(context.Background(), client, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -202,7 +208,7 @@ func TestDeleteTerminatingKeepsNamespaceWhilePDBRemains(t *testing.T) {
 	client.PrependReactor("delete", "poddisruptionbudgets", func(clienttesting.Action) (bool, runtime.Object, error) {
 		return true, nil, nil
 	})
-	d := NewDeleter(context.Background(), client, nil)
+	d := NewDeleter(client, nil)
 	result, err := d.DeleteTerminating(context.Background(), client, []string{"gone"})
 	if err != nil {
 		t.Fatal(err)
@@ -229,7 +235,7 @@ func stuckNamespaceRetry(t *testing.T, deletedAt time.Time) time.Duration {
 	client.PrependReactor("delete", "services", func(clienttesting.Action) (bool, runtime.Object, error) {
 		return true, nil, nil
 	})
-	result, err := NewDeleter(context.Background(), client, nil).DeleteTerminating(context.Background(), client, []string{"stuck"})
+	result, err := NewDeleter(client, nil).DeleteTerminating(context.Background(), client, []string{"stuck"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +272,7 @@ func TestDeleteTerminatingKeepsNamespaceWhileEndpointSliceRemains(t *testing.T) 
 	client.PrependReactor("delete", "endpointslices", func(clienttesting.Action) (bool, runtime.Object, error) {
 		return true, nil, nil
 	})
-	d := NewDeleter(context.Background(), client, nil)
+	d := NewDeleter(client, nil)
 	result, err := d.DeleteTerminating(context.Background(), client, []string{"gone"})
 	if err != nil {
 		t.Fatal(err)
@@ -292,7 +298,7 @@ func TestDeleteTerminatingKeepsNamespaceWhileEventRemains(t *testing.T) {
 	client.PrependReactor("delete", "events", func(clienttesting.Action) (bool, runtime.Object, error) {
 		return true, nil, nil
 	})
-	d := NewDeleter(context.Background(), client, nil)
+	d := NewDeleter(client, nil)
 	result, err := d.DeleteTerminating(context.Background(), client, []string{"gone"})
 	if err != nil {
 		t.Fatal(err)
@@ -318,7 +324,7 @@ func TestDeleteTerminatingKeepsNamespaceWhileEventsV1Remains(t *testing.T) {
 	client.PrependReactor("delete", "events", func(clienttesting.Action) (bool, runtime.Object, error) {
 		return true, nil, nil
 	})
-	d := NewDeleter(context.Background(), client, nil)
+	d := NewDeleter(client, nil)
 	result, err := d.DeleteTerminating(context.Background(), client, []string{"gone"})
 	if err != nil {
 		t.Fatal(err)
@@ -344,7 +350,7 @@ func TestDeleteTerminatingKeepsNamespaceWhileNetworkPolicyRemains(t *testing.T) 
 	client.PrependReactor("delete", "networkpolicies", func(clienttesting.Action) (bool, runtime.Object, error) {
 		return true, nil, nil
 	})
-	d := NewDeleter(context.Background(), client, nil)
+	d := NewDeleter(client, nil)
 	result, err := d.DeleteTerminating(context.Background(), client, []string{"gone"})
 	if err != nil {
 		t.Fatal(err)
@@ -370,7 +376,7 @@ func TestDeleteTerminatingKeepsNamespaceWhileServiceRemains(t *testing.T) {
 	client.PrependReactor("delete", "services", func(clienttesting.Action) (bool, runtime.Object, error) {
 		return true, nil, nil
 	})
-	d := NewDeleter(context.Background(), client, nil)
+	d := NewDeleter(client, nil)
 	result, err := d.DeleteTerminating(context.Background(), client, []string{"gone"})
 	if err != nil {
 		t.Fatal(err)
@@ -396,7 +402,7 @@ func TestDeleteTerminatingKeepsNamespaceWhileResourceClaimRemains(t *testing.T) 
 	client.PrependReactor("delete", "resourceclaims", func(clienttesting.Action) (bool, runtime.Object, error) {
 		return true, nil, nil
 	})
-	d := NewDeleter(context.Background(), client, nil)
+	d := NewDeleter(client, nil)
 	result, err := d.DeleteTerminating(context.Background(), client, []string{"gone"})
 	if err != nil {
 		t.Fatal(err)
@@ -422,7 +428,7 @@ func TestDeleteTerminatingKeepsNamespaceWhilePodTemplateRemains(t *testing.T) {
 	client.PrependReactor("delete", "podtemplates", func(clienttesting.Action) (bool, runtime.Object, error) {
 		return true, nil, nil
 	})
-	d := NewDeleter(context.Background(), client, nil)
+	d := NewDeleter(client, nil)
 	result, err := d.DeleteTerminating(context.Background(), client, []string{"gone"})
 	if err != nil {
 		t.Fatal(err)
@@ -448,7 +454,7 @@ func TestDeleteTerminatingKeepsNamespaceWhileReplicationControllerRemains(t *tes
 	client.PrependReactor("delete", "replicationcontrollers", func(clienttesting.Action) (bool, runtime.Object, error) {
 		return true, nil, nil
 	})
-	d := NewDeleter(context.Background(), client, nil)
+	d := NewDeleter(client, nil)
 	result, err := d.DeleteTerminating(context.Background(), client, []string{"gone"})
 	if err != nil {
 		t.Fatal(err)
@@ -474,7 +480,7 @@ func TestDeleteTerminatingKeepsNamespaceWhileLeaseRemains(t *testing.T) {
 	client.PrependReactor("delete", "leases", func(clienttesting.Action) (bool, runtime.Object, error) {
 		return true, nil, nil
 	})
-	d := NewDeleter(context.Background(), client, nil)
+	d := NewDeleter(client, nil)
 	result, err := d.DeleteTerminating(context.Background(), client, []string{"gone"})
 	if err != nil {
 		t.Fatal(err)
@@ -501,7 +507,7 @@ func TestDeleteTerminatingReportsContentConditionsWhilePodRemains(t *testing.T) 
 	client.PrependReactor("delete", "pods", func(clienttesting.Action) (bool, runtime.Object, error) {
 		return true, nil, nil
 	})
-	d := NewDeleter(context.Background(), client, nil)
+	d := NewDeleter(client, nil)
 	result, err := d.DeleteTerminating(context.Background(), client, []string{"ns"})
 	if err != nil {
 		t.Fatal(err)
@@ -569,5 +575,186 @@ func TestClearCoreRemovesEventsInOneRequestPerAPI(t *testing.T) {
 	}
 	if perItem != 0 || collections[""] != 1 || collections["events.k8s.io"] != 1 {
 		t.Fatalf("per-item deletes=%d collections=%v, want one delete-collection per events API", perItem, collections)
+	}
+}
+
+type preferredDiscovery struct{ *fakediscovery.FakeDiscovery }
+
+func (d preferredDiscovery) ServerPreferredNamespacedResources() ([]*metav1.APIResourceList, error) {
+	return discovery.ServerPreferredNamespacedResources(d.FakeDiscovery)
+}
+
+type discoveringClientset struct{ *fake.Clientset }
+
+func (c discoveringClientset) Discovery() discovery.DiscoveryInterface {
+	return preferredDiscovery{c.Clientset.Discovery().(*fakediscovery.FakeDiscovery)}
+}
+
+type slowMetadata struct {
+	metadata.Interface
+	delay time.Duration
+}
+
+func (m slowMetadata) Resource(gvr schema.GroupVersionResource) metadata.Getter {
+	return slowGetter{m.Interface.Resource(gvr), m.delay}
+}
+
+type slowGetter struct {
+	metadata.Getter
+	delay time.Duration
+}
+
+func (g slowGetter) Namespace(ns string) metadata.ResourceInterface {
+	return slowResource{g.Getter.Namespace(ns), g.delay}
+}
+
+type slowResource struct {
+	metadata.ResourceInterface
+	delay time.Duration
+}
+
+func (r slowResource) wait(ctx context.Context) error {
+	select {
+	case <-time.After(r.delay):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (r slowResource) List(ctx context.Context, opts metav1.ListOptions) (*metav1.PartialObjectMetadataList, error) {
+	if err := r.wait(ctx); err != nil {
+		return nil, err
+	}
+	return r.ResourceInterface.List(ctx, opts)
+}
+
+func (r slowResource) DeleteCollection(ctx context.Context, opts metav1.DeleteOptions, listOpts metav1.ListOptions) error {
+	if err := r.wait(ctx); err != nil {
+		return err
+	}
+	return r.ResourceInterface.DeleteCollection(ctx, opts, listOpts)
+}
+
+func namespacedResources(groupVersion string, names ...string) *metav1.APIResourceList {
+	list := &metav1.APIResourceList{GroupVersion: groupVersion}
+	for _, name := range names {
+		list.APIResources = append(list.APIResources, metav1.APIResource{Name: name, Namespaced: true, Verbs: metav1.Verbs{"create", "delete", "deletecollection", "get", "list"}})
+	}
+	return list
+}
+
+func customResourceName(i int) string {
+	return "kind" + strconv.Itoa(i) + "s"
+}
+
+func slowCluster(t *testing.T, delay time.Duration, customTypes int, objects ...runtime.Object) (discoveringClientset, *metadatafake.FakeMetadataClient, metadata.Interface) {
+	t.Helper()
+	now := metav1.Now()
+	client := discoveringClientset{fake.NewSimpleClientset(&v1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "gone", DeletionTimestamp: &now},
+		Spec:       v1.NamespaceSpec{Finalizers: []v1.FinalizerName{v1.FinalizerKubernetes}},
+		Status:     v1.NamespaceStatus{Phase: v1.NamespaceTerminating},
+	})}
+	client.PrependReactor("*", "*", func(clienttesting.Action) (bool, runtime.Object, error) {
+		time.Sleep(delay)
+		return false, nil, nil
+	})
+	var custom []string
+	for i := range customTypes {
+		custom = append(custom, customResourceName(i))
+	}
+	client.Resources = []*metav1.APIResourceList{
+		namespacedResources("v1", "pods", "configmaps", "secrets", "serviceaccounts", "services", "endpoints", "events", "podtemplates", "replicationcontrollers", "persistentvolumeclaims", "resourcequotas", "limitranges"),
+		namespacedResources("apps/v1", "deployments", "replicasets", "statefulsets", "daemonsets", "controllerrevisions"),
+		namespacedResources("batch/v1", "jobs", "cronjobs"),
+		namespacedResources("rbac.authorization.k8s.io/v1", "roles", "rolebindings"),
+		namespacedResources("coordination.k8s.io/v1", "leases"),
+		namespacedResources("discovery.k8s.io/v1", "endpointslices"),
+		namespacedResources("networking.k8s.io/v1", "networkpolicies", "ingresses"),
+		namespacedResources("policy/v1", "poddisruptionbudgets"),
+		namespacedResources("autoscaling/v1", "horizontalpodautoscalers"),
+		namespacedResources("events.k8s.io/v1", "events"),
+		namespacedResources("resource.k8s.io/v1", "resourceclaims", "resourceclaimtemplates"),
+		namespacedResources("storage.k8s.io/v1", "csistoragecapacities"),
+		namespacedResources("example.com/v1", custom...),
+	}
+	scheme := metadatafake.NewTestScheme()
+	if err := metav1.AddMetaToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	meta := metadatafake.NewSimpleMetadataClient(scheme, objects...)
+	meta.PrependReactor("delete-collection", "*", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		gvr, ns := action.GetResource(), action.GetNamespace()
+		list, err := meta.Tracker().List(gvr, schema.GroupVersionKind{Group: "fake-metadata-client-group", Version: "v1"}, ns)
+		if err != nil {
+			return true, nil, err
+		}
+		for _, item := range list.(*metav1.List).Items {
+			if err := meta.Tracker().Delete(gvr, ns, item.Object.(*metav1.PartialObjectMetadata).Name); err != nil {
+				return true, nil, err
+			}
+		}
+		return true, nil, nil
+	})
+	return client, meta, slowMetadata{meta, delay}
+}
+
+func TestDeleteTerminatingFinishesWithinTheBudgetWhateverTheNumberOfEmptyCustomResourceTypes(t *testing.T) {
+	saved := namespaceBudget
+	namespaceBudget = 2 * time.Second
+	defer func() { namespaceBudget = saved }()
+	for _, customTypes := range []int{0, 40} {
+		client, _, meta := slowCluster(t, 10*time.Millisecond, customTypes)
+		start := time.Now()
+		result, err := NewDeleter(client, meta).DeleteTerminating(context.Background(), client, []string{"gone"})
+		elapsed := time.Since(start)
+		t.Logf("%d empty custom resource types: one deletion took %s", customTypes, elapsed.Round(time.Millisecond))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Deleted != 1 {
+			t.Fatalf("%d empty custom resource types: result=%+v after %s, budget %s", customTypes, result, elapsed, namespaceBudget)
+		}
+	}
+}
+
+func TestDeleteTerminatingDoesNotSweepACustomResourceTypeAnEarlierPassEmptied(t *testing.T) {
+	saved := namespaceBudget
+	namespaceBudget = 1200 * time.Millisecond
+	defer func() { namespaceBudget = saved }()
+	var objects []runtime.Object
+	for i := range 40 {
+		objects = append(objects, &metav1.PartialObjectMetadata{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "example.com/v1", Kind: "Kind" + strconv.Itoa(i)},
+			ObjectMeta: metav1.ObjectMeta{Name: "item", Namespace: "gone"},
+		})
+	}
+	client, fakeMeta, meta := slowCluster(t, 10*time.Millisecond, 40, objects...)
+	d := NewDeleter(client, meta)
+	passes := 0
+	for passes < 10 {
+		passes++
+		result, err := d.DeleteTerminating(context.Background(), client, []string{"gone"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Deleted == 1 {
+			break
+		}
+	}
+	if passes < 2 {
+		t.Fatalf("finished in %d pass, the budget should have cut the first one", passes)
+	}
+	sweeps := map[string]int{}
+	for _, action := range fakeMeta.Actions() {
+		if action.GetVerb() == "delete-collection" && action.GetResource().Group == "example.com" {
+			sweeps[action.GetResource().Resource]++
+		}
+	}
+	for i := range 40 {
+		if n := sweeps[customResourceName(i)]; n != 1 {
+			t.Fatalf("%s swept %d times over %d passes, want once: %v", customResourceName(i), n, passes, sweeps)
+		}
 	}
 }
