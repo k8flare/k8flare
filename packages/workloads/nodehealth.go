@@ -43,15 +43,10 @@ func NodeHealth(ctx context.Context, client kubernetes.Interface, name string) (
 		return &NodeHealthResult{}, nil
 	}
 	node = node.DeepCopy()
-	held, known, expiry := nodeLeaseState(ctx, client, name)
+	held, known, _ := nodeLeaseState(ctx, client, name)
 	if held {
 		if readyStatus(node) == v1.ConditionFalse {
-			result, err := taintAndEvict(ctx, client, node, v1.TaintNodeNotReady, v1.TaintNodeUnreachable, false)
-			if err != nil {
-				return nil, err
-			}
-			result.NextMs = soonest(result.NextMs, time.Duration(untilExpiry(expiry))*time.Millisecond)
-			return result, nil
+			return taintAndEvict(ctx, client, node, v1.TaintNodeNotReady, v1.TaintNodeUnreachable, false)
 		}
 		if removeUnreachableTaints(node) {
 			if node, err = nodes.Update(ctx, node, metav1.UpdateOptions{}); err != nil {
@@ -63,7 +58,7 @@ func NodeHealth(ctx context.Context, client kubernetes.Interface, name string) (
 				return nil, err
 			}
 		}
-		return &NodeHealthResult{NextMs: untilExpiry(expiry)}, nil
+		return &NodeHealthResult{}, nil
 	}
 	if !known {
 		return &NodeHealthResult{}, nil
@@ -173,19 +168,6 @@ func nodeLeaseState(ctx context.Context, client kubernetes.Interface, name strin
 	}
 	expiry = lease.Spec.RenewTime.Add(dur + leaseExtra)
 	return time.Now().Before(expiry), true, expiry
-}
-
-// untilExpiry books the next lease check on the deadline the current lease
-// already implies, so a node that stops renewing is still visited once.
-func untilExpiry(expiry time.Time) int64 {
-	if expiry.IsZero() {
-		return 0
-	}
-	left := time.Until(expiry)
-	if left < time.Second {
-		left = time.Second
-	}
-	return left.Milliseconds()
 }
 
 func markUnknown(node *v1.Node, now metav1.Time) bool {

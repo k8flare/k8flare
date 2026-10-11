@@ -106,26 +106,37 @@ func TestNodeHealthSkipsWhenLeaseUnreadable(t *testing.T) {
 	}
 }
 
-func TestNodeHealthBooksTheNextCheckAtLeaseExpiry(t *testing.T) {
-	renew := metav1.NewMicroTime(time.Now())
+func TestNodeHealthBooksNothingForAHealthyNodeThatHoldsItsLease(t *testing.T) {
 	node := &v1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: "n1"},
 		Status:     v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}},
 	}
-	lease := &coordinationv1.Lease{
-		ObjectMeta: metav1.ObjectMeta{Name: "n1", Namespace: v1.NamespaceNodeLease},
-		Spec: coordinationv1.LeaseSpec{
-			RenewTime:            &renew,
-			LeaseDurationSeconds: ptr.To[int32](40),
-		},
-	}
-	got, err := NodeHealth(context.Background(), fake.NewSimpleClientset(node, lease), "n1")
+	got, err := NodeHealth(context.Background(), fake.NewSimpleClientset(node, leaseRenewedAt("n1", time.Now())), "n1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := (40*time.Second + leaseExtra).Milliseconds()
-	if got.NextMs <= 0 || got.NextMs > want {
-		t.Fatalf("NextMs = %d, want 0 < NextMs <= %d", got.NextMs, want)
+	if got.NextMs != 0 {
+		t.Fatalf("NextMs = %d, want 0: the Cluster object books the lease expiry itself", got.NextMs)
+	}
+}
+
+func TestNodeHealthBooksOnlyTolerationDeadlinesForAHeartbeatingNodeThatReportsNotReady(t *testing.T) {
+	node := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "n1"},
+		Status:     v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionFalse}}},
+	}
+	tolerating := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "p1", Namespace: "default"},
+		Spec: v1.PodSpec{NodeName: "n1", Tolerations: []v1.Toleration{{
+			Key: v1.TaintNodeNotReady, Operator: v1.TolerationOpExists, Effect: v1.TaintEffectNoExecute, TolerationSeconds: ptr.To[int64](300),
+		}}},
+	}
+	got, err := NodeHealth(context.Background(), fake.NewSimpleClientset(node, leaseRenewedAt("n1", time.Now()), tolerating), "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Waiting != 1 || got.NextMs <= (299*time.Second).Milliseconds() || got.NextMs > (300*time.Second).Milliseconds() {
+		t.Fatalf("result = %+v, want the 300s toleration as the only deadline", got)
 	}
 }
 

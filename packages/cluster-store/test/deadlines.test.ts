@@ -170,23 +170,98 @@ test("an unknown target is refused and books nothing", async (t) => {
   assert.equal(r.alarm.at, null);
 });
 
-test("a node lease books its check as a deadline on the alarm, never as a delayed queue message", async (t) => {
+const lease = (seconds?: number) => JSON.stringify({ spec: seconds === undefined ? {} : { leaseDurationSeconds: seconds } });
+const node = (ready: string) => JSON.stringify({ status: { conditions: [{ type: "Ready", status: ready }] } });
+
+async function fireIfDue(r: ReturnType<typeof rig>): Promise<void> {
+  if (r.alarm.at !== null && r.alarm.at <= Date.now()) await r.fire();
+}
+
+test("a node that keeps renewing its lease is checked once when first seen and never again, and books one alarm at the lease expiry", async (t) => {
   const tick = clock(t);
   const sent: Sent[] = [];
   const r = rig({ SNAPSHOT_INTERVAL_HOURS: "0", ...recordingQueues(sent) } as any);
   await r.settle();
   sent.length = 0;
-  await r.put("/registry/leases/kube-node-lease/n1", "v1");
-  await r.settle();
-  assert.deepEqual(sent, []);
-  assert.deepEqual(booked(r), [{ target: "leases", due: start + 60_000 }]);
 
-  tick(60_000);
-  await r.fire();
+  let rev = Number((await (await r.put("/registry/leases/kube-node-lease/n1", lease(40))).json()).revision);
+  await r.settle();
+  tick(1_000);
+  await fireIfDue(r);
   assert.deepEqual(sent, [{ queue: "ctrl", body: { kind: "lease-check", node: "n1" }, delaySeconds: undefined }]);
+
+  for (let i = 0; i < 30; i++) {
+    tick(10_000);
+    await fireIfDue(r);
+    rev = Number((await (await r.put("/registry/leases/kube-node-lease/n1", lease(40), rev)).json()).revision);
+    await r.settle();
+    assert.deepEqual(booked(r).filter((d: any) => d.target !== "workloads"), [{ target: "node-lease", due: Date.now() + 60_000 }]);
+  }
+  assert.equal(sent.filter((m) => m.queue === "ctrl").length, 1);
+});
+
+test("a lease that stops being renewed is checked exactly at its expiry, and the next renewal is checked at once", async (t) => {
+  const tick = clock(t);
+  const sent: Sent[] = [];
+  const r = rig({ SNAPSHOT_INTERVAL_HOURS: "0", ...recordingQueues(sent) } as any);
+  await r.settle();
+  const rev = Number((await (await r.put("/registry/leases/kube-node-lease/n1", lease(15))).json()).revision);
+  await r.settle();
+  tick(1_000);
+  await r.fire();
+  sent.length = 0;
+
+  assert.deepEqual(booked(r), [{ target: "node-lease", due: start + 35_000 }]);
+  tick(34_000);
+  await r.fire();
+  assert.deepEqual(sent.filter((m) => m.queue === "ctrl"), [{ queue: "ctrl", body: { kind: "lease-check", node: "n1" }, delaySeconds: undefined }]);
   assert.deepEqual(booked(r), []);
 
-  await r.post("/lease-check", { node: "n1", delayMs: 30_000 });
-  assert.deepEqual(booked(r), [{ target: "leases", due: start + 90_000 }]);
-  assert.equal(r.alarm.at, start + 90_000);
+  tick(120_000);
+  await r.put("/registry/leases/kube-node-lease/n1", lease(15), rev);
+  await r.settle();
+  assert.deepEqual(booked(r), [
+    { target: "leases", due: Date.now() },
+    { target: "node-lease", due: Date.now() + 35_000 },
+  ]);
+});
+
+test("a node whose Ready condition changes is checked at once, and other node writes book no check", async (t) => {
+  clock(t);
+  const r = rig({ SNAPSHOT_INTERVAL_HOURS: "0" });
+  await r.settle();
+  const created = Number((await (await r.put("/registry/minions/n1", node("True"))).json()).revision);
+  r.sql.exec("DELETE FROM deadlines");
+  const relabelled = Number((await (await r.put("/registry/minions/n1", node("True"), created)).json()).revision);
+  assert.deepEqual(booked(r), []);
+  await r.put("/registry/minions/n1", node("False"), relabelled);
+  assert.deepEqual(booked(r), [{ target: "leases", due: start }]);
+});
+
+test("deleting a node lease removes its expiry, so a removed node books nothing", async (t) => {
+  clock(t);
+  const r = rig({ SNAPSHOT_INTERVAL_HOURS: "0" });
+  await r.settle();
+  await r.put("/registry/leases/kube-node-lease/n1", lease(40));
+  r.sql.exec("DELETE FROM deadlines WHERE target = 'leases'");
+  await r.remove("/registry/leases/kube-node-lease/n1");
+  await r.settle();
+  assert.deepEqual(booked(r), []);
+});
+
+test("a lease check a node health pass asks for is not pushed back by lease renewals", async (t) => {
+  const tick = clock(t);
+  const r = rig({ SNAPSHOT_INTERVAL_HOURS: "0" });
+  await r.settle();
+  let rev = Number((await (await r.put("/registry/leases/kube-node-lease/n1", lease(40))).json()).revision);
+  r.sql.exec("DELETE FROM deadlines WHERE target = 'leases'");
+  await r.post("/lease-check", { node: "n1", delayMs: 300_000 });
+  for (let i = 0; i < 3; i++) {
+    tick(10_000);
+    rev = Number((await (await r.put("/registry/leases/kube-node-lease/n1", lease(40), rev)).json()).revision);
+  }
+  assert.deepEqual(booked(r), [
+    { target: "node-lease", due: Date.now() + 60_000 },
+    { target: "leases", due: start + 300_000 },
+  ]);
 });

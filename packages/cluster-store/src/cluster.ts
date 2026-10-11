@@ -17,8 +17,8 @@ const PITR_WINDOW_MS = 30 * 86_400_000;
 const COMPACT_BATCH = 200;
 const WATCH_LEASE_MS = 360_000;
 const NODE_LEASE_PREFIX = "/registry/leases/kube-node-lease/";
-const LEASE_CHECK_DELAY_S = 60;
-const LEASE_CHECK_EVERY_MS = 50_000;
+const NODE_LEASE_DURATION_S = 40;
+const NODE_LEASE_GRACE_MS = 20_000;
 const OUTBOX_BATCH = 100;
 const DEADLINE_RETRY_MS = 5_000;
 
@@ -75,7 +75,7 @@ export class Cluster extends DurableObject<Env> {
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)`);
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, target TEXT NOT NULL, rev INTEGER NOT NULL, key TEXT NOT NULL, type TEXT NOT NULL)`);
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS passes (target TEXT PRIMARY KEY, triggered INTEGER NOT NULL, finished INTEGER NOT NULL)`);
-      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS lease_checks (node TEXT PRIMARY KEY, sent INTEGER NOT NULL)`);
+      ctx.storage.sql.exec("DROP TABLE IF EXISTS lease_checks");
       if (!ctx.storage.sql.exec("PRAGMA table_info(deadlines)").toArray().some((c) => c.name === "key")) {
         ctx.storage.sql.exec("DROP TABLE IF EXISTS deadlines");
       }
@@ -270,7 +270,7 @@ export class Cluster extends DurableObject<Env> {
       case "POST /lease-check": {
         const body = (await request.json()) as { node: string; delayMs: number };
         if (!body.node) return new Response("missing node", { status: 400 });
-        this.scheduleLeaseCheck(body.node, Math.max(0, body.delayMs ?? 0));
+        this.book("leases", { kind: "lease-check", node: body.node }, Date.now() + Math.max(0, body.delayMs ?? 0));
         await this.armAlarm();
         return Response.json({ ok: true });
       }
@@ -549,16 +549,17 @@ export class Cluster extends DurableObject<Env> {
     await this.armAlarm();
   }
 
-  private book(target: string, body: Deferred, due: number): void {
+  private book(target: string, body: Deferred, due: number, replace = false): void {
     this.ctx.storage.sql.exec(
       `INSERT INTO deadlines (key, target, due, body) VALUES (?1, ?2, ?3, ?4)
        ON CONFLICT(key) DO UPDATE SET body = excluded.body,
-         due = CASE WHEN deadlines.due <= ?5 THEN excluded.due ELSE MIN(deadlines.due, excluded.due) END`,
+         due = CASE WHEN ?6 = 1 OR deadlines.due <= ?5 THEN excluded.due ELSE MIN(deadlines.due, excluded.due) END`,
       deadlineKey(target, body),
       target,
       due,
       JSON.stringify(body),
       Date.now(),
+      replace ? 1 : 0,
     );
   }
 
@@ -691,8 +692,12 @@ export class Cluster extends DurableObject<Env> {
   private record(name: string, type: string, rev: number, value: Uint8Array, prev: KV | null): void {
     if (!name.startsWith("/registry/") || name.startsWith("/registry/events/")) return;
     if (name.startsWith(NODE_LEASE_PREFIX)) {
-      if (type !== "deleted") this.ctx.waitUntil(this.checkLeaseLater(name.slice(NODE_LEASE_PREFIX.length)));
+      this.leaseWritten(name.slice(NODE_LEASE_PREFIX.length), type, value);
       return;
+    }
+    if ((name.startsWith("/registry/minions/") || name.startsWith("/registry/nodes/")) && type !== "deleted" && (!prev || readinessChanged(prev.value, value))) {
+      this.book("leases", { kind: "lease-check", node: name.slice(name.lastIndexOf("/") + 1) }, Date.now());
+      this.ctx.waitUntil(this.armAlarm());
     }
     const routes: Target[] = [];
     if (name.startsWith("/registry/horizontalpodautoscalers/")) {
@@ -728,18 +733,17 @@ export class Cluster extends DurableObject<Env> {
     if (routes.length > 0) this.ctx.waitUntil(this.flushOutbox());
   }
 
-  private async checkLeaseLater(node: string): Promise<void> {
-    const now = Date.now();
-    const rows = this.ctx.storage.sql.exec("SELECT sent FROM lease_checks WHERE node = ?", node).toArray();
-    if (rows.length > 0 && now - (rows[0].sent as number) < LEASE_CHECK_EVERY_MS) return;
-    this.scheduleLeaseCheck(node, LEASE_CHECK_DELAY_S * 1000);
-    await this.armAlarm();
-  }
-
-  private scheduleLeaseCheck(node: string, delayMs: number): void {
-    const now = Date.now();
-    this.ctx.storage.sql.exec("INSERT INTO lease_checks (node, sent) VALUES (?, ?) ON CONFLICT(node) DO UPDATE SET sent = excluded.sent", node, now);
-    this.book("leases", { kind: "lease-check", node }, now + delayMs);
+  private leaseWritten(node: string, type: string, value: Uint8Array): void {
+    const check: Deferred = { kind: "lease-check", node };
+    const expiry = deadlineKey("node-lease", check);
+    if (type === "deleted") {
+      this.ctx.storage.sql.exec("DELETE FROM deadlines WHERE key = ?", expiry);
+    } else {
+      const now = Date.now();
+      if (this.ctx.storage.sql.exec("SELECT 1 FROM deadlines WHERE key = ?", expiry).toArray().length === 0) this.book("leases", check, now);
+      this.book("node-lease", check, now + leaseDurationSeconds(value) * 1000 + NODE_LEASE_GRACE_MS, true);
+    }
+    this.ctx.waitUntil(this.armAlarm());
   }
 
   private markTriggered(target: Target): void {
@@ -934,6 +938,15 @@ function podWorkChanged(before: Uint8Array, after: Uint8Array): boolean {
 function podReady(pod: Record<string, any> | null): string {
   const conditions = (pod?.status?.conditions ?? []) as { type: string; status: string }[];
   return conditions.find((c) => c.type === "Ready")?.status ?? "Unknown";
+}
+
+function readinessChanged(before: Uint8Array, after: Uint8Array): boolean {
+  return readyStatus(decodeJSON(before)) !== readyStatus(decodeJSON(after));
+}
+
+function leaseDurationSeconds(value: Uint8Array): number {
+  const seconds = decodeJSON(value)?.spec?.leaseDurationSeconds;
+  return typeof seconds === "number" && seconds > 0 ? seconds : NODE_LEASE_DURATION_S;
 }
 
 function readyStatus(node: Record<string, any> | null): string {
