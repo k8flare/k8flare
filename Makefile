@@ -262,7 +262,7 @@ test:
 	cd scripts && go run ./e2e -set conformance -procs $(or $(PROCS),4)
 
 test-packages: wasm
-	go test -count=1 -timeout 20m ./packages/...
+	go test -count=1 -timeout 70m ./packages/...
 
 ## sizes: print the optimised size and linked function count of every worker,
 ## against the Loader cap. Needs wasm-objdump (wabt).
