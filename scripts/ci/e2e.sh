@@ -119,11 +119,11 @@ pinned_join() {
 
 node_identity() {
   local node=$1 kubeconfig=$2 want=$3 got
-  local -a k3s=(docker exec "$node" k3s)
+  local -a node_kubectl=(docker exec "$node" kubectl)
   if [ "$node" = "$(hostname)" ]; then
-    k3s=(sudo /usr/local/bin/k3s)
+    node_kubectl=(sudo /usr/local/bin/k3s kubectl)
   fi
-  got=$("${k3s[@]}" kubectl --kubeconfig "/var/lib/rancher/k3s/agent/$kubeconfig" --request-timeout=15s auth whoami -o jsonpath='{.status.userInfo.username}') || true
+  got=$("${node_kubectl[@]}" --kubeconfig "/var/lib/rancher/k3s/agent/$kubeconfig" --request-timeout=15s auth whoami -o jsonpath='{.status.userInfo.username}') || true
   if [ "$got" != "$want" ]; then
     echo "$node: the client certificate in $kubeconfig authenticated as '$got' through https://$API, want '$want'" >&2
     return 1
