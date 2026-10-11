@@ -67,6 +67,9 @@ jobs:
           git add -A
           git diff --cached --stat --exit-code
 
+      - name: Check that make e2e passes the shard to the runner
+        run: make -n e2e SET=required SHARD=1 SHARDS=3 | grep -F -- '-shard 1 -shards 3'
+
       - name: Test the host packages
         run: |
           go test -count=1 -timeout 20m \

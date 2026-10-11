@@ -255,7 +255,7 @@ manifests-notify:
 	pnpm exec wrangler r2 bucket notification create k8flare-manifests --event-type object-create object-delete --queue k8flare-addons
 
 e2e:
-	cd scripts && go run ./e2e -set $(or $(SET),required) -procs $(or $(PROCS),4)
+	cd scripts && go run ./e2e -set $(or $(SET),required) -procs $(or $(PROCS),4) -shard $(or $(SHARD),0) -shards $(or $(SHARDS),1)
 	cd scripts && go vet ./...
 
 test:
