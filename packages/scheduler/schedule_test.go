@@ -144,9 +144,10 @@ func TestTopologySpreadWithReplicaSetOwner(t *testing.T) {
 		Kind:       "ReplicaSet",
 		Name:       "rs1",
 		UID:        "rs-uid-1",
+		Controller: ptr.To(true),
 	}}
 
-	filler := pod("other-pod", "2", "100m")
+	filler := pod("other-pod", "2", "1")
 	filler.Labels = map[string]string{"app": "other"}
 	filler.Spec.NodeName = "n1"
 	filler.Status.Phase = v1.PodRunning
@@ -158,6 +159,7 @@ func TestTopologySpreadWithReplicaSetOwner(t *testing.T) {
 		Kind:       "ReplicaSet",
 		Name:       "rs1",
 		UID:        "rs-uid-1",
+		Controller: ptr.To(true),
 	}}
 
 	client := fake.NewSimpleClientset(n1, n2, rs, existing, filler, newPod)
