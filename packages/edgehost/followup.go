@@ -7,6 +7,7 @@ import (
 
 const (
 	refusedRetryS                     = 5
+	failedRetryMaxS                   = 1000
 	gcSettleS                         = 2
 	horizontalPodAutoscalerSyncPeriod = 15
 
@@ -28,14 +29,15 @@ type followIn struct {
 	Drained         bool     `json:"drained"`
 	HasResult       bool     `json:"hasResult"`
 	HPAs            int      `json:"hpas"`
-	Deleted         int      `json:"deleted"`
-	Patched         int      `json:"patched"`
+	Failed          int      `json:"failed"`
 	Pending         int      `json:"pending"`
 	Status          int      `json:"status"`
-	HasWork         bool     `json:"hasWork"`
 	Remaining       int      `json:"remaining"`
 	Terminating     int      `json:"terminating"`
 	Phase           string   `json:"phase"`
+	Failures        int      `json:"failures"`
+	Busy            bool     `json:"busy"`
+	MigrateFailed   bool     `json:"migrateFailed"`
 }
 
 type followSend struct {
@@ -46,6 +48,7 @@ type followSend struct {
 	Changed      []string `json:"changed,omitempty"`
 	Names        []string `json:"names,omitempty"`
 	Node         string   `json:"node,omitempty"`
+	Failures     int      `json:"failures,omitempty"`
 }
 
 type followResult struct {
@@ -69,7 +72,7 @@ func followUp(in followIn) followResult {
 	switch in.Target {
 	case "scheduler":
 		if !in.OK {
-			out.Sends = append(out.Sends, retry("sched", intPtr(0), nil, nil, "", refusedRetryS))
+			out.Sends = append(out.Sends, backoff("sched", intPtr(0), nil, nil, "", in.Failures))
 			return out
 		}
 		if !in.Skip && in.RetryAfterS > 0 {
@@ -77,60 +80,58 @@ func followUp(in followIn) followResult {
 		}
 	case "workloads":
 		if !in.PlanOK {
-			out.Sends = append(out.Sends, retry("wl", nil, nil, nil, "", refusedRetryS))
+			out.Sends = append(out.Sends, backoff("wl", nil, nil, nil, "", in.Failures))
 			return out
 		}
 		if in.ProvisionFailed {
-			out.Sends = append(out.Sends, retry("wl", nil, in.Changed, nil, "", refusedRetryS))
+			out.Sends = append(out.Sends, backoff("wl", nil, in.Changed, nil, "", in.Failures))
 		}
 		if len(in.Changed) == 0 {
 			return out
 		}
-		if !in.HasResult {
-			out.Sends = append(out.Sends, retry("wl", nil, in.Changed, nil, "", refusedRetryS))
-			return out
-		}
-		delayMs := in.NextMs
-		if !in.Drained {
-			delayMs = refusedRetryS * 1000
-		}
-		if delayMs > 0 {
-			out.Sends = append(out.Sends, retry("wl", nil, in.Changed, nil, "", ceilSeconds(delayMs)))
+		switch {
+		case !in.HasResult || (!in.Drained && !in.Busy):
+			out.Sends = append(out.Sends, backoff("wl", nil, in.Changed, nil, "", in.Failures))
+		case in.Busy:
+			out.Sends = append(out.Sends, busyRetry("wl", in.Changed, in.Failures))
+		case in.NextMs > 0:
+			out.Sends = append(out.Sends, retry("wl", nil, in.Changed, nil, "", ceilSeconds(in.NextMs)))
 		}
 	case "crds":
 		if in.Status != http.StatusOK || in.Pending > 0 {
-			out.Sends = append(out.Sends, retry("crd", nil, nil, nil, "", refusedRetryS))
+			out.Sends = append(out.Sends, backoff("crd", nil, nil, nil, "", in.Failures))
 		}
 	case "gc":
-		if !in.HasResult || in.Deleted > 0 || in.Patched > 0 || in.Pending > 0 {
-			delay := refusedRetryS
-			if in.HasResult {
-				delay = gcSettleS
-			}
-			out.Sends = append(out.Sends, retry("gc", nil, nil, nil, "", delay))
+		if !in.HasResult || in.Failed > 0 {
+			out.Sends = append(out.Sends, backoff("gc", nil, nil, nil, "", in.Failures))
+		} else if in.Remaining > 0 {
+			out.Sends = append(out.Sends, retry("gc", nil, nil, nil, "", gcSettleS))
 		}
 	case "accounts":
 		if in.Phase == "sync" {
-			if !in.HasResult || !in.Drained {
-				out.Sends = append(out.Sends, retry("acct", nil, nil, nil, "", refusedRetryS))
+			switch {
+			case !in.HasResult || (!in.Drained && !in.Busy):
+				out.Sends = append(out.Sends, backoff("acct", nil, nil, nil, "", in.Failures))
+			case in.Busy:
+				out.Sends = append(out.Sends, busyRetry("acct", nil, in.Failures))
 			}
 			return out
 		}
-		delayMs := in.NextMs
 		if !in.HasResult {
-			delayMs = refusedRetryS * 1000
-		}
-		if delayMs > 0 {
-			out.Sends = append(out.Sends, retry("acct", nil, nil, in.Names, "", atLeastOne(ceilSeconds(delayMs))))
+			out.Sends = append(out.Sends, backoff("acct", nil, nil, in.Names, "", in.Failures))
+		} else if in.NextMs > 0 {
+			out.Sends = append(out.Sends, retry("acct", nil, nil, in.Names, "", atLeastOne(ceilSeconds(in.NextMs))))
 		}
 		out.Stop = in.HasResult && (in.Remaining > 0 || in.Terminating > 0)
 	case "extensions":
 		if !in.OK {
-			out.Sends = append(out.Sends, retry("ext", nil, nil, nil, "", refusedRetryS))
+			out.Sends = append(out.Sends, backoff("ext", nil, nil, nil, "", in.Failures))
 		}
 	case "addons":
 		if !in.OK {
-			out.Sends = append(out.Sends, retry("addons", nil, nil, nil, "", refusedRetryS))
+			out.Sends = append(out.Sends, backoff("addons", nil, nil, nil, "", in.Failures))
+		} else if in.MigrateFailed {
+			out.Sends = append(out.Sends, backoff("addons", nil, nil, []string{storageMigrateOnly}, "", in.Failures))
 		} else if in.Pending > 0 {
 			out.Sends = append(out.Sends, retry("addons", nil, nil, []string{storageMigrateOnly}, "", refusedRetryS))
 		}
@@ -140,22 +141,22 @@ func followUp(in followIn) followResult {
 			out.Cancel = append(out.Cancel, "addons")
 		}
 	case "leases":
-		delayMs := in.NextMs
 		if !in.HasResult {
-			delayMs = refusedRetryS * 1000
-		}
-		if delayMs > 0 {
-			out.Sends = append(out.Sends, retry("ctrl", nil, nil, nil, in.Node, ceilSeconds(delayMs)))
+			out.Sends = append(out.Sends, backoff("ctrl", nil, nil, nil, in.Node, in.Failures))
+		} else if in.NextMs > 0 {
+			out.Sends = append(out.Sends, retry("ctrl", nil, nil, nil, in.Node, ceilSeconds(in.NextMs)))
 		}
 	case "hpa":
 		if !in.HasResult {
-			out.Sends = append(out.Sends, retry("hpa", nil, nil, nil, "", refusedRetryS))
+			out.Sends = append(out.Sends, backoff("hpa", nil, nil, nil, "", in.Failures))
 		} else if in.HPAs > 0 {
 			out.Sends = append(out.Sends, retry("hpa", nil, nil, nil, "", horizontalPodAutoscalerSyncPeriod))
 		}
 	case "containers":
-		if in.HasWork {
-			out.Sends = append(out.Sends, retry("containers", nil, nil, nil, "", refusedRetryS))
+		if !in.OK {
+			out.Sends = append(out.Sends, backoff("containers", nil, nil, nil, "", in.Failures))
+		} else if in.NextMs > 0 {
+			out.Sends = append(out.Sends, retry("containers", nil, nil, nil, "", ceilSeconds(in.NextMs)))
 		}
 	}
 	return out
@@ -173,6 +174,29 @@ func retry(queue string, attempt *int, changed, names []string, node string, del
 		names = nil
 	}
 	return followSend{Queue: queue, DelaySeconds: delay, Kind: kind, Attempt: attempt, Changed: changed, Names: names, Node: node}
+}
+
+func backoff(queue string, attempt *int, changed, names []string, node string, failures int) followSend {
+	send := retry(queue, attempt, changed, names, node, failedRetryDelayS(failures))
+	send.Failures = failures + 1
+	return send
+}
+
+func failedRetryDelayS(failures int) int {
+	delay := refusedRetryS
+	for range failures {
+		if delay >= failedRetryMaxS {
+			break
+		}
+		delay *= 2
+	}
+	return min(delay, failedRetryMaxS)
+}
+
+func busyRetry(queue string, changed []string, failures int) followSend {
+	send := retry(queue, nil, changed, nil, "", refusedRetryS)
+	send.Failures = failures
+	return send
 }
 
 func intPtr(v int) *int { return &v }

@@ -126,7 +126,7 @@ test("the nodes client and the R2 mint call the apiserver as system:k8flare:node
     "/api/v1/nodes/n1": { apiVersion: "v1", kind: "Node", metadata: { name: "n1" } },
     "/api/v1/pods": { items: [] },
     "/api/v1/namespaces/default/pods/web": { apiVersion: "v1", kind: "Pod", metadata: { name: "web", namespace: "default" } },
-    "/internal/nodes/vm-plan": { boots: [], teardowns: [], markBound: [], hasWork: false },
+    "/internal/nodes/vm-plan": { boots: [], teardowns: [], markBound: [], nextMs: 0 },
     "/internal/pods/merge-env": { apiVersion: "v1", kind: "Pod", metadata: { name: "web", namespace: "default" } },
     "/internal/r2/mint": { accessKeyId: "a", secretAccessKey: "s", sessionToken: "t" },
   });

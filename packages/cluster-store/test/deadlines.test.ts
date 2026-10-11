@@ -319,3 +319,47 @@ test("a Helm pass with no hook pending clears the addons row and leaves a storag
   assert.equal(r.alarm.at, null);
   assert.equal((await r.post("/cancel", { target: "nope" })).status, 400);
 });
+
+test("a failed retry's count is kept in its deadline row: a new instance sends it, a repeated failure keeps the highest count, and a booking without failures clears it", async (t) => {
+  const tick = clock(t);
+  const sent: Sent[] = [];
+  const r = rig({ SNAPSHOT_INTERVAL_HOURS: "0", ...recordingQueues(sent) } as any);
+  await r.settle();
+  sent.length = 0;
+
+  await r.post("/enqueue", { target: "gc", delayMs: 40_000, failures: 4 });
+  await r.post("/enqueue", { target: "gc", delayMs: 5_000, failures: 1 });
+  await r.post("/lease-check", { node: "n1", delayMs: 20_000, failures: 3 });
+  assert.deepEqual(booked(r), [
+    { target: "gc", due: start + 5_000 },
+    { target: "leases", due: start + 20_000 },
+  ]);
+
+  const pending: Promise<unknown>[] = [];
+  const ctx = {
+    storage: {
+      sql: r.sql,
+      getAlarm: async () => r.alarm.at,
+      setAlarm: async (at: number) => void (r.alarm.at = at),
+      deleteAlarm: async () => void (r.alarm.at = null),
+    },
+    waitUntil: (p: Promise<unknown>) => void pending.push(p),
+    blockConcurrencyWhile: (fn: () => Promise<void>) => fn(),
+    acceptWebSocket: () => {},
+    getWebSockets: () => [],
+  };
+  const fresh = new (r.cluster.constructor as any)(ctx, { ...recordingQueues(sent), SNAPSHOT_INTERVAL_HOURS: "0", CLUSTER_UID: "test" });
+  while (pending.length) await pending.shift();
+  tick(20_000);
+  await fresh.alarm();
+  assert.deepEqual(sent, [
+    { queue: "gc", body: { kind: "retry", failures: 4 }, delaySeconds: undefined },
+    { queue: "ctrl", body: { kind: "lease-check", node: "n1", failures: 3 }, delaySeconds: undefined },
+  ]);
+
+  await r.post("/enqueue", { target: "workloads", delayMs: 80_000, changed: ["pods"], failures: 5 });
+  await r.post("/enqueue", { target: "workloads", delayMs: 3_000, changed: ["pods"] });
+  tick(3_000);
+  await r.fire();
+  assert.deepEqual(sent.slice(2), [{ queue: "wl", body: { kind: "retry", changed: ["pods"] }, delaySeconds: undefined }]);
+});

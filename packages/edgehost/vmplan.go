@@ -63,7 +63,7 @@ type vmPlan struct {
 	Boots     []vmBoot  `json:"boots"`
 	Teardowns []vmTrack `json:"teardowns"`
 	MarkBound []string  `json:"markBound"`
-	HasWork   bool      `json:"hasWork"`
+	NextMs    int64     `json:"nextMs"`
 }
 
 func PlanVMs(in vmPlanIn) vmPlan {
@@ -75,12 +75,10 @@ func PlanVMs(in vmPlanIn) vmPlan {
 		tracked[k] = v
 	}
 	var boots []vmBoot
-	eligible := 0
 	for _, pod := range in.Pending {
 		if !pendingVMPod(pod) {
 			continue
 		}
-		eligible++
 		uid := podUID(pod)
 		if tracked[uid].Started {
 			continue
@@ -108,6 +106,7 @@ func PlanVMs(in vmPlanIn) vmPlan {
 	}
 	var teardowns []vmTrack
 	var markBound []string
+	var nextMs int64
 	uids := make([]string, 0, len(tracked))
 	for uid := range tracked {
 		uids = append(uids, uid)
@@ -133,6 +132,10 @@ func PlanVMs(in vmPlanIn) vmPlan {
 		if in.NowMs-vm.BootedAt > nodeReadyTimeoutMs {
 			teardowns = append(teardowns, vm)
 			delete(tracked, uid)
+			continue
+		}
+		if due := max(vm.BootedAt+nodeReadyTimeoutMs-in.NowMs, 1); nextMs == 0 || due < nextMs {
+			nextMs = due
 		}
 	}
 	if boots == nil {
@@ -144,7 +147,7 @@ func PlanVMs(in vmPlanIn) vmPlan {
 	if markBound == nil {
 		markBound = []string{}
 	}
-	return vmPlan{Boots: boots, Teardowns: teardowns, MarkBound: markBound, HasWork: eligible > 0 || len(tracked) > 0}
+	return vmPlan{Boots: boots, Teardowns: teardowns, MarkBound: markBound, NextMs: nextMs}
 }
 
 func PlanVMsHandler(w http.ResponseWriter, r *http.Request) {

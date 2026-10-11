@@ -76,7 +76,7 @@ test("a message on the HPA queue scrapes metrics, calls the HPA controller entry
   assert.equal(batch.acked, true);
   assert.deepEqual(passes, ["hpa"]);
   assert.equal(followUps.length, 1);
-  assert.deepEqual(followUps[0], { target: "hpa", hasResult: true, drained: true, hpas: 2 });
+  assert.deepEqual(followUps[0], { target: "hpa", hasResult: true, drained: true, hpas: 2, failures: 0 });
   assert.equal(enqueued.length, 1);
   assert.deepEqual(enqueued[0], { target: "hpa", delayMs: 15_000 });
 });

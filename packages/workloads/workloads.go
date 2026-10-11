@@ -50,7 +50,6 @@ const (
 	inFlightGrace        = 150 * time.Second
 	followGrace          = 30 * time.Second
 	followDrain          = 5 * time.Second
-	replicaRetry         = 5 * time.Second
 	syncLockWait         = 10 * time.Second
 	listBudget           = 30 * time.Second
 	listConcurrency      = 6
@@ -76,6 +75,7 @@ type Result struct {
 	Drained bool           `json:"drained"`
 	NextMs  int64          `json:"nextMs"`
 	Live    bool           `json:"live"`
+	Busy    bool           `json:"busy,omitempty"`
 }
 
 type pageFunc func(context.Context, metav1.ListOptions) (runtime.Object, error)
@@ -390,10 +390,9 @@ func SyncWithin(ctx context.Context, client kubernetes.Interface, rootCA, signin
 	locked, handed := lockSync(ctx, budget, changed)
 	if !locked {
 		if !finished(handed) || !handed.result.Live {
-			return &Result{Objects: map[string]int{}, NextMs: int64(syncBusyRetry / time.Millisecond)}, nil
+			return &Result{Objects: map[string]int{}, NextMs: int64(syncBusyRetry / time.Millisecond), Busy: true}, nil
 		}
 		result := handed.result
-		bookGaps(ctx, client, changed, controllers, &result)
 		return &result, nil
 	}
 	defer syncMu.Unlock()
@@ -420,19 +419,7 @@ func SyncWithin(ctx context.Context, client kubernetes.Interface, rootCA, signin
 			result.NextMs = follow.NextMs
 		}
 	}
-	bookGaps(ctx, client, changed, controllers, result)
 	return result, nil
-}
-
-func bookGaps(ctx context.Context, client kubernetes.Interface, changed []string, controllers map[string]bool, result *Result) {
-	if controllers["statefulset"] && changedHas(changed, "pods") && result.Objects["statefulsets"] > 0 {
-		if gap, err := statefulSetGap(ctx, client); err != nil || gap {
-			result.NextMs = soonest(result.NextMs, 2*time.Second)
-		}
-	}
-	if retry, ok := replicaGap(ctx, client, controllers); ok {
-		result.NextMs = soonest(result.NextMs, retry)
-	}
 }
 
 func releaseProtection(ctx context.Context, client kubernetes.Interface, changed []string) error {
@@ -447,110 +434,6 @@ func releaseProtection(ctx context.Context, client kubernetes.Interface, changed
 
 func replicaControllers(controllers map[string]bool) bool {
 	return controllers["replication"] || controllers["replicaset"] || controllers["deployment"]
-}
-
-func replicaGap(ctx context.Context, client kubernetes.Interface, controllers map[string]bool) (time.Duration, bool) {
-	if controllers["replication"] {
-		gap, err := replicationGap(ctx, client)
-		if err != nil || gap {
-			return replicaRetry, true
-		}
-	}
-	if controllers["replicaset"] || controllers["deployment"] {
-		gap, err := replicaSetGap(ctx, client)
-		if err != nil || gap {
-			return replicaRetry, true
-		}
-	}
-	if controllers["deployment"] {
-		gap, err := deploymentGap(ctx, client)
-		if err != nil || gap {
-			return replicaRetry, true
-		}
-	}
-	return 0, false
-}
-
-func replicationGap(ctx context.Context, client kubernetes.Interface) (bool, error) {
-	list, err := client.CoreV1().ReplicationControllers(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return false, err
-	}
-	for i := range list.Items {
-		rc := &list.Items[i]
-		if rc.DeletionTimestamp != nil || rc.Spec.Replicas == nil {
-			continue
-		}
-		if rc.Status.Replicas != *rc.Spec.Replicas {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-func replicaSetGap(ctx context.Context, client kubernetes.Interface) (bool, error) {
-	list, err := client.AppsV1().ReplicaSets(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return false, err
-	}
-	for i := range list.Items {
-		rs := &list.Items[i]
-		if rs.DeletionTimestamp != nil || rs.Spec.Replicas == nil {
-			continue
-		}
-		if rs.Status.Replicas != *rs.Spec.Replicas {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-func deploymentGap(ctx context.Context, client kubernetes.Interface) (bool, error) {
-	list, err := client.AppsV1().Deployments(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return false, err
-	}
-	for i := range list.Items {
-		dep := &list.Items[i]
-		if dep.DeletionTimestamp != nil || dep.Spec.Replicas == nil {
-			continue
-		}
-		if dep.Status.Replicas != *dep.Spec.Replicas {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-func statefulSetGap(ctx context.Context, client kubernetes.Interface) (bool, error) {
-	list, err := client.AppsV1().StatefulSets(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return false, err
-	}
-	for i := range list.Items {
-		set := &list.Items[i]
-		if set.DeletionTimestamp != nil || set.Spec.Replicas == nil {
-			continue
-		}
-		want := *set.Spec.Replicas
-		status := set.Status
-		if status.ObservedGeneration < set.Generation || status.Replicas != want || status.ReadyReplicas != want || status.UpdatedReplicas < rollingUpdateTarget(set) {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-func rollingUpdateTarget(set *appsv1.StatefulSet) int32 {
-	strategy := set.Spec.UpdateStrategy
-	if strategy.Type == appsv1.OnDeleteStatefulSetStrategyType {
-		return 0
-	}
-	target := *set.Spec.Replicas
-	if strategy.RollingUpdate != nil && strategy.RollingUpdate.Partition != nil {
-		target -= *strategy.RollingUpdate.Partition
-	}
-	return target
 }
 
 func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingCA, servingCA []byte, changed []string, drainFor, grace time.Duration, deadline time.Time) (*Result, error) {

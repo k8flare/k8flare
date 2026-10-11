@@ -18,7 +18,12 @@ type FollowSend = {
   changed?: string[];
   names?: string[];
   node?: string;
+  failures?: number;
 };
+
+function failuresOf(messages: readonly { body: QueueMessage | BucketChange }[]): number {
+  return Math.max(0, ...messages.map((m) => (m.body.kind === "retry" || m.body.kind === "lease-check" ? (m.body.failures ?? 0) : 0)));
+}
 
 function targetOf(queueName: string): Target | null {
   if (queueName.endsWith("-scheduler")) return "scheduler";
@@ -66,7 +71,7 @@ async function applySends(env: Env, sends: FollowSend[]): Promise<void> {
     if (send.kind === "lease-check") {
       await clusterStub(env).fetch("https://cluster.internal/lease-check", {
         method: "POST",
-        body: JSON.stringify({ node: send.node ?? "", delayMs }),
+        body: JSON.stringify({ node: send.node ?? "", delayMs, failures: send.failures }),
       });
       continue;
     }
@@ -74,7 +79,7 @@ async function applySends(env: Env, sends: FollowSend[]): Promise<void> {
     if (!target) continue;
     await clusterStub(env).fetch("https://cluster.internal/enqueue", {
       method: "POST",
-      body: JSON.stringify({ target, delayMs, attempt: send.attempt, changed: send.changed, names: send.names }),
+      body: JSON.stringify({ target, delayMs, attempt: send.attempt, changed: send.changed, names: send.names, failures: send.failures }),
     });
   }
 }
@@ -95,6 +100,7 @@ async function consumeScheduler(batch: MessageBatch<QueueMessage>, env: Env): Pr
     skip: Boolean(result?.skip),
     attempt: result?.attempt ?? 0,
     retryAfterS: result?.retryAfterS ?? 0,
+    failures: failuresOf(batch.messages),
   });
   if (result && !result.skip) console.log(`scheduler: bound=${result.bound} unschedulable=${result.unschedulable.length} attempt=${result.attempt}`);
   await applySends(env, follow.sends);
@@ -128,7 +134,7 @@ async function consumeWorkloadsInner(batch: MessageBatch<QueueMessage>, env: Env
   const planSpan = root.child("queue.plan", { "k8flare.messages": batch.messages.length });
   const plan = await planSpan.measure(() => queuePlan(env, batch.messages.map((m) => m.body)));
   if (!plan) {
-    await applySends(env, (await followUp(env, { target: "workloads" })).sends);
+    await applySends(env, (await followUp(env, { target: "workloads", failures: failuresOf(batch.messages) })).sends);
     batch.ackAll();
     return;
   }
@@ -153,6 +159,7 @@ async function consumeWorkloadsInner(batch: MessageBatch<QueueMessage>, env: Env
   }
   let hasResult = false;
   let drained = false;
+  let busy = false;
   let nextMs = 0;
   if (changed.length > 0) {
     const syncSpan = root.child("rpc.workloads.sync", { "k8flare.changed": changed.join(",") });
@@ -164,12 +171,13 @@ async function consumeWorkloadsInner(batch: MessageBatch<QueueMessage>, env: Env
     }
     hasResult = Boolean(result);
     drained = Boolean(result?.drained);
+    busy = Boolean(result?.busy);
     nextMs = result?.nextMs ?? 0;
     if (result) console.log(`workloads: ${Object.entries(result.objects).map(([k, v]) => `${k}=${v}`).join(" ")} drained=${result.drained}`);
   }
   const followSpan = root.child("queue.followup", { "k8flare.changed": changed.join(",") });
   await followSpan.measure(async () => {
-    await applySends(env, (await followUp(env, { target: "workloads", planOK: true, provisionFailed, changed, hasResult, drained, nextMs })).sends);
+    await applySends(env, (await followUp(env, { target: "workloads", planOK: true, provisionFailed, changed, hasResult, drained, busy, nextMs, failures: failuresOf(batch.messages) })).sends);
   });
   batch.ackAll();
 }
@@ -225,7 +233,7 @@ async function consumeHPA(batch: MessageBatch<QueueMessage>, env: Env): Promise<
   } catch (err) {
     console.log(`hpa: sync threw ${err}`);
   }
-  await applySends(env, (await followUp(env, { target: "hpa", hasResult, drained, hpas })).sends);
+  await applySends(env, (await followUp(env, { target: "hpa", hasResult, drained, hpas, failures: failuresOf(batch.messages) })).sends);
   batch.ackAll();
 }
 
@@ -234,19 +242,19 @@ async function consumeCRDs(batch: MessageBatch<QueueMessage>, env: Env): Promise
   await resp.text();
   const pending = Number(resp.headers.get("X-CRD-Pending") ?? "1") || 0;
   console.log(`crds: status=${resp.status} pending=${pending}`);
-  await applySends(env, (await followUp(env, { target: "crds", status: resp.status, pending })).sends);
+  await applySends(env, (await followUp(env, { target: "crds", status: resp.status, pending, failures: failuresOf(batch.messages) })).sends);
   batch.ackAll();
 }
 
 async function consumeGC(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
   const result = await env.GC.collect();
-  if (result) console.log(`gc: items=${result.items} deleted=${result.deleted} patched=${result.patched} pending=${result.pending}`);
+  if (result) console.log(`gc: items=${result.items} deleted=${result.deleted} patched=${result.patched} pending=${result.pending} failed=${result.failed} remaining=${result.remaining}`);
   await applySends(env, (await followUp(env, {
     target: "gc",
     hasResult: Boolean(result),
-    deleted: result?.deleted ?? 0,
-    patched: result?.patched ?? 0,
-    pending: result?.pending ?? 0,
+    failed: result?.failed ?? 0,
+    remaining: result?.remaining ?? 0,
+    failures: failuresOf(batch.messages),
   })).sends);
   batch.ackAll();
 }
@@ -266,6 +274,7 @@ async function consumeAccounts(batch: MessageBatch<QueueMessage>, env: Env): Pro
     names: namespaces?.names ?? [],
     remaining: namespaces?.remaining ?? 0,
     terminating: namespaces?.terminating ?? 0,
+    failures: failuresOf(batch.messages),
   });
   await applySends(env, first.sends);
   const provisionOnly = first.stop;
@@ -276,7 +285,7 @@ async function consumeAccounts(batch: MessageBatch<QueueMessage>, env: Env): Pro
     console.log(`accounts: sync failed, deferring to follow-up: ${String(err)}`);
   }
   if (result) console.log(`accounts: ${Object.entries(result.objects).map(([k, v]) => `${k}=${v}`).join(" ")} drained=${result.drained}`);
-  await applySends(env, (await followUp(env, { target: "accounts", phase: "sync", hasResult: Boolean(result), drained: Boolean(result?.drained) })).sends);
+  await applySends(env, (await followUp(env, { target: "accounts", phase: "sync", hasResult: Boolean(result), drained: Boolean(result?.drained), busy: Boolean(result?.busy), failures: failuresOf(batch.messages) })).sends);
   batch.ackAll();
 }
 
@@ -286,7 +295,7 @@ async function consumeExtensions(batch: MessageBatch<QueueMessage>, env: Env): P
     headers: { Authorization: `Bearer ${await componentToken(env, "queues")}`, "Content-Type": "application/json" },
     body: JSON.stringify({ messages: batch.messages.map((m) => m.body) }),
   }));
-  await applySends(env, (await followUp(env, { target: "extensions", ok: resp.ok })).sends);
+  await applySends(env, (await followUp(env, { target: "extensions", ok: resp.ok, failures: failuresOf(batch.messages) })).sends);
   batch.ackAll();
 }
 
@@ -296,7 +305,7 @@ async function consumeLeases(batch: MessageBatch<QueueMessage>, env: Env): Promi
     if (body.kind !== "lease-check") continue;
     const health = await env.WORKLOADS.nodeHealth(body.node);
     console.log(`lease check: ${body.node} evicted=${health?.evicted} waiting=${health?.waiting}`);
-    await applySends(env, (await followUp(env, { target: "leases", node: body.node, hasResult: Boolean(health), nextMs: health?.nextMs ?? 0 })).sends);
+    await applySends(env, (await followUp(env, { target: "leases", node: body.node, hasResult: Boolean(health), nextMs: health?.nextMs ?? 0, failures: body.failures ?? 0 })).sends);
   }
   batch.ackAll();
 }
@@ -358,9 +367,9 @@ async function consumeAddons(batch: MessageBatch<QueueMessage | BucketChange>, e
   const helm = migrateOnly ? { ok: true, nextMs: 0 } : await reconcileHelm(env);
   const ok = addonsOK && helm.ok;
   const migration = await migrateStorage(env);
-  const pending = migration ? migration.pending.length : 1;
+  const pending = migration ? migration.pending.length : 0;
   console.log(`addons: ok=${ok} addons=${addonsOK} helm=${helm.ok} nextMs=${helm.nextMs} storage-migrate rewritten=${migration?.rewritten ?? 0} pending=${pending} msgs=${batch.messages.length}`);
-  const follow = await followUp(env, { target: "addons", ok, pending, nextMs: helm.nextMs, skip: migrateOnly });
+  const follow = await followUp(env, { target: "addons", ok, pending, migrateFailed: !migration, nextMs: helm.nextMs, skip: migrateOnly, failures: failuresOf(batch.messages) });
   await applySends(env, follow.sends);
   await cancelDeadlines(env, follow.cancel ?? []);
   batch.ackAll();
@@ -374,9 +383,9 @@ async function consumeContainers(batch: MessageBatch<QueueMessage>, env: Env): P
   const { clusterName } = await import("./clusterid.ts");
   const stub = env.NODE_SCHED.get(env.NODE_SCHED.idFromName(clusterName(env)));
   const resp = await stub.fetch("https://nodesched.internal/reconcile");
-  const body = resp.ok ? ((await resp.json()) as { hasWork?: boolean }) : {};
+  const body = resp.ok ? ((await resp.json()) as { nextMs?: number; failed?: boolean }) : {};
   const woken = await wakePodKubelets(env, [...keys]);
-  console.log(`containers: keys=${keys.size} status=${resp.status} hasWork=${Boolean(body.hasWork)} kubelets=${woken}`);
-  await applySends(env, (await followUp(env, { target: "containers", hasWork: Boolean(body.hasWork) })).sends);
+  console.log(`containers: keys=${keys.size} status=${resp.status} nextMs=${body.nextMs ?? 0} failed=${Boolean(body.failed)} kubelets=${woken}`);
+  await applySends(env, (await followUp(env, { target: "containers", ok: !body.failed, nextMs: body.nextMs ?? 0, failures: failuresOf(batch.messages) })).sends);
   batch.ackAll();
 }

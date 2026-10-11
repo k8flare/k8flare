@@ -382,36 +382,6 @@ func TestBusySyncAsksTheRunningPassToYield(t *testing.T) {
 	}
 }
 
-func TestReplicaGapRetriesWhileStatusLags(t *testing.T) {
-	replicas := int32(40)
-	matched := int32(2)
-	client := fake.NewSimpleClientset(
-		&v1.ReplicationController{
-			ObjectMeta: metav1.ObjectMeta{Name: "burst", Namespace: "default"},
-			Spec:       v1.ReplicationControllerSpec{Replicas: &replicas},
-			Status:     v1.ReplicationControllerStatus{Replicas: 18},
-		},
-		&v1.ReplicationController{
-			ObjectMeta: metav1.ObjectMeta{Name: "done", Namespace: "default"},
-			Spec:       v1.ReplicationControllerSpec{Replicas: &matched},
-			Status:     v1.ReplicationControllerStatus{Replicas: matched},
-		},
-	)
-	controllers, _ := wanted([]string{"replicationcontrollers"})
-	gap, ok := replicaGap(context.Background(), client, controllers)
-	if !ok || gap != replicaRetry {
-		t.Fatalf("gap=%s ok=%v", gap, ok)
-	}
-	settled := fake.NewSimpleClientset(&v1.ReplicationController{
-		ObjectMeta: metav1.ObjectMeta{Name: "done", Namespace: "default"},
-		Spec:       v1.ReplicationControllerSpec{Replicas: &matched},
-		Status:     v1.ReplicationControllerStatus{Replicas: matched},
-	})
-	if _, ok := replicaGap(context.Background(), settled, controllers); ok {
-		t.Fatal("converged replication controller asked for another pass")
-	}
-}
-
 func TestClientScaleReadsDeploymentReplicas(t *testing.T) {
 	replicas := int32(3)
 	client := fake.NewSimpleClientset(&appsv1.Deployment{
@@ -486,8 +456,8 @@ func TestSyncWithinAnswersBusyInsteadOfBlocking(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a busy sync should answer, not fail: %v", err)
 	}
-	if result == nil || result.NextMs == 0 {
-		t.Fatalf("a busy sync should ask to be retried, got %+v", result)
+	if result == nil || result.NextMs == 0 || !result.Busy {
+		t.Fatalf("a busy sync should say so and ask to be retried, got %+v", result)
 	}
 	if waited := time.Since(started); waited > 3*time.Second {
 		t.Fatalf("waited %s for a lock another pass holds; the caller would have given up", waited)

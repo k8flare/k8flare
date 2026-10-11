@@ -191,6 +191,51 @@ test("ServiceCIDR, ValidatingAdmissionPolicy, ResourceClaim and ResourceSlice wr
   ]);
 });
 
+test("every write that moves a replica count reaches the workloads queue: a pod created, Running, Ready, deleted, and an owner's status write", async () => {
+  const sent: string[] = [];
+  const workloads = { send: async () => {}, sendBatch: async (batch: { body: { key: string; type: string } }[]) => void sent.push(...batch.map((m) => `${m.body.type} ${m.body.key}`)) };
+  const r = rig({ WL_Q: workloads } as any);
+  await r.settle();
+  const pod = (phase: string, ready: string) => `{"metadata":{"name":"web-1"},"spec":{"nodeName":"n1"},"status":{"phase":"${phase}","conditions":[{"type":"Ready","status":"${ready}"}]}}`;
+  const created = Number((await (await r.put("/registry/pods/default/web-1", pod("Pending", "False"))).json()).revision);
+  const running = Number((await (await r.put("/registry/pods/default/web-1", pod("Running", "False"), created)).json()).revision);
+  await r.put("/registry/pods/default/web-1", pod("Running", "True"), running);
+  await r.remove("/registry/pods/default/web-1");
+  for (const key of ["/registry/replicasets/default/web", "/registry/replicationcontrollers/default/burst", "/registry/deployments/default/web", "/registry/statefulsets/default/db"]) {
+    const rev = Number((await (await r.put(key, `{"status":{"replicas":1}}`)).json()).revision);
+    await r.put(key, `{"status":{"replicas":2}}`, rev);
+  }
+  await r.settle();
+  assert.deepEqual(sent, [
+    "created /registry/pods/default/web-1",
+    "modified /registry/pods/default/web-1",
+    "modified /registry/pods/default/web-1",
+    "deleted /registry/pods/default/web-1",
+    "created /registry/replicasets/default/web",
+    "modified /registry/replicasets/default/web",
+    "created /registry/replicationcontrollers/default/burst",
+    "modified /registry/replicationcontrollers/default/burst",
+    "created /registry/deployments/default/web",
+    "modified /registry/deployments/default/web",
+    "created /registry/statefulsets/default/db",
+    "modified /registry/statefulsets/default/db",
+  ]);
+});
+
+test("a Containers pod's creation, binding to its node and deletion reach the containers queue", async () => {
+  const sent: string[] = [];
+  const containers = { send: async () => {}, sendBatch: async (batch: { body: { key: string; type: string } }[]) => void sent.push(...batch.map((m) => `${m.body.type} ${m.body.key}`)) };
+  const r = rig({ CONTAINERS_Q: containers } as any);
+  await r.settle();
+  const pod = (node: string) => `{"spec":{"nodeSelector":{"k8flare.com/backend":"containers","kubernetes.io/hostname":"vm-1"}${node ? `,"nodeName":"${node}"` : ""}}}`;
+  const created = Number((await (await r.put("/registry/pods/default/job", pod(""))).json()).revision);
+  await r.put("/registry/pods/default/job", pod("vm-1"), created);
+  await r.remove("/registry/pods/default/job");
+  await r.put("/registry/pods/default/plain", `{"spec":{}}`);
+  await r.settle();
+  assert.deepEqual(sent, ["created /registry/pods/default/job", "modified /registry/pods/default/job", "deleted /registry/pods/default/job"]);
+});
+
 test("Role, RoleBinding, LimitRange, NetworkPolicy and ResourceClaimTemplate writes reach the workloads queue", async () => {
   const sent: string[] = [];
   const workloads = { send: async () => {}, sendBatch: async (batch: { body: { key: string } }[]) => void sent.push(...batch.map((m) => m.body.key)) };

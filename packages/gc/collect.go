@@ -27,10 +27,12 @@ const (
 )
 
 type Result struct {
-	Items   int `json:"items"`
-	Deleted int `json:"deleted"`
-	Patched int `json:"patched"`
-	Pending int `json:"pending"`
+	Items     int `json:"items"`
+	Deleted   int `json:"deleted"`
+	Patched   int `json:"patched"`
+	Pending   int `json:"pending"`
+	Failed    int `json:"failed"`
+	Remaining int `json:"remaining"`
 }
 
 type collector struct {
@@ -64,6 +66,9 @@ func Collect(ctx context.Context, client kubernetes.Interface, dyn dynamic.Inter
 			defer func() { <-slots }()
 			if err := c.sync(ctx, target); err != nil {
 				println("gc:", target.key, "failed:", err.Error())
+				c.mu.Lock()
+				c.result.Failed++
+				c.mu.Unlock()
 			}
 		}(it)
 	}
@@ -71,7 +76,7 @@ func Collect(ctx context.Context, client kubernetes.Interface, dyn dynamic.Inter
 	for _, it := range absentNamespace(g.items) {
 		if err := c.deleteItem(ctx, it, metav1.DeletePropagationBackground); err != nil {
 			println("gc:", it.key, "namespace gone:", err.Error())
-			c.result.Pending++
+			c.result.Failed++
 		}
 	}
 	if err := c.deleteOrphanKeys(ctx, store, append(append(orphanEventKeys(g), orphanLeaseKeys(g)...), expiredEventKeys(g, time.Now())...)); err != nil {
@@ -84,7 +89,7 @@ const orphanEventBatch = 200
 
 func (c *collector) deleteOrphanKeys(ctx context.Context, store *kine.Client, keys []string) error {
 	if len(keys) > orphanEventBatch {
-		c.result.Pending += len(keys) - orphanEventBatch
+		c.result.Remaining += len(keys) - orphanEventBatch
 		keys = keys[:orphanEventBatch]
 	}
 	for _, key := range keys {
