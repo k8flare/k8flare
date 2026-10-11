@@ -27,12 +27,13 @@ interface Call {
   body: string;
 }
 
-function rig(manifests: Record<string, string>, helmBody = "{}") {
+function rig(manifests: Record<string, string>, helmBody = "{}", follow: Record<string, unknown> = { sends: [], stop: false }) {
   const bucket = new PagedBucket();
   for (const [key, body] of Object.entries(manifests)) bucket.objects.set(key, body);
   const calls: Call[] = [];
   const internal: string[] = [];
   const followUps: Record<string, unknown>[] = [];
+  const cluster: { path: string; body: string }[] = [];
   const env = {
     DISABLE: "coredns",
     MANIFESTS_R2: bucket,
@@ -44,16 +45,27 @@ function rig(manifests: Record<string, string>, helmBody = "{}") {
         },
       }),
     },
-    CLUSTER: { idFromName: (name: string) => name, get: () => ({ fetch: async () => new Response("{}") }) },
+    CLUSTER: {
+      idFromName: (name: string) => name,
+      get: () => ({
+        fetch: async (url: string, init?: RequestInit) => {
+          cluster.push({ path: new URL(url).pathname, body: String(init?.body ?? "") });
+          return new Response("{}");
+        },
+      }),
+    },
     __apiserver: async (request: Request) => {
       const path = new URL(request.url).pathname;
       internal.push(path);
       if (path === "/internal/storage-migrate") return Response.json({ done: true, rewritten: 0, pending: [] });
-      if (path === "/internal/queue/followup") followUps.push(await request.json());
+      if (path === "/internal/queue/followup") {
+        followUps.push(await request.json());
+        return Response.json(follow);
+      }
       return Response.json({ sends: [], stop: false });
     },
   };
-  return { bucket, calls, internal, followUps, env: env as unknown as Env };
+  return { bucket, calls, internal, followUps, cluster, env: env as unknown as Env };
 }
 
 function batchOf(bodies: unknown[]) {
@@ -121,4 +133,21 @@ test("a helm pass waiting on a hook hands its deadline to the follow-up", async 
   assert.equal(followUps[0].target, "addons");
   assert.equal(followUps[0].ok, true);
   assert.equal(followUps[0].nextMs, 299_001);
+});
+
+test("a helm pass the follow-up finds no hook pending in clears the addons deadline on the Cluster object", async () => {
+  const { followUps, cluster, env } = rig({}, "{}", { sends: [], cancel: ["addons"], stop: false });
+
+  await consume(batchOf([{ kind: "retry" }]) as any, env);
+
+  assert.equal(followUps[0].skip, false);
+  assert.deepEqual(cluster.filter((c) => c.path === "/cancel"), [{ path: "/cancel", body: JSON.stringify({ target: "addons" }) }]);
+});
+
+test("a storage-migrate pass tells the follow-up it skipped helm", async () => {
+  const { followUps, env } = rig({});
+
+  await consume(batchOf([{ kind: "retry", names: ["storage-migrate"] }]) as any, env);
+
+  assert.equal(followUps[0].skip, true);
 });

@@ -265,3 +265,57 @@ test("a lease check a node health pass asks for is not pushed back by lease rene
     { target: "leases", due: start + 300_000 },
   ]);
 });
+
+test("a pending Helm hook's deadline is carried by the alarm as one addons row and fires once", async (t) => {
+  const tick = clock(t);
+  const sent: Sent[] = [];
+  const r = rig({ SNAPSHOT_INTERVAL_HOURS: "0", ...recordingQueues(sent) } as any);
+  await r.settle();
+  sent.length = 0;
+
+  await r.post("/enqueue", { target: "addons", delayMs: 300_000 });
+  tick(10_000);
+  await r.post("/enqueue", { target: "addons", delayMs: 295_000 });
+  assert.deepEqual(booked(r), [{ target: "addons", due: start + 300_000 }]);
+  assert.equal(r.alarm.at, start + 300_000);
+
+  tick(289_999);
+  await fireIfDue(r);
+  assert.deepEqual(sent, []);
+
+  tick(1);
+  await r.fire();
+  assert.deepEqual(sent, [{ queue: "addon", body: { kind: "retry" }, delaySeconds: undefined }]);
+  assert.deepEqual(booked(r), []);
+  assert.equal(r.alarm.at, null);
+
+  tick(600_000);
+  await r.fire();
+  assert.equal(sent.length, 1);
+});
+
+test("a Helm pass with no hook pending clears the addons row and leaves a storage-migrate retry booked", async (t) => {
+  const tick = clock(t);
+  const sent: Sent[] = [];
+  const r = rig({ SNAPSHOT_INTERVAL_HOURS: "0", ...recordingQueues(sent) } as any);
+  await r.settle();
+  sent.length = 0;
+
+  await r.post("/enqueue", { target: "addons", delayMs: 300_000 });
+  await r.post("/cancel", { target: "addons" });
+  assert.deepEqual(booked(r), []);
+  assert.equal(r.alarm.at, null);
+
+  await r.post("/enqueue", { target: "addons", delayMs: 300_000 });
+  await r.post("/enqueue", { target: "addons", delayMs: 5_000, names: ["storage-migrate"] });
+  await r.post("/cancel", { target: "addons" });
+  assert.deepEqual(booked(r), [{ target: "addons", due: start + 5_000 }]);
+
+  tick(5_000);
+  await r.fire();
+  tick(300_000);
+  await r.fire();
+  assert.deepEqual(sent, [{ queue: "addon", body: { kind: "retry", names: ["storage-migrate"] }, delaySeconds: undefined }]);
+  assert.equal(r.alarm.at, null);
+  assert.equal((await r.post("/cancel", { target: "nope" })).status, 400);
+});

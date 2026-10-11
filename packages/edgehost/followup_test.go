@@ -1,6 +1,9 @@
 package edgehost
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestFollowUpSchedulerFailure(t *testing.T) {
 	got := followUp(followIn{Target: "scheduler"})
@@ -60,6 +63,23 @@ func TestFollowUpAddonsBooksOneWakeAtTheHelmHookDeadline(t *testing.T) {
 	got := followUp(followIn{Target: "addons", OK: true, NextMs: 299_001})
 	if len(got.Sends) != 1 || got.Sends[0].Queue != "addons" || got.Sends[0].DelaySeconds != 300 || len(got.Sends[0].Names) != 0 {
 		t.Fatal(got)
+	}
+}
+
+func TestFollowUpAddonsClearsTheHelmHookWakeOnlyAfterAHelmPassWithNoHookPending(t *testing.T) {
+	for _, tc := range []struct {
+		in   followIn
+		want []string
+	}{
+		{followIn{Target: "addons", OK: true}, []string{"addons"}},
+		{followIn{Target: "addons", OK: true, Pending: 3}, []string{"addons"}},
+		{followIn{Target: "addons", OK: true, NextMs: 299_001}, nil},
+		{followIn{Target: "addons", OK: true, Skip: true}, nil},
+		{followIn{Target: "addons"}, nil},
+	} {
+		if got := followUp(tc.in); !slices.Equal(got.Cancel, tc.want) {
+			t.Errorf("%+v: cancel = %v, want %v", tc.in, got.Cancel, tc.want)
+		}
 	}
 }
 

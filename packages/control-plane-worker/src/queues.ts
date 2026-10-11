@@ -35,14 +35,14 @@ function targetOf(queueName: string): Target | null {
   return null;
 }
 
-async function followUp(env: Env, body: Record<string, unknown>): Promise<{ sends: FollowSend[]; stop: boolean }> {
+async function followUp(env: Env, body: Record<string, unknown>): Promise<{ sends: FollowSend[]; cancel?: string[]; stop: boolean }> {
   const resp = await apiserverFetch(env, new Request("https://apiserver.internal/internal/queue/followup", {
     method: "POST",
     headers: { Authorization: `Bearer ${await componentToken(env, "queues")}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
   }));
   if (!resp.ok) return { sends: [], stop: false };
-  return resp.json() as Promise<{ sends: FollowSend[]; stop: boolean }>;
+  return resp.json() as Promise<{ sends: FollowSend[]; cancel?: string[]; stop: boolean }>;
 }
 
 function targetForQueue(name: string): Target | null {
@@ -76,6 +76,14 @@ async function applySends(env: Env, sends: FollowSend[]): Promise<void> {
       method: "POST",
       body: JSON.stringify({ target, delayMs, attempt: send.attempt, changed: send.changed, names: send.names }),
     });
+  }
+}
+
+async function cancelDeadlines(env: Env, queues: string[]): Promise<void> {
+  for (const queue of queues) {
+    const target = targetForQueue(queue);
+    if (!target) continue;
+    await clusterStub(env).fetch("https://cluster.internal/cancel", { method: "POST", body: JSON.stringify({ target }) });
   }
 }
 
@@ -352,7 +360,9 @@ async function consumeAddons(batch: MessageBatch<QueueMessage | BucketChange>, e
   const migration = await migrateStorage(env);
   const pending = migration ? migration.pending.length : 1;
   console.log(`addons: ok=${ok} addons=${addonsOK} helm=${helm.ok} nextMs=${helm.nextMs} storage-migrate rewritten=${migration?.rewritten ?? 0} pending=${pending} msgs=${batch.messages.length}`);
-  await applySends(env, (await followUp(env, { target: "addons", ok, pending, nextMs: helm.nextMs })).sends);
+  const follow = await followUp(env, { target: "addons", ok, pending, nextMs: helm.nextMs, skip: migrateOnly });
+  await applySends(env, follow.sends);
+  await cancelDeadlines(env, follow.cancel ?? []);
   batch.ackAll();
 }
 

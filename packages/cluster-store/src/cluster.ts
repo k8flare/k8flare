@@ -303,6 +303,13 @@ export class Cluster extends DurableObject<Env> {
         await this.armAlarm();
         return Response.json({ ok: true });
       }
+      case "POST /cancel": {
+        const body = (await request.json()) as { target: Target };
+        if (!targets.includes(body.target)) return new Response("unknown target", { status: 400 });
+        this.ctx.storage.sql.exec("DELETE FROM deadlines WHERE key = ?", deadlineKey(body.target, { kind: "retry" }));
+        await this.armAlarm();
+        return Response.json({ ok: true });
+      }
       case "POST /snapshot": {
         const bucket = this.snapshotBucket();
         if (!bucket) return new Response("r2 unbound", { status: 503 });

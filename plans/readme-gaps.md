@@ -137,7 +137,12 @@ Decided on 2026-10-01, with the owner:
   while it still deletes, patches or has pending items; HPA every 15 s
   while an HPA exists (upstream's sync period); the scheduler every 5
   minutes while a pod is unschedulable (upstream's flush); a namespace that
-  cannot finish once a minute.
+  cannot finish once a minute. A pending Helm hook is not on a period: it
+  is one addons row at the earliest hook deadline, sent once when due and
+  deleted (`POST /cancel`) by a Helm pass that finds no hook pending
+  (`deadlines.test.ts`, `followup_test.go`). Since a booking keeps the
+  earlier due, a hook that finishes and is followed by another still wakes
+  one pass at the first hook's deadline.
 - node-tunnel imports its wasm statically into the Durable Object instead
   of loading it through the Worker Loader.
 
@@ -247,7 +252,8 @@ Decided on 2026-10-01, with the owner:
     `helm.sh/hook` to the addons queue only when it finishes or is deleted,
     and `/helm` returns the earliest hook deadline as `nextMs`, booked
     through `POST /enqueue` as the addons row of the Cluster object's
-    `deadlines` table, which keeps the earliest due.
+    `deadlines` table, which keeps the earliest due; a Helm pass with no
+    hook pending deletes the row.
     `spec.timeout` (default 300s, Helm's `--timeout`) bounds each hook wait.
     Not covered: `helm test` hooks, `helm.sh/hook-output-log-policy`, and a
     deadline while waiting for a previous hook object that is still

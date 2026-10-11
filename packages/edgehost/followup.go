@@ -49,8 +49,9 @@ type followSend struct {
 }
 
 type followResult struct {
-	Sends []followSend `json:"sends"`
-	Stop  bool         `json:"stop"`
+	Sends  []followSend `json:"sends"`
+	Cancel []string     `json:"cancel,omitempty"`
+	Stop   bool         `json:"stop"`
 }
 
 func FollowUp(w http.ResponseWriter, r *http.Request) {
@@ -135,6 +136,8 @@ func followUp(in followIn) followResult {
 		}
 		if in.OK && in.NextMs > 0 {
 			out.Sends = append(out.Sends, retry("addons", nil, nil, nil, "", ceilSeconds(in.NextMs)))
+		} else if in.OK && !in.Skip {
+			out.Cancel = append(out.Cancel, "addons")
 		}
 	case "leases":
 		delayMs := in.NextMs
