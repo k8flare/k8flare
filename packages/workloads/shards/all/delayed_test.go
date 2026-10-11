@@ -114,7 +114,7 @@ func TestSyncDoesNotRebookAPodChangeWhenNothingIsDue(t *testing.T) {
 	}
 }
 
-func TestSyncRebooksAPodChangeWhileAStatefulSetIsNotSettled(t *testing.T) {
+func TestAStatefulSetWaitingOnAnUnreadyPodBooksNothingAndThatPodsReadyWriteCreatesTheNext(t *testing.T) {
 	labels := map[string]string{"app": "db"}
 	set := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "default", UID: "s1", Generation: 1},
@@ -127,12 +127,22 @@ func TestSyncRebooksAPodChangeWhileAStatefulSetIsNotSettled(t *testing.T) {
 	}
 	client := fake.NewSimpleClientset(set)
 	assignGeneratedNames(client)
-	result, err := workloads.Sync(context.Background(), client, []byte("ca"), nil, nil, []string{"statefulsets", "pods"})
-	if err != nil {
-		t.Fatal(err)
+	assignResourceVersions(client)
+	createPodsPending(client)
+	changed := []string{"statefulsets", "pods"}
+	waiting := syncUntilQuiet(t, client, changed)
+	pods, err := client.CoreV1().Pods("default").List(context.Background(), metav1.ListOptions{})
+	if err != nil || len(pods.Items) != 1 || pods.Items[0].Name != "db-0" {
+		t.Fatalf("pods = %v, %v, want db-0 alone while it is not Ready", pods.Items, err)
 	}
-	if next := time.Duration(result.NextMs) * time.Millisecond; next <= 0 || next > 2*time.Second {
-		t.Fatalf("next pass in %s while the StatefulSet has unready replicas, want within 2s", next)
+	if waiting.NextMs != 0 {
+		t.Fatalf("next pass in %dms while the set waits on db-0, want none: its Ready write starts the pass", waiting.NextMs)
+	}
+
+	markReady(t, client, "app=db")
+	syncUntilQuiet(t, client, changed)
+	if _, err := client.CoreV1().Pods("default").Get(context.Background(), "db-1", metav1.GetOptions{}); err != nil {
+		t.Fatalf("db-1 after db-0's Ready write: %v", err)
 	}
 }
 

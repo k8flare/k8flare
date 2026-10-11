@@ -8,8 +8,10 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/utils/ptr"
 
 	"github.com/k8flare/k8flare/packages/workloads"
@@ -26,6 +28,15 @@ func storeWrites(client *fake.Clientset) int {
 		}
 	}
 	return n
+}
+
+func createPodsPending(client *fake.Clientset) {
+	client.PrependReactor("create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		if pod, ok := action.(k8stesting.CreateAction).GetObject().(*v1.Pod); ok && pod.Status.Phase == "" {
+			pod.Status.Phase = v1.PodPending
+		}
+		return false, nil, nil
+	})
 }
 
 func syncUntilQuiet(t *testing.T, client *fake.Clientset, changed []string) *workloads.Result {
@@ -75,6 +86,7 @@ func TestAReplicationControllerScalingUpConvergesOnItsOwnWritesAndBooksNothing(t
 	}
 	client := fake.NewSimpleClientset(rc)
 	assignGeneratedNames(client)
+	createPodsPending(client)
 	assignResourceVersions(client)
 	result := syncUntilQuiet(t, client, []string{"replicationcontrollers", "pods"})
 	got, err := client.CoreV1().ReplicationControllers("default").Get(context.Background(), "burst", metav1.GetOptions{})
@@ -107,6 +119,7 @@ func TestARolloutWaitingForANewPodBooksNothingBeforeItsProgressDeadlineAndFinish
 	}
 	client := fake.NewSimpleClientset(d)
 	assignGeneratedNames(client)
+	createPodsPending(client)
 	assignResourceVersions(client)
 	changed := []string{"deployments", "replicasets", "pods"}
 	syncUntilQuiet(t, client, changed)

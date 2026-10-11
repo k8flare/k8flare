@@ -396,7 +396,6 @@ func SyncWithin(ctx context.Context, client kubernetes.Interface, rootCA, signin
 		if needsFollowUp(controllers) && !result.Live {
 			result.Drained = false
 		}
-		bookGaps(ctx, client, changed, controllers, &result)
 		return &result, nil
 	}
 	defer syncMu.Unlock()
@@ -423,16 +422,7 @@ func SyncWithin(ctx context.Context, client kubernetes.Interface, rootCA, signin
 			result.NextMs = follow.NextMs
 		}
 	}
-	bookGaps(ctx, client, changed, controllers, result)
 	return result, nil
-}
-
-func bookGaps(ctx context.Context, client kubernetes.Interface, changed []string, controllers map[string]bool, result *Result) {
-	if controllers["statefulset"] && changedHas(changed, "pods") && result.Objects["statefulsets"] > 0 {
-		if gap, err := statefulSetGap(ctx, client); err != nil || gap {
-			result.NextMs = soonest(result.NextMs, 2*time.Second)
-		}
-	}
 }
 
 func releaseProtection(ctx context.Context, client kubernetes.Interface, changed []string) error {
@@ -447,37 +437,6 @@ func releaseProtection(ctx context.Context, client kubernetes.Interface, changed
 
 func replicaControllers(controllers map[string]bool) bool {
 	return controllers["replication"] || controllers["replicaset"] || controllers["deployment"]
-}
-
-func statefulSetGap(ctx context.Context, client kubernetes.Interface) (bool, error) {
-	list, err := client.AppsV1().StatefulSets(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return false, err
-	}
-	for i := range list.Items {
-		set := &list.Items[i]
-		if set.DeletionTimestamp != nil || set.Spec.Replicas == nil {
-			continue
-		}
-		want := *set.Spec.Replicas
-		status := set.Status
-		if status.ObservedGeneration < set.Generation || status.Replicas != want || status.ReadyReplicas != want || status.UpdatedReplicas < rollingUpdateTarget(set) {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-func rollingUpdateTarget(set *appsv1.StatefulSet) int32 {
-	strategy := set.Spec.UpdateStrategy
-	if strategy.Type == appsv1.OnDeleteStatefulSetStrategyType {
-		return 0
-	}
-	target := *set.Spec.Replicas
-	if strategy.RollingUpdate != nil && strategy.RollingUpdate.Partition != nil {
-		target -= *strategy.RollingUpdate.Partition
-	}
-	return target
 }
 
 func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingCA, servingCA []byte, changed []string, drainFor, grace time.Duration, deadline time.Time) (*Result, error) {
