@@ -222,6 +222,20 @@ test("every write that moves a replica count reaches the workloads queue: a pod 
   ]);
 });
 
+test("a Containers pod's creation, binding to its node and deletion reach the containers queue", async () => {
+  const sent: string[] = [];
+  const containers = { send: async () => {}, sendBatch: async (batch: { body: { key: string; type: string } }[]) => void sent.push(...batch.map((m) => `${m.body.type} ${m.body.key}`)) };
+  const r = rig({ CONTAINERS_Q: containers } as any);
+  await r.settle();
+  const pod = (node: string) => `{"spec":{"nodeSelector":{"k8flare.com/backend":"containers","kubernetes.io/hostname":"vm-1"}${node ? `,"nodeName":"${node}"` : ""}}}`;
+  const created = Number((await (await r.put("/registry/pods/default/job", pod(""))).json()).revision);
+  await r.put("/registry/pods/default/job", pod("vm-1"), created);
+  await r.remove("/registry/pods/default/job");
+  await r.put("/registry/pods/default/plain", `{"spec":{}}`);
+  await r.settle();
+  assert.deepEqual(sent, ["created /registry/pods/default/job", "modified /registry/pods/default/job", "deleted /registry/pods/default/job"]);
+});
+
 test("Role, RoleBinding, LimitRange, NetworkPolicy and ResourceClaimTemplate writes reach the workloads queue", async () => {
   const sent: string[] = [];
   const workloads = { send: async () => {}, sendBatch: async (batch: { body: { key: string } }[]) => void sent.push(...batch.map((m) => m.body.key)) };

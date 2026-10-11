@@ -383,9 +383,9 @@ async function consumeContainers(batch: MessageBatch<QueueMessage>, env: Env): P
   const { clusterName } = await import("./clusterid.ts");
   const stub = env.NODE_SCHED.get(env.NODE_SCHED.idFromName(clusterName(env)));
   const resp = await stub.fetch("https://nodesched.internal/reconcile");
-  const body = resp.ok ? ((await resp.json()) as { hasWork?: boolean }) : {};
+  const body = resp.ok ? ((await resp.json()) as { nextMs?: number; failed?: boolean }) : {};
   const woken = await wakePodKubelets(env, [...keys]);
-  console.log(`containers: keys=${keys.size} status=${resp.status} hasWork=${Boolean(body.hasWork)} kubelets=${woken}`);
-  await applySends(env, (await followUp(env, { target: "containers", hasWork: Boolean(body.hasWork) })).sends);
+  console.log(`containers: keys=${keys.size} status=${resp.status} nextMs=${body.nextMs ?? 0} failed=${Boolean(body.failed)} kubelets=${woken}`);
+  await applySends(env, (await followUp(env, { target: "containers", ok: !body.failed, nextMs: body.nextMs ?? 0, failures: failuresOf(batch.messages) })).sends);
   batch.ackAll();
 }

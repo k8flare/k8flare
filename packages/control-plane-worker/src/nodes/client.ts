@@ -198,7 +198,7 @@ export async function planNodeVMs(env: Env, body: unknown): Promise<{
   boots: Array<{ uid: string; namespace: string; podName: string; podUID: string; nodeName: string; tier: "small" | "medium" | "large"; claimed: boolean; meshConnectorId?: string }>;
   teardowns: Array<{ namespace: string; podName: string; podUID: string; nodeName: string; tier: "small" | "medium" | "large"; bound: boolean; started: boolean; bootedAt: number; meshConnectorId?: string }>;
   markBound: string[];
-  hasWork: boolean;
+  nextMs: number;
 }> {
   const resp = await apiFetch(env, "/internal/nodes/vm-plan", {
     method: "POST",

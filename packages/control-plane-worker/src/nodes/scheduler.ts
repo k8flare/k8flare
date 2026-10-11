@@ -147,11 +147,11 @@ export class CFContainersScheduler extends DurableObject<Env> {
     // mid-flight: run it detached, exactly like workers/controllers'
     // poke model (see its index.ts for the production incident that
     // motivated this shape).
-    const hasWork = await this.reconcile().catch((err) => {
+    const outcome = await this.reconcile().catch((err) => {
       console.log(`cf-containers-scheduler: ${err}`);
-      return true;
+      return { nextMs: 0, failed: true };
     });
-    return Response.json({ ok: true, scheduler: COMPONENT_NAME, hasWork });
+    return Response.json({ ok: true, scheduler: COMPONENT_NAME, ...outcome });
   }
 
   private async trackedVMs(): Promise<Record<string, TrackedVM>> {
@@ -174,10 +174,11 @@ export class CFContainersScheduler extends DurableObject<Env> {
   }
 
   /** Returns whether there is still work in flight (pending pods or live VMs). */
-  private async reconcile(): Promise<boolean> {
+  private async reconcile(): Promise<{ nextMs: number; failed: boolean }> {
     const tracked = await this.trackedVMs();
     const env = this.apiEnv();
     let dirty = false;
+    let failed = false;
     const nowMs = Date.now();
     const pending = await listPendingContainersPods(env);
     const pods: Record<string, PodObject | null> = {};
@@ -269,6 +270,7 @@ export class CFContainersScheduler extends DurableObject<Env> {
         await stub.up(nodeName, meshToken, joinSecret, extra);
       } catch (err) {
         console.log(`cf-containers-scheduler: boot ${nodeName} for ${uid}: ${err}`);
+        failed = true;
         continue;
       }
       tracked[uid].started = true;
@@ -304,7 +306,7 @@ export class CFContainersScheduler extends DurableObject<Env> {
     }
 
     if (dirty) await this.ctx.storage.put("vms", tracked);
-    return plan.hasWork;
+    return { nextMs: plan.nextMs, failed };
   }
 
   private async teardown(env: Env, vm: TrackedVM): Promise<void> {

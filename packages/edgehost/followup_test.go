@@ -133,6 +133,7 @@ func TestFollowUpBacksOffAFailureRetryFrom5sTo1000s(t *testing.T) {
 		{Target: "addons", OK: true, MigrateFailed: true},
 		{Target: "leases", Node: "n1"},
 		{Target: "hpa"},
+		{Target: "containers", NextMs: 240_000},
 	}
 	want := []int{5, 10, 20, 40, 80, 160, 320, 640, 1000, 1000, 1000}
 	for _, in := range failing {
@@ -153,6 +154,7 @@ func TestFollowUpClearsTheFailureCountOnSuccess(t *testing.T) {
 		{Target: "leases", Node: "n1", HasResult: true, NextMs: 30_000, Failures: 6},
 		{Target: "addons", OK: true, NextMs: 299_001, Failures: 6},
 		{Target: "hpa", HasResult: true, HPAs: 1, Failures: 6},
+		{Target: "containers", OK: true, NextMs: 240_000, Failures: 6},
 	} {
 		got := followUp(in)
 		if len(got.Sends) != 1 || got.Sends[0].Failures != 0 {
@@ -164,6 +166,7 @@ func TestFollowUpClearsTheFailureCountOnSuccess(t *testing.T) {
 		{Target: "crds", Status: 200, Failures: 6},
 		{Target: "extensions", OK: true, Failures: 6},
 		{Target: "scheduler", OK: true, Failures: 6},
+		{Target: "containers", OK: true, Failures: 6},
 	} {
 		if got := followUp(in); len(got.Sends) != 0 {
 			t.Fatalf("%+v: sends = %+v, want nothing booked", in, got.Sends)
@@ -186,6 +189,13 @@ func TestFollowUpRetriesABusySyncIn5sWithoutCountingAFailure(t *testing.T) {
 func TestFollowUpResumesAStorageMigrationIn5sWithoutCountingAFailure(t *testing.T) {
 	got := followUp(followIn{Target: "addons", OK: true, Pending: 2, Failures: 4})
 	if len(got.Sends) != 1 || got.Sends[0].DelaySeconds != 5 || got.Sends[0].Failures != 0 || !slices.Equal(got.Sends[0].Names, []string{"storage-migrate"}) {
+		t.Fatal(got)
+	}
+}
+
+func TestFollowUpBooksTheContainersNodeReadyTimeoutOnce(t *testing.T) {
+	got := followUp(followIn{Target: "containers", OK: true, NextMs: 239_001})
+	if len(got.Sends) != 1 || got.Sends[0].Queue != "containers" || got.Sends[0].DelaySeconds != 240 {
 		t.Fatal(got)
 	}
 }

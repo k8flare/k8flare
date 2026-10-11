@@ -32,7 +32,6 @@ type followIn struct {
 	Failed          int      `json:"failed"`
 	Pending         int      `json:"pending"`
 	Status          int      `json:"status"`
-	HasWork         bool     `json:"hasWork"`
 	Remaining       int      `json:"remaining"`
 	Terminating     int      `json:"terminating"`
 	Phase           string   `json:"phase"`
@@ -154,8 +153,10 @@ func followUp(in followIn) followResult {
 			out.Sends = append(out.Sends, retry("hpa", nil, nil, nil, "", horizontalPodAutoscalerSyncPeriod))
 		}
 	case "containers":
-		if in.HasWork {
-			out.Sends = append(out.Sends, retry("containers", nil, nil, nil, "", refusedRetryS))
+		if !in.OK {
+			out.Sends = append(out.Sends, backoff("containers", nil, nil, nil, "", in.Failures))
+		} else if in.NextMs > 0 {
+			out.Sends = append(out.Sends, retry("containers", nil, nil, nil, "", ceilSeconds(in.NextMs)))
 		}
 	}
 	return out
