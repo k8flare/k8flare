@@ -3,6 +3,7 @@ package workloads
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	goruntime "runtime"
 	"strconv"
 	"strings"
@@ -310,24 +311,63 @@ func changedHas(changed []string, name string) bool {
 
 var syncMu sync.Mutex
 
+var lastSeen = map[string]int64{}
+
 var yieldRequested atomic.Bool
 
-func lockSync(ctx context.Context, budget time.Duration) bool {
+type adoption struct {
+	changed  []string
+	accepted chan bool
+	done     chan struct{}
+	result   Result
+}
+
+var adoptions = make(chan *adoption)
+
+func lockSync(ctx context.Context, budget time.Duration, changed []string) (bool, *adoption) {
 	wait := syncLockWait
 	if budget > 0 && budget/4 < wait {
 		wait = budget / 4
 	}
 	deadline := time.Now().Add(wait)
+	var handed *adoption
 	for {
-		if syncMu.TryLock() {
+		if handed == nil && syncMu.TryLock() {
 			yieldRequested.Store(false)
-			return true
+			return true, nil
 		}
-		yieldRequested.Store(true)
-		if time.Now().After(deadline) || ctx.Err() != nil {
-			return false
+		if handed == nil {
+			yieldRequested.Store(true)
+			handed = offer(changed)
+		}
+		if finished(handed) || time.Now().After(deadline) || ctx.Err() != nil {
+			return false, handed
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func offer(changed []string) *adoption {
+	a := &adoption{changed: changed, accepted: make(chan bool, 1), done: make(chan struct{})}
+	select {
+	case adoptions <- a:
+		if <-a.accepted {
+			return a
+		}
+	default:
+	}
+	return nil
+}
+
+func finished(a *adoption) bool {
+	if a == nil {
+		return false
+	}
+	select {
+	case <-a.done:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -346,8 +386,18 @@ func SyncWithin(ctx context.Context, client kubernetes.Interface, rootCA, signin
 	if err := releaseProtection(ctx, client, changed); err != nil {
 		return nil, err
 	}
-	if !lockSync(ctx, budget) {
-		return &Result{Objects: map[string]int{}, NextMs: int64(syncBusyRetry / time.Millisecond)}, nil
+	controllers, _ := wanted(changed)
+	locked, handed := lockSync(ctx, budget, changed)
+	if !locked {
+		if !finished(handed) {
+			return &Result{Objects: map[string]int{}, NextMs: int64(syncBusyRetry / time.Millisecond)}, nil
+		}
+		result := handed.result
+		if needsFollowUp(controllers) && !result.Live {
+			result.Drained = false
+		}
+		bookGaps(ctx, client, changed, controllers, &result)
+		return &result, nil
 	}
 	defer syncMu.Unlock()
 	if holdWhileRunning != nil {
@@ -356,7 +406,6 @@ func SyncWithin(ctx context.Context, client kubernetes.Interface, rootCA, signin
 	if err := ensureServiceIPAddresses(ctx, client, changed); err != nil {
 		return nil, err
 	}
-	controllers, _ := wanted(changed)
 	result, err := syncPass(ctx, client, rootCA, signingCA, servingCA, changed, maxDrain, inFlightGrace, deadline)
 	if err != nil {
 		return result, err
@@ -374,6 +423,11 @@ func SyncWithin(ctx context.Context, client kubernetes.Interface, rootCA, signin
 			result.NextMs = follow.NextMs
 		}
 	}
+	bookGaps(ctx, client, changed, controllers, result)
+	return result, nil
+}
+
+func bookGaps(ctx context.Context, client kubernetes.Interface, changed []string, controllers map[string]bool, result *Result) {
 	if controllers["statefulset"] && changedHas(changed, "pods") && result.Objects["statefulsets"] > 0 {
 		if gap, err := statefulSetGap(ctx, client); err != nil || gap {
 			result.NextMs = soonest(result.NextMs, 2*time.Second)
@@ -382,7 +436,6 @@ func SyncWithin(ctx context.Context, client kubernetes.Interface, rootCA, signin
 	if retry, ok := replicaGap(ctx, client, controllers); ok {
 		result.NextMs = soonest(result.NextMs, retry)
 	}
-	return result, nil
 }
 
 func releaseProtection(ctx context.Context, client kubernetes.Interface, changed []string) error {
@@ -520,6 +573,16 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 	pending.reset()
 	factory := informers.NewSharedInformerFactory(client, 0)
 	result := &Result{Objects: map[string]int{}}
+	var adopted []*adoption
+	adoptFailed := false
+	defer func() {
+		for _, a := range adopted {
+			a.result = *result
+			a.result.Objects = maps.Clone(result.Objects)
+			close(a.done)
+		}
+	}()
+	raw := client
 	src := sources(client)
 	if needed != nil {
 		kept := src[:0]
@@ -537,23 +600,29 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 		return nil, listErr
 	}
 	var all []loadedSource
-	for i, s := range src {
-		objs := loaded[i]
-		if s.name == "jobs" {
-			if next, ok := nextJobTTL(objs); ok {
-				result.NextMs = soonest(result.NextMs, next)
+	load := func(src []source, loaded [][]runtime.Object) []loadedSource {
+		var fresh []loadedSource
+		for i, s := range src {
+			objs := loaded[i]
+			if s.name == "jobs" {
+				if next, ok := nextJobTTL(objs); ok {
+					result.NextMs = soonest(result.NextMs, next)
+				}
 			}
-		}
-		if s.name == "cronjobs" {
-			if next, ok := nextCronRun(objs); ok {
-				result.NextMs = soonest(result.NextMs, next)
+			if s.name == "cronjobs" {
+				if next, ok := nextCronRun(objs); ok {
+					result.NextMs = soonest(result.NextMs, next)
+				}
 			}
+			result.Objects[s.name] = len(objs)
+			informer := register(ctx, factory, s.example)
+			informer.ownersSyncedInPass = s.name == "endpointslices"
+			fresh = append(fresh, loadedSource{informer, objs})
 		}
-		result.Objects[s.name] = len(objs)
-		informer := register(ctx, factory, s.example)
-		informer.ownersSyncedInPass = s.name == "endpointslices"
-		all = append(all, loadedSource{informer, objs})
+		all = append(all, fresh...)
+		return fresh
 	}
+	load(src, loaded)
 	if err := recordCronChildren(ctx, client, loadedNamed(src, loaded, "cronjobs"), loadedNamed(src, loaded, "jobs")); err != nil {
 		println("workloads: cronjob active list:", err.Error())
 	}
@@ -563,7 +632,8 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 	if needed == nil || needed["configmaps"] {
 		ensureClusterInfo(ctx, client, rootCA)
 	}
-	runs, err := Deps{Client: client, Factory: factory, RootCA: rootCA, SigningCA: signingCA, ServingCA: servingCA, ServiceAccountKey: ServiceAccountKey}.buildShards(ctx, controllers)
+	deps := Deps{Client: client, Factory: factory, RootCA: rootCA, SigningCA: signingCA, ServingCA: servingCA, ServiceAccountKey: ServiceAccountKey}
+	runs, err := deps.buildShards(ctx, controllers)
 	if err != nil {
 		return nil, err
 	}
@@ -575,11 +645,16 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 		l.informer.replay(l.objs)
 	}
 	took("build+fill")
-	feed := followWrites(ctx, all, revisions)
-	done := make(chan struct{}, len(runs))
-	for _, run := range runs {
-		go func() { run(ctx); done <- struct{}{} }()
+	feed := followWrites(ctx, all, revisions, historyStart(controllers))
+	var stopped []chan struct{}
+	launch := func(runs []func(context.Context)) {
+		for _, run := range runs {
+			done := make(chan struct{}, 1)
+			stopped = append(stopped, done)
+			go func() { run(ctx); done <- struct{}{} }()
+		}
 	}
+	launch(runs)
 
 	if err := clearRecoveredNodes(ctx, client, nodesOf(all)); err != nil {
 		println("workloads: clearing node taints failed:", err.Error())
@@ -590,8 +665,88 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 			println("workloads: taint eviction failed:", err.Error())
 		}
 	}
-	result.Drained = drain(workloadQueue, drainFor, grace, deadline, feed.live)
+	adopt := func(a *adoption) {
+		adopted = append(adopted, a)
+		extra := map[string]bool{}
+		more, _ := wanted(a.changed)
+		for name := range more {
+			if !controllers[name] {
+				extra[name] = true
+				controllers[name] = true
+			}
+		}
+		println("workloads: pass adopted changed", strings.Join(a.changed, ","), "controllers", strconv.Itoa(len(extra)))
+		if err := ensureServiceIPAddresses(ctx, raw, a.changed); err != nil {
+			println("workloads: adopted service addresses:", err.Error())
+			adoptFailed = true
+		}
+		if len(extra) == 0 {
+			return
+		}
+		listed := map[string]bool{}
+		for _, s := range src {
+			listed[s.name] = true
+		}
+		var missing []source
+		for _, s := range sources(raw) {
+			if !listed[s.name] && needs(extra, s.name) {
+				missing = append(missing, s)
+			}
+		}
+		listCtx, listCancel := context.WithTimeout(ctx, listBudget)
+		defer listCancel()
+		missingLoaded, missingRevisions, err := listSources(listCtx, missing)
+		if err != nil {
+			println("workloads: adopted lists:", err.Error())
+			adoptFailed = true
+			return
+		}
+		fresh := load(missing, missingLoaded)
+		src = append(src, missing...)
+		loaded = append(loaded, missingLoaded...)
+		if extra["cronjob"] {
+			if err := recordCronChildren(ctx, raw, loadedNamed(src, loaded, "cronjobs"), loadedNamed(src, loaded, "jobs")); err != nil {
+				println("workloads: cronjob active list:", err.Error())
+			}
+		}
+		adoptedClient := observeWrites(raw, all)
+		if !listed["configmaps"] && needs(extra, "configmaps") {
+			ensureClusterInfo(ctx, adoptedClient, rootCA)
+		}
+		deps.Client = adoptedClient
+		runs, err := deps.buildShards(ctx, extra)
+		if err != nil {
+			println("workloads: adopted controllers:", err.Error())
+			adoptFailed = true
+			return
+		}
+		for _, l := range fresh {
+			l.informer.fill(l.objs)
+		}
+		for i, l := range fresh {
+			l.informer.replay(l.objs)
+			feed.follow(l.informer, missingRevisions[i])
+		}
+		for _, l := range all {
+			l.informer.replay(l.informer.held())
+		}
+		launch(runs)
+		if err := clearRecoveredNodes(ctx, adoptedClient, nodesOf(fresh)); err != nil {
+			println("workloads: clearing node taints failed:", err.Error())
+			result.NextMs = soonest(result.NextMs, taintClearRetry)
+		}
+		if extra["tainteviction"] {
+			if err := evictTaintedPods(ctx, adoptedClient, nodesOf(all), podsOf(all), time.Now()); err != nil {
+				println("workloads: taint eviction failed:", err.Error())
+			}
+		}
+	}
+	result.Drained = drain(workloadQueue, drainFor, grace, deadline, feed.live, adopt) && !adoptFailed
 	result.Live = feed.live()
+	seen := max(feed.reach(), listedFloor(revisions))
+	for name := range controllers {
+		lastSeen[name] = seen
+	}
 	took("drain")
 	println("workloads: live feed", strconv.FormatBool(result.Live), "applied", strconv.FormatInt(feed.count(), 10))
 	if next, ok := pending.next(); ok {
@@ -600,19 +755,40 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 	cancel()
 	stopping := time.NewTimer(shutdownGrace)
 	defer stopping.Stop()
-	for i := range runs {
+	for i, done := range stopped {
 		select {
 		case <-done:
 		case <-stopping.C:
 			println("workloads: controllers did not stop within", shutdownGrace.String(),
-				"- leaving", strconv.Itoa(len(runs)-i), "of", strconv.Itoa(len(runs)), "behind")
+				"- leaving", strconv.Itoa(len(stopped)-i), "of", strconv.Itoa(len(stopped)), "behind")
 			took("shutdown")
 			return result, nil
 		}
 	}
 	took("shutdown")
-	println("workloads: pass total", time.Since(passStart).Round(time.Millisecond).String(), "controllers", strconv.Itoa(len(runs)))
+	println("workloads: pass total", time.Since(passStart).Round(time.Millisecond).String(), "controllers", strconv.Itoa(len(stopped)))
 	return result, nil
+}
+
+func historyStart(controllers map[string]bool) int64 {
+	from := int64(0)
+	for name := range controllers {
+		if seen := lastSeen[name]; seen > 0 && (from == 0 || seen < from) {
+			from = seen
+		}
+	}
+	return from
+}
+
+func needs(controllers map[string]bool, source string) bool {
+	for name := range controllers {
+		for _, need := range controllerNeeds[name] {
+			if need == source {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func register(ctx context.Context, factory informers.SharedInformerFactory, example runtime.Object) *snapshotInformer {
@@ -750,7 +926,7 @@ func nextJobTTL(objs []runtime.Object) (time.Duration, bool) {
 	return soonestRun, found
 }
 
-func drain(owned func(string) bool, limit, grace time.Duration, budgetBy time.Time, live func() bool) bool {
+func drain(owned func(string) bool, limit, grace time.Duration, budgetBy time.Time, live func() bool, adopt func(*adoption)) bool {
 	started := time.Now()
 	deadline := started.Add(limit)
 	finishBy := deadline.Add(grace)
@@ -769,8 +945,26 @@ func drain(owned func(string) bool, limit, grace time.Duration, budgetBy time.Ti
 		}
 	}()
 	quiet := 0
+	poll := time.NewTicker(drainPoll)
+	defer poll.Stop()
 	for {
-		time.Sleep(drainPoll)
+		select {
+		case <-poll.C:
+		case a := <-adoptions:
+			taken := adopt != nil && live()
+			a.accepted <- taken
+			if taken {
+				adopt(a)
+				quiet = 0
+				if extended := time.Now().Add(limit); extended.After(deadline) {
+					deadline = extended
+				}
+				if deadline.After(finishBy) {
+					deadline = finishBy
+				}
+			}
+			continue
+		}
 		if work.idle(owned) {
 			quiet++
 		} else {

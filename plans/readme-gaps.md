@@ -1983,11 +1983,54 @@ Decided on 2026-10-01, with the owner:
     and deletes the pod at once (a Failed pod's grace period is 0), so it
     wins the same race. In the first run a pass was running at the write
     and its live feed applied the event, but that pass had 6 controllers
-    and not the DaemonSet one. Not fixed: a state that lives shorter than
-    a pass takes to start (the 1 s batch timeout plus the lists) never
-    reaches a controller. The revert is read from the upstream source and
-    the timing; the audit level is Metadata, so the patch body is not in
-    the log.
+    and not the DaemonSet one. A state that lives shorter than a pass
+    takes to start (the 1 s batch timeout plus the lists) never reached a
+    controller. The revert is read from the upstream source and the
+    timing; the audit level is Metadata, so the patch body is not in the
+    log. In 38141232272 the previous pass, with the DaemonSet controller,
+    ended at 13:35:46.200, 121 ms before the Failed write.
+    Fixed for terminal pod phases on `work/pass-misses`: each pass records,
+    per controller it ran, the revision its live feed reached (`lastSeen`,
+    in the isolate's memory; at least the lowest list revision). The next
+    pass dials the feed from the oldest `lastSeen` of its controllers
+    instead of its lowest list revision, so the Cluster object sends the
+    writes since then. A pod write in that history with a terminal phase
+    (Failed, Succeeded) whose pod is listed later non-terminal with the
+    same UID is put in the snapshot at its terminal version, with the
+    revision it was stored at, and delivered as an update; a write after
+    the lists replaces it as usual. Other history below the lists is
+    dropped as before, and a non-pod row below every list revision is
+    skipped before it is decoded. If the history start is compacted the
+    Cluster object answers `compacted` and the feed redials from the lists,
+    which is the relist a 410 Gone gives an informer; a new isolate has no
+    `lastSeen` and behaves as before. Cost per pass: one row over the
+    socket per registry write between that oldest `lastSeen` and the lists
+    (bounded by compaction: 5 minutes or 100 000 revisions), a JSON parse
+    each and a decode for pod rows only; the Cluster object's watch query
+    scans the prefix the same either way. Nothing runs on an idle cluster.
+    `TestADaemonPodThatFailedAndCameBackBeforeThePassListedIsStillDeleted`
+    (`shards/all`, failing before: the second pass dialed from its lists
+    and the DaemonSet controller never saw Failed),
+    `TestLiveFeedKeepsOnlyATerminalPhaseFromBeforeTheList`,
+    `TestLiveFeedFollowsFromTheListsWhenItsHistoryIsCompacted`. To watch
+    in CI: `workloads: live feed keeps Failed of pod <ns>/<name> from
+    <rev>` in the spec's window, followed by a `FailedDaemonPod` event.
+    Not every intermediate version, deliberately. Replaying every version
+    in order, which the task that led to this asked for, needs either a
+    list at the old revision or old versions pushed over the current
+    snapshot. The first loses the controller's own writes since then while
+    its expectations start empty (a pass is built fresh), so it creates
+    duplicates, and the controllers sharing the pass have different
+    `lastSeen`. The second makes controllers write a past state into the
+    present: an Endpoints controller shown a not-ready version of a pod
+    that is Ready now drops it from its Service. A terminal phase is safe
+    to replay because the API treats it as final (`generateAPIPodStatus`
+    keeps it on a sync; the apiserver does not enforce it). Left: within a
+    pass, writes the feed receives in one burst (its catch-up at dial) are
+    applied back to back, so a controller can still miss a version there;
+    `lastSeen` is per isolate, so a pass on a recreated isolate replays
+    nothing; and the held terminal pod stays out of Endpoints for the rest
+    of that pass although the pod runs.
   - ServiceAccounts "should guarantee kube-root-ca.crt exist in any
     namespace" (38141232272 shard 3). The spec's update to `ca.crt: ""`
     (13:32:15.674) was reconciled at 13:32:57.423, 11 s after its 30 s
@@ -2000,8 +2043,27 @@ Decided on 2026-10-01, with the owner:
     `drain` stops only at a poll with nothing in flight, and a live pass
     ignores the yield (`TestDrainIgnoresYieldWhileLive`) because it sees
     what a new pass would list, but it only runs the controllers it
-    started with. Not fixed; a yield would not have ended this pass
-    either, since a handler was in flight at every poll for 20 s. Which
+    started with. A yield would not have ended this pass either, since a
+    handler was in flight at every poll for 20 s. Fixed on
+    `work/pass-misses`: a sync that finds the lock held offers its change
+    set to the running pass. A pass whose feed is live takes it at its
+    next drain poll, lists the sources it has not listed, builds only the
+    controllers it is not running (no controller runs twice; the lock
+    stays global), replays its snapshot to their handlers and moves its
+    drain deadline to the adoption plus the drain limit, never past the
+    hard stop (`finishBy`). The waiting sync answers with that pass's
+    result if the pass ends within the lock wait and busy otherwise, so a
+    change set the pass did not finish is still retried as before. A pass
+    without a live feed refuses, since its lists are stale for the new
+    controllers, and the old wait applies. Each adoption prints
+    `workloads: pass adopted changed <list> controllers <n>`.
+    `TestAConfigMapChangeDuringALongPassWithoutThePublisherIsPublishedBeforeThatPassDrains`
+    (`shards/all`; before the change the publisher ran only after the
+    blocked pass drained, and the test also fails if an adopted change
+    starts a controller the pass already runs) and
+    `TestDrainAdoptsAnOfferedChangeOnlyWhileLive`. Not run on a cluster
+    yet; in CI, an adopted consume still logs a busy answer when the pass
+    runs past the 10 s lock wait. Which
     consume a pass belonged to was inferred from controller counts
     (`wanted` gives 19 for the 13:32:15.684 consume, 18 with a run), so
     each pass now prints `workloads: pass changed <list>` when it starts.
