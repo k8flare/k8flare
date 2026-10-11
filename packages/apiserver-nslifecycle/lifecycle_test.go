@@ -36,6 +36,17 @@ func TestNamespaceLifecycleKeepsImmortalNamespaces(t *testing.T) {
 	}
 }
 
+func TestRejectCreateOutsideActiveNamespaceLeavesNamespaceDeletesAlone(t *testing.T) {
+	h := RejectCreateOutsideActiveNamespace(&kine.Client{HTTP: http.DefaultClient})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/v1/namespaces/default", nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestNamespaceLifecycleAllowsAccessReviewInTerminatingNamespace(t *testing.T) {
 	ns, err := runtime.Encode(scheme.Codecs.LegacyCodec(corev1.SchemeGroupVersion), &corev1.Namespace{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
