@@ -386,6 +386,6 @@ async function consumeContainers(batch: MessageBatch<QueueMessage>, env: Env): P
   const body = resp.ok ? ((await resp.json()) as { nextMs?: number; failed?: boolean }) : {};
   const woken = await wakePodKubelets(env, [...keys]);
   console.log(`containers: keys=${keys.size} status=${resp.status} nextMs=${body.nextMs ?? 0} failed=${Boolean(body.failed)} kubelets=${woken}`);
-  await applySends(env, (await followUp(env, { target: "containers", ok: !body.failed, nextMs: body.nextMs ?? 0, failures: failuresOf(batch.messages) })).sends);
+  await applySends(env, (await followUp(env, { target: "containers", ok: resp.ok && !body.failed, nextMs: body.nextMs ?? 0, failures: failuresOf(batch.messages) })).sends);
   batch.ackAll();
 }
