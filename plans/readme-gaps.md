@@ -2000,8 +2000,27 @@ Decided on 2026-10-01, with the owner:
     `drain` stops only at a poll with nothing in flight, and a live pass
     ignores the yield (`TestDrainIgnoresYieldWhileLive`) because it sees
     what a new pass would list, but it only runs the controllers it
-    started with. Not fixed; a yield would not have ended this pass
-    either, since a handler was in flight at every poll for 20 s. Which
+    started with. A yield would not have ended this pass either, since a
+    handler was in flight at every poll for 20 s. Fixed on
+    `work/pass-misses`: a sync that finds the lock held offers its change
+    set to the running pass. A pass whose feed is live takes it at its
+    next drain poll, lists the sources it has not listed, builds only the
+    controllers it is not running (no controller runs twice; the lock
+    stays global), replays its snapshot to their handlers and moves its
+    drain deadline to the adoption plus the drain limit, never past the
+    hard stop (`finishBy`). The waiting sync answers with that pass's
+    result if the pass ends within the lock wait and busy otherwise, so a
+    change set the pass did not finish is still retried as before. A pass
+    without a live feed refuses, since its lists are stale for the new
+    controllers, and the old wait applies. Each adoption prints
+    `workloads: pass adopted changed <list> controllers <n>`.
+    `TestAConfigMapChangeDuringALongPassWithoutThePublisherIsPublishedBeforeThatPassDrains`
+    (`shards/all`; before the change the publisher ran only after the
+    blocked pass drained, and the test also fails if an adopted change
+    starts a controller the pass already runs) and
+    `TestDrainAdoptsAnOfferedChangeOnlyWhileLive`. Not run on a cluster
+    yet; in CI, an adopted consume still logs a busy answer when the pass
+    runs past the 10 s lock wait. Which
     consume a pass belonged to was inferred from controller counts
     (`wanted` gives 19 for the 13:32:15.684 consume, 18 with a run), so
     each pass now prints `workloads: pass changed <list>` when it starts.
