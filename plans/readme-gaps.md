@@ -79,8 +79,9 @@ Decided on 2026-10-01, with the owner:
     through the front, and one whose policy has `paramKind` runs discovery.
   - Not yet run on a live cluster or in Conformance. The admission worker
     grows from 63,746,282 to 68,901,984 bytes unoptimised (32,073 to
-    35,129 functions; data 24.2 to 26.5 MB). `wasm-opt` was not run, so
-    the optimised size is an estimate: about 59 MB of the 64 MiB cap.
+    35,129 functions; data 24.2 to 26.5 MB). Optimised, it measured
+    59,360,734 bytes of the 67,108,864-byte (64 MiB) cap in CI
+    (`admission.opt.wasm: 59360734 bytes`, E2E run 38146905191).
 - `jobs/scale` is served (`apiserver-registry/zz_generated_resources.go`),
   which upstream does not serve; it came in with 86c0c1a.
 - Implemented with no CI check: protobuf bodies (the e2e client is pinned
