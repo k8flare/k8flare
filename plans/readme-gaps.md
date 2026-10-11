@@ -2291,12 +2291,32 @@ Decided on 2026-10-01, with the owner:
     where `refill` would add, update and delete nothing; every request of
     the spec shows `refill=0` on `ci/batch24` too). Seen in both failures
     and in none of the passes: the chunking spec's namespace being deleted
-    across the spec. `clearCore` deletes its 400 pod templates with one
+    across the spec. `clearCore` deleted its 400 pod templates with one
     DELETE each, and two deleter passes overlapped on them (400 answered
     200, 389 and 436 answered 404; 19:33:14 to 19:36:27 and 20:54:15 to
     20:57:14); in the passes it ran before or after the spec. It is not the
     whole cause: 37594852228 failed without it, and while it ran the p50
-    of built-in requests rose only from about 0.05 s to 0.08 to 0.10 s. Not
+    of built-in requests rose only from about 0.05 s to 0.08 to 0.10 s.
+    Changed since: `clearCore` and its content check are gone and upstream's
+    deleter empties the namespace on its own (pods first, one
+    delete-collection per type that holds content); on the host a
+    namespace of 10 or 400 pod templates takes 54 requests either way, 125
+    and 515 before
+    (`TestDeleteTerminatingSendsAsManyRequestsForFourHundredObjectsAsForTen`).
+    Pods are now deleted with their grace period, as upstream does, not
+    with grace 0. The overlap came from the queue: every deletion in a
+    terminating namespace sends an accounts message, and in wrangler dev a
+    batch that fills to 100 is dispatched while the last one still runs
+    (miniflare has no `max_concurrency`); b25 shard 5 ran 8 messages
+    19:33:11 to 19:34:13 and 100 messages 19:33:36 to 19:34:39. A
+    delete-collection still deletes object by object on the server, so the
+    messages remain; the deleter now claims a namespace for its pass and a
+    second pass reports it remaining on its backoff
+    (`TestDeleteTerminatingLeavesANamespaceToThePassAlreadyDeletingIt`).
+    The claim lives in the Go instance; the loaded worker is keyed by the
+    calling isolate, so it covers passes from one control-plane isolate
+    (read from `loader-kit`, not observed) and not passes from two. Not
+    yet run in Conformance. Not
     established: where a conversion call spends its second or more. The
     webhook answers in under 1 ms, and a Go TLS handshake costs about 9 ms
     of client CPU in js/wasm (measured under node); each call reads the
