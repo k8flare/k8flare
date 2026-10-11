@@ -3,11 +3,13 @@ package apiserver
 import (
 	"net/http"
 
+	"github.com/k8flare/k8flare/packages/apiserver-autoscaling/storageconv"
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
 )
 
 func installStorageMigrate(mux *http.ServeMux, client *kine.Client) {
+	storageconv.Install()
 	mux.HandleFunc("GET /internal/storage-migrate/status", adminOnly(func(w http.ResponseWriter, r *http.Request) {
 		resources, err := registry.StoredResources()
 		if err != nil {
