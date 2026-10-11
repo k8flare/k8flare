@@ -48,8 +48,7 @@ Decided on 2026-10-01, with the owner:
 - `jobs/scale` is served (`apiserver-registry/zz_generated_resources.go`),
   which upstream does not serve; it came in with 86c0c1a.
 - Implemented with no CI check: protobuf bodies (the e2e client is pinned
-  to JSON, `scripts/e2e/conformance.go`), Table output, `sendInitialEvents`,
-  CRD `x-kubernetes-validations`, custom resource `/status` and `/scale`.
+  to JSON, `scripts/e2e/conformance.go`), Table output, `sendInitialEvents`.
   `unit.yml` skips the tests that would cover several of these because they
   need a running cluster: TestAdmissionExtensions, TestCompaction,
   TestConfigMapVerbs, TestControllers, TestCustomResources,
