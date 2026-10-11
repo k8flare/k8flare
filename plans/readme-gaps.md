@@ -320,12 +320,19 @@ Decided on 2026-10-01, with the owner:
   authorization. Failed API responses include Status fields; forwarded
   JSON/protobuf Status bodies are decoded up to 1 MiB, with larger or
   non-Status errors retaining only the HTTP code. Authentication failure
-  details survive in `k8flare.com/authentication-failure`. Not yet:
-  - Request and RequestResponse levels behave as Metadata; bodies and
-    upstream's `omitManagedFields` need the group workers, which run the
-    REST handlers, to log objects.
+  details survive in `k8flare.com/authentication-failure`. At Request and
+  RequestResponse the front passes the level and `omitManagedFields` to the
+  group and custom resource workers, whose upstream REST handlers log
+  `requestObject` and `responseObject`; the objects come back base64-encoded
+  in internal response headers that the front strips
+  (`apiserver/audit_test.go` drives a create and a patch through the core
+  group handler, `customresources/audit_test.go` a CRD create). Not yet:
+  - `objectRef` lacks the name, UID and resourceVersion that upstream's
+    `LogRequestObject` copies from the request object (a create's event has
+    no name).
   - Not run in a deployed Worker: `tail()` must relay the lines to
-    Workers Logs.
+    Workers Logs, and the object headers have not crossed the Worker Loader
+    boundary, so a size limit on response headers there is untested.
 - Upgrades: storage migration follows upstream's default at 1.36 (the
   `storagemigration.k8s.io` API and its controller are off by default;
   the deployed binary re-encodes an object the next time it is written),
