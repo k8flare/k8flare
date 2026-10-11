@@ -486,8 +486,8 @@ func TestSyncWithinAnswersBusyInsteadOfBlocking(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a busy sync should answer, not fail: %v", err)
 	}
-	if result == nil || result.NextMs == 0 {
-		t.Fatalf("a busy sync should ask to be retried, got %+v", result)
+	if result == nil || result.NextMs == 0 || !result.Busy {
+		t.Fatalf("a busy sync should say so and ask to be retried, got %+v", result)
 	}
 	if waited := time.Since(started); waited > 3*time.Second {
 		t.Fatalf("waited %s for a lock another pass holds; the caller would have given up", waited)

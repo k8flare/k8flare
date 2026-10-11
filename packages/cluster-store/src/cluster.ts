@@ -39,8 +39,8 @@ const SCHEDULER_VOLUME_PREFIXES = ["/registry/persistentvolumeclaims/", "/regist
 
 export type QueueMessage =
   | { kind: "change"; key: string; type: string; rev: number }
-  | { kind: "lease-check"; node: string }
-  | { kind: "retry"; attempt?: number; changed?: string[]; names?: string[] };
+  | { kind: "lease-check"; node: string; failures?: number }
+  | { kind: "retry"; attempt?: number; changed?: string[]; names?: string[]; failures?: number };
 
 type Deferred = Extract<QueueMessage, { kind: "retry" | "lease-check" }>;
 
@@ -270,9 +270,9 @@ export class Cluster extends DurableObject<Env> {
         return Response.json({ ok: true });
       }
       case "POST /lease-check": {
-        const body = (await request.json()) as { node: string; delayMs: number };
+        const body = (await request.json()) as { node: string; delayMs: number; failures?: number };
         if (!body.node) return new Response("missing node", { status: 400 });
-        this.book("leases", { kind: "lease-check", node: body.node }, Date.now() + Math.max(0, body.delayMs ?? 0));
+        this.book("leases", { kind: "lease-check", node: body.node, failures: body.failures }, Date.now() + Math.max(0, body.delayMs ?? 0));
         await this.armAlarm();
         return Response.json({ ok: true });
       }
@@ -297,9 +297,9 @@ export class Cluster extends DurableObject<Env> {
         return Response.json({ revision: this.insert(body.key, 1, cur.value, cur) });
       }
       case "POST /enqueue": {
-        const body = (await request.json()) as { target: Target; delayMs: number; attempt?: number; changed?: string[]; names?: string[] };
+        const body = (await request.json()) as { target: Target; delayMs: number; attempt?: number; changed?: string[]; names?: string[]; failures?: number };
         if (!targets.includes(body.target)) return new Response("unknown target", { status: 400 });
-        this.book(body.target, { kind: "retry", attempt: body.attempt, changed: body.changed, names: body.names }, Date.now() + Math.max(0, body.delayMs ?? 0));
+        this.book(body.target, { kind: "retry", attempt: body.attempt, changed: body.changed, names: body.names, failures: body.failures }, Date.now() + Math.max(0, body.delayMs ?? 0));
         await this.armAlarm();
         return Response.json({ ok: true });
       }
@@ -559,11 +559,17 @@ export class Cluster extends DurableObject<Env> {
   }
 
   private book(target: string, body: Deferred, due: number, replace = false): void {
+    const key = deadlineKey(target, body);
+    if (body.failures) {
+      const prior = this.ctx.storage.sql.exec("SELECT body FROM deadlines WHERE key = ?", key).toArray();
+      const priorFailures = prior.length === 0 ? 0 : ((JSON.parse(prior[0].body as string) as Deferred).failures ?? 0);
+      body = { ...body, failures: Math.max(body.failures, priorFailures) };
+    }
     this.ctx.storage.sql.exec(
       `INSERT INTO deadlines (key, target, due, body) VALUES (?1, ?2, ?3, ?4)
        ON CONFLICT(key) DO UPDATE SET body = excluded.body,
          due = CASE WHEN ?6 = 1 OR deadlines.due <= ?5 THEN excluded.due ELSE MIN(deadlines.due, excluded.due) END`,
-      deadlineKey(target, body),
+      key,
       target,
       due,
       JSON.stringify(body),

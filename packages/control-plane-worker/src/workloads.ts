@@ -7,6 +7,7 @@ export interface SyncResult {
   objects: Record<string, number>;
   drained: boolean;
   nextMs: number;
+  busy?: boolean;
 }
 
 export interface NodeHealthResult {
@@ -65,6 +66,7 @@ export class Workloads extends WorkerEntrypoint<Env> {
     return results.reduce((acc, r) => ({
       objects: { ...acc.objects, ...r.objects },
       drained: acc.drained || r.drained,
+      busy: acc.busy || r.busy,
       nextMs: acc.nextMs === 0 ? r.nextMs : r.nextMs === 0 ? acc.nextMs : Math.min(acc.nextMs, r.nextMs),
     }));
   }

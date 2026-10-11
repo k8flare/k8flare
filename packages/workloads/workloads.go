@@ -76,6 +76,7 @@ type Result struct {
 	Drained bool           `json:"drained"`
 	NextMs  int64          `json:"nextMs"`
 	Live    bool           `json:"live"`
+	Busy    bool           `json:"busy,omitempty"`
 }
 
 type pageFunc func(context.Context, metav1.ListOptions) (runtime.Object, error)
@@ -390,7 +391,7 @@ func SyncWithin(ctx context.Context, client kubernetes.Interface, rootCA, signin
 	locked, handed := lockSync(ctx, budget, changed)
 	if !locked {
 		if !finished(handed) {
-			return &Result{Objects: map[string]int{}, NextMs: int64(syncBusyRetry / time.Millisecond)}, nil
+			return &Result{Objects: map[string]int{}, NextMs: int64(syncBusyRetry / time.Millisecond), Busy: true}, nil
 		}
 		result := handed.result
 		if needsFollowUp(controllers) && !result.Live {
