@@ -31,14 +31,23 @@ RBAC. `READONLY_TOKEN` is an authenticated user with no privileged group;
 it only sees what RBAC grants. There is no per-tenant vault.
 
 **Inner Workers do not hold `ADMIN_TOKEN`.** The front derives one token per
-component (`component:<name>:<HMAC-SHA256 of the name keyed by ADMIN_TOKEN>`)
-and loads each component with only its own. The scheduler authenticates as
+component (`component:<name>:<HMAC-SHA256 of the name>`) keyed by a random
+key it creates in the Cluster Durable Object on first use
+(`/vault/component-key`). That key is not accepted as a bearer token and
+needs no configuration. Each component gets only its own token. The scheduler authenticates as
 `system:kube-scheduler`; the garbage collector, HPA and attach/detach
 controllers as their upstream `kube-system` ServiceAccounts, so RBAC gives them
-the upstream `system:controller:*` roles and nothing more. Workloads, addons,
-admission and the webhook echo worker still run in `system:masters` under their
-own identities. Requests without credentials are `system:anonymous`, and RBAC
-decides what they see.
+the upstream `system:controller:*` roles and nothing more. The queue consumers
+authenticate as `system:k8flare:queues` and the Pod-on-Containers node code as
+`system:k8flare:nodes`; RBAC lets them call only the internal endpoints they
+use, and the node code read Pods and Nodes, update Pods and delete Nodes.
+Workloads, addons, admission, the webhook echo worker, the Pod kubelet and the
+node tunnel still run in `system:masters` under their own identities. Group
+workers get only the SHA-256 of `ADMIN_TOKEN`, to recognise it in a
+TokenReview; only the front and the apiserver Worker hold the token itself.
+Workers bound to `Storage` can still read `/vault/tokens/admin` and
+`/vault/component-key` from the store. Requests without credentials are
+`system:anonymous`, and RBAC decides what they see.
 
 **`JOIN_TOKEN` is nearly as powerful as admin for join.** It unlocks
 `/v1-k3s/*` (except `/v1-k3s/connect`). Kubelet CSRs require a registered

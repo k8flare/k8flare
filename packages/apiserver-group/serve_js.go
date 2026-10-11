@@ -36,12 +36,12 @@ func Serve(groupVersion string) {
 	}
 	kubelet := registry.KubeletProxy{Transport: bridge.BindingTransport{Name: "TUNNEL"}, Base: "https://nodetunnel.internal"}
 	handler, err := NewHandler(gv, Config{
-		Kine:          &http.Client{Transport: bridge.BindingTransport{Name: "STORAGE"}},
-		AdminToken:    bridge.Getenv("ADMIN_TOKEN"),
-		ReadonlyToken: bridge.Getenv("READONLY_TOKEN"),
-		Kubelet:       kubelet,
-		Admission:     &http.Client{Transport: bridge.BindingTransport{Name: "ADMISSION"}},
-		Hooks:         &http.Client{Transport: bridge.BindingTransport{Name: "HOOKS"}},
+		Kine:             &http.Client{Transport: bridge.BindingTransport{Name: "STORAGE"}},
+		AdminTokenSHA256: bridge.Getenv("ADMIN_TOKEN_SHA256"),
+		ReadonlyToken:    bridge.Getenv("READONLY_TOKEN"),
+		Kubelet:          kubelet,
+		Admission:        &http.Client{Transport: bridge.BindingTransport{Name: "ADMISSION"}},
+		Hooks:            &http.Client{Transport: bridge.BindingTransport{Name: "HOOKS"}},
 
 		SecretsEncryptionKeys: bridge.Getenv("SECRETS_ENCRYPTION_KEYS"),
 	})

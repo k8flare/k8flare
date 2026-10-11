@@ -4,6 +4,7 @@ import { apiserverFetch } from "./loader.ts";
 import { clusterStub } from "./clusterid.ts";
 import { deployAddons, reconcileHelm } from "./addons.ts";
 import { wakePodKubelets } from "./podkubelet/wake.ts";
+import { componentToken } from "./componenttoken.ts";
 
 type Target = "scheduler" | "leases" | "workloads" | "crds" | "gc" | "accounts" | "extensions" | "containers" | "attachdetach" | "addons" | "hpa";
 
@@ -38,7 +39,7 @@ function targetOf(queueName: string): Target | null {
 async function followUp(env: Env, body: Record<string, unknown>): Promise<{ sends: FollowSend[]; stop: boolean }> {
   const resp = await apiserverFetch(env, new Request("https://apiserver.internal/internal/queue/followup", {
     method: "POST",
-    headers: { Authorization: `Bearer ${env.ADMIN_TOKEN}`, "Content-Type": "application/json" },
+    headers: { Authorization: `Bearer ${await componentToken(env, "queues")}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
   }));
   if (!resp.ok) return { sends: [], stop: false };
@@ -119,7 +120,7 @@ async function consumeScheduler(batch: MessageBatch<QueueMessage>, env: Env): Pr
 async function queuePlan(env: Env, messages: readonly QueueMessage[]): Promise<{ resources: string[]; serviceKeys: string[]; gatewayKeys: string[] } | null> {
   const resp = await apiserverFetch(env, new Request("https://apiserver.internal/internal/queue/plan", {
     method: "POST",
-    headers: { Authorization: `Bearer ${env.ADMIN_TOKEN}`, "Content-Type": "application/json" },
+    headers: { Authorization: `Bearer ${await componentToken(env, "queues")}`, "Content-Type": "application/json" },
     body: JSON.stringify({ messages }),
   }));
   if (!resp.ok) return null;
@@ -153,7 +154,7 @@ async function consumeWorkloadsInner(batch: MessageBatch<QueueMessage>, env: Env
   if (plan.serviceKeys.length > 0) {
     const resp = await apiserverFetch(env, new Request("https://apiserver.internal/internal/loadbalancer/provision", {
       method: "POST",
-      headers: { Authorization: `Bearer ${env.ADMIN_TOKEN}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${await componentToken(env, "queues")}`, "Content-Type": "application/json" },
       body: JSON.stringify({ keys: plan.serviceKeys }),
     }));
     if (!resp.ok) provisionFailed = true;
@@ -161,7 +162,7 @@ async function consumeWorkloadsInner(batch: MessageBatch<QueueMessage>, env: Env
   if (plan.gatewayKeys.length > 0) {
     const resp = await apiserverFetch(env, new Request("https://apiserver.internal/internal/gateway/provision", {
       method: "POST",
-      headers: { Authorization: `Bearer ${env.ADMIN_TOKEN}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${await componentToken(env, "queues")}`, "Content-Type": "application/json" },
       body: JSON.stringify({ keys: plan.gatewayKeys }),
     }));
     if (!resp.ok) provisionFailed = true;
@@ -219,7 +220,7 @@ async function consumeHPA(batch: MessageBatch<QueueMessage>, env: Env): Promise<
   try {
     await apiserverFetch(env, new Request("https://apiserver.internal/internal/metrics/scrape", {
       method: "POST",
-      headers: { Authorization: `Bearer ${env.ADMIN_TOKEN}` },
+      headers: { Authorization: `Bearer ${await componentToken(env, "queues")}` },
     }));
   } catch (err) {
     console.log(`hpa: metrics scrape threw ${err}`);
@@ -298,7 +299,7 @@ async function consumeAccounts(batch: MessageBatch<QueueMessage>, env: Env): Pro
 async function consumeExtensions(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
   const resp = await apiserverFetch(env, new Request("https://apiserver.internal/internal/extensions/dispatch", {
     method: "POST",
-    headers: { Authorization: `Bearer ${env.ADMIN_TOKEN}`, "Content-Type": "application/json" },
+    headers: { Authorization: `Bearer ${await componentToken(env, "queues")}`, "Content-Type": "application/json" },
     body: JSON.stringify({ messages: batch.messages.map((m) => m.body) }),
   }));
   await applySends(env, (await followUp(env, { target: "extensions", ok: resp.ok })).sends);
@@ -361,7 +362,7 @@ async function dispatch(batch: MessageBatch<QueueMessage>, env: Env, target: Tar
 async function migrateStorage(env: Env): Promise<{ done: boolean; rewritten: number; pending: string[] } | null> {
   const resp = await apiserverFetch(env, new Request("https://apiserver.internal/internal/storage-migrate", {
     method: "POST",
-    headers: { Authorization: `Bearer ${env.ADMIN_TOKEN}` },
+    headers: { Authorization: `Bearer ${await componentToken(env, "addons")}` },
   }));
   if (!resp.ok) return null;
   return resp.json() as Promise<{ done: boolean; rewritten: number; pending: string[] }>;

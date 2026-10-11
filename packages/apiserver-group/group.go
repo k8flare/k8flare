@@ -15,12 +15,12 @@ import (
 )
 
 type Config struct {
-	Kine          *http.Client
-	AdminToken    string
-	ReadonlyToken string
-	Kubelet       registry.KubeletProxy
-	Admission     *http.Client
-	Hooks         *http.Client
+	Kine             *http.Client
+	AdminTokenSHA256 string
+	ReadonlyToken    string
+	Kubelet          registry.KubeletProxy
+	Admission        *http.Client
+	Hooks            *http.Client
 
 	SecretsEncryptionKeys string
 }
@@ -34,11 +34,11 @@ func NewHandler(gv schema.GroupVersion, cfg Config) (http.Handler, error) {
 	vault := supervisor.NewVault(client)
 	deps := registry.Deps{
 		Kine:      client,
-		Tokens:    auth.WithAuthenticatedGroup(union.New(auth.AdminToken(cfg.AdminToken), auth.ReadonlyToken(cfg.ReadonlyToken), auth.VaultToken{Vault: vault}, auth.NodeToken{Vault: vault}, auth.ServiceAccountToken{HMAC: []byte(cfg.AdminToken), Objects: auth.NewServiceAccountObjects(auth.KineObjects{Client: client})})),
+		Tokens:    auth.WithAuthenticatedGroup(union.New(auth.AdminTokenSHA256(cfg.AdminTokenSHA256), auth.ReadonlyToken(cfg.ReadonlyToken), auth.VaultToken{Vault: vault}, auth.NodeToken{Vault: vault}, auth.ServiceAccountToken{HMAC: []byte(cfg.AdminTokenSHA256), Objects: auth.NewServiceAccountObjects(auth.KineObjects{Client: client})})),
 		Kubelet:   cfg.Kubelet,
 		Admission: cfg.Admission,
 		Hooks:     cfg.Hooks,
-		TokenHMAC: []byte(cfg.AdminToken),
+		TokenHMAC: []byte(cfg.AdminTokenSHA256),
 	}
 	mux := http.NewServeMux()
 	installed, err := installer.Install(mux, deps, servedFor(gv)...)
@@ -53,7 +53,7 @@ func NewHandler(gv schema.GroupVersion, cfg Config) (http.Handler, error) {
 	var ready atomic.Bool
 	return filters.WithRequestReceivedTimestamp(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !ready.Load() {
-			if err := auth.InstallServiceAccountKey(r.Context(), client, []byte(cfg.AdminToken)); err == nil {
+			if err := auth.InstallServiceAccountKey(r.Context(), client, []byte(cfg.AdminTokenSHA256)); err == nil {
 				ready.Store(true)
 			}
 		}

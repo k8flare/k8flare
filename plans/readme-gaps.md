@@ -425,22 +425,34 @@ Decided on 2026-10-01, with the owner:
   - Access groups come from the token's `custom.<ACCESS_GROUPS_CLAIM>`;
     the IdP must send them, and Access trims `custom` above about 1 KB.
     `get-identity` is not used.
-- Internal Workers no longer hold `ADMIN_TOKEN`; the front derives a
-  token per component. The scheduler, GC, HPA and attach/detach run as
-  their upstream identities. Still open:
-  - Workloads, addons, admission and hookecho run in `system:masters`
-    under their own identities, because workloads runs many controllers
-    and addons applies arbitrary manifests.
-  - Workers that hold the `STORAGE` binding (GC, workloads, admission)
-    read and write the datastore without RBAC.
-  - Group workers, CustomResources and the queue consumers still use
-    `ADMIN_TOKEN` or trust `X-Remote-User` from the front.
+- No internal caller sends `ADMIN_TOKEN`. The front derives a token per
+  component from a random key it creates in the Cluster Durable Object
+  (`/vault/component-key`, read by the apiserver through kine); nothing
+  accepts that key as a bearer and the operator configures nothing. The
+  scheduler, GC, HPA and attach/detach run as their upstream identities;
+  the queue consumers as `system:k8flare:queues` and the Pod-on-Containers
+  node code (`nodes/client.ts`, the R2 mint) as `system:k8flare:nodes`,
+  each with a bootstrap ClusterRole for only what they call
+  (`apiserver-authz/components.go`; authorizer-only, not stored as
+  objects). Group workers get the SHA-256 of `ADMIN_TOKEN` for TokenReview.
+  The `Metrics` entrypoint no longer adds the admin token; nothing binds
+  `METRICS` today. Unit tests cover each call site and the RBAC decisions
+  in-process; only the E2E job runs them against a live cluster. Still open:
+  - Workloads, addons, admission, hookecho, the Pod kubelet and the node
+    tunnel run in `system:masters` under their own identities: workloads
+    runs many controllers, addons applies arbitrary manifests and runs the
+    storage migration (`system:masters`-only), and the node tunnel is
+    issued a `system:masters` kubelet client certificate anyway.
+  - Workers that hold the `STORAGE` binding (GC, workloads, admission,
+    group workers, CustomResources) read and write the datastore without
+    RBAC, including `/vault/tokens/admin` (the admin token, in plaintext)
+    and `/vault/component-key`.
+  - Group workers and CustomResources trust `X-Remote-User` from the front.
   - `hpa-worker` and `attachdetach-worker` need the front deployed first
     (new `HPAAPIServer` and `AttachDetachAPIServer` entrypoints).
-  - A component token is an HMAC of `ADMIN_TOKEN`
-    (`control-plane-worker/src/componenttoken.ts`), so the identities share
-    one secret. node-tunnel, the metrics entrypoint and the nodes client
-    send `ADMIN_TOKEN` itself.
+  - Both sides cache the component key per isolate. A point-in-time
+    restore of the Cluster Durable Object to before the key existed leaves
+    running isolates on the old key until they are recycled.
 - Rate limiting is max-in-flight only (`MAX_REQUESTS_INFLIGHT`,
   `MAX_MUTATING_REQUESTS_INFLIGHT`, 400 and 200, watches and streams
   exempt, `system:masters` served when full). The count is per isolate,

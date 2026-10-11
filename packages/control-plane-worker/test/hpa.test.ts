@@ -18,7 +18,6 @@ test("a message on the HPA queue scrapes metrics, calls the HPA controller entry
   const followUps: Record<string, unknown>[] = [];
   const passes: string[] = [];
   const env = {
-    ADMIN_TOKEN: "admin-test-token",
     HPA: {
       sync: async () => {
         synced = true;

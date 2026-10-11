@@ -12,16 +12,13 @@
 // architecture.md and the apidef/table.go research this file's callers were
 // designed against.
 import { apiserverFetch } from "../loader.ts";
-
-function getToken(env: Env): string {
-  return env.ADMIN_TOKEN;
-}
+import { componentToken } from "../componenttoken.ts";
 
 // Post-consolidation this goes straight to the apiserver dynamic worker
 // (loader/apiserver.ts), not through the public routing.
 async function apiFetch(env: Env, path: string, init?: RequestInit): Promise<Response> {
   const headers = new Headers(init?.headers);
-  headers.set("Authorization", `Bearer ${getToken(env)}`);
+  headers.set("Authorization", `Bearer ${await componentToken(env, "nodes")}`);
   if (init?.body && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }

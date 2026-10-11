@@ -2,7 +2,9 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"fmt"
 	supervisor "github.com/k8flare/k8flare/packages/apiserver-supervisor"
 	"net/http"
@@ -26,6 +28,16 @@ type AdminToken string
 
 func (t AdminToken) AuthenticateToken(_ context.Context, token string) (*authenticator.Response, bool, error) {
 	if t == "" || subtle.ConstantTimeCompare([]byte(token), []byte(t)) != 1 {
+		return nil, false, nil
+	}
+	return &authenticator.Response{User: &user.DefaultInfo{Name: "admin", Groups: []string{user.SystemPrivilegedGroup, user.AllAuthenticated}}}, true, nil
+}
+
+type AdminTokenSHA256 string
+
+func (t AdminTokenSHA256) AuthenticateToken(_ context.Context, token string) (*authenticator.Response, bool, error) {
+	sum := sha256.Sum256([]byte(token))
+	if t == "" || token == "" || subtle.ConstantTimeCompare([]byte(hex.EncodeToString(sum[:])), []byte(t)) != 1 {
 		return nil, false, nil
 	}
 	return &authenticator.Response{User: &user.DefaultInfo{Name: "admin", Groups: []string{user.SystemPrivilegedGroup, user.AllAuthenticated}}}, true, nil
