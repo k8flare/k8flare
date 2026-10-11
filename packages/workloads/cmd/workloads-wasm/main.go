@@ -48,7 +48,7 @@ func main() {
 	bridge.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/namespaces" {
 			if deleter == nil {
-				deleter = workloads.NewDeleter(r.Context(), client, metadataClient)
+				deleter = workloads.NewDeleter(client, metadataClient)
 			}
 			var req struct {
 				Messages []workloads.NamespaceMessage `json:"messages"`
