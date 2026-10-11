@@ -13,6 +13,7 @@ const MAX_RETAINED_REVISIONS = 100_000;
 const COMPACT_SLACK_REVISIONS = 10_000;
 const PROGRESS_INTERVAL_MS = 30_000;
 const SNAPSHOT_RETRY_MS = 600_000;
+const PITR_WINDOW_MS = 30 * 86_400_000;
 const COMPACT_BATCH = 200;
 const WATCH_LEASE_MS = 360_000;
 const NODE_LEASE_PREFIX = "/registry/leases/kube-node-lease/";
@@ -330,6 +331,7 @@ export class Cluster extends DurableObject<Env> {
       case "POST /restore": {
         const at = parseRestoreTime(url.searchParams.get("to") ?? "");
         if (at === null) return new Response("invalid to", { status: 400 });
+        if (at < Date.now() - PITR_WINDOW_MS) return new Response("to is more than 30 days ago", { status: 400 });
         const bookmark = await this.ctx.storage.getBookmarkForTime(at);
         await this.ctx.storage.onNextSessionRestoreBookmark(bookmark);
         return Response.json({ ok: true, bookmark, to: new Date(at).toISOString() });
