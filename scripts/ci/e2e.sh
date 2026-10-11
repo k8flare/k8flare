@@ -143,6 +143,120 @@ netpol_settled() {
   [ "$(grep -lsE 'Starting network policy controller version|Skipping network policy controller start' "$LOGS"/agent*.log | wc -l)" -ge "$NODES" ]
 }
 
+node_metrics_served() {
+  local body node
+  body=$(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s get --raw /apis/metrics.k8s.io/v1beta1/nodes) || return 1
+  for node in $(node_names); do
+    if ! jq -e --arg node "$node" 'any(.items[]; .metadata.name == $node and (.usage.cpu | rtrimstr("n") | tonumber) > 0 and (.usage.memory | tonumber) > 0)' <<<"$body" >/dev/null; then
+      echo "metrics.k8s.io has no CPU and memory usage for node $node: $body"
+      return 1
+    fi
+  done
+}
+
+pod_metrics_served() {
+  local running body
+  running=$(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s get pods -A --field-selector status.phase=Running -o json |
+    jq -c '[.items[] | .metadata.namespace + "/" + .metadata.name]') || return 1
+  body=$(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s get --raw /apis/metrics.k8s.io/v1beta1/pods) || return 1
+  if ! jq -e --argjson running "$running" 'any(.items[]; (.metadata.namespace + "/" + .metadata.name) as $pod | ($running | any(. == $pod)) and any(.containers[]; (.usage.memory | tonumber) > 0))' <<<"$body" >/dev/null; then
+    echo "metrics.k8s.io has memory usage for none of the running pods $running: $body"
+    return 1
+  fi
+}
+
+metrics_served() {
+  wait_for "node usage in metrics.k8s.io" 24 5 node_metrics_served
+  wait_for "pod usage in metrics.k8s.io" 24 5 pod_metrics_served
+  kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s top node
+}
+
+claim_state() {
+  kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s -n ci-volume get pvc data \
+    -o jsonpath='{.status.phase} volumeName={.spec.volumeName} storage-provisioner={.metadata.annotations.volume\.kubernetes\.io/storage-provisioner} selected-node={.metadata.annotations.volume\.kubernetes\.io/selected-node}'
+}
+
+claim_waits() {
+  local state
+  for _ in $(seq 1 6); do
+    state=$(claim_state) || return 1
+    if [ "$state" != "Pending volumeName= storage-provisioner= selected-node=" ]; then
+      echo "the WaitForFirstConsumer claim ci-volume/data moved before any pod used it: $state" >&2
+      return 1
+    fi
+    sleep 5
+  done
+  echo "the WaitForFirstConsumer claim ci-volume/data stayed unbound for 30s with no pod: $state"
+}
+
+volume_pod_ready() {
+  [ "$(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s -n ci-volume get pod writer -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')" = True ]
+}
+
+claim_bound_to_pod_node() {
+  local state node want
+  state=$(claim_state) || return 1
+  node=$(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s -n ci-volume get pod writer -o jsonpath='{.spec.nodeName}') || return 1
+  want="Bound volumeName=?* storage-provisioner=rancher.io/local-path selected-node=$node"
+  if [ -z "$node" ] || [[ $state != $want ]]; then
+    echo "the claim ci-volume/data is '$state' while its pod runs on '$node'"
+    return 1
+  fi
+  echo "the claim ci-volume/data is $state, the pod writer runs there and wrote to it"
+}
+
+volume_bound_on_first_consumer() {
+  local -a k=(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s)
+  local mode
+  mode=$("${k[@]}" get storageclass local-path -o jsonpath='{.volumeBindingMode}')
+  if [ "$mode" != WaitForFirstConsumer ]; then
+    echo "the local-path StorageClass binds '$mode', want WaitForFirstConsumer" >&2
+    return 1
+  fi
+  "${k[@]}" create namespace ci-volume
+  "${k[@]}" apply -f - <<'EOF'
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data
+  namespace: ci-volume
+spec:
+  storageClassName: local-path
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 16Mi
+EOF
+  claim_waits
+  "${k[@]}" apply -f - <<'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: writer
+  namespace: ci-volume
+spec:
+  terminationGracePeriodSeconds: 1
+  containers:
+  - name: writer
+    image: rancher/mirrored-library-busybox:1.37.0
+    command: [sh, -c, 'echo k8flare > /data/probe && exec sleep 3600']
+    readinessProbe:
+      exec:
+        command: [grep, -qx, k8flare, /data/probe]
+      periodSeconds: 2
+    volumeMounts:
+    - name: data
+      mountPath: /data
+  volumes:
+  - name: data
+    persistentVolumeClaim:
+      claimName: data
+EOF
+  wait_for "the pod writer to write to its claim" 60 5 volume_pod_ready
+  claim_bound_to_pod_node
+  "${k[@]}" delete namespace ci-volume --wait=false
+}
+
 write_accepted() {
   kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s create namespace ci-writecheck &&
     kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s delete namespace ci-writecheck --wait=false
@@ -350,6 +464,8 @@ up() {
   fi
   kubectl --kubeconfig "$KUBECONFIG_PATH" get nodes -o wide
   node_cost
+  metrics_served
+  volume_bound_on_first_consumer
 }
 
 node_cost() {
@@ -412,6 +528,14 @@ join_evidence() {
   "${k[@]}" get events -A --sort-by=.lastTimestamp || true
   "${k[@]}" -n kube-system describe ds k8flare-node-proxy || true
   "${k[@]}" -n kube-system logs -l k8s-app=k8flare-node-proxy --all-containers --prefix --tail=200 || true
+  echo "::endgroup::"
+  echo "::group::metrics.k8s.io, the claim, its volume and local-path"
+  "${k[@]}" get --raw /apis/metrics.k8s.io/v1beta1/nodes || true
+  "${k[@]}" get --raw /apis/metrics.k8s.io/v1beta1/pods || true
+  "${k[@]}" get storageclass,pv -o wide || true
+  "${k[@]}" -n ci-volume describe pvc,pod || true
+  "${k[@]}" -n kube-system logs -l app=local-path-provisioner --tail=200 || true
+  grep -E 'metrics|hpa:' "$LOGS/dev.log" | tail -n 100 || true
   echo "::endgroup::"
   exit "$status"
 }
