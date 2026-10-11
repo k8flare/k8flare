@@ -2268,6 +2268,49 @@ Decided on 2026-10-01, with the owner:
     foreground owner with Foreground even when the dependent has no
     dependents (upstream does that only when it has some), so each pod
     gets a finalizer that a second round of 100 PATCHes removes.
+  - CustomResourceFieldSelectors on `ci/batch25` (failed 2 of 3) and
+    `ci/batch26` (1 of 2), after passing 4 of 4 on `ci/batch23` and 1 of 1
+    on `ci/batch24`: the same failure as 37594852228 above, not a new one.
+    The informers get 30 s from registration (`crd_selectable_fields.go:172`);
+    the DeleteCollection answered 29.9 s (b25 shard 5) and 30.4 s (b26)
+    after it and the update 40.0 s and 37.4 s after it, so the
+    `host=host1` informer stopped before either DELETED reached it. The
+    three plain watches had both DELETED events (line 303 began 6 ms after
+    291), so nothing was dropped. In the passes the update was done 9.7 s
+    (b26), 16.9 s (b24) and 7.3 s (b23) after registration. The time is in
+    the requests that convert through the webhook: v1 lists took 0.3 to
+    0.6 s, v2 lists 2.4 to 5.6 s and the DeleteCollection 6.9 s and 9.8 s,
+    against 1.2 to 2.5 s and 2.1 s in the b26 pass and 0.03 to 0.6 s and
+    0.9 s in b23; 37594852228, which had neither the Gateway API CRDs nor
+    the namespace probes nor the decode skip, had 6.0 s and 7.8 s. Ruled
+    out: the namespace probes (5 and 2 of this CRD in the window, 0.3 to
+    0.6 s each, all in empty namespaces, where the converter returns
+    without calling the webhook, `webhook_converter.go:258`; 34 and 12
+    probes of all custom types against 24 in the b26 pass), and the decode
+    skip (`settled` only holds when every revision matches the indexer,
+    where `refill` would add, update and delete nothing; every request of
+    the spec shows `refill=0` on `ci/batch24` too). Seen in both failures
+    and in none of the passes: the chunking spec's namespace being deleted
+    across the spec. `clearCore` deletes its 400 pod templates with one
+    DELETE each, and two deleter passes overlapped on them (400 answered
+    200, 389 and 436 answered 404; 19:33:14 to 19:36:27 and 20:54:15 to
+    20:57:14); in the passes it ran before or after the spec. It is not the
+    whole cause: 37594852228 failed without it, and while it ran the p50
+    of built-in requests rose only from about 0.05 s to 0.08 to 0.10 s. Not
+    established: where a conversion call spends its second or more. The
+    webhook answers in under 1 ms, and a Go TLS handshake costs about 9 ms
+    of client CPU in js/wasm (measured under node); each call reads the
+    Service's Endpoints from kine, then dials through the node tunnel on a
+    new TCP and TLS connection. Each call now logs `customresources:
+    conversion <ns>/<svc> resolve <d> dial <d> status <code>` and each
+    tunnel dial `tunnel dial <node> <host:port> connect <d> tls <d>
+    exchange <d> status <code>`. To read on the next failure: the
+    conversion lines between the DeleteCollection's `front` and `crd-diag`
+    lines are its calls; if `connect`, `tls` and `exchange` add up to the
+    conversion's `dial`, the time is in the round trips to the agent and
+    reusing connections would cut it; if they are much smaller, it is
+    spent reaching the node-tunnel worker and back on the saturated main
+    thread.
 
 ## Local development
 
