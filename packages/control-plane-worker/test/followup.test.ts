@@ -83,3 +83,18 @@ test("a lease check's failure count is read from its own message and booked agai
   assert.equal(asked[0].failures, 1);
   assert.deepEqual(cluster, [{ path: "/lease-check", body: { node: "n1", delayMs: 10_000, failures: 2 } }]);
 });
+
+test("a node scheduler reconcile that answers with an error status is followed up as a failure", async () => {
+  const asked: any[] = [];
+  const env = {
+    ...envWith([], [], asked),
+    NODE_SCHED: {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: async () => new Response("unavailable", { status: 503 }) }),
+    },
+  };
+  const batch = batchOf("k8flare-containers", [{ kind: "retry", failures: 2 }]);
+  await consume(batch as any, env as any);
+  assert.equal(batch.acked, true);
+  assert.deepEqual(asked, [{ target: "containers", ok: false, nextMs: 0, failures: 2 }]);
+});
