@@ -146,9 +146,10 @@ jobs:
         run: scripts/ci/e2e.sh up
 
       - name: Run the required e2e set
-        run: scripts/ci/e2e.sh test
+        run: |
+          cp .build/ci/kubeconfig.yaml .build/kubeconfig.yaml
+          make e2e SET=required
         env:
-          SET: required
           SHARD: ${{ matrix.shard }}
           SHARDS: 3
 
@@ -224,7 +225,7 @@ jobs:
       - name: Build
         run: scripts/ci/e2e.sh build
 
-      - name: Run the wrangler-backed apiserver tests
+      - name: Run the package tests, the wrangler-backed apiserver tests among them
         shell: bash
         env:
           CGO_ENABLED: "0"
@@ -233,9 +234,7 @@ jobs:
           TMPDIR: ${{ github.workspace }}/.build/ci/tmp
         run: |
           mkdir -p .build/ci/logs .build/ci/tmp
-          go test -count=1 -timeout 70m \
-            -run '^(TestAdmissionExtensions|TestCompaction|TestConfigMapVerbs|TestControllers|TestCustomResources|TestInformerWatchList|TestOpenAPI|TestNodePodCIDRAndPodLifecycle|TestRBAC|TestScheduler|TestSchedulerWakesOnNode|TestSupervisorJoin|TestTables|TestWatch|TestWatchSelectorTransitions|TestNodeFieldSelectorDefaults)$' \
-            ./packages/apiserver/... 2>&1 | tee .build/ci/logs/live.log
+          make test-packages 2>&1 | tee .build/ci/logs/live.log
 
       - name: Upload logs
         if: failure()
@@ -245,5 +244,106 @@ jobs:
           path: |
             .build/ci/logs
             .build/ci/tmp/**/wrangler.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  local-dev:
+    needs: workers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Restore Go caches
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-linux-${{ runner.os }}-${{ hashFiles('go.sum', 'scripts/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-linux-${{ runner.os }}-${{ hashFiles('go.sum', 'scripts/go.sum') }}-
+            go-linux-${{ runner.os }}-
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 10.13.1
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install binaryen
+        run: |
+          curl -sSfL https://github.com/WebAssembly/binaryen/releases/download/version_129/binaryen-version_129-x86_64-linux.tar.gz | sudo tar xz -C /opt
+          echo /opt/binaryen-version_129/bin >> "$GITHUB_PATH"
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: workers-*
+          path: .build/wasm
+          merge-multiple: true
+
+      - name: Build
+        run: |
+          pnpm install
+          make mirrors
+          make wasm
+
+      - name: Write .dev.vars from the example
+        run: |
+          cp .dev.vars.example .dev.vars
+          sed -i \
+            -e "s|^ADMIN_TOKEN=.*|ADMIN_TOKEN=$(openssl rand -hex 32)|" \
+            -e "s|^READONLY_TOKEN=.*|READONLY_TOKEN=$(openssl rand -hex 32)|" \
+            -e "s|^JOIN_TOKEN=.*|JOIN_TOKEN=$(openssl rand -hex 32)|" \
+            -e "s|^SECRETS_ENCRYPTION_KEYS=.*|SECRETS_ENCRYPTION_KEYS=ci:$(openssl rand -base64 32)|" \
+            .dev.vars
+
+      - name: Serve wrangler dev on :18787 with make dev
+        timeout-minutes: 30
+        run: |
+          mkdir -p .build/ci/logs
+          nohup make dev < /dev/null > .build/ci/logs/dev.log 2>&1 &
+          dev=$!
+          admin=$(sed -n 's/^ADMIN_TOKEN=//p' .dev.vars)
+          until curl -sf -m 10 -o /dev/null -H "Authorization: Bearer $admin" http://127.0.0.1:18787/livez; do
+            kill -0 "$dev"
+            sleep 5
+          done
+
+      - name: Serve https://localhost:6443 with make devtls
+        timeout-minutes: 10
+        run: |
+          nohup make devtls < /dev/null > .build/ci/logs/devtls.log 2>&1 &
+          devtls=$!
+          admin=$(sed -n 's/^ADMIN_TOKEN=//p' .dev.vars)
+          until curl -sf -m 10 --cacert .build/devtls/ca.crt -o /dev/null -H "Authorization: Bearer $admin" https://localhost:6443/livez; do
+            kill -0 "$devtls"
+            sleep 2
+          done
+
+      - name: Write through the kubeconfig from make kubeconfig
+        timeout-minutes: 10
+        run: |
+          eval "$(make -s kubeconfig)"
+          test "$KUBECONFIG" = "$PWD/.build/kubeconfig.yaml"
+          until kubectl --request-timeout=15s create namespace local-dev; do
+            sleep 5
+          done
+          kubectl --request-timeout=15s delete namespace local-dev --wait=false
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: local-dev-logs
+          path: .build/ci/logs
           retention-days: 7
           if-no-files-found: ignore

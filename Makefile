@@ -225,7 +225,7 @@ node-image: mirrors
 wrangler.dev.jsonc: wrangler.jsonc
 	sed 's/^  "observability": .*/  "observability": { "enabled": false },/' $< > $@
 
-dev: wrangler.dev.jsonc
+dev: wrangler.dev.jsonc node-image
 	env -u CLAUDECODE -u AI_AGENT X_LOCAL_OBSERVABILITY=false MINIFLARE_WORKERD_V8_FLAGS=--single-threaded-gc pnpm exec wrangler dev -c wrangler.dev.jsonc --local --persist-to .wrangler/state --port 18787
 
 devtls:
@@ -255,14 +255,14 @@ manifests-notify:
 	pnpm exec wrangler r2 bucket notification create k8flare-manifests --event-type object-create object-delete --queue k8flare-addons
 
 e2e:
-	cd scripts && go run ./e2e -set $(or $(SET),required) -procs $(or $(PROCS),4)
+	cd scripts && go run ./e2e -set $(or $(SET),required) -procs $(or $(PROCS),4) -shard $(or $(SHARD),0) -shards $(or $(SHARDS),1)
 	cd scripts && go vet ./...
 
 test:
 	cd scripts && go run ./e2e -set conformance -procs $(or $(PROCS),4)
 
 test-packages: wasm
-	go test -count=1 -timeout 20m ./packages/...
+	go test -count=1 -timeout 70m ./packages/...
 
 ## sizes: print the optimised size and linked function count of every worker,
 ## against the Loader cap. Needs wasm-objdump (wabt).
