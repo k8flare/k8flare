@@ -54,13 +54,33 @@ Decided on 2026-10-01, with the owner:
   stream paths answer other upgrades with 426.
 - `apiservices` has no upstream validation either
   (`apiserver-apiregistration/hooks.go`).
-- ValidatingAdmissionPolicy is evaluated by a local cel-go environment
-  (`admission/vap.go`, `cel.go`): `params` is never bound (no `ParamRef`
-  lookup), `matchConditions` and `auditAnnotations` are not read, an
-  expression error denies whatever `failurePolicy` says, and the `Warn`
-  and `Audit` actions produce nothing. MutatingAdmissionPolicy
-  (`admission/map.go`) passes no params and uses the deduced type
-  converter, so an ApplyConfiguration is not schema-aware.
+- ValidatingAdmissionPolicy and MutatingAdmissionPolicy run upstream's
+  dispatchers (`admission/vap.go`, `map.go`, `policy.go`) over hooks built
+  per request from the store, with upstream's compilers exported by the
+  mirror: matching, `paramKind`/`paramRef` (mapped through discovery and
+  read through the API), `matchConditions`, `failurePolicy`, `Deny`,
+  `Warn` and `Audit`, `auditAnnotations`, and for MutatingAdmissionPolicy
+  upstream's OpenAPI v3 type converter, so an ApplyConfiguration merges by
+  schema. `TestValidatingAdmissionPolicyMatchesUpstream` and
+  `TestMutatingAdmissionPolicyMatchesUpstream` compare each case with
+  upstream's plugin (unit job). Warnings reach the client as `Warning`
+  headers and audit annotations reach the front's audit log, now also at
+  `Metadata` level (`TestRemoteReplaysWarningsAndAuditAnnotations`,
+  `TestAuditForwardsWorkerAnnotationsAndWarningsAtMetadata`). Left:
+  - The chain never reinvokes: a MutatingAdmissionPolicy with
+    `reinvocationPolicy: IfNeeded` is not run again after a later webhook
+    changes the object (webhook reinvocation is missing as well).
+  - `matchPolicy: Equivalent` matches only the request's own resource (the
+    equivalent-resource registry is empty), as for webhooks.
+  - Policies are evaluated twice per write, like validating webhooks (the
+    remote plugin's `check` phase); identical warnings and annotations
+    collapse, so nothing visible doubles.
+  - A write that reaches a MutatingAdmissionPolicy fetches `/openapi/v3`
+    through the front, and one whose policy has `paramKind` runs discovery.
+  - Not yet run on a live cluster or in Conformance. The admission worker
+    grows from 63,746,282 to 68,901,984 bytes unoptimised (32,073 to
+    35,129 functions; data 24.2 to 26.5 MB). `wasm-opt` was not run, so
+    the optimised size is an estimate: about 59 MB of the 64 MiB cap.
 - `jobs/scale` is served (`apiserver-registry/zz_generated_resources.go`),
   which upstream does not serve; it came in with 86c0c1a.
 - Implemented with no CI check: protobuf bodies (the e2e client is pinned
