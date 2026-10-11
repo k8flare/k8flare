@@ -103,9 +103,10 @@ Decided on 2026-10-01, with the owner:
   (`control-plane-worker/src/queues.ts`, `edgehost/followup.go`), not on
   Durable Object alarms; the Cluster DO alarm only does store housekeeping.
   They do fire with no further write.
-- Things poll: the metrics scrape re-sends itself every 15 s whatever it
-  found (`followup.go`, case `metrics`) and wakes HPA each time; an
-  unfinished Job re-books a workloads pass every 10 s; each node gets a
+- Things poll: with an HPA in the cluster, the HPA pass scrapes kubelet
+  metrics and re-books itself every 15 s (`followup.go`, case `hpa`); with
+  none, only a `metrics.k8s.io` read scrapes, when the stored snapshot is
+  older than 30 s (`metricsapi`); an unfinished Job re-books a workloads pass every 10 s; each node gets a
   lease check about every 60 s; unschedulable pods are retried within 60 s.
 - node-tunnel imports its wasm statically into the Durable Object instead
   of loading it through the Worker Loader.
@@ -207,6 +208,16 @@ Decided on 2026-10-01, with the owner:
 
 ## Packaged components
 
+- metrics-server and scheduler volume binding have CI checks in
+  `scripts/ci/e2e.sh up`, not yet observed on GitHub Actions. Metrics:
+  node and pod usage from `metrics.k8s.io` for every node and a running
+  pod, then `kubectl top node`; no HPA exists, so the reads drive the
+  scrape and CPU is non-zero from the second snapshot, about 30 s after
+  the first read. Volume binding: a claim on `local-path` stays `Pending`
+  with no `storage-provisioner` or `selected-node` annotation for 30 s,
+  then a pod using it becomes Ready only after writing to it, and the
+  claim is `Bound` to the pod's node. Remove this entry once both pass in
+  CI.
 - HelmChart and HelmChartConfig are honoured by a Worker-side controller in
   the addons Worker (`packages/helm`, `/helm` on the addons Worker, run
   from the `k8flare-addons` queue after the manifest deployer; HelmChart
