@@ -146,9 +146,10 @@ jobs:
         run: scripts/ci/e2e.sh up
 
       - name: Run the required e2e set
-        run: scripts/ci/e2e.sh test
+        run: |
+          cp .build/ci/kubeconfig.yaml .build/kubeconfig.yaml
+          make e2e SET=required
         env:
-          SET: required
           SHARD: ${{ matrix.shard }}
           SHARDS: 3
 
