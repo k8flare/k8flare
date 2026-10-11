@@ -225,7 +225,7 @@ node-image: mirrors
 wrangler.dev.jsonc: wrangler.jsonc
 	sed 's/^  "observability": .*/  "observability": { "enabled": false },/' $< > $@
 
-dev: wrangler.dev.jsonc
+dev: wrangler.dev.jsonc node-image
 	env -u CLAUDECODE -u AI_AGENT X_LOCAL_OBSERVABILITY=false MINIFLARE_WORKERD_V8_FLAGS=--single-threaded-gc pnpm exec wrangler dev -c wrangler.dev.jsonc --local --persist-to .wrangler/state --port 18787
 
 devtls:
