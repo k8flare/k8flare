@@ -13,6 +13,7 @@ import (
 	auth "github.com/k8flare/k8flare/packages/apiserver-auth"
 	authz "github.com/k8flare/k8flare/packages/apiserver-authz"
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
+	nslifecycle "github.com/k8flare/k8flare/packages/apiserver-nslifecycle"
 	"github.com/k8flare/k8flare/packages/crdreconcile"
 	apiextensionshelpers "k8s.io/apiextensions-apiserver/pkg/apihelpers"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -175,7 +176,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 		fresh.gate(crdWrites).ServeHTTP(w, r)
 	}))
 	mux.Handle("/apis", fresh.gate(wrapCRDAggregated(crdInformer.Lister(), rootAPIs(crdInformer.Lister(), codecs))))
-	mux.Handle("/apis/", fresh.gate(afterSync(discoverySynced, crdHandler)))
+	mux.Handle("/apis/", fresh.gate(afterSync(discoverySynced, nslifecycle.RejectCreateOutsideActiveNamespace(client)(crdHandler))))
 	mux.Handle("/openapi/v2", pub.serveV2(fresh))
 	mux.Handle("/openapi/v3", pub.handler(fresh, openAPIV3Mux))
 	mux.Handle("/openapi/v3/", pub.handler(fresh, openAPIV3Mux))
