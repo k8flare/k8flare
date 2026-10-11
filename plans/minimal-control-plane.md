@@ -558,12 +558,13 @@ its log, and removing it again.
   scheduling specs' "stable cluster" wait never returned. Every
   group worker rejects creates in a Terminating namespace with the
   Forbidden status upstream's NamespaceLifecycle admission produces
-  (`registry.NamespaceLifecycle`, one kine read of the namespace per
+  (`nslifecycle.NamespaceLifecycle`, one kine read of the namespace per
   create); without that cause the root CA publisher and serviceaccount
   controllers recreate their objects while the namespace controller
   empties the namespace, and the two back off against each other for
-  minutes. Custom resource creates go through the customresources worker
-  and are not guarded yet. With the serviceaccount, root-ca-cert-publisher and namespace
+  minutes. The customresources worker refuses custom resource creates the
+  same way (`nslifecycle.RejectCreateOutsideActiveNamespace`, without the
+  immortal namespace rule). With the serviceaccount, root-ca-cert-publisher and namespace
   controllers in place the required set passes 15/15 (2026-09-14,
   `PROCS=4`, 104s).
 
@@ -893,7 +894,7 @@ the controllers (kube-controller-manager) and the production deploy check.
   webhooks are the clean first cut. Note: the specific "reject a create in
   a Terminating namespace" behavior that would have been NamespaceLifecycle's
   job is already covered by a narrower, hand-written
-  `registry.NamespaceLifecycle` hook (one kine read of the namespace per
+  `nslifecycle.NamespaceLifecycle` hook (one kine read of the namespace per
   create) — so **LimitRanger is the cleanest next full-plugin adoption**
   (still genuinely missing, per Known edge cases above), not
   NamespaceLifecycle. ServiceAccount's admission-time token-volume

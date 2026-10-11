@@ -2303,7 +2303,15 @@ Decided on 2026-10-01, with the owner:
     namespace of 10 or 400 pod templates takes 54 requests either way, 125
     and 515 before
     (`TestDeleteTerminatingSendsAsManyRequestsForFourHundredObjectsAsForTen`).
-    Pods are now deleted with their grace period, as upstream does, not
+    A type found empty by the probe is not swept, so, as upstream's, the
+    deleter relies on creates being refused once the namespace is
+    Terminating. Custom resource creates were not refused until the
+    customresources worker took the same check
+    (`nslifecycle.RejectCreateOutsideActiveNamespace`, 403 with
+    NamespaceTerminating or 404); the host test
+    `TestCustomResourceCreateFollowsNamespaceLifecycle` runs in Unit, the
+    live case in `TestCustomResources` only in E2E's package tests and has
+    not run there yet. Pods are now deleted with their grace period, as upstream does, not
     with grace 0. The overlap came from the queue: every deletion in a
     terminating namespace sends an accounts message, and in wrangler dev a
     batch that fills to 100 is dispatched while the last one still runs
