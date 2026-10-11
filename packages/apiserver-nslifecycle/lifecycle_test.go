@@ -1,4 +1,4 @@
-package registry
+package nslifecycle
 
 import (
 	"encoding/base64"

@@ -7,6 +7,7 @@ import (
 	auth "github.com/k8flare/k8flare/packages/apiserver-auth"
 	installer "github.com/k8flare/k8flare/packages/apiserver-installer"
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
+	nslifecycle "github.com/k8flare/k8flare/packages/apiserver-nslifecycle"
 	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
 	supervisor "github.com/k8flare/k8flare/packages/apiserver-supervisor"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -45,7 +46,7 @@ func NewHandler(gv schema.GroupVersion, cfg Config) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	handler := registry.NamespaceLifecycle(client)(mux)
+	handler := nslifecycle.NamespaceLifecycle(client)(mux)
 	for _, wrap := range registry.Middleware {
 		handler = wrap(installed.Stores)(handler)
 	}
