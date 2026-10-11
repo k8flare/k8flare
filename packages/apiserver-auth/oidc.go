@@ -52,7 +52,10 @@ func (o OIDC) AuthenticateToken(_ context.Context, raw string) (*authenticator.R
 		if err != nil {
 			return nil, err
 		}
-		return lookupKey(o.client(), jwksURL, kid)
+		if key, _, found := cachedKey(jwksURL, kid); found {
+			return key, nil
+		}
+		return fetchKey(o.client(), jwksURL, kid)
 	}, jwt.WithIssuer(o.IssuerURL), jwt.WithAudience(o.ClientID), jwt.WithValidMethods(oidcSigningMethods), jwt.WithExpirationRequired())
 	if err != nil || !tok.Valid {
 		return nil, false, nil

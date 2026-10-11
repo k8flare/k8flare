@@ -22,6 +22,7 @@ type oidcIssuer struct {
 	server *httptest.Server
 	rsa    *rsa.PrivateKey
 	ec     *ecdsa.PrivateKey
+	next   *rsa.PrivateKey
 	hits   int
 }
 
@@ -42,10 +43,14 @@ func newOIDCIssuer(t *testing.T) *oidcIssuer {
 		case "/.well-known/openid-configuration":
 			_ = json.NewEncoder(w).Encode(map[string]string{"issuer": i.server.URL, "jwks_uri": i.server.URL + "/keys"})
 		case "/keys":
-			_ = json.NewEncoder(w).Encode(jwkSet{Keys: []jwk{
+			keys := []jwk{
 				{Kid: "r1", Kty: "RSA", N: base64.RawURLEncoding.EncodeToString(rsaKey.N.Bytes()), E: base64.RawURLEncoding.EncodeToString(big.NewInt(int64(rsaKey.E)).Bytes())},
 				{Kid: "e1", Kty: "EC", Crv: "P-256", X: base64.RawURLEncoding.EncodeToString(ecKey.X.Bytes()), Y: base64.RawURLEncoding.EncodeToString(ecKey.Y.Bytes())},
-			}})
+			}
+			if i.next != nil {
+				keys = append(keys, jwk{Kid: "r2", Kty: "RSA", N: base64.RawURLEncoding.EncodeToString(i.next.N.Bytes()), E: base64.RawURLEncoding.EncodeToString(big.NewInt(int64(i.next.E)).Bytes())})
+			}
+			_ = json.NewEncoder(w).Encode(jwkSet{Keys: keys})
 		default:
 			http.NotFound(w, r)
 		}
@@ -164,6 +169,28 @@ func TestOIDCAcceptsRequiredClaimAndES256(t *testing.T) {
 	}
 	if _, ok, err := o.AuthenticateToken(t.Context(), raw); !ok || err != nil {
 		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+}
+
+func TestOIDCRefetchesKeysOnUnknownKid(t *testing.T) {
+	i := newOIDCIssuer(t)
+	o := i.options()
+	if _, ok, err := o.AuthenticateToken(t.Context(), i.sign(t, jwt.MapClaims{"sub": "u1"})); !ok || err != nil {
+		t.Fatalf("before rotation: ok=%v err=%v", ok, err)
+	}
+	next, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i.next = next
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{"iss": i.server.URL, "aud": "k8flare", "sub": "u1", "exp": time.Now().Add(time.Hour).Unix()})
+	tok.Header["kid"] = "r2"
+	raw, err := tok.SignedString(next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := o.AuthenticateToken(t.Context(), raw); !ok || err != nil {
+		t.Fatalf("after rotation: ok=%v err=%v", ok, err)
 	}
 }
 

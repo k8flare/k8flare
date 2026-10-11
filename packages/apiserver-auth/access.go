@@ -143,17 +143,27 @@ var (
 )
 
 func lookupKey(client *http.Client, jwksURL, kid string) (any, error) {
-	jwksMu.Lock()
-	entry, ok := jwksCache[jwksURL]
-	if ok && time.Now().Before(entry.expires) {
-		key, found := entry.keys[kid]
-		jwksMu.Unlock()
+	if key, cached, found := cachedKey(jwksURL, kid); cached {
 		if !found {
 			return nil, fmt.Errorf("unknown kid")
 		}
 		return key, nil
 	}
-	jwksMu.Unlock()
+	return fetchKey(client, jwksURL, kid)
+}
+
+func cachedKey(jwksURL, kid string) (key any, cached, found bool) {
+	jwksMu.Lock()
+	defer jwksMu.Unlock()
+	entry, ok := jwksCache[jwksURL]
+	if !ok || !time.Now().Before(entry.expires) {
+		return nil, false, false
+	}
+	key, found = entry.keys[kid]
+	return key, true, found
+}
+
+func fetchKey(client *http.Client, jwksURL, kid string) (any, error) {
 	keys, err := fetchJWKS(client, jwksURL)
 	if err != nil {
 		return nil, err
