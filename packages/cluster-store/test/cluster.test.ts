@@ -243,6 +243,23 @@ test("a Helm hook Job or Pod reaches the addons queue when it finishes or goes, 
   assert.deepEqual(sent, ["/registry/jobs/apps/pre", "/registry/pods/apps/post", "/registry/pods/apps/post"]);
 });
 
+test("a Secret named in a HelmChart's or HelmChartConfig's valuesSecrets reaches the addons queue unless updates are ignored", async () => {
+  const sent: string[] = [];
+  const addons = { send: async () => {}, sendBatch: async (batch: { body: { key: string } }[]) => void sent.push(...batch.map((m) => m.body.key)) };
+  const r = rig({ ADDON_Q: addons } as any);
+  await r.settle();
+  const valuesSecrets = (refs: string) => `{"metadata":{"name":"traefik"},"spec":{"valuesSecrets":${refs}}}`;
+  await r.put("/registry/helm.cattle.io/helmcharts/kube-system/traefik", valuesSecrets(`[{"name":"tracked"},{"name":"ignored","ignoreUpdates":true},{"name":"chart-values-traefik"}]`));
+  await r.put("/registry/helm.cattle.io/helmchartconfigs/kube-system/traefik", valuesSecrets(`[{"name":"from-config"}]`));
+  await r.settle();
+  sent.length = 0;
+  for (const name of ["tracked", "ignored", "chart-values-traefik", "from-config", "unrelated"]) await r.put(`/registry/secrets/kube-system/${name}`, "opaque");
+  await r.put("/registry/secrets/other/tracked", "opaque");
+  await r.remove("/registry/secrets/kube-system/tracked");
+  await r.settle();
+  assert.deepEqual(sent, ["/registry/secrets/kube-system/tracked", "/registry/secrets/kube-system/from-config", "/registry/secrets/kube-system/tracked"]);
+});
+
 test("POST /enqueue with once books an earlier deadline over a later one", async () => {
   const sent: { delaySeconds?: number }[] = [];
   const queue = {

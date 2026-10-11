@@ -295,6 +295,47 @@ func TestHelmChartConfigValuesOverrideTheChart(t *testing.T) {
 	}
 }
 
+func valuesSecret(name, values string) *unstructured.Unstructured {
+	secret := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Secret",
+		"data":       map[string]any{"values.yaml": base64.StdEncoding.EncodeToString([]byte(values))},
+	}}
+	secret.SetName(name)
+	secret.SetNamespace("kube-system")
+	return secret
+}
+
+func TestValuesSecretChangeUpgradesTheReleaseUnlessUpdatesAreIgnored(t *testing.T) {
+	server := chartRepository(t)
+	client := newFakeClient(helmChartObject(server.URL, map[string]any{"valuesSecrets": []any{
+		map[string]any{"name": "tracked", "keys": []any{"values.yaml"}},
+		map[string]any{"name": "ignored", "keys": []any{"values.yaml"}, "ignoreUpdates": true},
+	}}), valuesSecret("tracked", "replicaCount: 2\n"), valuesSecret("ignored", "image:\n  tag: \"1\"\n"))
+	c := newController(client)
+	if _, err := c.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Tracker().Update(secretsGVR, valuesSecret("ignored", "image:\n  tag: \"2\"\n"), "kube-system"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(releaseHistory(t, c, "apps")); n != 1 {
+		t.Fatalf("%d revisions after an ignoreUpdates secret changed, want 1", n)
+	}
+	if err := client.Tracker().Update(secretsGVR, valuesSecret("tracked", "replicaCount: 4\n"), "kube-system"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if replicas(t, client) != 4 || len(releaseHistory(t, c, "apps")) != 2 {
+		t.Fatalf("replicas = %d, revisions = %d after the values secret changed", replicas(t, client), len(releaseHistory(t, c, "apps")))
+	}
+}
+
 func TestUninstallOnDeletionRemovesObjectsAndReleaseButKeepsCRDs(t *testing.T) {
 	server := chartRepository(t)
 	client := newFakeClient(helmChartObject(server.URL, nil))

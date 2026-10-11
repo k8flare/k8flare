@@ -236,11 +236,34 @@ func (c *Controller) setStatus(ctx context.Context, u *unstructured.Unstructured
 	return err
 }
 
-func configHash(chart *helmv1.HelmChart, config *helmv1.HelmChartConfig) (string, error) {
+func (c *Controller) trackedSecrets(ctx context.Context, chart *helmv1.HelmChart, config *helmv1.HelmChartConfig) ([]map[string][]byte, error) {
+	refs := chart.Spec.ValuesSecrets
+	if config != nil {
+		refs = append(refs[:len(refs):len(refs)], config.Spec.ValuesSecrets...)
+	}
+	var tracked []map[string][]byte
+	for _, ref := range refs {
+		if ref.IgnoreUpdates || ref.Name == "chart-values-"+chart.Name {
+			continue
+		}
+		data, err := c.secrets(ctx, chart.Namespace, ref.Name)
+		if apierrors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("valuesSecrets %s: %w", ref.Name, err)
+		}
+		tracked = append(tracked, data)
+	}
+	return tracked, nil
+}
+
+func configHash(chart *helmv1.HelmChart, config *helmv1.HelmChartConfig, secrets []map[string][]byte) (string, error) {
 	input := struct {
-		Chart  helmv1.HelmChartSpec        `json:"chart"`
-		Config *helmv1.HelmChartConfigSpec `json:"config,omitempty"`
-	}{Chart: chart.Spec}
+		Chart   helmv1.HelmChartSpec        `json:"chart"`
+		Config  *helmv1.HelmChartConfigSpec `json:"config,omitempty"`
+		Secrets []map[string][]byte         `json:"secrets,omitempty"`
+	}{Chart: chart.Spec, Secrets: secrets}
 	if config != nil {
 		input.Config = &config.Spec
 	}
@@ -274,7 +297,11 @@ func failurePolicy(chart *helmv1.HelmChart, config *helmv1.HelmChartConfig) helm
 
 func (c *Controller) install(ctx context.Context, chart *helmv1.HelmChart, config *helmv1.HelmChartConfig) error {
 	name, namespace := chart.Name, targetNamespace(chart)
-	hash, err := configHash(chart, config)
+	tracked, err := c.trackedSecrets(ctx, chart, config)
+	if err != nil {
+		return err
+	}
+	hash, err := configHash(chart, config, tracked)
 	if err != nil {
 		return err
 	}

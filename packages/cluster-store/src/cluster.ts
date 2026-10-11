@@ -32,6 +32,7 @@ const ACCOUNT_PREFIXES = [NAMESPACE_PREFIX, "/registry/serviceaccounts/", "/regi
 const ADDON_PREFIX = "/registry/k3s.cattle.io/addons/";
 const HELM_PREFIXES = ["/registry/helm.cattle.io/helmcharts/", "/registry/helm.cattle.io/helmchartconfigs/"];
 const HELM_HOOK_PREFIXES = ["/registry/jobs/", "/registry/pods/"];
+const SECRET_PREFIX = "/registry/secrets/";
 const CRD_PREFIX = "/registry/apiextensions.k8s.io/customresourcedefinitions/";
 const ATTACH_PREFIXES = ["/registry/pods/", "/registry/minions/", "/registry/nodes/", "/registry/persistentvolumeclaims/", "/registry/persistentvolumes/", "/registry/storage.k8s.io/", "/registry/storageclasses/"];
 const SCHEDULER_VOLUME_PREFIXES = ["/registry/persistentvolumeclaims/", "/registry/persistentvolumes/", "/registry/storageclasses/", "/registry/csinodes/", "/registry/csidrivers/", "/registry/csistoragecapacities/", "/registry/volumeattachments/", "/registry/storage.k8s.io/", "/registry/resourceclaims/", "/registry/resourceslices/", "/registry/deviceclasses/"];
@@ -696,6 +697,7 @@ export class Cluster extends DurableObject<Env> {
     if (name.startsWith(ADDON_PREFIX) && type === "deleted") routes.push("addons");
     if (HELM_PREFIXES.some((p) => name.startsWith(p))) routes.push("addons");
     if (HELM_HOOK_PREFIXES.some((p) => name.startsWith(p)) && helmHookSettledOrGone(type, value, prev)) routes.push("addons");
+    if (name.startsWith(SECRET_PREFIX) && this.namedInHelmValues(name)) routes.push("addons");
     if (isExtensionKey(name, value, type)) routes.push("extensions");
     if (type === "deleted" || collectable(value, type === "modified" && prev ? prev.value : null)) routes.push("gc");
     if (name.startsWith("/registry/pods/")) {
@@ -711,6 +713,16 @@ export class Cluster extends DurableObject<Env> {
       this.ctx.storage.sql.exec("INSERT INTO outbox (target, rev, key, type) VALUES (?, ?, ?, ?)", target, rev, name, type);
     }
     if (routes.length > 0) this.ctx.waitUntil(this.flushOutbox());
+  }
+
+  private namedInHelmValues(name: string): boolean {
+    const [namespace, secret] = name.slice(SECRET_PREFIX.length).split("/");
+    return HELM_PREFIXES.some((prefix) =>
+      this.latest(`${prefix}${namespace}/`, false, "", Number.MAX_SAFE_INTEGER).some((kv) => {
+        const obj = decodeJSON(kv.value);
+        return (obj?.spec?.valuesSecrets ?? []).some((ref: any) => ref.name === secret && !ref.ignoreUpdates && ref.name !== `chart-values-${obj?.metadata?.name}`);
+      }),
+    );
   }
 
   private async checkLeaseLater(node: string): Promise<void> {
