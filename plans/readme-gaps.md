@@ -2083,10 +2083,19 @@ Decided on 2026-10-01, with the owner:
     stays global), replays its snapshot to their handlers and moves its
     drain deadline to the adoption plus the drain limit, never past the
     hard stop (`finishBy`). The waiting sync answers with that pass's
-    result if the pass ends within the lock wait and busy otherwise, so a
-    change set the pass did not finish is still retried as before. A pass
-    without a live feed refuses, since its lists are stale for the new
-    controllers, and the old wait applies. Each adoption prints
+    result if the pass ends within the lock wait with its feed still live
+    and busy otherwise, so a change set the pass did not finish is still
+    retried as before. A pass without a live feed refuses, since its lists
+    are stale for the new controllers, and the old wait applies. The feed
+    counts as live only while its socket is open: before
+    `work/housekeeping` it stayed live from its first connect, so a pass
+    whose feed had closed
+    or been compacted at its lists still adopted, ignored the yield and
+    reported `Live`. Now such a pass refuses offers, yields, reports
+    `Live: false` (so its own sync runs the follow-up pass), and a sync it
+    adopted before the drop answers busy
+    (`TestLiveFeedIsNotLiveOnceItStops`,
+    `TestASyncAdoptedByAPassWhoseFeedThenDropsAnswersBusy`). Each adoption prints
     `workloads: pass adopted changed <list> controllers <n>`.
     `TestAConfigMapChangeDuringALongPassWithoutThePublisherIsPublishedBeforeThatPassDrains`
     (`shards/all`; before the change the publisher ran only after the

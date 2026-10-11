@@ -96,6 +96,82 @@ func TestAConfigMapChangeDuringALongPassWithoutThePublisherIsPublishedBeforeThat
 	}
 }
 
+func TestASyncAdoptedByAPassWhoseFeedThenDropsAnswersBusy(t *testing.T) {
+	previous := workloads.WatchDialer
+	defer func() { workloads.WatchDialer = previous }()
+	feedMsgs := make(chan []byte)
+	feedClosed := make(chan struct{}, 1)
+	workloads.WatchDialer = func(context.Context, string) (<-chan []byte, func(), error) {
+		return feedMsgs, func() {
+			select {
+			case feedClosed <- struct{}{}:
+			default:
+			}
+		}, nil
+	}
+	client := fake.NewSimpleClientset(
+		&v1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "spec", UID: "s1"},
+			Spec:       v1.ServiceSpec{Selector: map[string]string{"app": "web"}, Ports: []v1.ServicePort{{Port: 80}}},
+		},
+		&v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "spec"}, Status: v1.NamespaceStatus{Phase: v1.NamespaceActive}},
+		&v1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "kube-root-ca.crt", Namespace: "spec"}, Data: map[string]string{"ca.crt": ""}},
+	)
+	blocked := make(chan struct{}, 1)
+	release := make(chan struct{})
+	slow := slowEndpointsClientset{Interface: client, blocked: blocked, release: release, creates: &atomic.Int32{}}
+	ctx := context.Background()
+	first := make(chan error, 1)
+	go func() {
+		_, err := workloads.Sync(ctx, slow, []byte("ca"), nil, nil, []string{"services"})
+		first <- err
+	}()
+	select {
+	case <-blocked:
+	case <-time.After(10 * time.Second):
+		close(release)
+		t.Fatal("the first pass never reached its endpoints write")
+	}
+	type answer struct {
+		result *workloads.Result
+		err    error
+	}
+	second := make(chan answer, 1)
+	go func() {
+		result, err := workloads.Sync(ctx, slow, []byte("ca"), nil, nil, []string{"services", "configmaps"})
+		second <- answer{result, err}
+	}()
+	adopted := false
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		cm, err := client.CoreV1().ConfigMaps("spec").Get(ctx, "kube-root-ca.crt", metav1.GetOptions{})
+		if err == nil && cm.Data["ca.crt"] == "ca" {
+			adopted = true
+			break
+		}
+	}
+	close(feedMsgs)
+	select {
+	case <-feedClosed:
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("the pass's feed did not close")
+	}
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	got := <-second
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	if !adopted {
+		t.Fatal("the running pass did not adopt the second change set")
+	}
+	if len(got.result.Objects) != 0 || got.result.Drained || got.result.NextMs <= 0 {
+		t.Fatalf("the waiting sync answered with the pass's result after its feed dropped (objects=%d drained=%v live=%v next=%d), want busy", len(got.result.Objects), got.result.Drained, got.result.Live, got.result.NextMs)
+	}
+}
+
 type slowEndpointsClientset struct {
 	kubernetes.Interface
 	blocked chan struct{}

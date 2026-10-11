@@ -110,6 +110,7 @@ func (f *liveFeed) watch(ctx context.Context, since int64) bool {
 	}
 	defer closeFn()
 	f.connected.Store(true)
+	defer f.connected.Store(false)
 	for {
 		select {
 		case <-ctx.Done():
