@@ -380,10 +380,13 @@ Decided on 2026-10-01, with the owner:
   - OIDC is a request-scoped JWT verifier in `apiserver-auth`, not
     upstream's `token/oidc` (that adds 26 MB and takes the front to
     71 MB, past the 64 MiB cap). It accepts RS/PS/ES algorithms, drops
-    `system:` groups from claims, has no CEL claim rules or
-    `--oidc-signing-algs`, and does not refetch keys on an unknown `kid`
-    until the 10 minute cache expires. Next: refetch on unknown `kid`,
-    match upstream's algorithm and `system:` rules, and serve
+    `system:` groups from claims, and has no CEL claim rules or
+    `--oidc-signing-algs`. Like upstream it rejects an `email_verified`
+    that is present but not `true`, and refetches keys on an unknown
+    `kid`; upstream's go-oidc skips that refetch while the JWKS
+    response's Cache-Control lifetime lasts, this verifier refetches
+    every time. Next: match upstream's algorithm and `system:` rules,
+    and serve
     `AuthenticationConfiguration` CEL (claimMappings,
     claimValidationRules, userValidationRules) by delegating expression
     evaluation to the admission Worker, which already links CEL.
