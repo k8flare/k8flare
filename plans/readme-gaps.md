@@ -342,7 +342,10 @@ Decided on 2026-10-01, with the owner:
   objects whose bytes differ (CAS on the revision, conflicts skipped), and
   resumes across passes from a per-resource cursor at 200 rewrites per
   pass. `GET /internal/storage-migrate/status` lists pending and failed
-  resources. Not covered: an undecodable object marks its resource failed
+  resources. The front installs the internal autoscaling types so the sweep
+  can convert an HPA stored at `autoscaling/v1` to v2; without them it
+  marked the resource failed (`apiserver/storagemigrate_test.go` drives
+  both routes on the host). Not covered: an undecodable object marks its resource failed
   and the sweep does not retry it until the key is deleted or the hash
   changes again; a stale Secret encryption key is not rewritten by the
   sweep (`k8flare secrets-encrypt reencrypt` does that); objects written by
