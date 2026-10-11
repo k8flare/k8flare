@@ -56,13 +56,18 @@ func main() {
 				w.Write([]byte("{}"))
 				return
 			}
-			if err := helmController.Reconcile(r.Context()); err != nil {
+			wake, err := helmController.Reconcile(r.Context())
+			if err != nil {
 				println("helm: reconcile failed:", err.Error())
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			var nextMs int64
+			if !wake.IsZero() {
+				nextMs = max(time.Until(wake).Milliseconds(), 1)
+			}
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte("{}"))
+			json.NewEncoder(w).Encode(map[string]int64{"nextMs": nextMs})
 			return
 		}
 		groups, err := restmapper.GetAPIGroupResources(disco)

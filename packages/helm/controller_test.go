@@ -3,6 +3,7 @@ package helm
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -35,6 +36,8 @@ func testMapper() meta.RESTMapper {
 	m.Add(schema.GroupVersionKind{Version: "v1", Kind: "Service"}, meta.RESTScopeNamespace)
 	m.Add(schema.GroupVersionKind{Version: "v1", Kind: "Secret"}, meta.RESTScopeNamespace)
 	m.Add(schema.GroupVersionKind{Version: "v1", Kind: "Namespace"}, meta.RESTScopeRoot)
+	m.Add(schema.GroupVersionKind{Version: "v1", Kind: "Pod"}, meta.RESTScopeNamespace)
+	m.Add(schema.GroupVersionKind{Group: "batch", Version: "v1", Kind: "Job"}, meta.RESTScopeNamespace)
 	m.Add(schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, meta.RESTScopeNamespace)
 	m.Add(schema.GroupVersionKind{Group: "apiextensions.k8s.io", Version: "v1", Kind: "CustomResourceDefinition"}, meta.RESTScopeRoot)
 	return m
@@ -50,6 +53,8 @@ func newFakeClient(objs ...runtime.Object) *fake.FakeDynamicClient {
 		namespacesGVR:  "NamespaceList",
 		helmChartsGVR:  "HelmChartList",
 		helmConfigsGVR: "HelmChartConfigList",
+		jobsGVR:        "JobList",
+		podsGVR:        "PodList",
 	}, objs...)
 	c.PrependReactor("patch", "*", func(action clienttesting.Action) (bool, runtime.Object, error) {
 		patch := action.(clienttesting.PatchAction)
@@ -175,7 +180,7 @@ func TestInstallFromRepositoryAppliesAndRecordsTheRelease(t *testing.T) {
 	})
 	client := newFakeClient(chart)
 	c := newController(client)
-	if err := c.Reconcile(context.Background()); err != nil {
+	if _, err := c.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if replicas(t, client) != 3 {
@@ -224,11 +229,11 @@ func TestReconcileIsIdempotent(t *testing.T) {
 	server := chartRepository(t)
 	client := newFakeClient(helmChartObject(server.URL, nil))
 	c := newController(client)
-	if err := c.Reconcile(context.Background()); err != nil {
+	if _, err := c.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	before := writeCount(client)
-	if err := c.Reconcile(context.Background()); err != nil {
+	if _, err := c.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if after := writeCount(client); after != before {
@@ -240,7 +245,7 @@ func TestUpgradePrunesRemovedObjectsAndSupersedesTheOldRelease(t *testing.T) {
 	server := chartRepository(t)
 	client := newFakeClient(helmChartObject(server.URL, nil))
 	c := newController(client)
-	if err := c.Reconcile(context.Background()); err != nil {
+	if _, err := c.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if !exists(client, configMapsGVR, "apps", "demo-cache") {
@@ -251,7 +256,7 @@ func TestUpgradePrunesRemovedObjectsAndSupersedesTheOldRelease(t *testing.T) {
 	if _, err := client.Resource(helmChartsGVR).Namespace("kube-system").Update(context.Background(), stored, metav1.UpdateOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Reconcile(context.Background()); err != nil {
+	if _, err := c.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if replicas(t, client) != 5 {
@@ -282,7 +287,7 @@ func TestHelmChartConfigValuesOverrideTheChart(t *testing.T) {
 	config.SetName("demo")
 	config.SetNamespace("kube-system")
 	client := newFakeClient(helmChartObject(server.URL, map[string]any{"valuesContent": "replicaCount: 2\n"}), config)
-	if err := newController(client).Reconcile(context.Background()); err != nil {
+	if _, err := newController(client).Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if replicas(t, client) != 7 {
@@ -294,7 +299,7 @@ func TestUninstallOnDeletionRemovesObjectsAndReleaseButKeepsCRDs(t *testing.T) {
 	server := chartRepository(t)
 	client := newFakeClient(helmChartObject(server.URL, nil))
 	c := newController(client)
-	if err := c.Reconcile(context.Background()); err != nil {
+	if _, err := c.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	stored := getObject(t, client, helmChartsGVR, "kube-system", "demo")
@@ -303,7 +308,7 @@ func TestUninstallOnDeletionRemovesObjectsAndReleaseButKeepsCRDs(t *testing.T) {
 	if _, err := client.Resource(helmChartsGVR).Namespace("kube-system").Update(context.Background(), stored, metav1.UpdateOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Reconcile(context.Background()); err != nil {
+	if _, err := c.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if exists(client, configMapsGVR, "apps", "demo-demo") || exists(client, configMapsGVR, "apps", "demo-cache") {
@@ -331,13 +336,13 @@ func TestInstallRefusesToAdoptForeignObjects(t *testing.T) {
 	foreign.SetNamespace("apps")
 	client := newFakeClient(helmChartObject(server.URL, nil), foreign)
 	c := newController(client)
-	err := c.Reconcile(context.Background())
+	_, err := c.Reconcile(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "invalid ownership metadata") {
 		t.Fatalf("err = %v", err)
 	}
 	history := releaseHistory(t, c, "apps")
-	if len(history) != 1 || history[0].release.Info.Status != release.StatusFailed {
-		t.Fatalf("history = %+v", history)
+	if len(history) != 0 {
+		t.Fatalf("history = %+v, want no release recorded for a refused install", history)
 	}
 	failed := getObject(t, client, helmChartsGVR, "kube-system", "demo")
 	if cond := condition(t, failed); cond["status"] != "True" || !strings.Contains(cond["message"].(string), "ownership") {
@@ -352,7 +357,7 @@ func TestInstallRefusesToAdoptForeignObjects(t *testing.T) {
 	if _, err := client.Resource(helmChartsGVR).Namespace("kube-system").Update(context.Background(), stored, metav1.UpdateOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Reconcile(context.Background()); err != nil {
+	if _, err := c.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	history = releaseHistory(t, c, "apps")
@@ -364,20 +369,24 @@ func TestInstallRefusesToAdoptForeignObjects(t *testing.T) {
 	}
 }
 
-func TestFailedInstallRetriesInPlaceInsteadOfPilingUpRevisions(t *testing.T) {
+func TestFailedInstallWithRetryPolicyRetriesInPlaceInsteadOfPilingUpRevisions(t *testing.T) {
 	server := chartRepository(t)
-	foreign := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "ConfigMap"}}
-	foreign.SetName("demo-demo")
-	foreign.SetNamespace("apps")
-	client := newFakeClient(helmChartObject(server.URL, nil), foreign)
+	client := newFakeClient(helmChartObject(server.URL, map[string]any{"failurePolicy": "retry"}))
+	client.PrependReactor("patch", "services", func(clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewInternalError(errors.New("apply refused"))
+	})
 	c := newController(client)
 	for i := 0; i < 3; i++ {
-		if err := c.Reconcile(context.Background()); err == nil {
-			t.Fatal("expected the ownership error")
+		if _, err := c.Reconcile(context.Background()); err == nil || !strings.Contains(err.Error(), "apply refused") {
+			t.Fatalf("err = %v, want the apply error", err)
 		}
 	}
-	if n := len(releaseHistory(t, c, "apps")); n != 1 {
-		t.Fatalf("%d release revisions, want 1", n)
+	history := releaseHistory(t, c, "apps")
+	if len(history) != 1 || history[0].release.Info.Status != release.StatusFailed {
+		t.Fatalf("history = %+v, want one failed revision", history)
+	}
+	if !exists(client, configMapsGVR, "apps", "demo-demo") {
+		t.Fatal("retry policy uninstalled the failed release")
 	}
 }
 
@@ -390,7 +399,7 @@ func TestUnmanagedAndForeignManagedChartsAreLeftAlone(t *testing.T) {
 	foreign.SetName("other")
 	foreign.SetAnnotations(map[string]string{AnnotationManagedBy: "k3s-server-1"})
 	client := newFakeClient(unmanaged, foreign)
-	if err := newController(client).Reconcile(context.Background()); err != nil {
+	if _, err := newController(client).Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if n := writeCount(client); n != 0 {
@@ -402,7 +411,7 @@ func TestInstallFromInlineChartContent(t *testing.T) {
 	inline := base64.StdEncoding.EncodeToString(readTestdata(t, "demo-0.1.0.tgz"))
 	chart := helmChartObject("", map[string]any{"chart": "", "chartContent": inline})
 	client := newFakeClient(chart)
-	if err := newController(client).Reconcile(context.Background()); err != nil {
+	if _, err := newController(client).Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if replicas(t, client) != 1 {
@@ -413,7 +422,7 @@ func TestInstallFromInlineChartContent(t *testing.T) {
 func TestUnsupportedHelmVersionIsReportedNotInstalled(t *testing.T) {
 	server := chartRepository(t)
 	client := newFakeClient(helmChartObject(server.URL, map[string]any{"helmVersion": "v2"}))
-	if err := newController(client).Reconcile(context.Background()); err != nil {
+	if _, err := newController(client).Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	stored := getObject(t, client, helmChartsGVR, "kube-system", "demo")
@@ -430,7 +439,7 @@ func TestReconcileWithoutTheCRDsIsANoOp(t *testing.T) {
 	client.PrependReactor("list", "helmcharts", func(clienttesting.Action) (bool, runtime.Object, error) {
 		return true, nil, apierrors.NewNotFound(helmChartsGVR.GroupResource(), "")
 	})
-	if err := newController(client).Reconcile(context.Background()); err != nil {
+	if _, err := newController(client).Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 }

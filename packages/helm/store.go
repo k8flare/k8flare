@@ -72,13 +72,16 @@ func (s store) history(ctx context.Context, namespace, name string) ([]*record, 
 	return records, nil
 }
 
-func (s store) create(ctx context.Context, rel *release.Release) error {
+func (s store) create(ctx context.Context, rel *release.Release) (*record, error) {
 	obj, err := s.secretObject(rel, map[string]string{"createdAt": strconv.FormatInt(s.now().Unix(), 10)})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	_, err = s.client.Resource(secretsGVR).Namespace(rel.Namespace).Create(ctx, obj, metav1.CreateOptions{})
-	return err
+	created, err := s.client.Resource(secretsGVR).Namespace(rel.Namespace).Create(ctx, obj, metav1.CreateOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return &record{release: rel, secret: created}, nil
 }
 
 func (s store) update(ctx context.Context, rec *record) error {
@@ -94,8 +97,12 @@ func (s store) update(ctx context.Context, rec *record) error {
 	}
 	obj.SetLabels(labels)
 	obj.SetResourceVersion(rec.secret.GetResourceVersion())
-	_, err = s.client.Resource(secretsGVR).Namespace(rec.release.Namespace).Update(ctx, obj, metav1.UpdateOptions{})
-	return err
+	updated, err := s.client.Resource(secretsGVR).Namespace(rec.release.Namespace).Update(ctx, obj, metav1.UpdateOptions{})
+	if err != nil {
+		return err
+	}
+	rec.secret = updated
+	return nil
 }
 
 func (s store) supersede(ctx context.Context, rec *record) error {

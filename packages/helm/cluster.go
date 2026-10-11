@@ -75,23 +75,41 @@ func objectKey(obj *unstructured.Unstructured) string {
 	return gvk.Group + "/" + gvk.Kind + "/" + obj.GetNamespace() + "/" + obj.GetName()
 }
 
-func (c *cluster) applyOwned(ctx context.Context, obj *unstructured.Unstructured, releaseName, releaseNamespace string, takeOwnership bool) error {
+func (c *cluster) placed(ctx context.Context, obj *unstructured.Unstructured, releaseNamespace string) (dynamic.ResourceInterface, error) {
 	mapping, err := c.mapping(ctx, obj.GroupVersionKind())
 	if err != nil {
-		return fmt.Errorf("%s %s: %w", obj.GetKind(), obj.GetName(), err)
+		return nil, fmt.Errorf("%s %s: %w", obj.GetKind(), obj.GetName(), err)
 	}
 	if obj.GetNamespace() == "" && mapping.Scope.Name() == meta.RESTScopeNameNamespace {
 		obj.SetNamespace(releaseNamespace)
 	}
-	resource := c.resource(mapping, obj.GetNamespace())
-	if !takeOwnership {
-		existing, err := resource.Get(ctx, obj.GetName(), metav1.GetOptions{})
-		if err != nil && !apierrors.IsNotFound(err) {
+	return c.resource(mapping, obj.GetNamespace()), nil
+}
+
+func (c *cluster) checkOwnership(ctx context.Context, objs []*unstructured.Unstructured, releaseName, releaseNamespace string) error {
+	for _, obj := range objs {
+		resource, err := c.placed(ctx, obj, releaseNamespace)
+		if err != nil {
 			return err
 		}
-		if err == nil && !ownedBy(existing, releaseName, releaseNamespace) {
+		existing, err := resource.Get(ctx, obj.GetName(), metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !ownedBy(existing, releaseName, releaseNamespace) {
 			return fmt.Errorf("%s %q in namespace %q exists and cannot be imported into the current release: invalid ownership metadata", obj.GetKind(), obj.GetName(), obj.GetNamespace())
 		}
+	}
+	return nil
+}
+
+func (c *cluster) applyOwned(ctx context.Context, obj *unstructured.Unstructured, releaseName, releaseNamespace string) error {
+	resource, err := c.placed(ctx, obj, releaseNamespace)
+	if err != nil {
+		return err
 	}
 	labels := obj.GetLabels()
 	if labels == nil {
