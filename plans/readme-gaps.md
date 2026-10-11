@@ -372,8 +372,12 @@ Decided on 2026-10-01, with the owner:
   k3s agent under workerd. `k8flare token create --bootstrap` writes the
   `bootstrap-token-<id>` Secret through the API; the CLI test checks the Secret
   against the upstream authenticator but not against the running apiserver.
-  `token list`, `rotate` and `revoke` still manage only vault-backed tokens: a
-  bootstrap token is neither listed nor revoked by `k8flare token`.
+  `token list` adds the `bootstrap.kubernetes.io/token` Secrets in
+  `kube-system` (type `bootstrap`, with expiry); `revoke`/`delete` deletes
+  both the vault token and the `bootstrap-token-<id>` Secret for the id and
+  fails when neither exists; `rotate` refuses a bootstrap token and says to
+  create a new one and revoke the old one, as k3s has no in-place rotation
+  for them. The CLI tests use a fake HTTP server, not the running apiserver.
 
 ## Security
 

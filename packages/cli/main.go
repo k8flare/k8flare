@@ -117,9 +117,23 @@ func (c *client) do(method, path string, query url.Values, body any) ([]byte, er
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, serverMessage(data))
+		return nil, &statusError{method: method, path: path, code: resp.StatusCode, status: resp.Status, message: serverMessage(data)}
 	}
 	return data, nil
+}
+
+type statusError struct {
+	method, path, status, message string
+	code                          int
+}
+
+func (e *statusError) Error() string {
+	return fmt.Sprintf("%s %s: %s: %s", e.method, e.path, e.status, e.message)
+}
+
+func isNotFound(err error) bool {
+	var s *statusError
+	return errors.As(err, &s) && s.code == http.StatusNotFound
 }
 
 func serverMessage(data []byte) string {
