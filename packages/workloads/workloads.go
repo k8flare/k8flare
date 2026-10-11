@@ -510,6 +510,7 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 	defer cancel()
 
 	passStart := time.Now()
+	println("workloads: pass changed", strings.Join(changed, ","))
 	stage := passStart
 	took := func(name string) {
 		println("workloads: stage", name, time.Since(stage).Round(time.Millisecond).String())
