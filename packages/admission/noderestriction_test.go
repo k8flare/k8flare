@@ -144,6 +144,7 @@ func TestNodeRestrictionDeniesWrongCNCSR(t *testing.T) {
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := csrAdmitReq("wrong-cn", certificatesv1.KubeAPIServerClientKubeletSignerName, pemWithCN("system:node:k8flare-agent"))
+	req.Phase = "admit"
 	req.User = admit.User{Username: "system:node:k8flare-c1", Groups: []string{user.NodesGroup, user.AllAuthenticated}}
 	out := postAdmit(t, h, req)
 	if out.Allowed {
@@ -159,6 +160,7 @@ func TestNodeRestrictionAllowsOwnCNCSR(t *testing.T) {
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	req := csrAdmitReq("own-cn", certificatesv1.KubeletServingSignerName, pemWithCN("system:node:k8flare-c1"))
+	req.Phase = "admit"
 	req.User = admit.User{Username: "system:node:k8flare-c1", Groups: []string{user.NodesGroup, user.AllAuthenticated}}
 	out := postAdmit(t, h, req)
 	if !out.Allowed {
@@ -540,7 +542,7 @@ func nodePodReq(node, nodeName string, mirror bool) admit.Request {
 		spec["nodeName"] = nodeName
 	}
 	return admit.Request{
-		Phase:     "validate",
+		Phase:     "admit",
 		Name:      "p",
 		Namespace: "default",
 		Resource:  schema.GroupVersionResource{Version: "v1", Resource: "pods"},
@@ -561,11 +563,11 @@ func nodeTokenReq(node string, ref map[string]any) admit.Request {
 		spec["boundObjectRef"] = ref
 	}
 	return admit.Request{
-		Phase:       "validate",
+		Phase:       "admit",
 		Name:        "default",
 		Namespace:   "default",
 		Resource:    schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"},
-		Kind:        schema.GroupVersionKind{Version: "v1", Kind: "ServiceAccount"},
+		Kind:        schema.GroupVersionKind{Group: "authentication.k8s.io", Version: "v1", Kind: "TokenRequest"},
 		Subresource: "token",
 		Operation:   "CREATE",
 		User:        admit.User{Username: "system:node:" + node, Groups: []string{user.NodesGroup, user.AllAuthenticated}},
@@ -593,7 +595,7 @@ func nodePVCReq(node string) admit.Request {
 		"status":     map[string]any{"phase": "Bound", "capacity": map[string]any{"storage": "1Gi"}},
 	}
 	return admit.Request{
-		Phase:       "validate",
+		Phase:       "admit",
 		Name:        "disk",
 		Namespace:   "default",
 		Resource:    schema.GroupVersionResource{Version: "v1", Resource: "persistentvolumeclaims"},
