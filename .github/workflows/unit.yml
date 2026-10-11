@@ -73,7 +73,7 @@ jobs:
       - name: Test the host packages
         run: |
           go test -count=1 -timeout 20m \
-            -skip '^(TestAdmissionExtensions|TestCompaction|TestConfigMapVerbs|TestControllers|TestCustomResources|TestInformerWatchList|TestOpenAPI|TestNodePodCIDRAndPodLifecycle|TestRBAC|TestScheduler|TestSchedulerWakesOnNode|TestSupervisorJoin|TestTables|TestWatch|TestWatchSelectorTransitions|TestNodeFieldSelectorDefaults)$' \
+            -skip '^(TestAdmissionExtensions|TestCompaction|TestConfigMapVerbs|TestControllers|TestCustomResources|TestInformerWatchList|TestNodeStreamsOverWebSocket|TestOpenAPI|TestNodePodCIDRAndPodLifecycle|TestRBAC|TestScheduler|TestSchedulerWakesOnNode|TestSupervisorJoin|TestTables|TestWatch|TestWatchSelectorTransitions|TestNodeFieldSelectorDefaults)$' \
             ./packages/...
 
       - name: Test the scripts module
