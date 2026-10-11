@@ -139,6 +139,27 @@ func (r *refillableInformer) refill(kvs []kine.KV) int {
 	return changed
 }
 
+func (r *refillableInformer) settled(kvs []kine.KV) bool {
+	indexer := r.GetIndexer()
+	if !r.HasSynced() || len(indexer.ListKeys()) != len(kvs) {
+		return false
+	}
+	crds := make([]*apiextensionsv1.CustomResourceDefinition, 0, len(kvs))
+	for _, kv := range kvs {
+		obj, exists, _ := indexer.GetByKey(strings.TrimPrefix(kv.Key, crdStoragePrefix))
+		if !exists {
+			return false
+		}
+		crd := obj.(*apiextensionsv1.CustomResourceDefinition)
+		if crd.ResourceVersion != strconv.FormatInt(kv.ModRevision, 10) {
+			return false
+		}
+		crds = append(crds, crd)
+	}
+	conditions, finalize := pendingWork(crds)
+	return !conditions && len(finalize) == 0
+}
+
 type queueActivity struct {
 	mu      sync.Mutex
 	pending map[string]*atomic.Int64

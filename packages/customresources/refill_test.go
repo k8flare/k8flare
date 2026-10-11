@@ -70,7 +70,7 @@ func TestGateDoesNotDecodeAnUnchangedCRDSetAgain(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(bytes.NewReader(body))}, nil
 	})}}
 	factory := informers.NewSharedInformerFactory(fake.NewSimpleClientset(), 0)
-	fresh := freshCRDs{client: client, informer: registerRefillable(factory), reconciler: &reconciler{}, settled: &settledRevisions{}}
+	fresh := freshCRDs{client: client, informer: registerRefillable(factory), reconciler: &reconciler{}}
 	refilled := func() string {
 		rec := httptest.NewRecorder()
 		fresh.gate(http.NotFoundHandler()).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/apis/example.com/v1/widgets", nil))
@@ -89,6 +89,10 @@ func TestGateDoesNotDecodeAnUnchangedCRDSetAgain(t *testing.T) {
 	kvs = []kine.KV{establishedCRDKV(t, "widgets.example.com", 2)}
 	if got := refilled(); got != "1/0" {
 		t.Fatalf("changed revision refill/pending = %s", got)
+	}
+	fresh.informer.refill([]kine.KV{establishedCRDKV(t, "widgets.example.com", 1)})
+	if got := refilled(); got != "1/0" {
+		t.Fatalf("informer behind the store was taken as settled: refill/pending = %s", got)
 	}
 }
 

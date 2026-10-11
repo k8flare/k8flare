@@ -6,7 +6,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/emicklei/go-restful/v3"
@@ -165,7 +164,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 		Client:  crdClient,
 		Kine:    client,
 		Drained: func() bool { return queueWork.drained(crdreconcile.QueueNames...) },
-	}}, settled: &settledRevisions{}}
+	}}}
 	pub := &crdOpenAPI{svc: openAPIV3Service, informer: refillable}
 	crdWrites := admitCRDWrites(crdAdmit(cfg.Admission), crdMux)
 	mux.Handle("/apis/apiextensions.k8s.io/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -288,43 +287,13 @@ type freshCRDs struct {
 	client     *kine.Client
 	informer   *refillableInformer
 	reconciler *reconciler
-	settled    *settledRevisions
-}
-
-type settledRevisions struct {
-	mu   sync.Mutex
-	revs map[string]int64
-}
-
-func (s *settledRevisions) holds(kvs []kine.KV) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.revs == nil || len(s.revs) != len(kvs) {
-		return false
-	}
-	for _, kv := range kvs {
-		if rev, ok := s.revs[kv.Key]; !ok || rev != kv.ModRevision {
-			return false
-		}
-	}
-	return true
-}
-
-func (s *settledRevisions) remember(kvs []kine.KV) {
-	revs := make(map[string]int64, len(kvs))
-	for _, kv := range kvs {
-		revs[kv.Key] = kv.ModRevision
-	}
-	s.mu.Lock()
-	s.revs = revs
-	s.mu.Unlock()
 }
 
 func (f freshCRDs) gate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-CRD-Instance", instanceID)
 		kvs, _, _, err := f.client.List(r.Context(), crdStoragePrefix, "", 0)
-		if err == nil && f.settled.holds(kvs) {
+		if err == nil && f.informer.settled(kvs) {
 			refillHeader(w, 0)
 			w.Header().Set("X-CRD-Pending", "0")
 		} else if err == nil {
@@ -341,9 +310,6 @@ func (f freshCRDs) gate(next http.Handler) http.Handler {
 				count := len(finalize)
 				if pending {
 					count++
-				}
-				if count == 0 {
-					f.settled.remember(kvs)
 				}
 				w.Header().Set("X-CRD-Pending", strconv.Itoa(count))
 			}
