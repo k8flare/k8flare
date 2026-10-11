@@ -223,7 +223,7 @@ node-image: mirrors
 ## dev: wrangler.dev.jsonc is wrangler.jsonc with local observability off; its
 ## capture outgrew the dev server's heap during long e2e runs. Production keeps it on.
 wrangler.dev.jsonc: wrangler.jsonc
-	sed 's/^  "observability": .*/  "observability": { "enabled": false },/' $< > $@
+	sed -e 's/^  "observability": .*/  "observability": { "enabled": false },/' -e '/^  "routes": /d' $< > $@
 
 wrangler.test.jsonc: wrangler.jsonc
 	sed 's/^  "services": \[$$/  "services": [ { "binding": "WORKER_user-echo", "service": "k8flare-user-echo" },/' $< > $@
