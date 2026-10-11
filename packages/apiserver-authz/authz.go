@@ -30,8 +30,8 @@ func init() {
 var nodeClusterRoles = []string{"system:node-proxier", "system:k3s-controller"}
 
 var (
-	bootstrapClusterRoles        = append(bootstrappolicy.ClusterRoles(), bootstrappolicy.ControllerRoles()...)
-	bootstrapClusterRoleBindings = append(bootstrappolicy.ClusterRoleBindings(), bootstrappolicy.ControllerRoleBindings()...)
+	bootstrapClusterRoles        = append(append(bootstrappolicy.ClusterRoles(), bootstrappolicy.ControllerRoles()...), componentClusterRoles...)
+	bootstrapClusterRoleBindings = append(append(bootstrappolicy.ClusterRoleBindings(), bootstrappolicy.ControllerRoleBindings()...), componentClusterRoleBindings...)
 	bootstrapNamespaceRoles      = bootstrappolicy.NamespaceRoles()
 	bootstrapNamespaceBindings   = bootstrappolicy.NamespaceRoleBindings()
 )

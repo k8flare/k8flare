@@ -99,7 +99,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	oidc.HTTP = cfg.Outbound
 	sa := auth.ServiceAccountToken{HMAC: []byte(cfg.AdminToken), Objects: auth.NewServiceAccountObjects(auth.KineObjects{Client: client})}
 	bootstrap := auth.BootstrapToken{Objects: auth.KineObjects{Client: client}}
-	tokens := auth.WithAuthenticatedGroup(union.New(auth.AdminToken(cfg.AdminToken), auth.ReadonlyToken(cfg.ReadonlyToken), auth.ComponentTokens{Key: []byte(cfg.AdminToken)}, auth.VaultToken{Vault: v}, auth.NodeToken{Vault: v}, sa, bootstrap, oidc, access))
+	tokens := auth.WithAuthenticatedGroup(union.New(auth.AdminToken(cfg.AdminToken), auth.ReadonlyToken(cfg.ReadonlyToken), &auth.ComponentTokens{Store: client}, auth.VaultToken{Vault: v}, auth.NodeToken{Vault: v}, sa, bootstrap, oidc, access))
 	edgeCert := auth.EdgeClientCert{ClientCA: func(ctx context.Context) ([]byte, error) { return v.CAPEM(ctx, "client-ca") }}
 	authn := group.NewAuthenticatedGroupAdder(requnion.New(bearertoken.New(tokens), edgeCert, access))
 	authorizer := authz.New(client)

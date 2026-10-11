@@ -2,6 +2,7 @@ package authz
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -17,13 +18,27 @@ type componentCall struct {
 	allow                              bool
 }
 
-func TestComponentIdentitiesGetOnlyTheirUpstreamRoles(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+type componentURL struct {
+	verb, path string
+	allow      bool
+}
+
+func componentAuthorizer(key []byte) (authorizer.Authorizer, *auth.ComponentTokens, func()) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/kv" && r.URL.Query().Get("key") == auth.ComponentKeyPath {
+			_ = json.NewEncoder(w).Encode(map[string]any{"revision": 1, "kv": map[string]any{"key": auth.ComponentKeyPath, "value": base64.StdEncoding.EncodeToString(key), "modRevision": 1}})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"revision": 1, "kvs": []any{}})
 	}))
-	defer srv.Close()
-	a := New(&kine.Client{HTTP: &http.Client{Transport: rewriteHost{base: srv.URL, next: srv.Client().Transport}}})
+	client := &kine.Client{HTTP: &http.Client{Transport: rewriteHost{base: srv.URL, next: srv.Client().Transport}}}
+	return New(client), &auth.ComponentTokens{Store: client}, srv.Close
+}
+
+func TestComponentIdentitiesGetOnlyTheirUpstreamRoles(t *testing.T) {
 	key := []byte("change-me")
+	a, tokens, done := componentAuthorizer(key)
+	defer done()
 	cases := map[string][]componentCall{
 		"scheduler": {
 			{"list", "", "pods", "", true},
@@ -73,8 +88,24 @@ func TestComponentIdentitiesGetOnlyTheirUpstreamRoles(t *testing.T) {
 			{"list", "", "secrets", "", false},
 			{"create", "", "pods", "", false},
 		},
+		"queues": {
+			{"list", "", "pods", "", false},
+			{"get", "", "secrets", "", false},
+			{"create", "", "pods", "", false},
+		},
+		"nodes": {
+			{"get", "", "pods", "", true},
+			{"list", "", "pods", "", true},
+			{"update", "", "pods", "", true},
+			{"get", "", "nodes", "", true},
+			{"delete", "", "nodes", "", true},
+			{"create", "", "pods", "", false},
+			{"delete", "", "pods", "", false},
+			{"update", "", "nodes", "", false},
+			{"get", "", "secrets", "", false},
+			{"create", "rbac.authorization.k8s.io", "clusterrolebindings", "", false},
+		},
 	}
-	tokens := auth.ComponentTokens{Key: key}
 	for component, calls := range cases {
 		resp, ok, err := tokens.AuthenticateToken(context.Background(), auth.MintComponentToken(key, component))
 		if err != nil || !ok {
@@ -89,6 +120,53 @@ func TestComponentIdentitiesGetOnlyTheirUpstreamRoles(t *testing.T) {
 			}
 			if got := d == authorizer.DecisionAllow; got != c.allow {
 				t.Errorf("%s %s %s.%s/%s: allowed=%v want %v", component, c.verb, c.resource, c.group, c.subresource, got, c.allow)
+			}
+		}
+	}
+}
+
+func TestComponentIdentitiesReachOnlyTheirInternalEndpoints(t *testing.T) {
+	key := []byte("change-me")
+	a, tokens, done := componentAuthorizer(key)
+	defer done()
+	cases := map[string][]componentURL{
+		"queues": {
+			{"post", "/internal/queue/plan", true},
+			{"post", "/internal/queue/followup", true},
+			{"post", "/internal/loadbalancer/provision", true},
+			{"post", "/internal/gateway/provision", true},
+			{"post", "/internal/extensions/dispatch", true},
+			{"post", "/internal/metrics/scrape", true},
+			{"post", "/internal/storage-migrate", false},
+			{"post", "/internal/kubelet-client", false},
+			{"post", "/internal/r2/mint", false},
+			{"post", "/internal/nodes/vm-plan", false},
+			{"get", "/internal/queue/plan", false},
+		},
+		"nodes": {
+			{"post", "/internal/nodes/vm-plan", true},
+			{"post", "/internal/pods/merge-env", true},
+			{"post", "/internal/r2/mint", true},
+			{"post", "/internal/queue/followup", false},
+			{"post", "/internal/kubelet-client", false},
+			{"post", "/internal/proxy-client", false},
+		},
+		"scheduler": {
+			{"post", "/internal/queue/followup", false},
+		},
+	}
+	for component, calls := range cases {
+		resp, ok, err := tokens.AuthenticateToken(context.Background(), auth.MintComponentToken(key, component))
+		if err != nil || !ok {
+			t.Fatalf("%s: ok=%v err=%v", component, ok, err)
+		}
+		for _, c := range calls {
+			d, _, err := a.Authorize(context.Background(), &authorizer.AttributesRecord{User: resp.User, Verb: c.verb, Path: c.path})
+			if err != nil {
+				t.Fatalf("%s %s %s: %v", component, c.verb, c.path, err)
+			}
+			if got := d == authorizer.DecisionAllow; got != c.allow {
+				t.Errorf("%s %s %s: allowed=%v want %v", component, c.verb, c.path, got, c.allow)
 			}
 		}
 	}
