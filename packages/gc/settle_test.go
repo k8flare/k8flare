@@ -180,6 +180,58 @@ func TestAForegroundDeletionFinishesOnTheWritesItsCollectsMakeAndThenNeedsNoRetr
 	}
 }
 
+func TestAForegroundOwnerWaitsForDependentsAlreadyBeingDeletedWithoutWritingToThem(t *testing.T) {
+	store := &fakeKineStore{data: map[string]string{}}
+	foregroundRC(store.data, 0)
+	now := metav1.Now()
+	var pods []string
+	for i := range 3 {
+		pod := owned(fmt.Sprintf("pod-%d", i), ref("rc", true))
+		pod.DeletionTimestamp = &now
+		storedItem(store.data, pod)
+		pods = append(pods, pod.key)
+	}
+	res, err := collectAgainst(store, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Deleted+res.Patched != 0 {
+		t.Fatalf("result = %+v while the rc's pods terminate, want no write: the rc waits for them to be gone", res)
+	}
+	if _, ok := store.data["/registry/replicationcontrollers/default/rc"]; !ok {
+		t.Fatal("rc removed while its pods still exist")
+	}
+	for _, key := range pods {
+		delete(store.data, key)
+	}
+	if _, err := collectAgainst(store, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.data["/registry/replicationcontrollers/default/rc"]; ok {
+		t.Fatal("rc still present after its pods are gone")
+	}
+}
+
+func TestAForegroundDeletionCycleFinishes(t *testing.T) {
+	store := &fakeKineStore{data: map[string]string{}}
+	foregroundRC(store.data, 0)
+	delete(store.data, "/registry/replicationcontrollers/default/rc")
+	now := metav1.Now()
+	for _, p := range []*item{owned("p1", ref("p3", true)), owned("p2", ref("p1", true)), owned("p3", ref("p2", true))} {
+		p.DeletionTimestamp = &now
+		p.Finalizers = []string{foregroundFinalizer}
+		storedItem(store.data, p)
+	}
+	for round := 0; len(store.data) > 1; round++ {
+		if round == 8 {
+			t.Fatalf("cycle still present after 8 collects: %d keys", len(store.data))
+		}
+		if _, err := collectAgainst(store, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestACollectCountsADeleteItCouldNotMakeAsFailed(t *testing.T) {
 	store := &fakeKineStore{data: map[string]string{}}
 	foregroundRC(store.data, 2)

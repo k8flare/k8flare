@@ -169,30 +169,43 @@ func (c *collector) sync(ctx context.Context, it *item) error {
 }
 
 func (c *collector) finishForeground(ctx context.Context, it *item) error {
-	live, deleting := splitBlockers(c.graph, it)
-	for _, dep := range deleting {
+	waiting, circular := splitBlockers(c.graph, it)
+	for _, dep := range circular {
 		if err := c.unblockOwners(ctx, dep); err != nil {
 			return err
 		}
 	}
-	if len(live) > 0 {
+	if len(waiting) > 0 {
 		return nil
 	}
 	return c.removeFinalizer(ctx, it, foregroundFinalizer)
 }
 
-func splitBlockers(g *graph, it *item) (live, deleting []*item) {
+func splitBlockers(g *graph, it *item) (waiting, circular []*item) {
 	for _, dep := range g.dependents[it.UID] {
 		if !blocks(dep, it.UID) {
 			continue
 		}
-		if dep.DeletionTimestamp != nil {
-			deleting = append(deleting, dep)
+		if waitsOn(g, dep, it.UID, map[types.UID]bool{}) {
+			circular = append(circular, dep)
 		} else {
-			live = append(live, dep)
+			waiting = append(waiting, dep)
 		}
 	}
 	return
+}
+
+func waitsOn(g *graph, it *item, owner types.UID, seen map[types.UID]bool) bool {
+	if it.DeletionTimestamp == nil || !it.hasFinalizer(foregroundFinalizer) || seen[it.UID] {
+		return false
+	}
+	seen[it.UID] = true
+	for _, dep := range g.dependents[it.UID] {
+		if blocks(dep, it.UID) && (dep.UID == owner || waitsOn(g, dep, owner, seen)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *collector) orphanDependents(ctx context.Context, it *item) error {

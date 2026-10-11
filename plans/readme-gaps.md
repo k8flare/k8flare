@@ -2245,6 +2245,29 @@ Decided on 2026-10-01, with the owner:
     RC's finalizer had started at 09:18:05 from a list that still held
     them and ran 47 s, past the spec's deadline at 09:18:37.751. The
     spec's own GETs waited 9 to 31 s in `devtls.log`.
+    Why that collect ran long, read again with the same spec's failure on
+    `ci/batch23` (shard 0, gc-1094) and a pass of it (gc-1795): the RC's
+    own sync. `finishForeground` cleared `blockOwnerDeletion` on every
+    dependent that was already deleting, one PATCH after another, before
+    it could drop the finalizer. The front logged them one a second per
+    collect while two collects overlapped (09:18:23 to 09:19:20 here,
+    19:15:24 to 19:16:17 in gc-1094), so a collect that listed the pods
+    still there ran 40 to 111 s and blocked the next one. In gc-1094 the
+    last pod was gone by 19:15:21 (the last pod PATCH that found its pod
+    answered then; all 137 after it answered 404), 32 s before the spec's
+    deadline, and the RC's finalizer came off at 19:16:15. The pass is the case where the collect that
+    dropped the finalizer (17:50:10, 44 s after the delete) had listed the
+    pods gone. e641dad is not involved: the 2 s re-book was still in place
+    for 37439510537, which failed the same way. Upstream's owner only waits
+    for its blocking dependents (`processDeletingDependentsItem`), and the
+    collector now does too: it unblocks only a dependent that waits back on
+    the owner, the cycle 219e2e3 was for
+    (`TestAForegroundOwnerWaitsForDependentsAlreadyBeingDeletedWithoutWritingToThem`,
+    failing before; `TestAForegroundDeletionCycleFinishes`). Not yet run in
+    Conformance. Also left as it is: the collector deletes a dependent of a
+    foreground owner with Foreground even when the dependent has no
+    dependents (upstream does that only when it has some), so each pod
+    gets a finalizer that a second round of 100 PATCHes removes.
 
 ## Local development
 

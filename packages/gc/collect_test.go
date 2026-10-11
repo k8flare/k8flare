@@ -81,9 +81,9 @@ func TestCircleBlockersAreAlreadyDeleting(t *testing.T) {
 	}
 	g := graphOf(p1, p2, p3)
 	for _, p := range []*item{p1, p2, p3} {
-		live, deleting := splitBlockers(g, p)
-		if len(live) != 0 || len(deleting) != 1 {
-			t.Fatalf("%s: live=%d deleting=%d", p.Name, len(live), len(deleting))
+		waiting, circular := splitBlockers(g, p)
+		if len(waiting) != 0 || len(circular) != 1 {
+			t.Fatalf("%s: waiting=%d circular=%d", p.Name, len(waiting), len(circular))
 		}
 	}
 }
