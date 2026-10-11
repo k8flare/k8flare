@@ -137,9 +137,26 @@ type jwksEntry struct {
 	expires time.Time
 }
 
+type jwksFetch struct {
+	started time.Time
+	done    chan struct{}
+	keys    map[string]any
+	err     error
+}
+
+func (f *jwksFetch) running() bool {
+	select {
+	case <-f.done:
+		return false
+	default:
+		return true
+	}
+}
+
 var (
-	jwksMu    sync.Mutex
-	jwksCache = map[string]jwksEntry{}
+	jwksMu      sync.Mutex
+	jwksCache   = map[string]jwksEntry{}
+	jwksFetches = map[string]*jwksFetch{}
 )
 
 func lookupKey(client *http.Client, jwksURL, kid string) (any, error) {
@@ -149,7 +166,7 @@ func lookupKey(client *http.Client, jwksURL, kid string) (any, error) {
 		}
 		return key, nil
 	}
-	return fetchKey(client, jwksURL, kid)
+	return fetchKey(client, jwksURL, kid, 0)
 }
 
 func cachedKey(jwksURL, kid string) (key any, cached, found bool) {
@@ -163,19 +180,37 @@ func cachedKey(jwksURL, kid string) (key any, cached, found bool) {
 	return key, true, found
 }
 
-func fetchKey(client *http.Client, jwksURL, kid string) (any, error) {
-	keys, err := fetchJWKS(client, jwksURL)
+func fetchKey(client *http.Client, jwksURL, kid string, reuseFor time.Duration) (any, error) {
+	keys, err := sharedJWKS(client, jwksURL, reuseFor)
 	if err != nil {
 		return nil, err
 	}
-	jwksMu.Lock()
-	jwksCache[jwksURL] = jwksEntry{keys: keys, expires: time.Now().Add(10 * time.Minute)}
 	key, found := keys[kid]
-	jwksMu.Unlock()
 	if !found {
 		return nil, fmt.Errorf("unknown kid")
 	}
 	return key, nil
+}
+
+func sharedJWKS(client *http.Client, jwksURL string, reuseFor time.Duration) (map[string]any, error) {
+	jwksMu.Lock()
+	f := jwksFetches[jwksURL]
+	if f != nil && (f.running() || time.Since(f.started) < reuseFor) {
+		jwksMu.Unlock()
+		<-f.done
+		return f.keys, f.err
+	}
+	f = &jwksFetch{started: time.Now(), done: make(chan struct{})}
+	jwksFetches[jwksURL] = f
+	jwksMu.Unlock()
+	f.keys, f.err = fetchJWKS(client, jwksURL)
+	if f.err == nil {
+		jwksMu.Lock()
+		jwksCache[jwksURL] = jwksEntry{keys: f.keys, expires: time.Now().Add(10 * time.Minute)}
+		jwksMu.Unlock()
+	}
+	close(f.done)
+	return f.keys, f.err
 }
 
 func fetchJWKS(client *http.Client, jwksURL string) (map[string]any, error) {

@@ -386,9 +386,13 @@ Decided on 2026-10-01, with the owner:
     `system:` groups from claims, and has no CEL claim rules or
     `--oidc-signing-algs`. Like upstream it rejects an `email_verified`
     that is present but not `true`, and refetches keys on an unknown
-    `kid`; upstream's go-oidc skips that refetch while the JWKS
-    response's Cache-Control lifetime lasts, this verifier refetches
-    every time. Next: match upstream's algorithm and `system:` rules,
+    `kid`. Upstream's go-oidc (v2.5.0) refetches only within 30 s
+    (`keysExpiryDelta`) of the JWKS response's Cache-Control expiry, or
+    on every such token when there is no Cache-Control, and shares one
+    in-flight fetch. This verifier ignores Cache-Control, keeps keys
+    10 minutes, refetches at most once per 30 s per JWKS URL and
+    isolate, and concurrent requests share one fetch; a key rotated in
+    right after a fetch is accepted up to 30 s late. Next: match upstream's algorithm and `system:` rules,
     and serve
     `AuthenticationConfiguration` CEL (claimMappings,
     claimValidationRules, userValidationRules) by delegating expression

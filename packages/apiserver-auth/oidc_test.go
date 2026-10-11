@@ -7,10 +7,13 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,11 +22,13 @@ import (
 )
 
 type oidcIssuer struct {
-	server *httptest.Server
-	rsa    *rsa.PrivateKey
-	ec     *ecdsa.PrivateKey
-	next   *rsa.PrivateKey
-	hits   int
+	server  *httptest.Server
+	rsa     *rsa.PrivateKey
+	ec      *ecdsa.PrivateKey
+	next    *rsa.PrivateKey
+	delay   time.Duration
+	hits    atomic.Int32
+	keyHits atomic.Int32
 }
 
 func newOIDCIssuer(t *testing.T) *oidcIssuer {
@@ -38,11 +43,13 @@ func newOIDCIssuer(t *testing.T) *oidcIssuer {
 	}
 	i := &oidcIssuer{rsa: rsaKey, ec: ecKey}
 	i.server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		i.hits++
+		i.hits.Add(1)
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
 			_ = json.NewEncoder(w).Encode(map[string]string{"issuer": i.server.URL, "jwks_uri": i.server.URL + "/keys"})
 		case "/keys":
+			i.keyHits.Add(1)
+			time.Sleep(i.delay)
 			keys := []jwk{
 				{Kid: "r1", Kty: "RSA", N: base64.RawURLEncoding.EncodeToString(rsaKey.N.Bytes()), E: base64.RawURLEncoding.EncodeToString(big.NewInt(int64(rsaKey.E)).Bytes())},
 				{Kid: "e1", Kty: "EC", Crv: "P-256", X: base64.RawURLEncoding.EncodeToString(ecKey.X.Bytes()), Y: base64.RawURLEncoding.EncodeToString(ecKey.Y.Bytes())},
@@ -58,8 +65,28 @@ func newOIDCIssuer(t *testing.T) *oidcIssuer {
 	t.Cleanup(i.server.Close)
 	jwksMu.Lock()
 	jwksCache = map[string]jwksEntry{}
+	jwksFetches = map[string]*jwksFetch{}
 	jwksMu.Unlock()
 	return i
+}
+
+func (i *oidcIssuer) expireRefetchInterval() {
+	jwksMu.Lock()
+	defer jwksMu.Unlock()
+	for _, f := range jwksFetches {
+		f.started = f.started.Add(-oidcKeyRefetchInterval)
+	}
+}
+
+func (i *oidcIssuer) signWithKid(t *testing.T, kid string, key *rsa.PrivateKey) string {
+	t.Helper()
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{"iss": i.server.URL, "aud": "k8flare", "sub": "u1", "exp": time.Now().Add(time.Hour).Unix()})
+	tok.Header["kid"] = kid
+	raw, err := tok.SignedString(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }
 
 func (i *oidcIssuer) sign(t *testing.T, claims jwt.MapClaims) string {
@@ -172,7 +199,7 @@ func TestOIDCAcceptsRequiredClaimAndES256(t *testing.T) {
 	}
 }
 
-func TestOIDCRefetchesKeysOnUnknownKid(t *testing.T) {
+func TestOIDCRefetchesKeysOnUnknownKidAfterInterval(t *testing.T) {
 	i := newOIDCIssuer(t)
 	o := i.options()
 	if _, ok, err := o.AuthenticateToken(t.Context(), i.sign(t, jwt.MapClaims{"sub": "u1"})); !ok || err != nil {
@@ -183,14 +210,52 @@ func TestOIDCRefetchesKeysOnUnknownKid(t *testing.T) {
 		t.Fatal(err)
 	}
 	i.next = next
-	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{"iss": i.server.URL, "aud": "k8flare", "sub": "u1", "exp": time.Now().Add(time.Hour).Unix()})
-	tok.Header["kid"] = "r2"
-	raw, err := tok.SignedString(next)
-	if err != nil {
-		t.Fatal(err)
+	raw := i.signWithKid(t, "r2", next)
+	if _, ok, _ := o.AuthenticateToken(t.Context(), raw); ok {
+		t.Fatal("refetched keys within the refetch interval")
 	}
+	if got := i.keyHits.Load(); got != 1 {
+		t.Fatalf("key set fetched %d times within the interval, want 1", got)
+	}
+	i.expireRefetchInterval()
 	if _, ok, err := o.AuthenticateToken(t.Context(), raw); !ok || err != nil {
 		t.Fatalf("after rotation: ok=%v err=%v", ok, err)
+	}
+	if got := i.keyHits.Load(); got != 2 {
+		t.Fatalf("key set fetched %d times, want 2", got)
+	}
+}
+
+func TestOIDCRandomKidsFetchKeysOncePerInterval(t *testing.T) {
+	i := newOIDCIssuer(t)
+	o := i.options()
+	if _, ok, err := o.AuthenticateToken(t.Context(), i.sign(t, jwt.MapClaims{"sub": "u1"})); !ok || err != nil {
+		t.Fatalf("warm up: ok=%v err=%v", ok, err)
+	}
+	i.expireRefetchInterval()
+	i.delay = 50 * time.Millisecond
+	var wg sync.WaitGroup
+	for n := range 20 {
+		raw := i.signWithKid(t, fmt.Sprintf("random-%d", n), i.rsa)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, ok, _ := o.AuthenticateToken(t.Context(), raw); ok {
+				t.Error("accepted a token with an unknown kid")
+			}
+		}()
+	}
+	wg.Wait()
+	for n := range 20 {
+		if _, ok, _ := o.AuthenticateToken(t.Context(), i.signWithKid(t, fmt.Sprintf("later-%d", n), i.rsa)); ok {
+			t.Fatal("accepted a token with an unknown kid")
+		}
+	}
+	if got := i.keyHits.Load(); got != 2 {
+		t.Fatalf("key set fetched %d times for 40 unknown kids, want 2 (warm up and one refetch)", got)
+	}
+	if _, ok, err := o.AuthenticateToken(t.Context(), i.sign(t, jwt.MapClaims{"sub": "u1"})); !ok || err != nil {
+		t.Fatalf("known kid after refetch: ok=%v err=%v", ok, err)
 	}
 }
 
@@ -202,8 +267,8 @@ func TestOIDCIgnoresForeignTokensWithoutFetching(t *testing.T) {
 			t.Fatalf("%q: ok=%v err=%v", raw, ok, err)
 		}
 	}
-	if i.hits != 0 {
-		t.Fatalf("issuer contacted %d times", i.hits)
+	if got := i.hits.Load(); got != 0 {
+		t.Fatalf("issuer contacted %d times", got)
 	}
 }
 
