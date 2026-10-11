@@ -187,7 +187,9 @@ CoreDNS, and the small node API proxy, and nothing else from the platform.
 - **Workers as webhooks and API servers.** An admission webhook,
   conversion webhook, or `APIService` can point at a Worker instead of a
   Service: webhooks with the URL `https://k8flare.com/worker/<name>`, and
-  any of them with the `k8flare.com/worker: <name>` annotation.
+  any of them with the `k8flare.com/worker: <name>` annotation. A Worker
+  named in either feature is reached through a service binding
+  `WORKER_<name>` added to `services` in `wrangler.jsonc`.
 - **LoadBalancer Services on the edge.** `type: LoadBalancer` is
   published as `{name}--{namespace}.<cluster domain>` and routed to
   ready endpoints through the node tunnel, with TLS from Cloudflare.

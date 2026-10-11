@@ -1,0 +1,11 @@
+{
+  "$schema": "../../../../node_modules/wrangler/config-schema.json",
+  "name": "k8flare-user-echo",
+  "main": "index.js",
+  "compatibility_date": "2026-09-01",
+  "workers_dev": false,
+  "vars": { "API_TOKEN": "k8flare-dev-token" },
+  "services": [
+    { "binding": "APISERVER", "service": "k8flare" },
+  ],
+}

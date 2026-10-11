@@ -225,6 +225,9 @@ node-image: mirrors
 wrangler.dev.jsonc: wrangler.jsonc
 	sed 's/^  "observability": .*/  "observability": { "enabled": false },/' $< > $@
 
+wrangler.test.jsonc: wrangler.jsonc
+	sed 's/^  "services": \[$$/  "services": [ { "binding": "WORKER_user-echo", "service": "k8flare-user-echo" },/' $< > $@
+
 dev: wrangler.dev.jsonc node-image
 	env -u CLAUDECODE -u AI_AGENT X_LOCAL_OBSERVABILITY=false MINIFLARE_WORKERD_V8_FLAGS=--single-threaded-gc pnpm exec wrangler dev -c wrangler.dev.jsonc --local --persist-to .wrangler/state --port 18787
 
@@ -261,7 +264,7 @@ e2e:
 test:
 	cd scripts && go run ./e2e -set conformance -procs $(or $(PROCS),4)
 
-test-packages: wasm
+test-packages: wasm wrangler.test.jsonc
 	go test -count=1 -timeout 70m ./packages/...
 
 ## sizes: print the optimised size and linked function count of every worker,

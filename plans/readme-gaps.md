@@ -482,14 +482,11 @@ Decided on 2026-10-01, with the owner:
 
 ## Cloudflare features
 
-- Unit tests only (the `Hooks` entrypoint serves only `hookecho`, so no
-  dev or CI run can serve an aggregated API from a Worker yet). An
-  `APIService` points at a Worker with the `k8flare.com/worker`
+- An `APIService` points at a Worker with the `k8flare.com/worker`
   annotation (the same key admission webhooks use); `spec.service` is not
   needed (README's `https://k8flare.com/worker/<name>` form has no field to
-  live in: `APIService` has no `url`). Requests reach the Worker as `https://hooks.internal/hook/<name>`
-  followed by the original API path; the requesting user travels in
-  `X-Remote-*` headers.
+  live in: `APIService` has no `url`). Requests reach the Worker with the
+  original API path; the requesting user travels in `X-Remote-*` headers.
   - Aggregated discovery fetches the remote's `/apis` (aggregated v2, or the
     legacy `/apis/<group>/<version>` list when unsupported) as
     `system:kube-aggregator`, caches it for a minute per APIService in the
@@ -498,12 +495,20 @@ Decided on 2026-10-01, with the owner:
     service), and group/version priorities are not carried over.
   - Availability of a Worker APIService is always `True`; the Worker is not
     probed.
-- The same limit holds for Workers as controllers and as admission or
-  conversion webhooks: `Hooks` (`control-plane-worker/src/hooks.ts`) loads
-  `hookecho` whatever the name, and `hookecho` answers three echo names.
-  A conversion webhook is matched by URL only, not by the annotation.
-  `TestAdmissionExtensions`, which drives the delivery, is skipped in
-  `unit.yml`.
+- Workers as controllers, webhooks and API servers: `Hooks`
+  (`control-plane-worker/src/hooks.ts`) sends `/hook/<name>/<path>` to the
+  service binding `WORKER_<name>` as `/<path>`, and loads the built-in
+  `hookecho` for a name with no such binding (it answers three echo names,
+  404 for any other). The user Worker gets no credentials from k8flare: to
+  reconcile through the API it brings its own, for example a
+  ServiceAccount token and a service binding to `k8flare`. The live job
+  (`make test-packages` in `e2e.yml`) runs `TestAdmissionExtensions`
+  against `wrangler.test.jsonc` (`wrangler.jsonc` plus `WORKER_user-echo`)
+  and the test Worker `packages/apiserver/testdata/user-echo`: admission
+  by URL and by annotation, a CRD controller, a conversion webhook by
+  annotation, and an `APIService`. Not yet seen passing in CI: the multi-config
+  `wrangler dev` it needs was not run on a host, and `unit.yml` skips the
+  test.
 - No exec credential plugin ships; `k8flare` only accepts the Access token
   as a bearer.
 - Traces start in the workloads and queue paths only (`otel.ts`), not per

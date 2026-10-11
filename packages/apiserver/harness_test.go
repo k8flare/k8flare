@@ -44,6 +44,11 @@ var devState string
 
 func startDevURL(t *testing.T) (string, *kubernetes.Clientset) {
 	t.Helper()
+	return startDevURLWith(t, "wrangler.jsonc")
+}
+
+func startDevURLWith(t *testing.T, configs ...string) (string, *kubernetes.Clientset) {
+	t.Helper()
 	_, file, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(file), "../..")
 	workers := []string{"apiserver", "openapi", "customresources", "scheduler", "workloads", "gc", "admission"}
@@ -59,15 +64,21 @@ func startDevURL(t *testing.T) (string, *kubernetes.Clientset) {
 			t.Fatalf("wasm assets missing; run make wasm: %v", err)
 		}
 	}
+	args := []string{"exec", "wrangler", "dev", "--local", "--enable-containers=false"}
+	for _, c := range configs {
+		if _, err := os.Stat(filepath.Join(root, c)); err != nil {
+			t.Fatalf("wrangler config missing; make test-packages generates wrangler.test.jsonc: %v", err)
+		}
+		args = append(args, "-c", c)
+	}
 	port := freePort(t)
 	state := t.TempDir()
 	devState = state
-	cmd := exec.Command("pnpm", "exec", "wrangler", "dev", "--local", "--enable-containers=false",
-		"-c", "wrangler.jsonc",
+	cmd := exec.Command("pnpm", append(args,
 		"--persist-to", state, "--port", fmt.Sprint(port), "--inspector-port", "0",
 		"--local-upstream", fmt.Sprintf("127.0.0.1:%d", port),
 		"--var", "ADMIN_TOKEN:"+devToken, "--var", "READONLY_TOKEN:"+readonlyDevToken, "--var", "JOIN_TOKEN:"+joinToken,
-		"--var", "SECRETS_ENCRYPTION_KEYS:"+secretsEncryptionKeys)
+		"--var", "SECRETS_ENCRYPTION_KEYS:"+secretsEncryptionKeys)...)
 	cmd.Dir = root
 	cmd.Env = devEnv()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
