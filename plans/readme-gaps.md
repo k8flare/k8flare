@@ -104,8 +104,20 @@ Decided on 2026-10-01, with the owner:
 
 ## Architecture
 
-- Things poll: the metrics scrape re-sends itself every 15 s whatever it
-  found (`followup.go`, case `metrics`) and wakes HPA each time.
+- Every deadline is a row in the Cluster object's `deadlines` table and
+  the alarm sends it; an idle cluster books none (`cluster-store`
+  `deadlines.test.ts`). "Nothing polls" holds only while nothing is
+  pending: these still re-book on a fixed period for as long as their
+  condition lasts, which can be for ever. `replicaGap` every 5 s while a
+  ReplicationController, ReplicaSet or Deployment has `status.replicas`
+  different from `spec.replicas`, and the StatefulSet 2 s re-run while a
+  set has not settled (`workloads.go`); failure and pending retries every
+  5 s without backoff (`followup.go`: workloads, accounts, crds, addons,
+  extensions, containers, leases, scheduler on error) and gc every 2 s
+  while it still deletes, patches or has pending items; HPA every 15 s
+  while an HPA exists (upstream's sync period); the scheduler every 5
+  minutes while a pod is unschedulable (upstream's flush); a namespace that
+  cannot finish once a minute.
 - node-tunnel imports its wasm statically into the Durable Object instead
   of loading it through the Worker Loader.
 
