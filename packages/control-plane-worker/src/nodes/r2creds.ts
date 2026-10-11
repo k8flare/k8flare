@@ -1,5 +1,6 @@
 import { apiserverFetch } from "../loader.ts";
 import { clusterName } from "../clusterid.ts";
+import { componentToken } from "../componenttoken.ts";
 
 type R2Env = Env & {
   CLOUDFLARE_API_TOKEN?: string;
@@ -33,7 +34,7 @@ export async function mintLocal(env: R2Env, prefix: string): Promise<TempCreds |
   if (!env.R2_ACCESS_KEY_ID || !env.R2_SECRET_ACCESS_KEY || !env.R2_ACCOUNT_ID || !env.R2_BUCKET) return null;
   const resp = await apiserverFetch(env, new Request("https://apiserver.internal/internal/r2/mint", {
     method: "POST",
-    headers: { Authorization: `Bearer ${env.ADMIN_TOKEN}`, "Content-Type": "application/json" },
+    headers: { Authorization: `Bearer ${await componentToken(env, "nodes")}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       accessKeyId: env.R2_ACCESS_KEY_ID,
       secretAccessKey: env.R2_SECRET_ACCESS_KEY,

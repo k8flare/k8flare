@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import "../../control-plane-worker/assets/wasm/wasm_exec.js";
 import { apiserverFetch } from "../../control-plane-worker/src/loader.ts";
+import { componentToken } from "../../control-plane-worker/src/componenttoken.ts";
 import nodeTunnelWasm from "../assets/node-tunnel.wasm";
 
 declare const Go: new () => {
@@ -40,7 +41,7 @@ async function kubeletCredentials(env: Env): Promise<Record<string, string>> {
     env,
     new Request("https://apiserver.internal/internal/kubelet-client", {
       method: "POST",
-      headers: { Authorization: `Bearer ${env.ADMIN_TOKEN}` },
+      headers: { Authorization: `Bearer ${await componentToken(env, "nodetunnel")}` },
     }),
   );
   if (!resp.ok) throw new Error(`kubelet client credentials: ${resp.status}`);
@@ -53,7 +54,7 @@ async function proxyClientCredentials(env: Env): Promise<Record<string, string>>
     env,
     new Request("https://apiserver.internal/internal/proxy-client", {
       method: "POST",
-      headers: { Authorization: `Bearer ${env.ADMIN_TOKEN}` },
+      headers: { Authorization: `Bearer ${await componentToken(env, "nodetunnel")}` },
     }),
   );
   if (!resp.ok) throw new Error(`proxy client credentials: ${resp.status}`);
@@ -136,7 +137,7 @@ export class NodeTunnel extends DurableObject<Env> {
     if (!this.goInstance) {
       this.goInstance = tunnelCredentials(this.env)
         .then((kubelet) => {
-          this.goEnv = { ADMIN_TOKEN: this.env.ADMIN_TOKEN, ...kubelet };
+          this.goEnv = { ...kubelet };
           this.kubeletRefreshAt = Date.now() + kubeletCredentialsRefreshMs;
           return instantiate(this.goEnv);
         })
