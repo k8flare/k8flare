@@ -1,6 +1,6 @@
 import { registerHooks } from "node:module";
 
-const durableObject = "data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }";
+const durableObject = "data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } } export class WorkerEntrypoint { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }";
 const loader = "data:text/javascript,export async function apiserverFetch(env, request) { return env.__apiserver(request); }";
 const loaderKit = "data:text/javascript,export async function loadWasmWorker(loader, assets, name, env) { return loader.load(name, env); }";
 
