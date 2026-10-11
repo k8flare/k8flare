@@ -126,6 +126,8 @@ func TestOIDCRejects(t *testing.T) {
 		{"no expiry", func(*OIDC) {}, jwt.MapClaims{"sub": "u1", "exp": nil}},
 		{"missing username claim", func(*OIDC) {}, jwt.MapClaims{}},
 		{"unverified email", func(o *OIDC) { o.UsernameClaim = "email" }, jwt.MapClaims{"email": "a@b.c", "email_verified": false}},
+		{"string email_verified", func(o *OIDC) { o.UsernameClaim = "email" }, jwt.MapClaims{"email": "a@b.c", "email_verified": "true"}},
+		{"null email_verified", func(o *OIDC) { o.UsernameClaim = "email" }, jwt.MapClaims{"email": "a@b.c", "email_verified": json.RawMessage("null")}},
 		{"required claim differs", func(o *OIDC) { o.RequiredClaims = map[string]string{"hd": "kooffice.jp"} }, jwt.MapClaims{"sub": "u1", "hd": "other.jp"}},
 		{"system group", func(o *OIDC) { o.GroupsClaim = "groups"; o.GroupsPrefix = "-" }, jwt.MapClaims{"sub": "u1", "groups": []string{"system:masters"}}},
 	}

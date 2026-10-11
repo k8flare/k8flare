@@ -80,8 +80,10 @@ func (o OIDC) username(claims jwt.MapClaims) (string, bool) {
 		return "", false
 	}
 	if claim == "email" {
-		if verified, ok := claims["email_verified"].(bool); ok && !verified {
-			return "", false
+		if value, present := claims["email_verified"]; present {
+			if verified, _ := value.(bool); !verified {
+				return "", false
+			}
 		}
 	}
 	switch {
