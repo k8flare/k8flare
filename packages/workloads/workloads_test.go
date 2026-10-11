@@ -382,36 +382,6 @@ func TestBusySyncAsksTheRunningPassToYield(t *testing.T) {
 	}
 }
 
-func TestReplicaGapRetriesWhileStatusLags(t *testing.T) {
-	replicas := int32(40)
-	matched := int32(2)
-	client := fake.NewSimpleClientset(
-		&v1.ReplicationController{
-			ObjectMeta: metav1.ObjectMeta{Name: "burst", Namespace: "default"},
-			Spec:       v1.ReplicationControllerSpec{Replicas: &replicas},
-			Status:     v1.ReplicationControllerStatus{Replicas: 18},
-		},
-		&v1.ReplicationController{
-			ObjectMeta: metav1.ObjectMeta{Name: "done", Namespace: "default"},
-			Spec:       v1.ReplicationControllerSpec{Replicas: &matched},
-			Status:     v1.ReplicationControllerStatus{Replicas: matched},
-		},
-	)
-	controllers, _ := wanted([]string{"replicationcontrollers"})
-	gap, ok := replicaGap(context.Background(), client, controllers)
-	if !ok || gap != replicaRetry {
-		t.Fatalf("gap=%s ok=%v", gap, ok)
-	}
-	settled := fake.NewSimpleClientset(&v1.ReplicationController{
-		ObjectMeta: metav1.ObjectMeta{Name: "done", Namespace: "default"},
-		Spec:       v1.ReplicationControllerSpec{Replicas: &matched},
-		Status:     v1.ReplicationControllerStatus{Replicas: matched},
-	})
-	if _, ok := replicaGap(context.Background(), settled, controllers); ok {
-		t.Fatal("converged replication controller asked for another pass")
-	}
-}
-
 func TestClientScaleReadsDeploymentReplicas(t *testing.T) {
 	replicas := int32(3)
 	client := fake.NewSimpleClientset(&appsv1.Deployment{
