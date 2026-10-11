@@ -326,13 +326,22 @@ Decided on 2026-10-01, with the owner:
   `requestObject` and `responseObject`; the objects come back base64-encoded
   in internal response headers that the front strips
   (`apiserver/audit_test.go` drives a create and a patch through the core
-  group handler, `customresources/audit_test.go` a CRD create). Not yet:
+  group handler, `customresources/audit_test.go` a CRD create). When the
+  encoded objects exceed 64 KiB (Workers allow 128 KB of response headers),
+  the worker sends neither and the front's event keeps its level and gains
+  upstream's truncating-backend annotation `audit.k8s.io/truncated: "true"`.
+  Requests that `longRunningRequest` matches (watch, proxy, and the attach,
+  exec, log and portforward subresources), for which upstream logs no
+  objects, are not given the level, so their workers send no objects
+  (`apiserver/audit_test.go` covers a patch at and over the budget and a
+  streaming watch). Not yet:
   - `objectRef` lacks the name, UID and resourceVersion that upstream's
     `LogRequestObject` copies from the request object (a create's event has
     no name).
   - Not run in a deployed Worker: `tail()` must relay the lines to
     Workers Logs, and the object headers have not crossed the Worker Loader
-    boundary, so a size limit on response headers there is untested.
+    boundary, so whether the documented 128 KB response header limit
+    applies there unchanged is untested.
 - Upgrades: storage migration follows upstream's default at 1.36 (the
   `storagemigration.k8s.io` API and its controller are off by default;
   the deployed binary re-encodes an object the next time it is written),
