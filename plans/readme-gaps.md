@@ -394,10 +394,15 @@ Decided on 2026-10-01, with the owner:
     `kid`. Upstream's go-oidc (v2.5.0) refetches only within 30 s
     (`keysExpiryDelta`) of the JWKS response's Cache-Control expiry, or
     on every such token when there is no Cache-Control, and shares one
-    in-flight fetch. This verifier ignores Cache-Control, keeps keys
-    10 minutes, refetches at most once per 30 s per JWKS URL and
-    isolate, and concurrent requests share one fetch; a key rotated in
-    right after a fetch is accepted up to 30 s late. Next: match upstream's algorithm and `system:` rules,
+    in-flight fetch. This verifier ignores Cache-Control and keeps keys
+    10 minutes. While those keys are fresh, an unknown `kid` starts a
+    refetch at most once per 30 s per JWKS URL and isolate, counted from
+    the start of the last fetch whether it finished, failed or is still
+    running; other requests in that window are rejected instead of
+    waiting on another request's fetch, so a key rotated in right after
+    a fetch is accepted up to 30 s late. When the keys are missing or
+    expired every request fetches, as the Access verifier does, so
+    concurrent cold requests each fetch once. Next: match upstream's algorithm and `system:` rules,
     and serve
     `AuthenticationConfiguration` CEL (claimMappings,
     claimValidationRules, userValidationRules) by delegating expression
