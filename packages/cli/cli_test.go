@@ -19,8 +19,16 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+	corelisters "k8s.io/client-go/listers/core/v1"
+	"k8s.io/client-go/tools/cache"
+	bootstrapapi "k8s.io/cluster-bootstrap/token/api"
+	bootstraputil "k8s.io/cluster-bootstrap/token/util"
+	"k8s.io/kubernetes/plugin/pkg/auth/authenticator/token/bootstrap"
 )
 
 func testCAPEM(t *testing.T) string {
@@ -197,6 +205,57 @@ func TestTokenDeleteAndRotateAcceptThePrintedK10Token(t *testing.T) {
 	}
 	if f.last().method != "POST" || f.last().path != "/internal/tokens/abc123/rotate" {
 		t.Fatalf("rotate %+v", f.last())
+	}
+}
+
+func TestTokenCreateBootstrapWritesABootstrapTokenSecret(t *testing.T) {
+	f := newFakeCluster(t)
+	before := time.Now()
+	out, err := f.run(t, "token", "create", "--bootstrap", "--ttl", "1h", "--description", "ci")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := f.last()
+	if c.method != "POST" || c.path != "/api/v1/namespaces/kube-system/secrets" || c.auth != "Bearer admin-secret" {
+		t.Fatalf("%+v", c)
+	}
+	var secret corev1.Secret
+	if err := json.Unmarshal([]byte(c.body), &secret); err != nil {
+		t.Fatal(err)
+	}
+	id, tokenSecret := string(secret.Data[bootstrapapi.BootstrapTokenIDKey]), string(secret.Data[bootstrapapi.BootstrapTokenSecretKey])
+	if !bootstraputil.IsValidBootstrapToken(id+"."+tokenSecret) || secret.Name != "bootstrap-token-"+id || secret.Namespace != "kube-system" || secret.Type != bootstrapapi.SecretTypeBootstrapToken {
+		t.Fatalf("secret %+v", secret)
+	}
+	if string(secret.Data[bootstrapapi.BootstrapTokenUsageAuthentication]) != "true" || string(secret.Data[bootstrapapi.BootstrapTokenDescriptionKey]) != "ci" {
+		t.Fatalf("data %q", secret.Data)
+	}
+	expires, err := time.Parse(time.RFC3339, string(secret.Data[bootstrapapi.BootstrapTokenExpirationKey]))
+	if err != nil || expires.Before(before.Add(time.Hour).Truncate(time.Second)) || expires.After(time.Now().Add(time.Hour)) {
+		t.Fatalf("expiration %q %v", secret.Data[bootstrapapi.BootstrapTokenExpirationKey], err)
+	}
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	if err := indexer.Add(&secret); err != nil {
+		t.Fatal(err)
+	}
+	authenticated, ok, err := bootstrap.NewTokenAuthenticator(corelisters.NewSecretLister(indexer).Secrets("kube-system")).AuthenticateToken(t.Context(), id+"."+tokenSecret)
+	if err != nil || !ok || !slices.Contains(authenticated.User.GetGroups(), bootstrapapi.BootstrapDefaultGroup) {
+		t.Fatalf("upstream bootstrap authenticator: ok=%v err=%v", ok, err)
+	}
+	if want := k10Of(t, f.respond["GET /cacerts"], id+"."+tokenSecret) + "\n"; out != want {
+		t.Fatalf("output %q, want %q", out, want)
+	}
+	for _, call := range f.calls {
+		if strings.HasPrefix(call.path, "/internal/tokens") {
+			t.Fatalf("vault token created: %+v", call)
+		}
+	}
+	if _, err := f.run(t, "token", "create", "--bootstrap", "--ttl", "0"); err != nil {
+		t.Fatal(err)
+	}
+	var neverExpires corev1.Secret
+	if err := json.Unmarshal([]byte(f.last().body), &neverExpires); err != nil || neverExpires.Data[bootstrapapi.BootstrapTokenExpirationKey] != nil {
+		t.Fatalf("ttl 0: %s %v", f.last().body, err)
 	}
 }
 
