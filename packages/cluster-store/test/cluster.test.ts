@@ -223,6 +223,42 @@ test("HelmChart and HelmChartConfig writes of every kind reach the addons queue"
   ]);
 });
 
+test("a Helm hook Job or Pod reaches the addons queue when it finishes or goes, not on every write", async () => {
+  const sent: string[] = [];
+  const addons = { send: async () => {}, sendBatch: async (batch: { body: { key: string } }[]) => void sent.push(...batch.map((m) => m.body.key)) };
+  const r = rig({ ADDON_Q: addons } as any);
+  await r.settle();
+  const hook = `"annotations":{"helm.sh/hook":"pre-install"}`;
+  const job = (status: string) => `{"kind":"Job","metadata":{"name":"pre",${hook}},"status":${status}}`;
+  const pod = (phase: string) => `{"kind":"Pod","metadata":{"name":"post",${hook}},"status":{"phase":"${phase}"}}`;
+  await r.put("/registry/jobs/apps/pre", job(`{}`));
+  await r.put("/registry/jobs/apps/pre", job(`{"active":1}`), 2);
+  await r.put("/registry/jobs/apps/pre", job(`{"conditions":[{"type":"Complete","status":"True"}]}`), 3);
+  await r.put("/registry/jobs/apps/plain", `{"kind":"Job","metadata":{"name":"plain"},"status":{"conditions":[{"type":"Complete","status":"True"}]}}`);
+  await r.put("/registry/pods/apps/post", pod("Pending"));
+  await r.put("/registry/pods/apps/post", pod("Running"), 6);
+  await r.put("/registry/pods/apps/post", pod("Failed"), 7);
+  await r.remove("/registry/pods/apps/post");
+  await r.settle();
+  assert.deepEqual(sent, ["/registry/jobs/apps/pre", "/registry/pods/apps/post", "/registry/pods/apps/post"]);
+});
+
+test("POST /enqueue with once books an earlier deadline over a later one", async () => {
+  const sent: { delaySeconds?: number }[] = [];
+  const queue = {
+    send: async (_body: unknown, opts?: { delaySeconds?: number }) => void sent.push({ delaySeconds: opts?.delaySeconds }),
+    sendBatch: async () => {},
+  };
+  const r = rig({ ADDON_Q: queue } as any);
+  await r.settle();
+  sent.length = 0;
+
+  assert.deepEqual(await (await r.post("/enqueue", { target: "addons", delayMs: 300_000, once: true })).json(), { ok: true, booked: true });
+  assert.deepEqual(await (await r.post("/enqueue", { target: "addons", delayMs: 30_000, once: true })).json(), { ok: true, booked: true });
+  assert.deepEqual(await (await r.post("/enqueue", { target: "addons", delayMs: 60_000, once: true })).json(), { ok: true, booked: false });
+  assert.deepEqual(sent.map((s) => s.delaySeconds), [300, 30]);
+});
+
 function targetQueue() {
   const sent: string[] = [];
   const queue = {
