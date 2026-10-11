@@ -507,7 +507,7 @@ func TestAuditForwardedProtobufStatus(t *testing.T) {
 
 func groupWorkerClient(t *testing.T) *http.Client {
 	t.Helper()
-	worker, err := apiservergroup.NewHandler(schema.GroupVersion{Version: "v1"}, apiservergroup.Config{Kine: fakeVaultStore().HTTP, AdminToken: "admin"})
+	worker, err := apiservergroup.NewHandler(schema.GroupVersion{Version: "v1"}, apiservergroup.Config{Kine: fakeVaultStore().HTTP, AdminTokenSHA256: "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918"})
 	if err != nil {
 		t.Fatal(err)
 	}
