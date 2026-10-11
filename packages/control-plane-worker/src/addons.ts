@@ -44,7 +44,7 @@ export async function deployAddons(env: Env): Promise<boolean> {
   }
 }
 
-export async function reconcileHelm(env: Env): Promise<boolean> {
+export async function reconcileHelm(env: Env): Promise<{ ok: boolean; nextMs: number }> {
   try {
     const worker = await addonsWorker(env);
     const resp = await worker.fetch("https://addons.internal/helm", {
@@ -52,10 +52,13 @@ export async function reconcileHelm(env: Env): Promise<boolean> {
       signal: AbortSignal.timeout(HELM_TIMEOUT_MS),
     });
     const text = await resp.text();
-    if (resp.status !== 200) console.log(`helm: reconcile status=${resp.status} ${text.slice(0, 200)}`);
-    return resp.status === 200;
+    if (resp.status !== 200) {
+      console.log(`helm: reconcile status=${resp.status} ${text.slice(0, 200)}`);
+      return { ok: false, nextMs: 0 };
+    }
+    return { ok: true, nextMs: (JSON.parse(text) as { nextMs?: number }).nextMs ?? 0 };
   } catch (err) {
     console.log(`helm: reconcile failed: ${String(err)}`);
-    return false;
+    return { ok: false, nextMs: 0 };
   }
 }

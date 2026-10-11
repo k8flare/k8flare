@@ -27,11 +27,12 @@ interface Call {
   body: string;
 }
 
-function rig(manifests: Record<string, string>) {
+function rig(manifests: Record<string, string>, helmBody = "{}") {
   const bucket = new PagedBucket();
   for (const [key, body] of Object.entries(manifests)) bucket.objects.set(key, body);
   const calls: Call[] = [];
   const internal: string[] = [];
+  const followUps: Record<string, unknown>[] = [];
   const env = {
     DISABLE: "coredns",
     MANIFESTS_R2: bucket,
@@ -39,7 +40,7 @@ function rig(manifests: Record<string, string>) {
       load: (worker: string, workerEnv: Record<string, unknown>) => ({
         fetch: async (url: string, init?: RequestInit) => {
           calls.push({ worker: `${worker} disable=${workerEnv.DISABLE}`, path: new URL(url).pathname, body: String(init?.body ?? "") });
-          return new Response("{}");
+          return new Response(new URL(url).pathname === "/helm" ? helmBody : "{}");
         },
       }),
     },
@@ -48,10 +49,11 @@ function rig(manifests: Record<string, string>) {
       const path = new URL(request.url).pathname;
       internal.push(path);
       if (path === "/internal/storage-migrate") return Response.json({ done: true, rewritten: 0, pending: [] });
+      if (path === "/internal/queue/followup") followUps.push(await request.json());
       return Response.json({ sends: [], stop: false });
     },
   };
-  return { bucket, calls, internal, env: env as unknown as Env };
+  return { bucket, calls, internal, followUps, env: env as unknown as Env };
 }
 
 function batchOf(bodies: unknown[]) {
@@ -108,4 +110,15 @@ test("a storage-migrate retry alone reads nothing from the manifests bucket", as
   assert.deepEqual(calls, []);
   assert.equal(bucket.lists, 0);
   assert.deepEqual(internal, ["/internal/storage-migrate", "/internal/queue/followup"]);
+});
+
+test("a helm pass waiting on a hook hands its deadline to the follow-up", async () => {
+  const { followUps, env } = rig({}, JSON.stringify({ nextMs: 299_001 }));
+
+  await consume(batchOf([{ kind: "retry" }]) as any, env);
+
+  assert.equal(followUps.length, 1);
+  assert.equal(followUps[0].target, "addons");
+  assert.equal(followUps[0].ok, true);
+  assert.equal(followUps[0].nextMs, 299_001);
 });

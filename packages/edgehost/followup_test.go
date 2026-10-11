@@ -45,6 +45,13 @@ func TestFollowUpAddonsResumesAPendingStorageMigrationAlone(t *testing.T) {
 	}
 }
 
+func TestFollowUpAddonsBooksOneWakeAtTheHelmHookDeadline(t *testing.T) {
+	got := followUp(followIn{Target: "addons", OK: true, NextMs: 299_001})
+	if len(got.Sends) != 1 || got.Sends[0].Queue != "addons" || got.Sends[0].DelaySeconds != 300 || !got.Sends[0].Once || len(got.Sends[0].Names) != 0 {
+		t.Fatal(got)
+	}
+}
+
 func TestFollowUpHPAReschedulesWhenHPAsExist(t *testing.T) {
 	got := followUp(followIn{Target: "hpa", HasResult: true, HPAs: 2})
 	if len(got.Sends) != 1 || got.Sends[0].Queue != "hpa" || got.Sends[0].DelaySeconds != 15 || !got.Sends[0].Once {
