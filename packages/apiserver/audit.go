@@ -15,6 +15,7 @@ import (
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
 	"k8s.io/apiserver/pkg/endpoints/filters"
+	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	auditlog "k8s.io/apiserver/plugin/pkg/audit/log"
 	"k8s.io/client-go/kubernetes/scheme"
 )
@@ -113,14 +114,20 @@ func withAuditConfig(next http.Handler, evaluator audit.PolicyRuleEvaluator) htt
 
 func forwardAuditConfig(r *http.Request, h http.Header) {
 	rac, _ := r.Context().Value(auditConfigKey{}).(audit.RequestAuditConfig)
+	if info, ok := genericapirequest.RequestInfoFrom(r.Context()); ok && longRunningRequest(r, info) {
+		rac = audit.RequestAuditConfig{}
+	}
 	auth.ForwardAuditConfig(h, rac)
 }
 
 func logForwardedObjects(r *http.Request, h http.Header) {
-	request, response := auth.TakeForwardedAuditObjects(h)
+	request, response, truncated := auth.TakeForwardedAuditObjects(h)
 	ac := audit.AuditContextFrom(r.Context())
 	if !ac.Enabled() {
 		return
+	}
+	if truncated {
+		audit.AddAuditAnnotation(r.Context(), "audit.k8s.io/truncated", "true")
 	}
 	if len(request) > 0 {
 		ac.LogRequestPatch(request)

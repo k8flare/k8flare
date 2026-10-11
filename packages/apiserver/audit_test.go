@@ -3,6 +3,7 @@
 package apiserver
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"testing"
 
+	auth "github.com/k8flare/k8flare/packages/apiserver-auth"
 	_ "github.com/k8flare/k8flare/packages/apiserver-core"
 	apiservergroup "github.com/k8flare/k8flare/packages/apiserver-group"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -23,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer/protobuf"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
+	"k8s.io/apiserver/pkg/audit"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
@@ -593,6 +596,106 @@ func TestAuditGroupWorkerObjects(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAuditGroupWorkerObjectBudget(t *testing.T) {
+	const budget = 64 << 10
+	policy := func(level string) string {
+		return "apiVersion: audit.k8s.io/v1\nkind: Policy\nomitStages: [\"RequestReceived\"]\nrules:\n- level: " + level + "\n"
+	}
+	patchOfSize := func(size int) string {
+		const prefix, suffix = `{"metadata":{"annotations":{"big":"`, `"}}}`
+		return prefix + strings.Repeat("x", size-len(prefix)-len(suffix)) + suffix
+	}
+	for _, tc := range []struct {
+		name, level, patch string
+		wantLogged         bool
+	}{
+		{"at budget", "Request", patchOfSize(budget / 4 * 3), true},
+		{"over budget", "RequestResponse", patchOfSize(budget/4*3 + 1), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := groupWorkerClient(t)
+			seed := newAuditRig(t, policy("None"), forwardTo(client, "https://group.internal", ""))
+			if rec := seed.do(http.MethodPost, "/api/v1/namespaces", "admin-token", `{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"audited"}}`); rec.Code != http.StatusCreated {
+				t.Fatalf("seed: %d %s", rec.Code, rec.Body)
+			}
+			rig := newAuditRig(t, policy(tc.level), forwardTo(client, "https://group.internal", ""))
+			req := httptest.NewRequest(http.MethodPatch, "/api/v1/namespaces/audited", strings.NewReader(tc.patch))
+			req.Header.Set("Authorization", "Bearer admin-token")
+			req.Header.Set("Content-Type", "application/merge-patch+json")
+			req.Header.Set("Accept", "application/json")
+			rec := httptest.NewRecorder()
+			rig.handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("patch: %d %s", rec.Code, rec.Body)
+			}
+			events := rig.events(t)
+			if len(events) != 1 {
+				t.Fatalf("want one event, got %s", rig.out.String())
+			}
+			ev := events[0]
+			if string(ev.Level) != tc.level || ev.Verb != "patch" || ev.ObjectRef == nil || ev.ObjectRef.Name != "audited" || ev.ResponseStatus == nil || ev.ResponseStatus.Code != http.StatusOK {
+				t.Fatalf("event lost its metadata: %s", rig.out.String())
+			}
+			if tc.wantLogged {
+				if ev.RequestObject == nil || string(ev.RequestObject.Raw) != tc.patch || ev.Annotations["audit.k8s.io/truncated"] != "" {
+					t.Fatalf("patch at the budget was not logged whole: %.300s", rig.out.String())
+				}
+				return
+			}
+			if ev.RequestObject != nil || ev.ResponseObject != nil || ev.Annotations["audit.k8s.io/truncated"] != "true" {
+				t.Fatalf("over-budget objects were not dropped with the truncated annotation: %.300s", rig.out.String())
+			}
+		})
+	}
+}
+
+func TestAuditWatchForwardsNoObjects(t *testing.T) {
+	release := make(chan struct{})
+	worker := httptest.NewServer(auth.WithForwardedAudit(auth.WithRequestInfo(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		audit.LogRequestPatch(r.Context(), []byte(`{"kind":"Pod"}`))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"type":"ADDED","object":{"kind":"Pod"}}`+"\n")
+		w.(http.Flusher).Flush()
+		<-release
+	}))))
+	defer worker.Close()
+	var workerHeaders http.Header
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		resp, err := worker.Client().Transport.RoundTrip(r)
+		if err == nil {
+			workerHeaders = resp.Header.Clone()
+		}
+		return resp, err
+	})}
+	rig := newAuditRig(t, "apiVersion: audit.k8s.io/v1\nkind: Policy\nomitStages: [\"RequestReceived\"]\nrules:\n- level: RequestResponse\n", forwardTo(client, worker.URL, ""))
+	front := httptest.NewServer(rig.handler)
+	defer front.Close()
+	req, _ := http.NewRequest(http.MethodGet, front.URL+"/api/v1/namespaces/default/pods?watch=true", nil)
+	req.Header.Set("Authorization", "Bearer admin-token")
+	resp, err := front.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line, err := bufio.NewReader(resp.Body).ReadString('\n')
+	if err != nil || !strings.Contains(line, `"ADDED"`) {
+		t.Fatalf("watch did not stream its first event: %q %v", line, err)
+	}
+	close(release)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	for name := range workerHeaders {
+		if strings.HasPrefix(name, "X-K8flare-Audit") {
+			t.Fatalf("worker returned audit header %s for a watch", name)
+		}
+	}
+	for _, ev := range rig.events(t) {
+		if ev.Level != auditv1.LevelRequestResponse || ev.RequestObject != nil || ev.ResponseObject != nil {
+			t.Fatalf("watch event: %s", rig.out.String())
+		}
 	}
 }
 

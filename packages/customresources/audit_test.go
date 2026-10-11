@@ -30,7 +30,7 @@ func TestForwardedAuditObjects(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create: status=%d body=%s", rec.Code, rec.Body)
 	}
-	request, response := auth.TakeForwardedAuditObjects(rec.Header())
+	request, response, _ := auth.TakeForwardedAuditObjects(rec.Header())
 	for name, raw := range map[string][]byte{"request": request, "response": response} {
 		var obj struct {
 			Kind     string `json:"kind"`
