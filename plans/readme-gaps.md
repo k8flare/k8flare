@@ -27,15 +27,31 @@ Decided on 2026-10-01, with the owner:
   allow-all authorizer, as the group worker has none.
 - Streaming over WebSocket: logs and exec pass in Conformance (36857951122:
   `remote command execution over websockets`, `retrieving logs from the
-  container over websockets`). attach has no CI spec. `kubectl
-  port-forward` is unverified: kubectl 1.36 first offers the
-  `SPDY/3.1+portforward.k8s.io` tunnel
-  (`kubectl/pkg/cmd/portforward/portforward.go:145-153`), upstream answers
-  it with `translator.NewTunnelingHandler` unless the kubelet takes it
-  (`pkg/registry/core/pod/rest/subresources.go:296-304`), and nothing here
-  translates; the front relays the offered subprotocol to the kubelet
-  (`edgehost/stream.go`). SPDY cannot be served: workerd only accepts
-  `Upgrade: websocket`, so stream paths answer other upgrades with 426.
+  container over websockets`). attach (v5 channel protocol) and `kubectl
+  port-forward` (kubectl 1.36 first offers the
+  `SPDY/3.1+portforward.k8s.io` tunnel,
+  `kubectl/pkg/cmd/portforward/portforward.go:145-153`) are covered by
+  `TestNodeStreamsOverWebSocket` (`apiserver/nodestream_test.go`, the
+  `live` job), not yet run in CI. That test is the node: it joins through
+  the supervisor, holds the remotedialer session, and serves a kubelet
+  built from the handlers a 1.36 kubelet uses (`translator.NewTunnelingHandler`
+  and `NewStreamTranslatorHandler` in front of `k8s.io/cri-streaming`), not
+  a real kubelet. Nothing here translates, and for 1.36 nodes nothing
+  needs to: the front relays the offered subprotocol to the kubelet
+  (`edgehost/stream.go`), and a 1.36 kubelet answers both itself
+  (`ExtendWebSocketsToKubelet`, Beta and on by default in 1.36;
+  `pkg/kubelet/server/server.go` getAttach, getExec, getPortForward), which
+  is what upstream's apiserver relies on for a node that declares it
+  (`pkg/registry/core/pod/rest/subresources.go:296-304`). Not yet:
+  - A node older than 1.36, or with that gate off, cannot serve exec,
+    attach or port-forward over WebSocket here. Upstream translates at the
+    apiserver for such a node; here the front has already answered 101, so
+    kubectl does not fall back to SPDY.
+  - Pods on the Cloudflare node take only the channel protocols
+    (`podkubelet/streams.ts` `dispatch`), so `kubectl port-forward` to one
+    is closed with 1002 after the handshake.
+  SPDY cannot be served: workerd only accepts `Upgrade: websocket`, so
+  stream paths answer other upgrades with 426.
 - `apiservices` has no upstream validation either
   (`apiserver-apiregistration/hooks.go`).
 - ValidatingAdmissionPolicy is evaluated by a local cel-go environment
