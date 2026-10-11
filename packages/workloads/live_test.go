@@ -280,7 +280,7 @@ func TestLiveFeedFollowsFromTheListsWhenItsHistoryIsCompacted(t *testing.T) {
 	defer cancel()
 	feed := followWrites(ctx, []loadedSource{{informer: newSnapshotInformer(&corev1.Pod{})}}, []int64{10}, 5)
 	deadline := time.Now().Add(5 * time.Second)
-	for len(dialed) < 2 && time.Now().Before(deadline) {
+	for (len(dialed) < 2 || !feed.live()) && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if len(dialed) != 2 || dialed[0] != liveWatchBase+"5" || dialed[1] != liveWatchBase+"10" {
@@ -288,5 +288,39 @@ func TestLiveFeedFollowsFromTheListsWhenItsHistoryIsCompacted(t *testing.T) {
 	}
 	if !feed.live() {
 		t.Fatal("the feed did not stay live after falling back to the lists")
+	}
+}
+
+func TestLiveFeedIsNotLiveOnceItStops(t *testing.T) {
+	previous := WatchDialer
+	defer func() { WatchDialer = previous }()
+	compacted, _ := json.Marshal(liveEvent{Rev: 10, Type: "compacted"})
+	for name, end := range map[string]func(chan []byte){
+		"closed":              func(msgs chan []byte) { close(msgs) },
+		"compacted at listed": func(msgs chan []byte) { msgs <- compacted },
+	} {
+		msgs := make(chan []byte, 1)
+		WatchDialer = func(context.Context, string) (<-chan []byte, func(), error) {
+			return msgs, func() {}, nil
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		feed := followWrites(ctx, []loadedSource{{informer: newSnapshotInformer(&corev1.Pod{})}}, []int64{10}, 0)
+		for deadline := time.Now().Add(5 * time.Second); !feed.live() && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		}
+		if !feed.live() {
+			cancel()
+			t.Fatalf("%s: the feed never reported itself live", name)
+		}
+		end(msgs)
+		select {
+		case <-feed.done:
+		case <-time.After(5 * time.Second):
+			cancel()
+			t.Fatalf("%s: the feed did not stop", name)
+		}
+		cancel()
+		if feed.live() {
+			t.Fatalf("%s: a stopped feed still reports itself live", name)
+		}
 	}
 }

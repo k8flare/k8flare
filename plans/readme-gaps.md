@@ -79,8 +79,9 @@ Decided on 2026-10-01, with the owner:
     through the front, and one whose policy has `paramKind` runs discovery.
   - Not yet run on a live cluster or in Conformance. The admission worker
     grows from 63,746,282 to 68,901,984 bytes unoptimised (32,073 to
-    35,129 functions; data 24.2 to 26.5 MB). `wasm-opt` was not run, so
-    the optimised size is an estimate: about 59 MB of the 64 MiB cap.
+    35,129 functions; data 24.2 to 26.5 MB). Optimised, it measured
+    59,360,734 bytes of the 67,108,864-byte (64 MiB) cap in CI
+    (`admission.opt.wasm: 59360734 bytes`, E2E run 38146905191).
 - `jobs/scale` is served (`apiserver-registry/zz_generated_resources.go`),
   which upstream does not serve; it came in with 86c0c1a.
 - Implemented with no CI check: protobuf bodies (the e2e client is pinned
@@ -2083,10 +2084,19 @@ Decided on 2026-10-01, with the owner:
     stays global), replays its snapshot to their handlers and moves its
     drain deadline to the adoption plus the drain limit, never past the
     hard stop (`finishBy`). The waiting sync answers with that pass's
-    result if the pass ends within the lock wait and busy otherwise, so a
-    change set the pass did not finish is still retried as before. A pass
-    without a live feed refuses, since its lists are stale for the new
-    controllers, and the old wait applies. Each adoption prints
+    result if the pass ends within the lock wait with its feed still live
+    and busy otherwise, so a change set the pass did not finish is still
+    retried as before. A pass without a live feed refuses, since its lists
+    are stale for the new controllers, and the old wait applies. The feed
+    counts as live only while its socket is open: before
+    `work/housekeeping` it stayed live from its first connect, so a pass
+    whose feed had closed
+    or been compacted at its lists still adopted, ignored the yield and
+    reported `Live`. Now such a pass refuses offers, yields, reports
+    `Live: false` (so its own sync runs the follow-up pass), and a sync it
+    adopted before the drop answers busy
+    (`TestLiveFeedIsNotLiveOnceItStops`,
+    `TestASyncAdoptedByAPassWhoseFeedThenDropsAnswersBusy`). Each adoption prints
     `workloads: pass adopted changed <list> controllers <n>`.
     `TestAConfigMapChangeDuringALongPassWithoutThePublisherIsPublishedBeforeThatPassDrains`
     (`shards/all`; before the change the publisher ran only after the

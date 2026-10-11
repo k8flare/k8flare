@@ -389,13 +389,10 @@ func SyncWithin(ctx context.Context, client kubernetes.Interface, rootCA, signin
 	controllers, _ := wanted(changed)
 	locked, handed := lockSync(ctx, budget, changed)
 	if !locked {
-		if !finished(handed) {
+		if !finished(handed) || !handed.result.Live {
 			return &Result{Objects: map[string]int{}, NextMs: int64(syncBusyRetry / time.Millisecond)}, nil
 		}
 		result := handed.result
-		if needsFollowUp(controllers) && !result.Live {
-			result.Drained = false
-		}
 		bookGaps(ctx, client, changed, controllers, &result)
 		return &result, nil
 	}
