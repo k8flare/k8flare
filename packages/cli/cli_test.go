@@ -171,6 +171,35 @@ func TestTokenRotatePrintsTheNewToken(t *testing.T) {
 	}
 }
 
+func TestTokenRevokeDeletesTheToken(t *testing.T) {
+	f := newFakeCluster(t)
+	out, err := f.run(t, "token", "revoke", "abc123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.calls) != 1 || f.calls[0].method != "DELETE" || f.calls[0].path != "/internal/tokens/abc123" || out != "token abc123 deleted\n" {
+		t.Fatalf("%q %+v", out, f.calls)
+	}
+}
+
+func TestTokenDeleteAndRotateAcceptThePrintedK10Token(t *testing.T) {
+	f := newFakeCluster(t)
+	printed := k10Of(t, f.respond["GET /cacerts"], "abc123.0123456789abcdef")
+	f.respond["POST /internal/tokens/abc123/rotate"] = `{"id":"abc123","token":"abc123.newnewnewnewnew0"}`
+	if _, err := f.run(t, "token", "delete", printed); err != nil {
+		t.Fatal(err)
+	}
+	if f.last().method != "DELETE" || f.last().path != "/internal/tokens/abc123" {
+		t.Fatalf("delete %+v", f.last())
+	}
+	if _, err := f.run(t, "token", "rotate", printed); err != nil {
+		t.Fatal(err)
+	}
+	if f.last().method != "POST" || f.last().path != "/internal/tokens/abc123/rotate" {
+		t.Fatalf("rotate %+v", f.last())
+	}
+}
+
 func TestSecretsEncryptStatusAndReencrypt(t *testing.T) {
 	f := newFakeCluster(t)
 	f.respond["GET /internal/secrets-encrypt/status"] = `{"enabled":true,"activeKey":"aesgcm k2","inactiveKeys":["aesgcm k1"],"total":10,"current":7,"stale":3}`

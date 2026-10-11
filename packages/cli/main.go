@@ -19,7 +19,7 @@ import (
 const usage = `usage: k8flare <command>
 
 commands:
-  token create|list|delete|rotate
+  token create|list|delete|revoke|rotate
   certificate rotate-ca|check
   edge-certificate --hosts <name,...> [--out-dir <dir>] [--ttl <duration>]
   secrets-encrypt status|reencrypt

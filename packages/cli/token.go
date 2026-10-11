@@ -20,14 +20,14 @@ type tokenRecord struct {
 
 func runToken(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: k8flare token create|list|delete|rotate")
+		return errors.New("usage: k8flare token create|list|delete|revoke|rotate")
 	}
 	switch args[0] {
 	case "create":
 		return tokenCreate(args[1:], out)
 	case "list":
 		return tokenList(args[1:], out)
-	case "delete":
+	case "delete", "revoke":
 		return tokenDelete(args[1:], out)
 	case "rotate":
 		return tokenRotate(args[1:], out)
@@ -107,6 +107,9 @@ func k10Token(caHash, token string) string {
 }
 
 func tokenID(arg string) string {
+	if _, creds, ok := strings.Cut(arg, "::"); ok {
+		arg = creds
+	}
 	id, _, _ := strings.Cut(arg, ".")
 	return id
 }
