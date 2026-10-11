@@ -382,7 +382,26 @@ Decided on 2026-10-01, with the owner:
   - Charts that need `helm dependency build` must be packaged with their
     `charts/` directory; `dependencies` are not fetched.
 - Ingress and Gateway API are routed at the edge, covered by Go tests
-  only; no workerd or CI run has exercised them.
+  and by `scripts/ci/e2e.sh up`, which has not yet run on GitHub Actions:
+  a busybox Deployment behind a `type: LoadBalancer` Service must be
+  published as `web--ci-edge.<CLUSTER_DOMAIN>` and answer its pod name
+  through devtls (strict edge mode, the three hosts in `-hosts`) for that
+  host, for an Ingress host rule and for an HTTPRoute whose Gateway
+  reports Accepted and Programmed.
+  - Until this branch the dev stack and CI never delivered such a host:
+    wrangler dev infers an origin from the first route
+    (`k8flare.kooffice.jp`) and Miniflare rewrites every request's URL and
+    Host to it (the client's host survives only in
+    `MF-Original-Hostname`, which nothing reads), so the apiserver saw an
+    `API_HOSTS` host for every request. `wrangler.dev.jsonc` now drops
+    `routes`, so the dev stack, E2E and Conformance see the host the
+    client sent (`localhost:16443`, `host.docker.internal:16443`), and the
+    supervisor config answers port 16443 instead of 443 for both the
+    apiserver and the supervisor.
+  - The production path is not covered: the edge-proxy Worker sets `Host`
+    and `X-Forwarded-Host` and fetches `k8flare.kooffice.workers.dev`,
+    and `loader.ts` replaces `X-Forwarded-Host` with the URL host unless
+    one of them carries a port.
   - The workloads pass compiles every owned Ingress (IngressClass
     controller `k8flare.com/edge`; the `k8flare` class is packaged as the
     default) and HTTPRoute (GatewayClass with the same controller) into one
@@ -408,12 +427,19 @@ Decided on 2026-10-01, with the owner:
     Selector` (treated as not allowed), RequestMirror, ExtensionRef,
     per-backend filters, GRPCRoute, TLSRoute, listener `port` matching,
     and TLS `certificateRefs` (never read).
-  - The Gateway API CRDs are not shipped. `sigs.k8s.io/gateway-api` is not
-    in go.mod or the module cache, so there is no local canon, and the
-    standard-install CRDs are large embedded data that wasm-opt cannot
-    shrink. Install them with `kubectl apply -f` of the release's
-    `standard-install.yaml`; whether `customresources` accepts their CEL
-    validations is unchecked.
+  - The Gateway API v1.5.1 standard-channel CRDs for GatewayClass,
+    Gateway, HTTPRoute and ReferenceGrant ship as the `gateway-crds`
+    add-on, disabled together with `edge-routing`; GRPCRoute, TLSRoute and
+    the rest of `standard-install.yaml` are left out. They add 659,162
+    bytes to the unoptimised addons Worker (58,647,105 to 59,306,267);
+    the optimised size was not measured. `TestGatewayCRDsAreCorrect` pins
+    each CRD to a sha256 of its upstream `config/crd/standard` file, but
+    the pins were taken from the embedded bytes: no upstream file was
+    fetched to compare them. The E2E apply of a Gateway and an HTTPRoute
+    is the first check that `customresources` accepts their CEL
+    validations. Every namespace deletion now also walks three namespaced
+    custom resource types, at the unexplained cost of a custom resource
+    request recorded under Conformance.
   - Requests that match no rule fall through to the API, so a
     hostless catch-all Ingress does not shadow `k8flare.com`,
     `api.k8flare.com`, `*.workers.dev`, `*.internal`, `localhost`, IP
@@ -441,8 +467,9 @@ Decided on 2026-10-01, with the owner:
   answers `DisableNPC`, so the agent skips `netpol.Run`). The
   `helm-controller` switch (`addons/cmd/addons-wasm/main.go`) is js-only
   and no CI test exercises it.
-- The LoadBalancer hostname suffix is the constant `.k8flare.com`
-  (`edgehost/host.go`), not the cluster domain.
+- The LoadBalancer hostname suffix is `CLUSTER_DOMAIN` (`k8flare.com` in
+  `wrangler.jsonc`, also the fallback in `edgehost/host.go`); the E2E check
+  reads it from `wrangler.jsonc`.
 - Nothing measures what the platform costs a node.
 
 ## Operations
@@ -1842,8 +1869,10 @@ Decided on 2026-10-01, with the owner:
   fix) failed the required E2E set and all three Conformance runs
   (36954041871, 36954047059, 36954052382), with 55 to 127 `devtls`
   replays and 13 to 256 502s in shard 4 against 1 to 17 and 0 to 1 on
-  699ba58. Not merged. The CRDs stay out until the cost of a custom
-  resource request and the wait of outside requests are understood.
+  699ba58. Not merged. `work/gateway-e2e` ships the CRDs again: the wait
+  of outside requests is explained in the next entry, but the cost of a
+  custom resource request is still not understood, so its first E2E and
+  Conformance runs are where that cost would show.
 - Why a request from outside waits while requests between workers are
   served (the open question of the two entries above). Reproduced on the
   dev stack of this Mac on 3337b7e, no nodes: a probe GET of

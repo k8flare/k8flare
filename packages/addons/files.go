@@ -81,6 +81,7 @@ func ParseDisable(list string) map[string]bool {
 	}
 	if disables["edge-routing"] {
 		disables["ingressclass"] = true
+		disables["gateway-crds"] = true
 	}
 	return disables
 }

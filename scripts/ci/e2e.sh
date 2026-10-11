@@ -15,6 +15,10 @@ AGENT=${AGENT:-k3s}
 SERVICE_API=10.43.0.1
 KUBECONFIG_PATH=$PWD/$WORK/kubeconfig.yaml
 STATE=${STATE:-/dev/shm/k8flare-state}
+CLUSTER_DOMAIN=$(sed -n 's/^ *"CLUSTER_DOMAIN": "\([^"]*\)",$/\1/p' wrangler.jsonc)
+EDGE_LB_HOST=web--ci-edge.$CLUSTER_DOMAIN
+EDGE_INGRESS_HOST=ingress.ci-edge.example
+EDGE_GATEWAY_HOST=gateway.ci-edge.example
 mkdir -p "$LOGS"
 
 stamped() {
@@ -257,6 +261,170 @@ EOF
   "${k[@]}" delete namespace ci-volume --wait=false
 }
 
+gateway_crds_established() {
+  local crd
+  for crd in gatewayclasses gateways httproutes; do
+    [ "$(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s get crd "$crd.gateway.networking.k8s.io" -o jsonpath='{.status.conditions[?(@.type=="Established")].status}')" = True ] || return 1
+  done
+}
+
+edge_pod_ready() {
+  [ "$(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s -n ci-edge get pods -l app=web -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}')" = True ]
+}
+
+lb_published() {
+  local got
+  got=$(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s -n ci-edge get svc web -o jsonpath='{.status.loadBalancer.ingress[*].hostname}') || return 1
+  if [ "$got" != "$EDGE_LB_HOST" ]; then
+    echo "the LoadBalancer Service ci-edge/web is published as '$got', want $EDGE_LB_HOST"
+    return 1
+  fi
+  echo "the LoadBalancer Service ci-edge/web is published as $got"
+}
+
+edge_serves() {
+  local via=$1 host=$2 pod got
+  pod=$(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s -n ci-edge get pods -l app=web -o jsonpath='{.items[*].metadata.name}') || return 1
+  got=$(curl -sS -m 10 --cacert .build/devtls/server-ca.crt --resolve "$host:$API_PORT:127.0.0.1" -w ' status=%{http_code}' "https://$host:$API_PORT/") || return 1
+  if [ "$got" != "k8flare-edge $pod status=200" ]; then
+    echo "$via: https://$host:$API_PORT/ answered '$got', want 'k8flare-edge $pod status=200' from the pod"
+    return 1
+  fi
+  echo "$via: https://$host:$API_PORT/ answered '$got' from the pod $pod"
+}
+
+gateway_programmed() {
+  local gw route
+  gw=$(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s -n ci-edge get gateway edge -o json) || return 1
+  route=$(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s -n ci-edge get httproute web -o json) || return 1
+  if ! jq -e '. as $gw | all("Accepted", "Programmed"; . as $t | any($gw.status.conditions[]?; .type == $t and .status == "True"))' <<<"$gw" >/dev/null; then
+    echo "the Gateway ci-edge/edge is not Accepted and Programmed: $(jq -c .status <<<"$gw")"
+    return 1
+  fi
+  if ! jq -e 'any(.status.parents[]?; .controllerName == "k8flare.com/edge" and (. as $p | all("Accepted", "ResolvedRefs"; . as $t | any($p.conditions[]?; .type == $t and .status == "True"))))' <<<"$route" >/dev/null; then
+    echo "the HTTPRoute ci-edge/web is not Accepted with ResolvedRefs by k8flare.com/edge: $(jq -c .status <<<"$route")"
+    return 1
+  fi
+  echo "the Gateway ci-edge/edge is Accepted and Programmed and the HTTPRoute ci-edge/web is Accepted with ResolvedRefs"
+}
+
+edge_routing() {
+  local -a k=(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s)
+  wait_for "the Gateway API CRDs to be established" 60 5 gateway_crds_established
+  "${k[@]}" create namespace ci-edge
+  "${k[@]}" apply -f - <<'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: ci-edge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+      - name: web
+        image: rancher/mirrored-library-busybox:1.37.0
+        command: [sh, -c, 'mkdir /www && printf "k8flare-edge %s" "$(hostname)" > /www/index.html && exec httpd -f -p 8080 -h /www']
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: ci-edge
+spec:
+  type: LoadBalancer
+  selector:
+    app: web
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+EOF
+  wait_for "the pod of ci-edge/web to serve" 60 5 edge_pod_ready
+  wait_for "the LoadBalancer hostname of ci-edge/web" 24 5 lb_published
+  lb_published
+  wait_for "$EDGE_LB_HOST to reach the pod through devtls" 24 5 edge_serves LoadBalancer "$EDGE_LB_HOST"
+  edge_serves LoadBalancer "$EDGE_LB_HOST"
+  "${k[@]}" apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web
+  namespace: ci-edge
+spec:
+  ingressClassName: k8flare
+  rules:
+  - host: $EDGE_INGRESS_HOST
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: web
+            port:
+              number: 80
+EOF
+  wait_for "the Ingress host $EDGE_INGRESS_HOST to reach the pod through devtls" 24 5 edge_serves Ingress "$EDGE_INGRESS_HOST"
+  edge_serves Ingress "$EDGE_INGRESS_HOST"
+  "${k[@]}" apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: k8flare
+spec:
+  controllerName: k8flare.com/edge
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: edge
+  namespace: ci-edge
+spec:
+  gatewayClassName: k8flare
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: web
+  namespace: ci-edge
+spec:
+  parentRefs:
+  - name: edge
+  hostnames:
+  - $EDGE_GATEWAY_HOST
+  rules:
+  - backendRefs:
+    - name: web
+      port: 80
+EOF
+  wait_for "the Gateway ci-edge/edge and the HTTPRoute ci-edge/web to be accepted" 24 5 gateway_programmed
+  gateway_programmed
+  wait_for "the HTTPRoute host $EDGE_GATEWAY_HOST to reach the pod through devtls" 24 5 edge_serves Gateway "$EDGE_GATEWAY_HOST"
+  edge_serves Gateway "$EDGE_GATEWAY_HOST"
+  "${k[@]}" delete namespace ci-edge --wait=false
+  "${k[@]}" delete gatewayclass k8flare --wait=false
+}
+
 write_accepted() {
   kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s create namespace ci-writecheck &&
     kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s delete namespace ci-writecheck --wait=false
@@ -429,7 +597,7 @@ up() {
     < /dev/null 2>&1 | stamped "$LOGS/procs.log" &
   worker=$(user_worker_port "$admin" "$runtime")
   echo "user worker $runtime listens on 127.0.0.1:$worker"
-  nohup "$WORK/devtls" -listen ":$API_PORT" -upstream "http://127.0.0.1:$worker" -dir .build/devtls -hosts "${API%%:*},${CONTAINER_API%%:*}" -admin-token "$admin" -strict-edge \
+  nohup "$WORK/devtls" -listen ":$API_PORT" -upstream "http://127.0.0.1:$worker" -dir .build/devtls -hosts "${API%%:*},${CONTAINER_API%%:*},$EDGE_LB_HOST,$EDGE_INGRESS_HOST,$EDGE_GATEWAY_HOST" -admin-token "$admin" -strict-edge \
     < /dev/null 2>&1 | stamped "$LOGS/devtls.log" &
   wait_for "devtls" 180 1 curl -sf -m 10 --cacert .build/devtls/server-ca.crt -o /dev/null -H "Authorization: Bearer $admin" "https://$API/livez"
 
@@ -466,6 +634,7 @@ up() {
   node_cost
   metrics_served
   volume_bound_on_first_consumer
+  edge_routing
 }
 
 node_cost() {
@@ -536,6 +705,15 @@ join_evidence() {
   "${k[@]}" -n ci-volume describe pvc,pod || true
   "${k[@]}" -n kube-system logs -l app=local-path-provisioner --tail=200 || true
   grep -E 'metrics|hpa:' "$LOGS/dev.log" | tail -n 100 || true
+  echo "::endgroup::"
+  echo "::group::the edge routes of ci-edge and the Gateway API"
+  "${k[@]}" get crd -o wide | grep -E '^NAME|gateway\.networking\.k8s\.io' || true
+  "${k[@]}" -n ci-edge get deploy,pods,svc,endpointslices,ingress -o wide || true
+  "${k[@]}" -n ci-edge get svc,ingress -o yaml || true
+  "${k[@]}" -n ci-edge get gateway,httproute -o yaml || true
+  "${k[@]}" get gatewayclass -o yaml || true
+  "${k[@]}" -n ci-edge logs -l app=web --tail=50 || true
+  grep -E 'consume changed=|gateway|loadbalancer' "$LOGS/dev.log" | tail -n 100 || true
   echo "::endgroup::"
   exit "$status"
 }

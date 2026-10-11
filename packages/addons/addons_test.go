@@ -2,6 +2,7 @@ package addons
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"regexp"
 	"strings"
@@ -570,5 +571,107 @@ func TestIngressClassIsTheEdgeDefault(t *testing.T) {
 	controller, _, _ := unstructured.NestedString(objs[0].Object, "spec", "controller")
 	if objs[0].GetKind() != "IngressClass" || objs[0].GetName() != "k8flare" || controller != "k8flare.com/edge" || objs[0].GetAnnotations()["ingressclass.kubernetes.io/is-default-class"] != "true" {
 		t.Fatalf("ingress class = %v", objs[0].Object)
+	}
+}
+
+func TestGatewayCRDsAreCorrect(t *testing.T) {
+	const upstreamVersion = "v1.5.1"
+	upstreamSha256 := map[string]string{
+		"config/crd/standard/gateway.networking.k8s.io_gatewayclasses.yaml":  "234ad4b2757ee1b3596a4187bb98df071c5bbdd9e1806f692f2dbf8387e6bef4",
+		"config/crd/standard/gateway.networking.k8s.io_gateways.yaml":        "7416e8300eb4d8c0a71a23445609075bbacbe8bc80104584b019cfe1ebe77c31",
+		"config/crd/standard/gateway.networking.k8s.io_httproutes.yaml":      "682203b109baecb18d38073a578f7bc2c17d22fe9b0c27bf030850abe014c370",
+		"config/crd/standard/gateway.networking.k8s.io_referencegrants.yaml": "a8902c486eed0b7339f5bb8a476ccaba0918eb038048402bdc01cbb69b0fbb51",
+	}
+
+	var file File
+	for _, f := range Packaged() {
+		if f.Name == "gateway-crds.yaml" {
+			file = f
+		}
+	}
+	if file.Name == "" {
+		t.Fatal("gateway-crds.yaml not found in packaged addons")
+	}
+
+	objs, err := Decode(file.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expectedCRDs := map[string]bool{
+		"gatewayclasses.gateway.networking.k8s.io":  false,
+		"gateways.gateway.networking.k8s.io":        false,
+		"httproutes.gateway.networking.k8s.io":      false,
+		"referencegrants.gateway.networking.k8s.io": false,
+	}
+
+	if len(objs) != len(expectedCRDs) {
+		t.Fatalf("expected %d CRDs, got %d", len(expectedCRDs), len(objs))
+	}
+
+	for _, obj := range objs {
+		if obj.GetKind() != "CustomResourceDefinition" {
+			t.Fatalf("unexpected kind: %s", obj.GetKind())
+		}
+		name := obj.GetName()
+		if _, exists := expectedCRDs[name]; !exists {
+			t.Fatalf("unexpected CRD: %s", name)
+		}
+		expectedCRDs[name] = true
+
+		versions, _, _ := unstructured.NestedSlice(obj.Object, "spec", "versions")
+		servedVersions := []string{}
+		for _, v := range versions {
+			vMap := v.(map[string]any)
+			if served, ok := vMap["served"].(bool); ok && served {
+				if vName, ok := vMap["name"].(string); ok {
+					servedVersions = append(servedVersions, vName)
+				}
+			}
+		}
+		if len(servedVersions) == 0 {
+			t.Fatalf("CRD %s has no served versions", name)
+		}
+		if got := obj.GetAnnotations()["gateway.networking.k8s.io/bundle-version"]; got != upstreamVersion {
+			t.Errorf("CRD %s bundle-version = %q, want %q", name, got, upstreamVersion)
+		}
+	}
+
+	for name, found := range expectedCRDs {
+		if !found {
+			t.Errorf("CRD %s not found", name)
+		}
+	}
+
+	docs := strings.Split(string(file.Content), "\n---\n")
+	if len(docs) != len(upstreamSha256) {
+		t.Fatalf("expected %d documents, got %d", len(upstreamSha256), len(docs))
+	}
+	for i, doc := range docs {
+		if i < len(docs)-1 {
+			doc += "\n"
+		}
+		lines := strings.SplitN(doc, "\n", 4)
+		if len(lines) != 4 || lines[0] != "#" || lines[2] != "#" || !strings.HasPrefix(lines[1], "# ") {
+			t.Fatalf("document %d does not start with the upstream file header: %q", i, lines[:min(len(lines), 3)])
+		}
+		path := strings.TrimPrefix(lines[1], "# ")
+		want, ok := upstreamSha256[path]
+		if !ok {
+			t.Fatalf("document %d comes from %s, not one of the pinned upstream files", i, path)
+		}
+		if got := fmt.Sprintf("%x", sha256.Sum256([]byte(lines[3]))); got != want {
+			t.Errorf("%s: sha256 %s, upstream %s %s", path, got, upstreamVersion, want)
+		}
+		delete(upstreamSha256, path)
+	}
+}
+
+func TestParseDisableEdgeRoutingAlsoDisablesGatewayCRDs(t *testing.T) {
+	if got := ParseDisable("edge-routing"); !got["edge-routing"] || !got["gateway-crds"] {
+		t.Fatalf("got %v, expected gateway-crds to be disabled with edge-routing", got)
+	}
+	if got := ParseDisable("servicelb"); got["gateway-crds"] {
+		t.Fatalf("got %v, expected gateway-crds not to be disabled", got)
 	}
 }
