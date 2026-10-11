@@ -311,6 +311,8 @@ func changedHas(changed []string, name string) bool {
 
 var syncMu sync.Mutex
 
+var lastSeen = map[string]int64{}
+
 var yieldRequested atomic.Bool
 
 type adoption struct {
@@ -643,7 +645,7 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 		l.informer.replay(l.objs)
 	}
 	took("build+fill")
-	feed := followWrites(ctx, all, revisions)
+	feed := followWrites(ctx, all, revisions, historyStart(controllers))
 	var stopped []chan struct{}
 	launch := func(runs []func(context.Context)) {
 		for _, run := range runs {
@@ -741,6 +743,10 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 	}
 	result.Drained = drain(workloadQueue, drainFor, grace, deadline, feed.live, adopt) && !adoptFailed
 	result.Live = feed.live()
+	seen := max(feed.reach(), listedFloor(revisions))
+	for name := range controllers {
+		lastSeen[name] = seen
+	}
 	took("drain")
 	println("workloads: live feed", strconv.FormatBool(result.Live), "applied", strconv.FormatInt(feed.count(), 10))
 	if next, ok := pending.next(); ok {
@@ -762,6 +768,16 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 	took("shutdown")
 	println("workloads: pass total", time.Since(passStart).Round(time.Millisecond).String(), "controllers", strconv.Itoa(len(stopped)))
 	return result, nil
+}
+
+func historyStart(controllers map[string]bool) int64 {
+	from := int64(0)
+	for name := range controllers {
+		if seen := lastSeen[name]; seen > 0 && (from == 0 || seen < from) {
+			from = seen
+		}
+	}
+	return from
 }
 
 func needs(controllers map[string]bool, source string) bool {
