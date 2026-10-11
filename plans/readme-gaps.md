@@ -203,31 +203,62 @@ Decided on 2026-10-01, with the owner:
   Releases are stored as `sh.helm.release.v1.<name>.v<N>` Secrets in the
   release namespace in Helm's own encoding, so `helm list` and `helm
   history` on a workstation see them; objects carry the
-  `meta.helm.sh/release-*` ownership metadata. Verified against fakes and
-  `helm template` output, not against a running cluster or workerd. Not
-  supported:
-  - Hooks are recorded in the release but never run (no pre/post-install
-    Jobs, no `helm test`).
-  - `spec.failurePolicy` (a retry after a failed first install re-renders as
-    an install, but nothing is uninstalled first), `timeout`, `backOffLimit`,
-    `jobImage`, `repoCA`, `insecureSkipTLSVerify` and `dockerRegistrySecret`
-    are ignored; there is no Job. Objects are always server-side applied
-    with force; `serverSide` and `forceConflicts` are ignored.
+  `meta.helm.sh/release-*` ownership metadata. Ownership conflicts are
+  checked before a release is recorded, as in `helm install`.
+  - Chart hooks run in the controller, not in a helm Job:
+    pre/post-install, pre/post-upgrade and pre/post-delete hooks are created
+    in `helm.sh/hook-weight` order with Helm's delete policies (default
+    `before-hook-creation`). A Job hook is done at its `Complete`
+    condition, a Pod hook at phase `Succeeded`; other kinds when created.
+    Progress is kept in the release's `Hook.LastRun`, so a release stays
+    `pending-install`/`pending-upgrade`/`uninstalling` across passes. The
+    Cluster Durable Object routes a write of a Job or Pod carrying
+    `helm.sh/hook` to the addons queue only when it finishes or is deleted,
+    and `/helm` returns the earliest hook deadline as `nextMs`, booked once
+    through `POST /enqueue` (`once` now keeps the earliest deadline).
+    `spec.timeout` (default 300s, Helm's `--timeout`) bounds each hook wait.
+    Not covered: `helm test` hooks, `helm.sh/hook-output-log-policy`, and a
+    deadline while waiting for a previous hook object that is still
+    terminating (that wait ends on the object's deletion only).
+  - `failurePolicy` (HelmChart, overridden by HelmChartConfig) applies to a
+    failed release: `abort` holds it with the Failed condition and no retry,
+    `reinstall` (default) uninstalls with delete hooks and installs revision
+    1 again, `retry` re-runs the install or upgrade, updating the failed
+    revision in place when the spec is unchanged. A failure is retried every
+    5s by the addons follow-up; k3s retries through the Job's backoff.
+    Deleting a HelmChart whose delete hook fails still removes the
+    finalizer, as klipper-helm's `helm uninstall || true` does.
+  - Ignored, needing an owner decision: `jobImage`, `backOffLimit`,
+    `podSecurityContext` and `securityContext` configure the helm Job, which
+    does not exist here. `repoCA`, `repoCAConfigMap` and
+    `insecureSkipTLSVerify` cannot be honoured through `OUTBOUND`: Workers
+    `fetch` verifies against public roots and offers neither a custom CA
+    nor skipping verification; it would take a TLS client over a raw
+    socket. Objects are always server-side applied with force;
+    `serverSide` and `forceConflicts` are ignored.
   - `spec.chart` must be a repo chart name with `spec.repo`, a chart URL,
     `oci://` or `spec.chartContent`; repo aliases such as `stable/x` are
-    not resolved. OCI covers anonymous and basic/bearer-token registries,
-    not `dockerRegistrySecret` or registry redirects that need extra auth.
-  - Changes to Secrets named in `valuesSecrets` do not trigger a run and
-    are not part of the config hash; the next spec change or deploy does.
+    not resolved. OCI covers anonymous and basic/bearer-token registries
+    and `dockerRegistrySecret` (`.dockerconfigjson` `auths` matched by host,
+    also legacy `https://host/` keys; `auth`, `username`/`password` and
+    `registrytoken`; not `identitytoken` or credential helpers), not
+    registry redirects that need extra auth.
+  - A write to a Secret named in `valuesSecrets` without `ignoreUpdates`
+    (other than `chart-values-<name>`) reruns the chart: its data is part
+    of the config hash, and the Cluster Durable Object routes the write to
+    the addons queue when a HelmChart or HelmChartConfig in its namespace
+    names it.
   - `lookup` goes through the addons Worker's API binding and has not been
     run under workerd. Chart `.Capabilities.APIVersions` comes from
     discovery.
   - Deleting a HelmChart uninstalls through a finalizer
     (`wrangler.cattle.io/on-helm-chart-remove`); `crds/` objects are never
     removed, as in Helm. History is trimmed to 10 revisions, never
-    dropping the deployed one. A failed apply records a failed revision and
-    the queue retries with backoff; retries of the same spec update that
-    revision instead of adding new ones.
+    dropping the deployed one.
+  - Covered by Go tests on fakes (`packages/helm`), the Cluster Durable
+    Object and queue tests in `unit.yml`, and `helm template` output; not
+    by a workerd test or a running cluster, so no hook Job has run on a
+    real node.
   - Charts that need `helm dependency build` must be packaged with their
     `charts/` directory; `dependencies` are not fetched.
 - Ingress and Gateway API are routed at the edge, covered by Go tests
