@@ -2324,21 +2324,46 @@ Decided on 2026-10-01, with the owner:
     The claim lives in the Go instance; the loaded worker is keyed by the
     calling isolate, so it covers passes from one control-plane isolate
     (read from `loader-kit`, not observed) and not passes from two. Not
-    yet run in Conformance. Not
-    established: where a conversion call spends its second or more. The
-    webhook answers in under 1 ms, and a Go TLS handshake costs about 9 ms
-    of client CPU in js/wasm (measured under node); each call reads the
-    Service's Endpoints from kine, then dials through the node tunnel on a
-    new TCP and TLS connection. Each call now logs `customresources:
-    conversion <ns>/<svc> resolve <d> dial <d> status <code>` and each
-    tunnel dial `tunnel dial <node> <host:port> connect <d> tls <d>
-    exchange <d> status <code>`. To read on the next failure: the
-    conversion lines between the DeleteCollection's `front` and `crd-diag`
-    lines are its calls; if `connect`, `tls` and `exchange` add up to the
-    conversion's `dial`, the time is in the round trips to the agent and
-    reusing connections would cut it; if they are much smaller, it is
-    spent reaching the node-tunnel worker and back on the saturated main
-    thread.
+    yet run in Conformance. Where a
+    conversion call spends its time, read from the diagnostics in the next
+    failure (38187218549 shard 5, and a pass on `ci/batch27` with the same
+    numbers): 69 calls in the spec's window, 726 ms on average, 50 s in
+    total against the spec's 30 s. Each call opened its own TLS connection
+    to the webhook pod: the node tunnel's `/dial/` handler dialed, shook
+    hands, wrote one request and closed the connection, for conversion,
+    admission and aggregated API calls alike (the callers' transports only
+    reach the node-tunnel binding). `tls` was 250 ms to 2.07 s per call in
+    bursts (five concurrent calls each paid the same), `exchange` 10 to
+    40 ms, `connect` 0 to 1 ms; on a quiet cluster `tls` was 9 to 33 ms.
+    The crypto itself is small: under node, js/wasm, a full handshake of
+    both ends (RSA-2048 serving chain like upstream's e2e webhook, P-256
+    proxy client certificate) takes 8.3 ms, 4 ms of it the server's RSA
+    signature that runs natively on the pod; chain verification 0.15 ms,
+    the server signature check 0.15 ms, the client signature 0.14 ms,
+    X25519 0.7 ms, ML-KEM 0.2 ms; a resumed handshake 1.7 ms. So most of
+    `tls` is waiting in the handshake's round trips and behind the other
+    handshakes on the object's one thread, which session resumption would
+    keep (it still pays a round trip and the key exchange). The node
+    tunnel now keeps TLS connections alive per node, server name, CA
+    bundle and proxy client certificate, up to 25 idle per address (what
+    client-go keeps for webhooks) for 10 s. That is possible because the
+    TLS client runs inside the NodeTunnel Durable Object and the
+    remotedialer streams ride the agent's hibernatable WebSocket, which
+    the object, not a request, owns; an idle connection's timer keeps the
+    object from hibernating, so the timeout is the platform's own 10 s
+    idle window rather than upstream's 90 s, and the connections die with
+    the object when it is evicted. Verification is unchanged: a connection
+    is only reused for the same server name and CA bundle
+    (`TestTLSDialsDoNotReuseAConnectionVerifiedForAnotherServerName`), and
+    five sequential calls shake hands once, a moved endpoint again
+    (`TestTLSDialsToOneEndpointHandshakeOnceAndAgainWhenItsAddressChanges`,
+    5 handshakes before). Not yet run in Conformance. To watch:
+    `tunnel dial` lines now end in `reused <bool>`; within a spec only the
+    first call to a webhook address and the extra connections of a burst
+    should show `reused false` with a nonzero `tls`, the rest `reused true`
+    with `connect 0s tls 0s`. If `exchange` grows to take the place of
+    `tls`, the time is in the object's saturated thread, not in the
+    handshakes.
 
 ## Local development
 
