@@ -8,7 +8,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/base64"
 	"errors"
 	"io"
 	"net"
@@ -360,6 +359,10 @@ func dialProxy() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
+		if r.Header.Get("X-Dial-TLS") == "1" {
+			proxyTLSDial(w, r, node, host, port, path)
+			return
+		}
 		dial := server.Dialer(node)
 		start := time.Now()
 		conn, err := dial(r.Context(), "tcp", net.JoinHostPort(host, port))
@@ -369,19 +372,6 @@ func dialProxy() http.Handler {
 		}
 		defer conn.Close()
 		connected := time.Now()
-		if r.Header.Get("X-Dial-TLS") == "1" {
-			cfg, err := dialTLSConfig(r.Header.Get("X-Dial-ServerName"), r.Header.Get("X-Dial-CA"), bridge.Getenv("PROXY_CLIENT_CERT"), bridge.Getenv("PROXY_CLIENT_KEY"))
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadGateway)
-				return
-			}
-			tconn := tls.Client(conn, cfg)
-			if err := tconn.HandshakeContext(r.Context()); err != nil {
-				http.Error(w, err.Error(), http.StatusBadGateway)
-				return
-			}
-			conn = tconn
-		}
 		secured := time.Now()
 		outReq := dialRequest(r, host, port, path)
 		if err := outReq.Write(conn); err != nil {
@@ -401,6 +391,24 @@ func dialProxy() http.Handler {
 		w.WriteHeader(resp.StatusCode)
 		_, _ = io.Copy(w, resp.Body)
 	})
+}
+
+var tlsDials tlsTransports
+
+func proxyTLSDial(w http.ResponseWriter, r *http.Request, node, host, port, path string) {
+	ep := tlsEndpoint{node: node, serverName: r.Header.Get("X-Dial-ServerName"), caBundle: r.Header.Get("X-Dial-CA"), clientCert: bridge.Getenv("PROXY_CLIENT_CERT")}
+	resp, times, err := tlsDials.roundTrip(dialRequest(r, host, port, path), ep, bridge.Getenv("PROXY_CLIENT_KEY"), server.Dialer(node))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	println("tunnel dial", node, net.JoinHostPort(host, port), "connect", times.connect.String(), "tls", times.handshake.String(), "exchange", times.exchange.String(), "status", resp.StatusCode, "reused", times.reused)
+	for k, v := range resp.Header {
+		w.Header()[k] = v
+	}
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
 }
 
 func dialRequest(r *http.Request, host, port, path string) *http.Request {
@@ -429,29 +437,6 @@ func splitJoinedHeaderValues(values []string) []string {
 		}
 	}
 	return out
-}
-
-func dialTLSConfig(serverName, caHeader, clientCertPEM, clientKeyPEM string) (*tls.Config, error) {
-	cfg := &tls.Config{ServerName: serverName}
-	if caHeader != "" {
-		pool := x509.NewCertPool()
-		pem := []byte(caHeader)
-		if decoded, err := base64.StdEncoding.DecodeString(caHeader); err == nil && bytes.Contains(decoded, []byte("-----BEGIN")) {
-			pem = decoded
-		}
-		pool.AppendCertsFromPEM(pem)
-		cfg.RootCAs = pool
-	} else {
-		cfg.InsecureSkipVerify = true
-	}
-	if clientCertPEM != "" && clientKeyPEM != "" {
-		cert, err := tls.X509KeyPair([]byte(clientCertPEM), []byte(clientKeyPEM))
-		if err != nil {
-			return nil, err
-		}
-		cfg.Certificates = []tls.Certificate{cert}
-	}
-	return cfg, nil
 }
 
 func parseDialPath(p string) (node, host, port, path string, ok bool) {
