@@ -3,7 +3,13 @@ name: E2E
 on:
   push:
     branches: [main, feat/minimal-rewrite]
+    paths-ignore:
+      - plans/**
+      - "**.md"
   pull_request:
+    paths-ignore:
+      - plans/**
+      - "**.md"
   workflow_dispatch:
 
 permissions:
@@ -96,9 +102,12 @@ jobs:
     steps:
       - name: Free disk space
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          sudo docker image prune -af
           df -h /
+          if [ "$(df --output=avail -BG / | tail -1 | tr -dc 0-9)" -lt 40 ]; then
+            sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+            sudo docker image prune -af
+            df -h /
+          fi
 
       - uses: actions/checkout@v7
 
@@ -180,9 +189,12 @@ jobs:
     steps:
       - name: Free disk space
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          sudo docker image prune -af
           df -h /
+          if [ "$(df --output=avail -BG / | tail -1 | tr -dc 0-9)" -lt 40 ]; then
+            sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+            sudo docker image prune -af
+            df -h /
+          fi
 
       - uses: actions/checkout@v7
 

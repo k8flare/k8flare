@@ -3,7 +3,13 @@ name: Conformance
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - plans/**
+      - "**.md"
   pull_request:
+    paths-ignore:
+      - plans/**
+      - "**.md"
   schedule:
     - cron: "17 2 * * *"
   workflow_call:
@@ -19,6 +25,14 @@ on:
         default: ""
       probe_minutes:
         description: Stop the suite after this many minutes and pass; the shard is then a sample for the workerd spin
+        required: false
+        default: ""
+      procs:
+        description: Ginkgo processes per shard, 4 when empty
+        required: false
+        default: ""
+      shard:
+        description: Run only this shard of the usual split
         required: false
         default: ""
 
@@ -42,13 +56,18 @@ jobs:
       - id: plan
         env:
           FOCUS: ${{ inputs.focus }}
+          ONLY_SHARD: ${{ inputs.shard }}
         run: |
           shards=$CONFORMANCE_SHARDS
           if [ -n "$FOCUS" ]; then
             shards=1
           fi
           echo "shards=$shards" >> "$GITHUB_OUTPUT"
-          echo "matrix=$(seq 0 $((shards - 1)) | paste -sd, - | sed 's/.*/[&]/')" >> "$GITHUB_OUTPUT"
+          if [ -n "$ONLY_SHARD" ]; then
+            echo "matrix=[$ONLY_SHARD]" >> "$GITHUB_OUTPUT"
+          else
+            echo "matrix=$(seq 0 $((shards - 1)) | paste -sd, - | sed 's/.*/[&]/')" >> "$GITHUB_OUTPUT"
+          fi
 
   workers:
     runs-on: ubuntu-24.04
@@ -132,9 +151,12 @@ jobs:
     steps:
       - name: Free disk space
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          sudo docker image prune -af
           df -h /
+          if [ "$(df --output=avail -BG / | tail -1 | tr -dc 0-9)" -lt 40 ]; then
+            sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+            sudo docker image prune -af
+            df -h /
+          fi
 
       - uses: actions/checkout@v7
 
@@ -190,6 +212,7 @@ jobs:
           SET: conformance
           FOCUS: ${{ inputs.focus }}
           PROBE_MINUTES: ${{ inputs.probe_minutes }}
+          PROCS: ${{ inputs.procs }}
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ needs.plan.outputs.shards }}
 
