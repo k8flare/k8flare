@@ -64,6 +64,10 @@ jobs:
           fi
           echo "shards=$shards" >> "$GITHUB_OUTPUT"
           if [ -n "$ONLY_SHARD" ]; then
+            if ! [[ $ONLY_SHARD =~ ^[0-9]+$ ]] || [ "$ONLY_SHARD" -ge "$shards" ]; then
+              echo "shard '$ONLY_SHARD' is not one of 0..$((shards - 1))" >&2
+              exit 1
+            fi
             echo "matrix=[$ONLY_SHARD]" >> "$GITHUB_OUTPUT"
           else
             echo "matrix=$(seq 0 $((shards - 1)) | paste -sd, - | sed 's/.*/[&]/')" >> "$GITHUB_OUTPUT"
