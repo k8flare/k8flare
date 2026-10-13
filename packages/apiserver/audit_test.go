@@ -96,7 +96,7 @@ func newAuditRig(t *testing.T, policy string, inner http.Handler) *auditRig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &auditRig{out: out, handler: withFrontFilters(inner, auditTestAuthn, auditTestAuthz, a, 10, 10)}
+	return &auditRig{out: out, handler: withFrontFilters(inner, auditTestAuthn, auditTestAuthz, a, newFlowControl(fakeVaultStore(), 20))}
 }
 
 func (r *auditRig) do(method, target, token, body string) *httptest.ResponseRecorder {

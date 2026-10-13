@@ -56,6 +56,15 @@ var componentIdentities = map[string]func() user.Info{
 	"nodes":        unprivileged("system:k8flare:nodes"),
 }
 
+func IsComponentIdentity(name string) bool {
+	for _, identity := range componentIdentities {
+		if identity().GetName() == name {
+			return true
+		}
+	}
+	return false
+}
+
 func MintComponentToken(key []byte, component string) string {
 	return componentTokenPrefix + component + ":" + componentMAC(key, component)
 }
