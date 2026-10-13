@@ -83,6 +83,7 @@ func newClient(t *testing.T, objs ...runtime.Object) *fake.FakeDynamicClient {
 		claimsGVR:         "PersistentVolumeClaimList",
 		volumesGVR:        "PersistentVolumeList",
 		storageClassesGVR: "StorageClassList",
+		eventsGVR:         "EventList",
 	}, append(packagedLocalStorage(t), objs...)...)
 }
 
@@ -197,8 +198,33 @@ func checkHelper(t *testing.T, pod corev1.Pod, name, script, volDir string) {
 	if pod.Spec.RestartPolicy != corev1.RestartPolicyNever || pod.Spec.AutomountServiceAccountToken == nil || *pod.Spec.AutomountServiceAccountToken {
 		t.Fatalf("helper restartPolicy %q automountServiceAccountToken %v", pod.Spec.RestartPolicy, pod.Spec.AutomountServiceAccountToken)
 	}
-	if c.SecurityContext == nil || c.SecurityContext.Privileged == nil || !*c.SecurityContext.Privileged {
-		t.Fatalf("helper is not privileged: %+v", c.SecurityContext)
+	if c.SecurityContext != nil || pod.Spec.SecurityContext != nil {
+		t.Fatalf("helper security context %+v %+v, upstream sets none", c.SecurityContext, pod.Spec.SecurityContext)
+	}
+	wantTolerations := []corev1.Toleration{{Key: "node.kubernetes.io/disk-pressure", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule}}
+	if !slices.Equal(pod.Spec.Tolerations, wantTolerations) {
+		t.Fatalf("helper tolerations %+v, want %+v", pod.Spec.Tolerations, wantTolerations)
+	}
+	var names []string
+	for _, e := range c.Env {
+		names = append(names, e.Name)
+	}
+	if !slices.Equal(names, []string{"VOL_DIR", "VOL_MODE", "VOL_SIZE_BYTES", "VOL_USER", "VOL_GROUP", "VOL_PERM"}) {
+		t.Fatalf("helper env names %v", names)
+	}
+	action := map[string]string{"setup": "create", "teardown": "delete"}[script]
+	if !slices.Equal(c.Args, []string{"-p", volDir, "-s", "16777216", "-m", "Filesystem", "-a", action}) {
+		t.Fatalf("helper args %v", c.Args)
+	}
+	var mounts []string
+	for _, m := range c.VolumeMounts {
+		mounts = append(mounts, m.Name+":"+m.MountPath)
+	}
+	if !slices.Equal(mounts, []string{"script:/script", "data:" + storageRoot}) {
+		t.Fatalf("helper mounts %v", mounts)
+	}
+	if pod.Spec.PriorityClassName != "" || c.ImagePullPolicy != corev1.PullIfNotPresent {
+		t.Fatalf("helper priorityClassName %q imagePullPolicy %q", pod.Spec.PriorityClassName, c.ImagePullPolicy)
 	}
 }
 
