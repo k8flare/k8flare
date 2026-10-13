@@ -233,17 +233,28 @@ func tokenRotate(args []string, out io.Writer) error {
 	}
 	id := tokenID(ids[0])
 	var rotated tokenRecord
-	if err := c.call("POST", "/internal/tokens/"+id+"/rotate", nil, nil, &rotated); err != nil {
-		if !isNotFound(err) {
-			return err
-		}
-		if _, getErr := c.do("GET", bootstrapSecretPath(id), nil, nil); getErr == nil {
-			return fmt.Errorf("token %s is a bootstrap token, whose secret cannot be rotated in place; run `k8flare token create --bootstrap`, then `k8flare token revoke %s`", id, id)
-		} else if !isNotFound(getErr) {
-			return getErr
-		}
+	if err := c.call("POST", "/internal/tokens/"+id+"/rotate", nil, nil, &rotated); err == nil {
+		fmt.Fprintln(out, k10Token(caHash, rotated.Token))
+		return nil
+	} else if !isNotFound(err) {
 		return err
 	}
-	fmt.Fprintln(out, k10Token(caHash, rotated.Token))
+	var bootstrapToken corev1.Secret
+	if err := c.call("GET", bootstrapSecretPath(id), nil, nil, &bootstrapToken); err != nil {
+		return err
+	}
+	newToken, err := bootstraputil.GenerateBootstrapToken()
+	if err != nil {
+		return err
+	}
+	_, secret, _ := strings.Cut(newToken, ".")
+	bootstrapToken.Data[bootstrapapi.BootstrapTokenSecretKey] = []byte(secret)
+	if expires, err := time.Parse(time.RFC3339, string(bootstrapToken.Data[bootstrapapi.BootstrapTokenExpirationKey])); err == nil && !bootstrapToken.CreationTimestamp.IsZero() {
+		bootstrapToken.Data[bootstrapapi.BootstrapTokenExpirationKey] = []byte(time.Now().Add(expires.Sub(bootstrapToken.CreationTimestamp.Time)).UTC().Format(time.RFC3339))
+	}
+	if err := c.call("PUT", bootstrapSecretPath(id), nil, &bootstrapToken, nil); err != nil {
+		return err
+	}
+	fmt.Fprintln(out, k10Token(caHash, id+"."+secret))
 	return nil
 }

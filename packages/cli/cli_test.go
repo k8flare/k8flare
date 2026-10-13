@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	bootstrapapi "k8s.io/cluster-bootstrap/token/api"
@@ -316,20 +317,58 @@ func TestTokenListIncludesBootstrapTokens(t *testing.T) {
 	}
 }
 
-func TestTokenRotateRefusesABootstrapToken(t *testing.T) {
+func TestTokenRotateBootstrapTokenKeepsItsAttributesAndReplacesItsSecret(t *testing.T) {
 	f := newFakeCluster(t)
+	old := corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "bootstrap-token-abc123", Namespace: "kube-system", CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Hour))},
+		Type:       bootstrapapi.SecretTypeBootstrapToken,
+		Data: map[string][]byte{
+			bootstrapapi.BootstrapTokenIDKey:               []byte("abc123"),
+			bootstrapapi.BootstrapTokenSecretKey:           []byte("0123456789abcdef"),
+			bootstrapapi.BootstrapTokenUsageAuthentication: []byte("true"),
+			bootstrapapi.BootstrapTokenUsageSigningKey:     []byte("true"),
+			bootstrapapi.BootstrapTokenExtraGroupsKey:      []byte("system:bootstrappers:ci"),
+			bootstrapapi.BootstrapTokenDescriptionKey:      []byte("join node"),
+			bootstrapapi.BootstrapTokenExpirationKey:       []byte(time.Now().Add(time.Hour).UTC().Format(time.RFC3339)),
+		},
+	}
+	data, err := json.Marshal(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/namespaces/kube-system/secrets/bootstrap-token-abc123"
 	f.statuses["POST /internal/tokens/abc123/rotate"] = http.StatusNotFound
 	f.respond["POST /internal/tokens/abc123/rotate"] = "join token not found"
+	f.respond["GET "+path] = string(data)
 	out, err := f.run(t, "token", "rotate", "abc123")
-	if err == nil || !strings.Contains(err.Error(), "token create --bootstrap") || !strings.Contains(err.Error(), "token revoke abc123") {
-		t.Fatalf("%q %v", out, err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if f.last().method != "GET" || f.last().path != "/api/v1/namespaces/kube-system/secrets/bootstrap-token-abc123" {
-		t.Fatalf("%+v", f.last())
+	call := f.last()
+	if call.method != "PUT" || call.path != path {
+		t.Fatalf("%+v", call)
 	}
-	f.statuses["GET /api/v1/namespaces/kube-system/secrets/bootstrap-token-abc123"] = http.StatusNotFound
-	if _, err := f.run(t, "token", "rotate", "abc123"); err == nil || !strings.Contains(err.Error(), "join token not found") {
-		t.Fatalf("missing token: %v", err)
+	var rotated corev1.Secret
+	if err := json.Unmarshal([]byte(call.body), &rotated); err != nil {
+		t.Fatal(err)
+	}
+	newSecret := string(rotated.Data[bootstrapapi.BootstrapTokenSecretKey])
+	if newSecret == "0123456789abcdef" || string(rotated.Data[bootstrapapi.BootstrapTokenIDKey]) != "abc123" || string(rotated.Data[bootstrapapi.BootstrapTokenDescriptionKey]) != "join node" || string(rotated.Data[bootstrapapi.BootstrapTokenUsageSigningKey]) != "true" || string(rotated.Data[bootstrapapi.BootstrapTokenExtraGroupsKey]) != "system:bootstrappers:ci" {
+		t.Fatalf("rotated Secret = %+v", rotated)
+	}
+	if out != k10Of(t, f.respond["GET /cacerts"], "abc123."+newSecret)+"\n" {
+		t.Fatalf("output %q", out)
+	}
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	if err := indexer.Add(&rotated); err != nil {
+		t.Fatal(err)
+	}
+	authenticator := bootstrap.NewTokenAuthenticator(corelisters.NewSecretLister(indexer).Secrets("kube-system"))
+	if _, ok, err := authenticator.AuthenticateToken(t.Context(), "abc123.0123456789abcdef"); err != nil || ok {
+		t.Fatalf("old secret authenticated: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := authenticator.AuthenticateToken(t.Context(), "abc123."+newSecret); err != nil || !ok {
+		t.Fatalf("new secret did not authenticate: ok=%v err=%v", ok, err)
 	}
 }
 
