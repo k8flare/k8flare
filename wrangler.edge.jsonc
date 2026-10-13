@@ -17,4 +17,5 @@
     { "pattern": "*.k8flare.com/*", "zone_name": "k8flare.com" },
     { "pattern": "*.svc.k8flare.com/*", "zone_name": "k8flare.com" },
   ],
+  "observability": { "enabled": true, "traces": { "enabled": true, "head_sampling_rate": 1, "persist": true } },
 }

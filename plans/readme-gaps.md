@@ -591,8 +591,10 @@ Decided on 2026-10-01, with the owner:
   `onNextSessionRestoreBookmark` are fakes in the tests, `/restore/apply`
   (`ctx.abort`) has no test, and none of them has run against a deployed
   Durable Object. It rewinds the whole Durable Object,
-  `/vault/` included. Snapshots go to `PODS_R2`, the bucket pods use. No
-  Logpush is configured.
+  `/vault/` included. Snapshots go to `PODS_R2`, the bucket pods use. Logpush
+  is enabled on the control-plane Worker, which relays audit records through
+  `tail()` as individual `audit.k8s.io/v1` Event JSON lines. A destination and
+  job remain operator configuration; this has not been observed on Cloudflare.
 - Bootstrap-token Secrets now authenticate API bearer requests and k3s agent
   joins through the upstream bootstrap authenticator. Unit tests cover validation
   and supervisor access; a Secret-backed join has not been exercised with a live
@@ -723,8 +725,7 @@ Decided on 2026-10-01, with the owner:
   test.
 - No exec credential plugin ships; `k8flare` only accepts the Access token
   as a bearer.
-- Traces start in the workloads and queue paths only (`otel.ts`), not per
-  API request, and no config sets `OTEL_ENDPOINT`.
+- Workers Traces head-samples every deployed Worker at 1. Platform instrumentation records handler invocations and fetch, binding and Durable Object operations; request and controller semantic spans remain incomplete. `otel.ts` exports only when an `OTEL_ENDPOINT` environment value is supplied, and none is configured.
 - The LoadBalancer hostname and the edge proxy origin are fixed to
   `k8flare.com` (see Packaged components).
 
