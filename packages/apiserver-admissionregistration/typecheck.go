@@ -188,9 +188,12 @@ type crdLite struct {
 		Group string `json:"group"`
 		Names struct {
 			Plural string `json:"plural"`
+			Kind   string `json:"kind"`
 		} `json:"names"`
 		Versions []struct {
-			Storage bool `json:"storage"`
+			Name    string `json:"name"`
+			Served  bool   `json:"served"`
+			Storage bool   `json:"storage"`
 			Schema  struct {
 				OpenAPIV3Schema schemaNode `json:"openAPIV3Schema"`
 			} `json:"schema"`

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -106,6 +107,23 @@ func NewCountingStore(t *testing.T) *CountingStore {
 			cs.data[body.Key] = raw
 			cs.revs[body.Key] = cs.rev
 			reply(http.StatusOK, map[string]any{"revision": cs.rev})
+		case "GET /list":
+			prefix := r.URL.Query().Get("prefix")
+			cs.mu.Lock()
+			var keys []string
+			for key := range cs.data {
+				if strings.HasPrefix(key, prefix) {
+					keys = append(keys, key)
+				}
+			}
+			sort.Strings(keys)
+			kvs := make([]kine.KV, 0, len(keys))
+			for _, key := range keys {
+				kvs = append(kvs, kine.KV{Key: key, Value: base64.StdEncoding.EncodeToString(cs.data[key]), ModRevision: cs.revs[key]})
+			}
+			rev := cs.rev
+			cs.mu.Unlock()
+			reply(http.StatusOK, map[string]any{"revision": rev, "kvs": kvs})
 		default:
 			reply(http.StatusNotFound, map[string]any{})
 		}
