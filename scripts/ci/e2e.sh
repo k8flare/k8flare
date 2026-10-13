@@ -370,6 +370,133 @@ EOF
   "${k[@]}" delete namespace ci-volume --wait=false
 }
 
+helm_chart_content() {
+  local dir
+  dir=$(mktemp -d)
+  mkdir -p "$dir/ci-chart/templates"
+  cat > "$dir/ci-chart/Chart.yaml" <<'EOF'
+apiVersion: v2
+name: ci-chart
+version: 0.1.0
+EOF
+  cat > "$dir/ci-chart/values.yaml" <<'EOF'
+message: chart-default
+greeting: chart-default
+EOF
+  cat > "$dir/ci-chart/templates/config.yaml" <<'EOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+data:
+  message: {{ .Values.message | quote }}
+  greeting: {{ .Values.greeting | quote }}
+EOF
+  cat > "$dir/ci-chart/templates/app.yaml" <<'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-app
+  annotations:
+    ci.example/message: {{ .Values.message | quote }}
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-app
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-app
+    spec:
+      containers:
+      - name: app
+        image: rancher/mirrored-library-busybox:1.37.0
+        command: [sleep, "3600"]
+EOF
+  tar -cf - -C "$dir" ci-chart | gzip -n | base64 | tr -d '\n'
+  rm -rf "$dir"
+}
+
+apply_helm_chart() {
+  local message=$1
+  jq -n --arg chart "$(helm_chart_content)" --arg values "message: $message" '{
+    apiVersion: "helm.cattle.io/v1",
+    kind: "HelmChart",
+    metadata: {name: "ci-helm", namespace: "ci-helm"},
+    spec: {chartContent: $chart, valuesContent: $values, set: {greeting: "from-set"}}
+  }' | kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s apply -f -
+}
+
+helm_crd_established() {
+  [ "$(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s get crd helmcharts.helm.cattle.io -o jsonpath='{.status.conditions[?(@.type=="Established")].status}')" = True ]
+}
+
+helm_release_applied() {
+  local want=$1 config app
+  local -a k=(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s -n ci-helm)
+  config=$("${k[@]}" get configmap ci-helm-config -o jsonpath='{.data.message}/{.data.greeting}') || return 1
+  if [ "$config" != "$want/from-set" ]; then
+    echo "ConfigMap ci-helm/ci-helm-config holds message/greeting '$config', want '$want/from-set'"
+    return 1
+  fi
+  app=$("${k[@]}" get deployment ci-helm-app -o jsonpath='{.metadata.annotations.ci\.example/message}') || return 1
+  if [ "$app" != "$want" ]; then
+    echo "Deployment ci-helm/ci-helm-app is annotated '$app', want '$want'"
+    return 1
+  fi
+  echo "the release objects carry '$want'"
+}
+
+helm_release_revision() {
+  local want=$1 got
+  got=$(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s -n ci-helm get secrets -l owner=helm,name=ci-helm,status=deployed -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}') || return 1
+  if [ "$got" != "sh.helm.release.v1.ci-helm.v$want" ]; then
+    echo "the deployed release Secrets are '$got', want only sh.helm.release.v1.ci-helm.v$want"
+    return 1
+  fi
+  echo "the deployed release is revision $want"
+}
+
+helm_chart_not_failed() {
+  local got
+  got=$(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s -n ci-helm get helmchart ci-helm -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}') || return 1
+  if [ "$got" != False ]; then
+    echo "the HelmChart Failed condition is '$got', want False"
+    return 1
+  fi
+}
+
+helm_release_removed() {
+  local left
+  left=$(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s -n ci-helm get configmap,deployment,secret,helmchart -o name | grep -E 'ci-helm|sh.helm.release' || true)
+  if [ -n "$left" ]; then
+    echo "objects of the deleted HelmChart remain: $left"
+    return 1
+  fi
+  echo "no object of the HelmChart remains"
+}
+
+helm_chart_install() {
+  local -a k=(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s)
+  wait_for "the HelmChart CRD" 60 5 helm_crd_established
+  "${k[@]}" create namespace ci-helm
+  apply_helm_chart from-values
+  wait_for "the release objects from the inline chart" 60 5 helm_release_applied from-values
+  helm_release_applied from-values
+  wait_for "release revision 1" 30 5 helm_release_revision 1
+  helm_chart_not_failed
+  apply_helm_chart upgraded
+  wait_for "the upgraded release objects" 60 5 helm_release_applied upgraded
+  helm_release_applied upgraded
+  wait_for "release revision 2" 30 5 helm_release_revision 2
+  helm_chart_not_failed
+  "${k[@]}" -n ci-helm delete helmchart ci-helm --timeout=120s
+  wait_for "the released objects to be removed" 30 5 helm_release_removed
+  helm_release_removed
+  "${k[@]}" delete namespace ci-helm --wait=false
+}
+
 gateway_crds_established() {
   local crd
   for crd in gatewayclasses gateways httproutes; do
@@ -767,6 +894,7 @@ up() {
   metrics_served
   volume_bound_on_first_consumer
   dynamic_resource_allocation
+  helm_chart_install
   edge_routing
 }
 

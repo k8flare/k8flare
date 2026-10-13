@@ -399,9 +399,12 @@ Decided on 2026-10-01, with the owner:
     removed, as in Helm. History is trimmed to 10 revisions, never
     dropping the deployed one.
   - Covered by Go tests on fakes (`packages/helm`), the Cluster Durable
-    Object and queue tests in `unit.yml`, and `helm template` output; not
-    by a workerd test or a running cluster, so no hook Job has run on a
-    real node.
+    Object and queue tests in `unit.yml`, and `helm template` output. On a
+    running cluster, `scripts/ci/e2e.sh up` installs an inline-chart
+    HelmChart (`chartContent`, `valuesContent`, `set`), upgrades it by
+    changing the values and deletes it, checking the objects and release
+    Secrets at each step; this has not yet run on GitHub Actions. No
+    workerd test exists and no hook Job has run on a real node.
   - Charts that need `helm dependency build` must be packaged with their
     `charts/` directory; `dependencies` are not fetched.
 - Ingress and Gateway API are routed at the edge, covered by Go tests
