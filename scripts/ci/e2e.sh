@@ -833,8 +833,9 @@ stop_devtls() {
 }
 
 stop_control_plane() {
-  pkill -9 -f 'wrangler dev' || true
+  pkill -9 -f 'wrangler(\.js)? dev' || true
   pkill -9 -x workerd || true
+  ss -ltnpH 'sport = :18787' | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u | xargs -r kill -9 || true
   wait_for "wrangler dev to release :18787" 60 1 port_free 18787
 }
 
