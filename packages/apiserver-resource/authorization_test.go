@@ -2,40 +2,21 @@ package resource
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
 	registrytest "github.com/k8flare/k8flare/packages/apiserver-registry/registrytest"
+	rbacv1 "k8s.io/api/rbac/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/authentication/user"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/rest"
+	"k8s.io/client-go/kubernetes/scheme"
 )
-
-type toServer struct{ base string }
-
-func (t toServer) RoundTrip(req *http.Request) (*http.Response, error) {
-	next, err := http.NewRequestWithContext(req.Context(), req.Method, t.base+req.URL.RequestURI(), req.Body)
-	if err != nil {
-		return nil, err
-	}
-	return http.DefaultTransport.RoundTrip(next)
-}
-
-func emptyKine(t *testing.T) *kine.Client {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"revision": 1, "kvs": []any{}})
-	}))
-	t.Cleanup(srv.Close)
-	return &kine.Client{HTTP: &http.Client{Transport: toServer{base: srv.URL}}}
-}
 
 func claimStatusContext(who user.Info) context.Context {
 	ctx := genericapirequest.WithNamespace(context.Background(), "default")
@@ -71,29 +52,73 @@ func claimWithAllocation() *resourcev1.ResourceClaim {
 	return claim
 }
 
-func updateClaimStatus(t *testing.T, who user.Info) error {
+func claimStore(t *testing.T) *registry.Store {
 	t.Helper()
-	client := emptyKine(t)
-	store, err := registry.NewStore(client, schema.GroupVersion{Group: "resource.k8s.io", Version: "v1"}, metav1.APIResource{Name: "resourceclaims", Kind: "ResourceClaim", Namespaced: true})
+	cs := registrytest.NewCountingStore(t)
+	codec := scheme.Codecs.LegacyCodec(rbacv1.SchemeGroupVersion)
+	seed := func(key string, obj runtime.Object) {
+		s := kine.NewStorage(cs.Client(), codec, func() runtime.Object { return obj.DeepCopyObject() })
+		if err := s.Create(context.Background(), key, obj, obj.DeepCopyObject(), 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed("/clusterroles/driver-writer", &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{Name: "driver-writer"},
+		Rules: []rbacv1.PolicyRule{{
+			Verbs:         []string{resourcev1.VerbPrefixArbitraryNode + "update"},
+			APIGroups:     []string{"resource.k8s.io"},
+			Resources:     []string{"resourceclaims/driver"},
+			ResourceNames: []string{"driver.example.com"},
+		}},
+	})
+	seed("/clusterrolebindings/driver-writer", &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "driver-writer"},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "driver-writer"},
+		Subjects:   []rbacv1.Subject{{Kind: rbacv1.UserKind, APIGroup: rbacv1.GroupName, Name: "driver-plugin"}},
+	})
+	store, err := registry.NewStore(cs.Client(), schema.GroupVersion{Group: "resource.k8s.io", Version: "v1"}, metav1.APIResource{Name: "resourceclaims", Kind: "ResourceClaim", Namespaced: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry.Customizers["resourceclaims"](store, registry.Deps{Kine: client})
+	registry.Customizers["resourceclaims"](store, registry.Deps{Kine: cs.Client()})
+	return store
+}
+
+func updateClaimStatus(t *testing.T, who user.Info, obj, old *resourcev1.ResourceClaim) error {
+	t.Helper()
+	store := claimStore(t)
 	strategy := registry.StatusStrategyFor(store)
 	ctx := claimStatusContext(who)
-	obj := claimWithAllocation()
-	old := claimWithoutAllocation()
 	strategy.PrepareForUpdate(ctx, obj, old)
 	return rest.BeforeUpdate(strategy, ctx, obj, old)
 }
 
+func claimWithDeviceStatus() *resourcev1.ResourceClaim {
+	claim := claimWithAllocation()
+	claim.Status.Devices = []resourcev1.AllocatedDeviceStatus{{Driver: "driver.example.com", Pool: "pool", Device: "dev"}}
+	return claim
+}
+
 func TestClaimAllocationNeedsBindingPermission(t *testing.T) {
-	err := updateClaimStatus(t, &user.DefaultInfo{Name: "alice", Groups: []string{user.AllAuthenticated}})
+	err := updateClaimStatus(t, &user.DefaultInfo{Name: "alice", Groups: []string{user.AllAuthenticated}}, claimWithAllocation(), claimWithoutAllocation())
 	registrytest.RequireFieldError(t, err, "status.allocation", "resourceclaims/binding")
 }
 
 func TestClaimAllocationAllowedWithBindingPermission(t *testing.T) {
-	if err := updateClaimStatus(t, &user.DefaultInfo{Name: "system:kube-scheduler", Groups: []string{user.AllAuthenticated}}); err != nil {
+	who := &user.DefaultInfo{Name: "system:kube-scheduler", Groups: []string{user.AllAuthenticated}}
+	if err := updateClaimStatus(t, who, claimWithAllocation(), claimWithoutAllocation()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClaimDeviceStatusNeedsDriverPermission(t *testing.T) {
+	err := updateClaimStatus(t, &user.DefaultInfo{Name: "alice", Groups: []string{user.AllAuthenticated}}, claimWithDeviceStatus(), claimWithAllocation())
+	registrytest.RequireFieldError(t, err, "status.devices", "resourceclaims/driver")
+}
+
+func TestClaimDeviceStatusAllowedWithDriverPermission(t *testing.T) {
+	who := &user.DefaultInfo{Name: "driver-plugin", Groups: []string{user.AllAuthenticated}}
+	if err := updateClaimStatus(t, who, claimWithDeviceStatus(), claimWithAllocation()); err != nil {
 		t.Fatal(err)
 	}
 }
