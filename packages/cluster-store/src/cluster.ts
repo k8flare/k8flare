@@ -34,6 +34,10 @@ const ADDON_PREFIX = "/registry/k3s.cattle.io/addons/";
 const HELM_PREFIXES = ["/registry/helm.cattle.io/helmcharts/", "/registry/helm.cattle.io/helmchartconfigs/"];
 const HELM_HOOK_PREFIXES = ["/registry/jobs/", "/registry/pods/"];
 const SECRET_PREFIX = "/registry/secrets/";
+const LOCAL_PATH_PROVISIONER = "rancher.io/local-path";
+const LOCAL_PATH_VOLUME_PREFIXES = ["/registry/persistentvolumeclaims/", "/registry/persistentvolumes/"];
+const LOCAL_PATH_HELPER_PREFIX = "/registry/pods/kube-system/";
+const LOCAL_PATH_HELPER_ANNOTATION = "k8flare.io/local-path-failures";
 const CRD_PREFIX = "/registry/apiextensions.k8s.io/customresourcedefinitions/";
 const ATTACH_PREFIXES = ["/registry/pods/", "/registry/minions/", "/registry/nodes/", "/registry/persistentvolumeclaims/", "/registry/persistentvolumes/", "/registry/storage.k8s.io/", "/registry/storageclasses/"];
 const SCHEDULER_VOLUME_PREFIXES = ["/registry/persistentvolumeclaims/", "/registry/persistentvolumes/", "/registry/storageclasses/", "/registry/csinodes/", "/registry/csidrivers/", "/registry/csistoragecapacities/", "/registry/volumeattachments/", "/registry/storage.k8s.io/", "/registry/resourceclaims/", "/registry/resourceslices/", "/registry/deviceclasses/"];
@@ -742,6 +746,8 @@ export class Cluster extends DurableObject<Env> {
     if (HELM_PREFIXES.some((p) => name.startsWith(p))) routes.push("addons");
     if (HELM_HOOK_PREFIXES.some((p) => name.startsWith(p)) && helmHookSettledOrGone(type, value, prev)) routes.push("addons");
     if (name.startsWith(SECRET_PREFIX) && this.namedInHelmValues(name)) routes.push("addons");
+    if (LOCAL_PATH_VOLUME_PREFIXES.some((p) => name.startsWith(p)) && (localPathVolume(value) || (prev && localPathVolume(prev.value)))) routes.push("addons");
+    if (name.startsWith(LOCAL_PATH_HELPER_PREFIX) && localPathHelperSettledOrGone(type, value, prev)) routes.push("addons");
     if (isExtensionKey(name, value, type)) routes.push("extensions");
     if (type === "deleted" || collectable(value, type === "modified" && prev ? prev.value : null)) routes.push("gc");
     if (name.startsWith("/registry/pods/")) {
@@ -968,6 +974,23 @@ function helmHookSettled(obj: Record<string, any>): boolean {
 function helmHookSettledOrGone(type: string, value: Uint8Array, prev: KV | null): boolean {
   const obj = decodeJSON(value);
   if (!obj?.metadata?.annotations?.["helm.sh/hook"]) return false;
+  if (type === "deleted") return true;
+  const before = prev ? decodeJSON(prev.value) : null;
+  return helmHookSettled(obj) !== Boolean(before && helmHookSettled(before));
+}
+
+function localPathVolume(value: Uint8Array): boolean {
+  const annotations = decodeJSON(value)?.metadata?.annotations ?? {};
+  return [
+    annotations["volume.kubernetes.io/storage-provisioner"],
+    annotations["volume.beta.kubernetes.io/storage-provisioner"],
+    annotations["pv.kubernetes.io/provisioned-by"],
+  ].includes(LOCAL_PATH_PROVISIONER);
+}
+
+function localPathHelperSettledOrGone(type: string, value: Uint8Array, prev: KV | null): boolean {
+  const obj = decodeJSON(value);
+  if (obj?.metadata?.annotations?.[LOCAL_PATH_HELPER_ANNOTATION] === undefined) return false;
   if (type === "deleted") return true;
   const before = prev ? decodeJSON(prev.value) : null;
   return helmHookSettled(obj) !== Boolean(before && helmHookSettled(before));

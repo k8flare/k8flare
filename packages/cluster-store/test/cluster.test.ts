@@ -309,6 +309,43 @@ test("a Helm hook Job or Pod reaches the addons queue when it finishes or goes, 
   assert.deepEqual(sent, ["/registry/jobs/apps/pre", "/registry/pods/apps/post", "/registry/pods/apps/post"]);
 });
 
+test("local-path claims and volumes reach the addons queue, other claims and volumes do not", async () => {
+  const sent: string[] = [];
+  const addons = { send: async () => {}, sendBatch: async (batch: { body: { key: string } }[]) => void sent.push(...batch.map((m) => m.body.key)) };
+  const r = rig({ ADDON_Q: addons } as any);
+  await r.settle();
+  const annotated = (key: string, value: string) => `{"metadata":{"annotations":{"${key}":"${value}"}}}`;
+  await r.put("/registry/persistentvolumeclaims/app/data", annotated("volume.kubernetes.io/storage-provisioner", "rancher.io/local-path"));
+  await r.put("/registry/persistentvolumeclaims/app/old", annotated("volume.beta.kubernetes.io/storage-provisioner", "rancher.io/local-path"));
+  await r.put("/registry/persistentvolumeclaims/app/csi", annotated("volume.kubernetes.io/storage-provisioner", "ebs.csi.aws.com"));
+  await r.put("/registry/persistentvolumeclaims/app/pending", `{"metadata":{}}`);
+  await r.put("/registry/persistentvolumes/pvc-1", annotated("pv.kubernetes.io/provisioned-by", "rancher.io/local-path"));
+  await r.put("/registry/persistentvolumes/pvc-2", annotated("pv.kubernetes.io/provisioned-by", "ebs.csi.aws.com"));
+  await r.remove("/registry/persistentvolumes/pvc-1");
+  await r.settle();
+  assert.deepEqual(sent, [
+    "/registry/persistentvolumeclaims/app/data",
+    "/registry/persistentvolumeclaims/app/old",
+    "/registry/persistentvolumes/pvc-1",
+    "/registry/persistentvolumes/pvc-1",
+  ]);
+});
+
+test("a local-path helper pod reaches the addons queue when it finishes or goes, not on every write", async () => {
+  const sent: string[] = [];
+  const addons = { send: async () => {}, sendBatch: async (batch: { body: { key: string } }[]) => void sent.push(...batch.map((m) => m.body.key)) };
+  const r = rig({ ADDON_Q: addons } as any);
+  await r.settle();
+  const helper = (phase: string) => `{"kind":"Pod","metadata":{"name":"helper-pod-create-pvc-1","annotations":{"k8flare.io/local-path-failures":"0"}},"status":{"phase":"${phase}"}}`;
+  await r.put("/registry/pods/kube-system/helper-pod-create-pvc-1", helper("Pending"));
+  await r.put("/registry/pods/kube-system/helper-pod-create-pvc-1", helper("Running"), 2);
+  await r.put("/registry/pods/kube-system/helper-pod-create-pvc-1", helper("Succeeded"), 3);
+  await r.put("/registry/pods/kube-system/coredns", `{"kind":"Pod","metadata":{"name":"coredns"},"status":{"phase":"Succeeded"}}`);
+  await r.remove("/registry/pods/kube-system/helper-pod-create-pvc-1");
+  await r.settle();
+  assert.deepEqual(sent, ["/registry/pods/kube-system/helper-pod-create-pvc-1", "/registry/pods/kube-system/helper-pod-create-pvc-1"]);
+});
+
 test("a Secret named in a HelmChart's or HelmChartConfig's valuesSecrets reaches the addons queue unless updates are ignored", async () => {
   const sent: string[] = [];
   const addons = { send: async () => {}, sendBatch: async (batch: { body: { key: string } }[]) => void sent.push(...batch.map((m) => m.body.key)) };

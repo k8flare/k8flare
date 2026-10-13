@@ -2,7 +2,7 @@ import type { QueueMessage } from "@k8flare/cluster-store";
 import { Trace } from "./otel";
 import { apiserverFetch } from "./loader.ts";
 import { clusterStub } from "./clusterid.ts";
-import { deployAddons, reconcileHelm } from "./addons.ts";
+import { deployAddons, reconcileHelm, reconcileLocalPath } from "./addons.ts";
 import { wakePodKubelets } from "./podkubelet/wake.ts";
 import { componentToken } from "./componenttoken.ts";
 
@@ -369,11 +369,14 @@ async function consumeAddons(batch: MessageBatch<QueueMessage | BucketChange>, e
   const migrateOnly = batch.messages.every((m) => m.body.kind === "retry" && m.body.names?.includes("storage-migrate"));
   const addonsOK = migrateOnly || (await deployAddons(env));
   const helm = migrateOnly ? { ok: true, nextMs: 0 } : await reconcileHelm(env);
-  const ok = addonsOK && helm.ok;
+  const localPath = migrateOnly ? { ok: true, nextMs: 0 } : await reconcileLocalPath(env);
+  const ok = addonsOK && helm.ok && localPath.ok;
+  const waits = [helm.nextMs, localPath.nextMs].filter((ms) => ms > 0);
+  const nextMs = waits.length > 0 ? Math.min(...waits) : 0;
   const migration = await migrateStorage(env);
   const pending = migration ? migration.pending.length : 0;
-  console.log(`addons: ok=${ok} addons=${addonsOK} helm=${helm.ok} nextMs=${helm.nextMs} storage-migrate rewritten=${migration?.rewritten ?? 0} pending=${pending} msgs=${batch.messages.length}`);
-  const follow = await followUp(env, { target: "addons", ok, pending, migrateFailed: !migration, nextMs: helm.nextMs, skip: migrateOnly, failures: failuresOf(batch.messages) });
+  console.log(`addons: ok=${ok} addons=${addonsOK} helm=${helm.ok} local-path=${localPath.ok} nextMs=${nextMs} storage-migrate rewritten=${migration?.rewritten ?? 0} pending=${pending} msgs=${batch.messages.length}`);
+  const follow = await followUp(env, { target: "addons", ok, pending, migrateFailed: !migration, nextMs, skip: migrateOnly, failures: failuresOf(batch.messages) });
   await applySends(env, follow.sends);
   await cancelDeadlines(env, follow.cancel ?? []);
   batch.ackAll();

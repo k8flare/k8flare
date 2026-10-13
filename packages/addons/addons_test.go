@@ -485,6 +485,26 @@ func TestLocalStorageIsTheDefaultWaitForFirstConsumerClass(t *testing.T) {
 	t.Fatal("no StorageClass")
 }
 
+func TestLocalStorageShipsOnlyItsClassAndConfig(t *testing.T) {
+	var file File
+	for _, f := range Packaged() {
+		if f.Name == "local-storage.yaml" {
+			file = f
+		}
+	}
+	objs, err := Decode(Render([]File{file}, Vars())[0].Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kinds []string
+	for _, o := range objs {
+		kinds = append(kinds, o.GetKind()+"/"+o.GetName())
+	}
+	if strings.Join(kinds, " ") != "StorageClass/local-path ConfigMap/local-path-config" {
+		t.Fatalf("local-storage.yaml ships %v, want only the StorageClass and its ConfigMap", kinds)
+	}
+}
+
 func TestNodeProxyDaemonSetRunsOnHostNetworkAwayFromK8flareAgentNodes(t *testing.T) {
 	var file File
 	for _, f := range Packaged() {

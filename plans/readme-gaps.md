@@ -306,7 +306,8 @@ Decided on 2026-10-01, with the owner:
   the first read. Volume binding: a claim on `local-path` stays `Pending`
   with no `storage-provisioner` or `selected-node` annotation for 30 s,
   then a pod using it becomes Ready only after writing to it, and the
-  claim is `Bound` to the pod's node. Remove this entry once both pass in
+  claim is `Bound` to the pod's node, with no local-path pod before the
+  claim or after the bind. Remove this entry once both pass in
   CI.
 - HelmChart and HelmChartConfig are honoured by a Worker-side controller in
   the addons Worker (`packages/helm`, `/helm` on the addons Worker, run
@@ -478,7 +479,57 @@ Decided on 2026-10-01, with the owner:
     removed the Ingress; 372 specs then timed out.
   - Changes to any Service also run the edge pass (ResolvedRefs depends on
     Services); backends are looked up per ref rather than listed.
-- local-path runs as a resident Deployment, not helper pods only.
+- local-path provisioning runs in the addons Worker (`packages/localpath`,
+  `/local-path`, run after helm in every `k8flare-addons` pass), and
+  `local-storage.yaml` ships only the StorageClass and `local-path-config`
+  (the deployer prunes the old Deployment, ServiceAccount and RBAC). A
+  claim with `storage-provisioner: rancher.io/local-path` (and a
+  `selected-node` when its class is WaitForFirstConsumer) gets
+  `helper-pod-create-pvc-<uid>` in kube-system on that node, running
+  `setup` from the ConfigMap; on success the PV is created and the helper
+  deleted. A Released `Delete` PV without a deletionTimestamp gets
+  `helper-pod-delete-<pv>` running `teardown`, then the PV is deleted (at
+  once if its node is gone). `cluster.ts` sends local-path claims and
+  volumes, and helper pods when they finish or go, to the addons queue; a
+  running helper books its `cmdTimeoutSeconds` (default 120 s) as the
+  pass's `nextMs`. `DISABLE=local-storage` turns it off. CI
+  (`scripts/ci/e2e.sh up`) asserts no local-path pod exists before the
+  WaitForFirstConsumer claim and after it binds; not yet observed on GitHub
+  Actions. Remove this entry once it passes in CI. The helper pod, the PV,
+  the claim checks, the delete path, `config.json` (`nodePathMap`,
+  `sharedFileSystemPath`, `storageClassConfigs`, `setupCommand`,
+  `teardownCommand`, `cmdTimeoutSeconds`), the helper template checks and
+  the StorageClass `nodePath`, `pathPattern`, `allowUnsafePathPattern`,
+  `nodeAffinityKey`, `userPattern`/`groupPattern`/`permPattern` and
+  `defaultVolumeType` follow rancher/local-path-provisioner v0.0.37
+  `provisioner.go`/`util.go` and sig-storage-lib-external-provisioner
+  v11.0.1 (read from GitHub; neither is in the module cache or mirrors),
+  asserted field by field in `packages/localpath/upstream_test.go`.
+  Provisioning, ProvisioningSucceeded, ProvisioningFailed and
+  VolumeFailedDelete events are written synchronously (the scheduler's
+  pattern) with source component `rancher.io/local-path`, not
+  `rancher.io/local-path_<host>_<uuid>`. Known differences:
+  - Helper pods mount no ServiceAccount token and name no ServiceAccount;
+    rancher sets `local-path-provisioner-service-account`, which the
+    deployer now prunes.
+  - A failed helper stays Failed until its backoff (5 s doubling to 1000 s,
+    the count in `k8flare.io/local-path-failures`) expires and is then
+    recreated; rancher only watches for Succeeded, so a failed helper sits
+    until the timeout, is deleted, and the claim is retried by its
+    workqueue (up to 15 times). A helper past the timeout is deleted and
+    the count starts again.
+  - With several paths for a node and no `nodePath`, the path is picked by
+    a hash of the volume name, not at random: the helper and the PV are
+    made in different passes and must agree on the path.
+  - No helper log capture, no `--allow-unsafe-helper-pod-template` (always
+    off, as k3s ships it), no `volume.beta.kubernetes.io/storage-class`
+    claim annotation, no 15-attempt provisioning or delete limit (the
+    addons follow-up backoff retries instead). A failed helper emits no
+    ProvisioningFailed event; only a helper past the timeout does.
+  - The create helper of a claim deleted mid-provisioning is deleted; a
+    directory its setup already made stays on the node.
+  - Every write to a local-path claim or volume runs the whole addons pass
+    (deploy and helm too).
 - CoreDNS NodeHosts is never written.
 - The manifests bucket is not bound: `addons.ts` reads `MANIFESTS_R2` and
   no wrangler config declares it. An edit to the bucket does not start a

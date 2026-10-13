@@ -27,7 +27,7 @@ interface Call {
   body: string;
 }
 
-function rig(manifests: Record<string, string>, helmBody = "{}", follow: Record<string, unknown> = { sends: [], stop: false }) {
+function rig(manifests: Record<string, string>, helmBody = "{}", follow: Record<string, unknown> = { sends: [], stop: false }, localPath = { status: 200, body: "{}" }) {
   const bucket = new PagedBucket();
   for (const [key, body] of Object.entries(manifests)) bucket.objects.set(key, body);
   const calls: Call[] = [];
@@ -41,7 +41,9 @@ function rig(manifests: Record<string, string>, helmBody = "{}", follow: Record<
       load: (worker: string, workerEnv: Record<string, unknown>) => ({
         fetch: async (url: string, init?: RequestInit) => {
           calls.push({ worker: `${worker} disable=${workerEnv.DISABLE}`, path: new URL(url).pathname, body: String(init?.body ?? "") });
-          return new Response(new URL(url).pathname === "/helm" ? helmBody : "{}");
+          const path = new URL(url).pathname;
+          if (path === "/local-path") return new Response(localPath.body, { status: localPath.status });
+          return new Response(path === "/helm" ? helmBody : "{}");
         },
       }),
     },
@@ -88,7 +90,7 @@ test("a change in the manifests bucket runs an addons pass with every manifest i
 
   await consume(batch as any, env);
 
-  assert.deepEqual(calls.map((c) => `${c.worker} ${c.path}`), ["addons disable=coredns /deploy", "addons disable=coredns /helm"]);
+  assert.deepEqual(calls.map((c) => `${c.worker} ${c.path}`), ["addons disable=coredns /deploy", "addons disable=coredns /helm", "addons disable=coredns /local-path"]);
   assert.deepEqual(JSON.parse(calls[0].body), manifests);
   assert.equal(bucket.lists, 3);
   assert.equal(batch.acked, true);
@@ -111,7 +113,7 @@ test("a bucket change in a batch with a storage-migrate retry still deploys", as
 
   await consume(batchOf([{ kind: "retry", names: ["storage-migrate"] }, bucketChange]) as any, env);
 
-  assert.deepEqual(calls.map((c) => c.path), ["/deploy", "/helm"]);
+  assert.deepEqual(calls.map((c) => c.path), ["/deploy", "/helm", "/local-path"]);
 });
 
 test("a storage-migrate retry alone reads nothing from the manifests bucket", async () => {
@@ -150,4 +152,30 @@ test("a storage-migrate pass tells the follow-up it skipped helm", async () => {
   await consume(batchOf([{ kind: "retry", names: ["storage-migrate"] }]) as any, env);
 
   assert.equal(followUps[0].skip, true);
+});
+
+test("a local-path pass waiting on a helper pod hands the earlier deadline to the follow-up", async () => {
+  const { followUps, env } = rig({}, JSON.stringify({ nextMs: 299_001 }), undefined, { status: 200, body: JSON.stringify({ nextMs: 120_000 }) });
+
+  await consume(batchOf([{ kind: "retry" }]) as any, env);
+
+  assert.equal(followUps[0].ok, true);
+  assert.equal(followUps[0].nextMs, 120_000);
+});
+
+test("a failed local-path pass fails the addons pass so the follow-up backs off", async () => {
+  const { followUps, env } = rig({}, "{}", undefined, { status: 500, body: "boom" });
+
+  await consume(batchOf([{ kind: "retry", failures: 2 }]) as any, env);
+
+  assert.equal(followUps[0].ok, false);
+  assert.equal(followUps[0].failures, 2);
+});
+
+test("a storage-migrate retry alone runs no local-path pass", async () => {
+  const { calls, env } = rig({});
+
+  await consume(batchOf([{ kind: "retry", names: ["storage-migrate"] }]) as any, env);
+
+  assert.deepEqual(calls.map((c) => c.path), []);
 });

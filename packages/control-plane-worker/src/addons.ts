@@ -3,6 +3,7 @@ import { componentToken } from "./componenttoken.ts";
 
 const DEPLOY_TIMEOUT_MS = 120_000;
 const HELM_TIMEOUT_MS = 300_000;
+const LOCAL_PATH_TIMEOUT_MS = 120_000;
 
 async function userManifests(bucket: R2Bucket): Promise<Record<string, string>> {
   const manifests: Record<string, string> = {};
@@ -59,6 +60,25 @@ export async function reconcileHelm(env: Env): Promise<{ ok: boolean; nextMs: nu
     return { ok: true, nextMs: (JSON.parse(text) as { nextMs?: number }).nextMs ?? 0 };
   } catch (err) {
     console.log(`helm: reconcile failed: ${String(err)}`);
+    return { ok: false, nextMs: 0 };
+  }
+}
+
+export async function reconcileLocalPath(env: Env): Promise<{ ok: boolean; nextMs: number }> {
+  try {
+    const worker = await addonsWorker(env);
+    const resp = await worker.fetch("https://addons.internal/local-path", {
+      method: "POST",
+      signal: AbortSignal.timeout(LOCAL_PATH_TIMEOUT_MS),
+    });
+    const text = await resp.text();
+    if (resp.status !== 200) {
+      console.log(`local-path: reconcile status=${resp.status} ${text.slice(0, 200)}`);
+      return { ok: false, nextMs: 0 };
+    }
+    return { ok: true, nextMs: (JSON.parse(text) as { nextMs?: number }).nextMs ?? 0 };
+  } catch (err) {
+    console.log(`local-path: reconcile failed: ${String(err)}`);
     return { ok: false, nextMs: 0 };
   }
 }
