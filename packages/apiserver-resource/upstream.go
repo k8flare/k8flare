@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	auth "github.com/k8flare/k8flare/packages/apiserver-auth"
+	authz "github.com/k8flare/k8flare/packages/apiserver-authz"
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
 	corev1 "k8s.io/api/core/v1"
@@ -13,7 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apiserver/pkg/authorization/authorizerfactory"
+	"k8s.io/apiserver/pkg/authorization/authorizer"
 	"k8s.io/apiserver/pkg/storage"
 	"k8s.io/client-go/kubernetes/scheme"
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
@@ -38,13 +39,24 @@ func (namespaceReader) Get(ctx context.Context, name string, _ metav1.GetOptions
 	return namespace, nil
 }
 
+var claimAuthorizer authorizer.Authorizer
+
+type lateAuthorizer struct{}
+
+func (lateAuthorizer) Authorize(ctx context.Context, attrs authorizer.Attributes) (authorizer.Decision, string, error) {
+	if claimAuthorizer == nil {
+		return authorizer.DecisionNoOpinion, "authorizer not configured", nil
+	}
+	return claimAuthorizer.Authorize(ctx, attrs)
+}
+
 func init() {
 	utilruntime.Must(resource.AddToScheme(registry.InternalScheme))
 	utilruntime.Must(resourcev1.AddToScheme(registry.InternalScheme))
 	group := func(resource string) schema.GroupResource {
 		return schema.GroupResource{Group: "resource.k8s.io", Resource: resource}
 	}
-	claim := resourceclaim.NewStrategy(namespaceReader{}, authorizerfactory.NewAlwaysAllowAuthorizer())
+	claim := resourceclaim.NewStrategy(namespaceReader{}, lateAuthorizer{})
 	registry.Upstreams[group("deviceclasses")] = registry.Upstream{Strategy: deviceclass.Strategy}
 	registry.Upstreams[group("resourceclaims")] = registry.Upstream{Strategy: claim, Status: resourceclaim.NewStatusStrategy(claim)}
 	registry.Upstreams[group("resourceclaimtemplates")] = registry.Upstream{Strategy: resourceclaimtemplate.NewStrategy(namespaceReader{})}
@@ -54,6 +66,7 @@ func init() {
 	})
 	for _, name := range []string{"resourceclaims", "resourceclaimtemplates"} {
 		registry.Customizers[name] = func(_ *registry.Store, deps registry.Deps) {
+			claimAuthorizer = authz.New(deps.Kine)
 			namespaces = kine.NewStorage(deps.Kine, scheme.Codecs.LegacyCodec(corev1.SchemeGroupVersion), func() runtime.Object { return &corev1.Namespace{} })
 		}
 	}

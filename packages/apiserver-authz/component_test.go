@@ -50,6 +50,7 @@ func TestComponentIdentitiesGetOnlyTheirUpstreamRoles(t *testing.T) {
 			{"list", "storage.k8s.io", "csinodes", "", true},
 			{"list", "resource.k8s.io", "resourceslices", "", true},
 			{"update", "resource.k8s.io", "resourceclaims", "status", true},
+			{"update", "resource.k8s.io", "resourceclaims", "binding", true},
 			{"create", "", "events", "", true},
 			{"list", "", "secrets", "", false},
 			{"create", "", "pods", "", false},

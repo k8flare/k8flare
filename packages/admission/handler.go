@@ -54,6 +54,7 @@ func NewHandler(cfg Config) http.Handler {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /admit", h.admit)
+	mux.HandleFunc("POST /validate", h.validate)
 	return mux
 }
 

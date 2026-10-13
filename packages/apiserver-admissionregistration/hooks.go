@@ -2,28 +2,38 @@ package admissionregistration
 
 import (
 	"context"
-	"fmt"
+	"net/http"
 
-	"github.com/google/cel-go/cel"
+	admit "github.com/k8flare/k8flare/packages/apiserver-admit"
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
 	admissionregv1 "k8s.io/api/admissionregistration/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/rest"
 )
 
+var validatedResources = []string{
+	"mutatingwebhookconfigurations",
+	"validatingwebhookconfigurations",
+	"validatingadmissionpolicies",
+	"validatingadmissionpolicybindings",
+	"mutatingadmissionpolicies",
+	"mutatingadmissionpolicybindings",
+}
+
 func init() {
-	for _, name := range []string{"mutatingwebhookconfigurations", "validatingwebhookconfigurations"} {
-		res := name
-		registry.Customizers[res] = func(store *registry.Store, _ registry.Deps) {
-			store.CreateStrategy = createCEL{store.CreateStrategy}
-			store.UpdateStrategy = updateCEL{store.UpdateStrategy}
+	for _, name := range validatedResources {
+		resource := name
+		registry.Customizers[resource] = func(store *registry.Store, deps registry.Deps) {
+			store.CreateStrategy = validateRemotely{RESTCreateStrategy: store.CreateStrategy, resource: resource, client: deps.Admission}
+			store.UpdateStrategy = validateUpdateRemotely{RESTUpdateStrategy: store.UpdateStrategy, resource: resource, client: deps.Admission}
+			if resource == "validatingadmissionpolicies" {
+				store.CreateStrategy = vapCreate{RESTCreateStrategy: store.CreateStrategy, kine: deps.Kine}
+				store.UpdateStrategy = vapUpdate{RESTUpdateStrategy: store.UpdateStrategy, kine: deps.Kine}
+			}
 		}
-	}
-	registry.Customizers["validatingadmissionpolicies"] = func(store *registry.Store, deps registry.Deps) {
-		store.CreateStrategy = vapCreate{RESTCreateStrategy: store.CreateStrategy, kine: deps.Kine}
-		store.UpdateStrategy = vapUpdate{RESTUpdateStrategy: store.UpdateStrategy, kine: deps.Kine}
 	}
 }
 
@@ -55,58 +65,42 @@ func (s vapUpdate) PrepareForUpdate(ctx context.Context, obj, old runtime.Object
 	}
 }
 
-type createCEL struct{ rest.RESTCreateStrategy }
-
-type updateCEL struct{ rest.RESTUpdateStrategy }
-
-func (createCEL) Validate(_ context.Context, obj runtime.Object) field.ErrorList {
-	return compileAdmissionCEL(obj)
+type validateRemotely struct {
+	rest.RESTCreateStrategy
+	resource string
+	client   *http.Client
 }
 
-func (updateCEL) ValidateUpdate(_ context.Context, obj, _ runtime.Object) field.ErrorList {
-	return compileAdmissionCEL(obj)
+type validateUpdateRemotely struct {
+	rest.RESTUpdateStrategy
+	resource string
+	client   *http.Client
 }
 
-func compileAdmissionCEL(obj runtime.Object) field.ErrorList {
-	var errs field.ErrorList
-	switch o := obj.(type) {
-	case *admissionregv1.MutatingWebhookConfiguration:
-		for i, hook := range o.Webhooks {
-			errs = append(errs, compileMatchConditions(field.NewPath("webhooks").Index(i).Child("matchConditions"), hook.MatchConditions)...)
+func (s validateRemotely) Validate(ctx context.Context, obj runtime.Object) field.ErrorList {
+	return validateOnAdmissionWorker(ctx, s.client, admit.ValidateRequest{Resource: s.resource}, obj, nil)
+}
+
+func (s validateUpdateRemotely) ValidateUpdate(ctx context.Context, obj, old runtime.Object) field.ErrorList {
+	req := admit.ValidateRequest{Resource: s.resource, Update: true}
+	if info, ok := genericapirequest.RequestInfoFrom(ctx); ok {
+		req.Subresource = info.Subresource
+	}
+	return validateOnAdmissionWorker(ctx, s.client, req, obj, old)
+}
+
+func validateOnAdmissionWorker(ctx context.Context, client *http.Client, req admit.ValidateRequest, obj, old runtime.Object) field.ErrorList {
+	if client == nil {
+		return nil
+	}
+	var err error
+	if req.Object, err = runtime.DefaultUnstructuredConverter.ToUnstructured(obj); err != nil {
+		return field.ErrorList{field.InternalError(nil, err)}
+	}
+	if old != nil {
+		if req.OldObject, err = runtime.DefaultUnstructuredConverter.ToUnstructured(old); err != nil {
+			return field.ErrorList{field.InternalError(nil, err)}
 		}
-	case *admissionregv1.ValidatingWebhookConfiguration:
-		for i, hook := range o.Webhooks {
-			errs = append(errs, compileMatchConditions(field.NewPath("webhooks").Index(i).Child("matchConditions"), hook.MatchConditions)...)
-		}
 	}
-	return errs
-}
-
-func compileMatchConditions(path *field.Path, conds []admissionregv1.MatchCondition) field.ErrorList {
-	var errs field.ErrorList
-	for i, c := range conds {
-		if err := compileCEL(c.Expression); err != nil {
-			errs = append(errs, field.Invalid(path.Index(i).Child("expression"), c.Expression, err.Error()))
-		}
-	}
-	return errs
-}
-
-func compileCEL(expr string) error {
-	env, err := cel.NewEnv(
-		cel.Variable("object", cel.DynType),
-		cel.Variable("oldObject", cel.DynType),
-		cel.Variable("request", cel.DynType),
-		cel.Variable("namespaceObject", cel.DynType),
-		cel.Variable("authorizer", cel.DynType),
-		cel.Variable("params", cel.DynType),
-	)
-	if err != nil {
-		return err
-	}
-	_, iss := env.Compile(expr)
-	if iss != nil && iss.Err() != nil {
-		return fmt.Errorf("compilation failed: %w", iss.Err())
-	}
-	return nil
+	return admit.Validate(ctx, client, req)
 }
