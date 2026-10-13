@@ -29,7 +29,7 @@ rollout_hostname() {
 current_version() {
   local deployment
   deployment=$(wrangler versions deployments status --json -c "$1")
-  node -e 'const deployment = JSON.parse(process.argv[1]); const version = deployment.versions.find((candidate) => candidate.percentage > 0); if (!version) process.exit(1); console.log(version.version_id)' "$deployment"
+  node -e 'const deployment = JSON.parse(process.argv[1]); const serving = deployment.versions.filter((candidate) => candidate.percentage > 0); if (serving.length === 0) process.exit(1); if (serving.length > 1) process.exit(3); console.log(serving[0].version_id)' "$deployment"
 }
 
 upload() {
@@ -97,7 +97,12 @@ if [[ "${DEPLOY_ROLLOUT:-}" == immediate ]]; then
   exit 0
 fi
 
-if ! old_version=$(current_version "$main_config"); then
+old_version=$(current_version "$main_config") && status=0 || status=$?
+if [[ "$status" == 3 ]]; then
+  printf '%s\n' 'The main Worker is already split between versions. Finish or roll back that rollout before deploying.' >&2
+  exit 1
+fi
+if [[ "$status" != 0 ]]; then
   printf '%s\n' 'Could not read the deployed main Worker version. For a first deploy, re-run with DEPLOY_ROLLOUT=immediate.' >&2
   exit 1
 fi

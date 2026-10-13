@@ -23,6 +23,10 @@ case "$*" in
       printf '%s\n' 'status request failed' >&2
       exit 1
     fi
+    if [[ "${DEPLOY_TEST_SPLIT:-}" == "1" ]]; then
+      printf '%s\n' '{"id":"deployment-id","created_on":"2026-10-13T00:00:00.000Z","versions":[{"version_id":"newer-version","percentage":10},{"version_id":"old-version","percentage":90}]}'
+      exit 0
+    fi
     printf '%s\n' '{"id":"deployment-id","created_on":"2026-10-13T00:00:00.000Z","versions":[{"version_id":"old-version","percentage":100}]}'
     ;;
   *"versions upload"*)
@@ -112,6 +116,16 @@ if PATH="$tmp/bin:$PATH" DEPLOY_TEST_LOG="$tmp/log" DEPLOY_TEST_CURL_COUNT="$tmp
   exit 1
 fi
 grep -Fq 'Durable Object migration is pending' "$tmp/migration.err"
+
+: > "$tmp/log"
+: > "$tmp/curl-count"
+if PATH="$tmp/bin:$PATH" DEPLOY_TEST_LOG="$tmp/log" DEPLOY_TEST_CURL_COUNT="$tmp/curl-count" DEPLOY_ROLLOUT_SOAK_SECONDS=0 DEPLOY_TEST_SPLIT=1 bash "$root/scripts/deploy.sh" 2>"$tmp/split.err"; then
+  exit 1
+fi
+grep -Fq 'already split between versions' "$tmp/split.err"
+if grep -Eq 'versions (upload|deploy) ' "$tmp/log"; then
+  exit 1
+fi
 
 run env DEPLOY_ROLLOUT=immediate bash "$root/scripts/deploy.sh"
 assert_contains 'exec wrangler deploy -c wrangler.jsonc'
