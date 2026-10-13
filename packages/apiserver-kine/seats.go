@@ -3,6 +3,8 @@ package kine
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,6 +15,7 @@ import (
 const seatReleaseTimeout = 5 * time.Second
 
 type SeatRequest struct {
+	ID               string `json:"id"`
 	Level            string `json:"level"`
 	Limit            int    `json:"limit"`
 	Queues           int    `json:"queues"`
@@ -23,6 +26,11 @@ type SeatRequest struct {
 }
 
 func (c *Client) AcquireSeat(ctx context.Context, seat SeatRequest) (release func(), retryAfter int, err error) {
+	id := make([]byte, 16)
+	if _, err := rand.Read(id); err != nil {
+		return nil, 0, err
+	}
+	seat.ID = hex.EncodeToString(id)
 	data, err := json.Marshal(seat)
 	if err != nil {
 		return nil, 0, err
@@ -34,19 +42,14 @@ func (c *Client) AcquireSeat(ctx context.Context, seat SeatRequest) (release fun
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
+		c.releaseSeat(context.WithoutCancel(ctx), seat.ID)
 		return nil, 0, fmt.Errorf("kine POST /apf/seat: %w", err)
 	}
 	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusOK:
-		var out struct {
-			Seat int64 `json:"seat"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-			return nil, 0, fmt.Errorf("kine POST /apf/seat: %w", err)
-		}
 		var once sync.Once
-		return func() { once.Do(func() { c.releaseSeat(context.WithoutCancel(ctx), out.Seat) }) }, 0, nil
+		return func() { once.Do(func() { c.releaseSeat(context.WithoutCancel(ctx), seat.ID) }) }, 0, nil
 	case http.StatusTooManyRequests:
 		var out struct {
 			RetryAfter int `json:"retryAfter"`
@@ -59,10 +62,10 @@ func (c *Client) AcquireSeat(ctx context.Context, seat SeatRequest) (release fun
 	return nil, 0, fmt.Errorf("kine POST /apf/seat: status %d", resp.StatusCode)
 }
 
-func (c *Client) releaseSeat(ctx context.Context, seat int64) {
+func (c *Client) releaseSeat(ctx context.Context, id string) {
 	ctx, cancel := context.WithTimeout(ctx, seatReleaseTimeout)
 	defer cancel()
-	data, _ := json.Marshal(map[string]int64{"seat": seat})
+	data, _ := json.Marshal(map[string]string{"id": id})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, kineBase+"/apf/release", bytes.NewReader(data))
 	if err != nil {
 		println("kine POST /apf/release:", err.Error())

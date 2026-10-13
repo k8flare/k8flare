@@ -108,6 +108,23 @@ test("a seat that is never released is reclaimed after the hold limit", async ()
   assert.equal((await queued).admitted, true);
 });
 
+test("releasing a request that is still queued gives its place up without taking a seat", async () => {
+  const clock = new Clock();
+  const s = seats(clock);
+  const first = await s.acquire(queuing({ id: "first" }));
+  const gone = s.acquire(queuing({ id: "gone" }));
+  const next = s.acquire(queuing({ id: "next" }));
+  s.release("gone");
+  assert.deepEqual(await gone, { admitted: false, retryAfter: 1 });
+  s.release("first");
+  assert.equal(first.admitted, true);
+  assert.equal((await next).admitted, true);
+  let refused = false;
+  void s.acquire(queuing({ id: "after", queueLengthLimit: 0 })).then((o) => (refused = !o.admitted));
+  await Promise.resolve();
+  assert.equal(refused, true);
+});
+
 test("the rate limiter rejects a user over the rate with Retry-After and lets other users and keyless requests through", async () => {
   const clock = new Clock();
   const s = seats(clock, 2, 2);
@@ -123,15 +140,16 @@ test("the rate limiter rejects a user over the rate with Retry-After and lets ot
 
 test("the seat endpoint holds the seat until the caller releases it", async () => {
   const r = rig();
-  const body = { level: "global-default", limit: 1, queues: 0, queueLengthLimit: 0, hand: [], waitMs: 1000 };
+  const body = { id: "first", level: "global-default", limit: 1, queues: 0, queueLengthLimit: 0, hand: [], waitMs: 1000 };
   const held = await r.post("/apf/seat", body);
   assert.equal(held.status, 200);
-  const refused = await r.post("/apf/seat", body);
+  const refused = await r.post("/apf/seat", { ...body, id: "second" });
   assert.equal(refused.status, 429);
   assert.deepEqual(await refused.json(), { retryAfter: 1 });
-  const { seat } = (await held.json()) as { seat: number };
-  assert.equal((await r.post("/apf/release", { seat })).status, 200);
-  const again = await r.post("/apf/seat", body);
+  assert.equal((await r.post("/apf/release", { id: "second" })).status, 200);
+  assert.equal((await r.post("/apf/seat", { ...body, id: "third" })).status, 429);
+  assert.equal((await r.post("/apf/release", { id: "first" })).status, 200);
+  const again = await r.post("/apf/seat", { ...body, id: "fourth" });
   assert.equal(again.status, 200);
 });
 
