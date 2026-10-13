@@ -706,6 +706,7 @@ start_control_plane() {
 start_devtls() {
   local suffix=${1:-} admin
   admin=$(admin_token)
+  : "${USER_WORKER_PORT:=$(user_worker_port "$admin" "$(user_worker_pid)")}"
   nohup "$WORK/devtls" -listen ":$API_PORT" -upstream "http://127.0.0.1:$USER_WORKER_PORT" -dir .build/devtls -hosts "${API%%:*},${CONTAINER_API%%:*},$EDGE_LB_HOST,$EDGE_INGRESS_HOST,$EDGE_GATEWAY_HOST" -admin-token "$admin" -strict-edge \
     < /dev/null 2>&1 | stamped "$LOGS/devtls$suffix.log" &
   wait_for "devtls" 180 1 curl -sf -m 10 --cacert .build/devtls/server-ca.crt -o /dev/null -H "Authorization: Bearer $admin" "https://$API/livez"
