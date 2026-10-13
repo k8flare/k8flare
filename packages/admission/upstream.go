@@ -55,6 +55,7 @@ func decodeRequestObject(m map[string]any, gvk schema.GroupVersionKind) (runtime
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(m, versioned); err != nil {
 		return nil, err
 	}
+	legacyscheme.Scheme.Default(versioned)
 	return toInternalObject(versioned)
 }
 
