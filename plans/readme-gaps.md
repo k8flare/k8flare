@@ -196,7 +196,29 @@ Decided on 2026-10-01, with the owner:
 - Without an HPA, only a `metrics.k8s.io` read scrapes kubelet metrics, when
   the stored snapshot is older than 30 s (`metricsapi`).
 - node-tunnel imports its wasm statically into the Durable Object instead
-  of loading it through the Worker Loader.
+  of loading it through the Worker Loader. Moving it was looked at and
+  not done: the remotedialer session, the kubelet streams and the kept-alive
+  TLS connections (`current`, `streamRegistry`, `tlsDials` in
+  `node-tunnel/tunnel.go`) must stay in one isolate with the frames, and
+  "two requests are never guaranteed to reach the same isolate"
+  (developers.cloudflare.com/dynamic-workers/api-reference/). The only
+  documented way to hold one isolate is to keep RPC stubs, which extends a
+  single execution context for the tunnel's life
+  (developers.cloudflare.com/workers/runtime-apis/rpc/lifecycle/), and a
+  Dynamic Worker's CPU time and subrequests are limited per invocation
+  and it throws once either runs out
+  (developers.cloudflare.com/dynamic-workers/usage/limits/; at most 5 min
+  of CPU), while the Durable Object's budget is reset by every request and
+  WebSocket message (developers.cloudflare.com/durable-objects/platform/limits/).
+  Without a held stub, the Go goroutines and the 10 s idle TLS timers stop
+  when each call ends, and a frame written later has no live `send`, since
+  stubs received as parameters are disposed when the call returns. It is
+  also undocumented whether calls on a held stub are counted against the
+  invocation that created it. The loader key
+  (`loader-kit`, `name@sha@isolate@tail`) would also have to include the
+  node, because `current` is one session per Go instance. Durable Object
+  Facets (dynamic code that runs as a Durable Object) would avoid the
+  per-invocation budget but are not the `loader-kit` path.
 
 ## Joining a node
 
