@@ -5,12 +5,8 @@ import (
 
 	admit "github.com/k8flare/k8flare/packages/apiserver-admit"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
-	_ "k8s.io/kubernetes/pkg/apis/authentication/install"
 	_ "k8s.io/kubernetes/pkg/apis/certificates/install"
-	_ "k8s.io/kubernetes/pkg/apis/coordination/install"
 	_ "k8s.io/kubernetes/pkg/apis/core/install"
-	_ "k8s.io/kubernetes/pkg/apis/policy/install"
-	_ "k8s.io/kubernetes/pkg/apis/resource/install"
 	_ "k8s.io/kubernetes/pkg/apis/storage/install"
 	"k8s.io/kubernetes/plugin/pkg/admission/noderestriction"
 )

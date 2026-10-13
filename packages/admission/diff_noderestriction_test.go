@@ -10,6 +10,7 @@ import (
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -341,6 +342,24 @@ func TestDiffNodeRestriction(t *testing.T) {
 		tokenCase("node requests a token for a pod on another node", n1, tokenRequest(podRef("pod-uid")), p1(func(p *corev1.Pod) { p.UID = "pod-uid"; p.Spec.NodeName = "n2" }), sa),
 		tokenCase("node requests a token for a missing pod", n1, tokenRequest(podRef("pod-uid")), sa),
 		tokenCase("not a node user requests a token", alice, tokenRequest(nil), sa),
+	)
+
+	slice := func(nodeName *string) *resourcev1.ResourceSlice {
+		return &resourcev1.ResourceSlice{ObjectMeta: metav1.ObjectMeta{Name: "slice"}, Spec: resourcev1.ResourceSliceSpec{Driver: "example.com/driver", NodeName: nodeName}}
+	}
+	sliceCase := func(name, op string, who user.Info, obj, old *resourcev1.ResourceSlice) diffCase {
+		c := diffCase{plugin: plugin, name: name, resource: schema.GroupVersionResource{Group: "resource.k8s.io", Version: "v1", Resource: "resourceslices"}, kind: schema.GroupVersionKind{Group: "resource.k8s.io", Version: "v1", Kind: "ResourceSlice"}, objName: "slice", operation: admissionOperation(op), user: who, object: obj}
+		if old != nil {
+			c.oldObject = old
+		}
+		return c
+	}
+	cases = append(cases,
+		sliceCase("node creates a slice for itself", "CREATE", n1, slice(ptr.To("n1")), nil),
+		sliceCase("node creates a slice for another node", "CREATE", n1, slice(ptr.To("n2")), nil),
+		sliceCase("node creates a slice without a node name", "CREATE", n1, slice(nil), nil),
+		sliceCase("node deletes a slice of itself", "DELETE", n1, slice(ptr.To("n1")), slice(ptr.To("n1"))),
+		sliceCase("node deletes a slice of another node", "DELETE", n1, slice(ptr.To("n2")), slice(ptr.To("n2"))),
 	)
 
 	claim := func(mutate func(*corev1.PersistentVolumeClaim)) *corev1.PersistentVolumeClaim {

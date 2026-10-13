@@ -2170,27 +2170,25 @@ Decided on 2026-10-01, with the owner:
     went from 63,342,735 to 61,455,429; the other apiserver-* workers grew
     by 0.46 to 1.25 MB and stay under 87%. Conformance still has to show
     the NodeAuthorizer and NodeRestriction specs and kubelet operations.
-  - Admission, 18 plugins, about 750 cases against the upstream plugin
-    built over a fake clientset: 59 cases differ. Outcome differences,
-    by plugin: NodeRestriction does not check a mirror pod's owner
-    references or its secret, configmap, claim and service account
-    references, and has no audience restriction on node token requests;
-    ServiceAccount ignores `kubernetes.io/enforce-mountable-secrets`,
-    does not special-case mirror pods, admits a pod whose default
-    service account does not exist yet, and appends a second token
-    volume to a pod that has one; ResourceQuota charges a pod's full
-    usage on every update, skips the resize subresource, treats a
-    resource missing from `status.used` as zero and falls back to
-    `spec.hard`; PodSecurity evaluates updates upstream calls
-    insignificant and treats a missing namespace as unlabeled;
-    LimitRanger ignores pod-level resources and copies a defaulted limit
-    into a missing request; RuntimeClass rejects a class being deleted
-    and accepts an empty name; Priority resolves a system class that is
-    not in the cluster; PodTopologyLabels also labels on update;
-    PersistentVolumeClaimResize ignores the beta class annotation. Not
-    covered: ServiceAccount's volume paths of `limitSecretReferences`,
-    PodSecurity on namespace label changes, NodeRestriction on
-    `podcertificaterequests` and `resourceslices`.
+  - Admission differential tests against the upstream plugin built over a
+    fake clientset: NodeRestriction, ServiceAccount, PodSecurity,
+    CertificateApproval and CertificateSigning now run the upstream plugin
+    itself over the store (`admission/informers.go` indexers,
+    `storeclient.go`), so they have no known differences, including
+    ServiceAccountNodeAudienceRestriction, mirror pod owner and reference
+    checks, `kubernetes.io/enforce-mountable-secrets`, the default
+    service account lookup retry. ResourceQuota charges updates and the resize subresource
+    like upstream's pod evaluator. Still different, on purpose:
+    ResourceQuota treats a resource missing from `status.used` as zero,
+    falls back to `spec.hard`, and takes the larger of `status.used` and
+    the live usage in the store; Priority resolves
+    `system-node-critical` and `system-cluster-critical` before the
+    bootstrap has created them. Not covered by the cases: ServiceAccount's
+    volume paths of `limitSecretReferences`, PodSecurity on namespaces and
+    workloads (it now runs there too, as upstream does), NodeRestriction on
+    `podcertificaterequests`. The admission worker only registers the v1
+    versions of the authentication, coordination, policy and resource
+    groups in the scheme (`admission/legacyscheme.go`), the only ones served.
 - Writes that woke nothing (`work/wake-check` 9cde004, on `ci/batch8`, not
   merged): Role, RoleBinding, LimitRange and NetworkPolicy writes now
   start a workloads pass, the only thing that recomputes a
