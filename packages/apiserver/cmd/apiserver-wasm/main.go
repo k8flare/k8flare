@@ -5,6 +5,7 @@ package main
 import (
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/k8flare/k8flare/packages/apiserver"
 	auth "github.com/k8flare/k8flare/packages/apiserver-auth"
@@ -22,6 +23,18 @@ func inflightLimit(name string, fallback int) int {
 		panic(name + " must be a non-negative integer")
 	}
 	return limit
+}
+
+func leafCertificateLifetime() time.Duration {
+	raw := bridge.Getenv("AGENT_LEAF_CERTIFICATE_LIFETIME")
+	if raw == "" {
+		return 0
+	}
+	lifetime, err := time.ParseDuration(raw)
+	if err != nil || lifetime <= 0 {
+		panic("AGENT_LEAF_CERTIFICATE_LIFETIME must be a positive duration")
+	}
+	return lifetime
 }
 
 func main() {
@@ -61,6 +74,7 @@ func main() {
 		MaxMutatingRequestsInflight: inflightLimit("MAX_MUTATING_REQUESTS_INFLIGHT", apiserver.DefaultMaxMutatingRequestsInflight),
 		ClusterUID:                  bridge.Getenv("CLUSTER_UID"),
 		AuditPolicy:                 bridge.Getenv("AUDIT_POLICY"),
+		LeafCertificateLifetime:     leafCertificateLifetime(),
 
 		SecretsEncryptionKeys: bridge.Getenv("SECRETS_ENCRYPTION_KEYS"),
 	})

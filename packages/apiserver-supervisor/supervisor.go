@@ -29,9 +29,10 @@ import (
 // supervisor serves the k3s supervisor protocol a k3s agent joins through
 // (/cacerts and /v1-k3s/*). It is what a k3s server would answer.
 type Supervisor struct {
-	vault       *Vault
-	joinToken   string
-	ClientCerts authenticator.Request
+	vault        *Vault
+	joinToken    string
+	leafLifetime time.Duration
+	ClientCerts  authenticator.Request
 
 	ServiceAccounts authenticator.Request
 	BootstrapTokens authenticator.Request
@@ -197,6 +198,9 @@ func (s *Supervisor) nodeAuth(w http.ResponseWriter, r *http.Request) (*nodeIden
 }
 
 func (s *Supervisor) signCSR(w http.ResponseWriter, r *http.Request, caName string, tmpl *x509.Certificate) {
+	if tmpl.NotAfter.IsZero() {
+		tmpl.NotAfter = time.Now().Add(s.leafLifetime)
+	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -327,7 +331,14 @@ func (s *Supervisor) ProxyClient(w http.ResponseWriter, r *http.Request) {
 
 // New returns the supervisor for a cluster whose agents join with joinToken.
 func New(vault *Vault, joinToken string) *Supervisor {
-	return &Supervisor{vault: vault, joinToken: joinToken}
+	return NewWithLeafLifetime(vault, joinToken, 365*24*time.Hour)
+}
+
+func NewWithLeafLifetime(vault *Vault, joinToken string, leafLifetime time.Duration) *Supervisor {
+	if leafLifetime <= 0 {
+		leafLifetime = 365 * 24 * time.Hour
+	}
+	return &Supervisor{vault: vault, joinToken: joinToken, leafLifetime: leafLifetime}
 }
 
 // Register mounts /cacerts, /ping and /v1-k3s/* on mux.
