@@ -31,11 +31,12 @@ func (a *sarAuthorizer) Authorize(ctx context.Context, attr authorizer.Attribute
 			UID:    attr.GetUser().GetUID(),
 			Groups: attr.GetUser().GetGroups(),
 			ResourceAttributes: &authorizationv1.ResourceAttributes{
-				Verb:     attr.GetVerb(),
-				Group:    attr.GetAPIGroup(),
-				Version:  attr.GetAPIVersion(),
-				Resource: attr.GetResource(),
-				Name:     attr.GetName(),
+				Namespace: attr.GetNamespace(),
+				Verb:      attr.GetVerb(),
+				Group:     attr.GetAPIGroup(),
+				Version:   attr.GetAPIVersion(),
+				Resource:  attr.GetResource(),
+				Name:      attr.GetName(),
 			},
 		},
 	}
