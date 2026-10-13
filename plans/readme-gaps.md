@@ -303,7 +303,8 @@ Decided on 2026-10-01, with the owner:
   the first read. Volume binding: a claim on `local-path` stays `Pending`
   with no `storage-provisioner` or `selected-node` annotation for 30 s,
   then a pod using it becomes Ready only after writing to it, and the
-  claim is `Bound` to the pod's node. Remove this entry once both pass in
+  claim is `Bound` to the pod's node, with no local-path pod before the
+  claim or after the bind. Remove this entry once both pass in
   CI.
 - HelmChart and HelmChartConfig are honoured by a Worker-side controller in
   the addons Worker (`packages/helm`, `/helm` on the addons Worker, run
@@ -475,7 +476,38 @@ Decided on 2026-10-01, with the owner:
     removed the Ingress; 372 specs then timed out.
   - Changes to any Service also run the edge pass (ResolvedRefs depends on
     Services); backends are looked up per ref rather than listed.
-- local-path runs as a resident Deployment, not helper pods only.
+- local-path provisioning runs in the addons Worker (`packages/localpath`,
+  `/local-path`, run after helm in every `k8flare-addons` pass), and
+  `local-storage.yaml` ships only the StorageClass and `local-path-config`
+  (the deployer prunes the old Deployment, ServiceAccount and RBAC). A
+  claim with `storage-provisioner: rancher.io/local-path` and a
+  `selected-node` gets `helper-pod-create-pvc-<uid>` in kube-system on that
+  node, running `setup` from the ConfigMap; on success the PV is created and
+  the helper deleted. A Released `Delete` PV gets `helper-pod-delete-<pv>`
+  running `teardown`, then the PV is deleted. `cluster.ts` sends local-path
+  claims and volumes, and helper pods when they finish or go, to the addons
+  queue; a running helper books its 120 s timeout as the pass's `nextMs`.
+  `DISABLE=local-storage` turns it off. CI (`scripts/ci/e2e.sh up`) asserts
+  no local-path pod exists before the WaitForFirstConsumer claim and after
+  it binds; not yet observed on GitHub Actions. Remove this entry once it
+  passes in CI. The provisioner source is not in the module cache or
+  mirrors: its behaviour was taken from the manifest and from rancher's
+  provisioner as remembered, not read. Known differences:
+  - Helper pods mount no ServiceAccount token.
+  - A failed helper stays Failed until its backoff (5 s doubling to 1000 s,
+    the count in `k8flare.io/local-path-failures`) expires; rancher deletes
+    it at once and backs off in its workqueue. A helper past 120 s is
+    deleted and the count starts again.
+  - With several paths for a node the path is picked by a hash of the
+    volume name, not at random.
+  - Not read: StorageClass `nodePath`/`pathPattern`, `storageClassConfigs`,
+    `sharedFileSystemPath`, `setupCommand`/`teardownCommand`. No access
+    mode or selector check, no events, no helper log capture. A claim with
+    no selected node is left alone instead of failing.
+  - The create helper of a claim deleted mid-provisioning is deleted; a
+    directory its setup already made stays on the node.
+  - Every write to a local-path claim or volume runs the whole addons pass
+    (deploy and helm too).
 - CoreDNS NodeHosts is never written.
 - The manifests bucket is not bound: `addons.ts` reads `MANIFESTS_R2` and
   no wrangler config declares it. An edit to the bucket does not start a
