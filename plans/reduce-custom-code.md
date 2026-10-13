@@ -219,11 +219,14 @@ Step 2:
   - Left: CertificateApproval and CertificateSigning (need an
     authorizer), ServiceAccount, NodeRestriction, ResourceQuota,
     PodSecurity, PodResize, NodeDeclaredFeatures, and the chain order.
-- Node authorizer (`work/nodeauth-upstream`): upstream's NodeAuthorizer
-  over a graph built per request from the node's own pods, the PVs and
-  the named VolumeAttachment or ResourceSlice. No known differences left
-  in 124,903 questions; `node.go` went from 554 lines to 160. A node may
-  now list endpoints: upstream has no opinion and RBAC allows it through
-  the k3s-controller role. Not merged: the customresources worker grew to
-  65,814,760 bytes and 45,461 functions (98% of the cap), three times the
-  growth of apiserver-core. Being measured.
+- Node authorizer: upstream's NodeAuthorizer over a graph built per request
+  from the node's own pods, the PVs and the named VolumeAttachment or
+  ResourceSlice. No known differences remain in 124,903 questions; `node.go`
+  went from 554 lines to 160. A node may now list endpoints: upstream has no
+  opinion and RBAC allows it through the k3s-controller role. The earlier
+  all-worker link made customresources 65,814,760 bytes and 45,461 functions
+  (98% of the cap). Customresources now uses the existing privileged-and-RBAC
+  chain without the node graph because custom-resource requests have no
+  node-authorizer resource decision. The local js/wasm build is currently
+  blocked before linking by stale client-go mirror interfaces; CI must record
+  the replacement raw and optimized sizes before this is considered closed.

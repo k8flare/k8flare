@@ -1980,23 +1980,15 @@ Decided on 2026-10-01, with the owner:
     `abort` in `BindingTransport.RoundTrip` runs through `window.Run`,
     which queues the job until the request's window is pumped, and the
     cancelled front request no longer pumps it.
-- What comparing with upstream on the host showed (tests only, nothing
-  fixed; `work/diff-nodeauth` 7bd12b8, `work/diff-admission` aad3e4e).
-  - Node authorizer (`apiserver-authz/node.go`) against upstream's
-    `NodeAuthorizer` with `NodeRules`, 124,903 questions over one cluster
-    state: 55,927 answers differ, in 21 named classes. Allowed here where
-    upstream has no opinion (so RBAC would decide): a token for any
-    service account, list and watch of every PVC and of leases, reads
-    without a namespace, subresources on reads, resources of another API
-    group with the same name, mirror pod references, PVs bound through
-    the PVC's `volumeName`, the default service account. Denied here and
-    allowed upstream: secrets and configmaps of ephemeral containers, CSI
-    volume secret refs, PV secret refs, PVCs of generic ephemeral
-    volumes, PVs bound through `claimRef`, `endpoints` get. Denied here
-    where upstream has no opinion: about 18,000 questions a request can
-    reach, which never get to RBAC. `node.go` consults no feature gate.
-    Replacement by upstream's authorizer over a per-request graph is on
-    `work/nodeauth-upstream`.
+- What comparing with upstream on the host showed (`work/diff-nodeauth`
+  7bd12b8, `work/diff-admission` aad3e4e).
+  - Node authorizer (`apiserver-authz/node.go`) now delegates to upstream's
+    `NodeAuthorizer` with `NodeRules` over a per-request graph. The
+    differential test has no known differences across 124,903 questions.
+    Custom resources intentionally uses the RBAC-only chain: the upstream node
+    authorizer has no resource-specific decision for custom resources, while
+    omitting its graph avoids linking it into that worker; CI still needs to
+    record the resulting Loader-size measurement.
   - Admission, 18 plugins, about 750 cases against the upstream plugin
     built over a fake clientset: 59 cases differ. Outcome differences,
     by plugin: NodeRestriction does not check a mirror pod's owner
