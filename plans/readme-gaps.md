@@ -608,7 +608,7 @@ Decided on 2026-10-01, with the owner:
     agent restarts: the agent asks the supervisor for its kubelet, kube-proxy
     and k3s-controller certificates on every start. The supervisor issues a
     fresh one each time and does not check for expiry. The `live` CI flow sets
-    the test-only `AGENT_LEAF_CERTIFICATE_LIFETIME=1h`, records every non-CA
+    the test-only `AGENT_LEAF_CERTIFICATE_LIFETIME=2400h`, records every non-CA
     leaf's serial and expiry from the host agent's disk, restarts it, and
     fails unless each serial changed, each expiry did not move backward, the
     Node UID stayed stable, the node is Ready, and logs and exec still work.
