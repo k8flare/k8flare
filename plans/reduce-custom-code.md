@@ -225,8 +225,12 @@ Step 2:
   went from 554 lines to 160. A node may now list endpoints: upstream has no
   opinion and RBAC allows it through the k3s-controller role. The earlier
   all-worker link made customresources 65,814,760 bytes and 45,461 functions
-  (98% of the cap). Customresources now uses the existing privileged-and-RBAC
-  chain without the node graph because custom-resource requests have no
-  node-authorizer resource decision. The local js/wasm build is currently
-  blocked before linking by stale client-go mirror interfaces; CI must record
-  the replacement raw and optimized sizes before this is considered closed.
+  (98% of the cap) because the package was linked into it. The node
+  authorizer is now its own package (`apiserver-authz/nodeauthz`) that
+  `authz.New` receives as an extra authorizer, and customresources does not
+  import it. Optimized sizes against the 67,108,864 cap, before and after:
+  customresources 63,342,735 to 61,455,429 (91%); apiserver-core 62,603,219 to
+  63,374,118 (94%, 41,416 functions), now the tightest worker, as customresources
+  was before; apiserver-discovery 56,431,701 to 57,210,653; apiserver-resource
+  57,434,619 to 57,892,499; the remaining apiserver-* workers grew 0.9 to
+  1.25 MB and stay under 84%. Option (a) fit, so (b) and (c) were not needed.

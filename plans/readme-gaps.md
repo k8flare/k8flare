@@ -1982,13 +1982,20 @@ Decided on 2026-10-01, with the owner:
     cancelled front request no longer pumps it.
 - What comparing with upstream on the host showed (`work/diff-nodeauth`
   7bd12b8, `work/diff-admission` aad3e4e).
-  - Node authorizer (`apiserver-authz/node.go`) now delegates to upstream's
+  - Node authorizer (`apiserver-authz/nodeauthz/node.go`) now delegates to upstream's
     `NodeAuthorizer` with `NodeRules` over a per-request graph. The
     differential test has no known differences across 124,903 questions.
-    Custom resources intentionally uses the RBAC-only chain: the upstream node
-    authorizer has no resource-specific decision for custom resources, while
-    omitting its graph avoids linking it into that worker; CI still needs to
-    record the resulting Loader-size measurement.
+    The authorizer lives in `apiserver-authz/nodeauthz`; `authz.New` takes
+    extra authorizers, and every caller except custom resources passes it.
+    Custom resources uses the privileged-and-RBAC chain: upstream's node
+    authorizer has no decision for custom resources, and not importing the
+    package keeps its graph out of that worker. Raw builds and `wasm-opt -Oz` (the Makefile
+    flags) of all 22 workers that link `apiserver-authz` were measured on
+    the host, with `graph_populator.go` tagged `!js` as `make mirrors` does: the largest, apiserver-core, is 63,374,118 bytes
+    (94% of the 67,108,864 cap, 41,416 functions), +770,899; custom resources
+    went from 63,342,735 to 61,455,429; the other apiserver-* workers grew
+    by 0.46 to 1.25 MB and stay under 87%. Conformance still has to show
+    the NodeAuthorizer and NodeRestriction specs and kubelet operations.
   - Admission, 18 plugins, about 750 cases against the upstream plugin
     built over a fake clientset: 59 cases differ. Outcome differences,
     by plugin: NodeRestriction does not check a mirror pod's owner
