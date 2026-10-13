@@ -29,6 +29,10 @@ case "$*" in
     fi
     printf '%s\n' '{"id":"deployment-id","created_on":"2026-10-13T00:00:00.000Z","versions":[{"version_id":"old-version","percentage":100}]}'
     ;;
+  *"versions deploy new-version@${DEPLOY_TEST_FAIL_DEPLOY_AT:-none}%"*)
+    printf '%s\n' 'deploy request failed' >&2
+    exit 1
+    ;;
   *"versions upload"*)
     if [[ "${DEPLOY_TEST_MIGRATION:-}" == "1" ]]; then
       printf '%s\n' 'This Worker has a pending Durable Object migration, which cannot be applied by `wrangler versions upload`.' >&2
@@ -126,6 +130,14 @@ grep -Fq 'already split between versions' "$tmp/split.err"
 if grep -Eq 'versions (upload|deploy) ' "$tmp/log"; then
   exit 1
 fi
+
+: > "$tmp/log"
+: > "$tmp/curl-count"
+if PATH="$tmp/bin:$PATH" DEPLOY_TEST_LOG="$tmp/log" DEPLOY_TEST_CURL_COUNT="$tmp/curl-count" DEPLOY_ROLLOUT_SOAK_SECONDS=0 DEPLOY_TEST_FAIL_DEPLOY_AT=50 bash "$root/scripts/deploy.sh"; then
+  exit 1
+fi
+assert_contains 'versions deploy new-version@10% old-version@90% -y -c wrangler.jsonc'
+assert_contains 'versions deploy old-version@100% -y -c wrangler.jsonc'
 
 run env DEPLOY_ROLLOUT=immediate bash "$root/scripts/deploy.sh"
 assert_contains 'exec wrangler deploy -c wrangler.jsonc'

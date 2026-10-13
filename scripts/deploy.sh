@@ -110,9 +110,8 @@ fi
 new_version=$(upload "$main_config")
 IFS=, read -r -a steps <<< "$rollout_steps"
 for step in "${steps[@]}"; do
-  wrangler versions deploy "${new_version}@${step}%" "${old_version}@$((100 - step))%" -y -c "$main_config"
-  if ! ready "$new_version"; then
-    printf '%s\n' 'Main Worker readiness gate failed; rolling back to the previous version.' >&2
+  if ! wrangler versions deploy "${new_version}@${step}%" "${old_version}@$((100 - step))%" -y -c "$main_config" || ! ready "$new_version"; then
+    printf '%s\n' 'Main Worker rollout step or readiness gate failed; rolling back to the previous version.' >&2
     wrangler versions deploy "${old_version}@100%" -y -c "$main_config"
     exit 1
   fi
