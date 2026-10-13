@@ -129,48 +129,5 @@ func TestDiffServiceAccount(t *testing.T) {
 	deleted.operation = "DELETE"
 	cases = append(cases, bothPhases(deleted)...)
 
-	allowedByOurs := "outcome: upstream denied 403 Forbidden; ours allowed"
-	mirrorReason := "ours does not special-case mirror pods: it neither skips the default account and token mount nor rejects service account, secret or token projection references (serviceaccount/admission.go Admit and Validate, mirror pod branches)"
-	cases = applyKnown(t, cases, map[string]*knownDifference{
-		"container already mounting the token path":                                             {reason: "ours appends the token volume even when every container already mounts the token path, upstream adds it only when a container needs it (serviceaccount/admission.go mountServiceAccountToken)", rewrites: []objectRewrite{addTokenVolume}},
-		"pod already has a token volume":                                                        {reason: "upstream reuses an existing volume named kube-api-access-*, ours matches the exact name kube-api-access and appends another (serviceaccount/admission.go mountServiceAccountToken)", rewrites: []objectRewrite{addTokenVolume}},
-		"secret not mountable but enforcement annotation set":                                   {reason: "ours ignores the kubernetes.io/enforce-mountable-secrets annotation (serviceaccount/admission.go enforceMountableSecrets, limitSecretReferences)", signature: allowedByOurs},
-		"secret not mountable but enforcement annotation set (validate)":                        {reason: "same as the admit case", signature: allowedByOurs},
-		"mirror pod without references":                                                         {reason: mirrorReason, rewrites: []objectRewrite{defaultAccountAndTokenMount}},
-		"mirror pod naming a service account":                                                   {reason: mirrorReason, signature: allowedByOurs},
-		"mirror pod naming a service account (validate)":                                        {reason: mirrorReason, signature: allowedByOurs},
-		"mirror pod referencing a secret":                                                       {reason: mirrorReason, signature: allowedByOurs},
-		"mirror pod referencing a secret (validate)":                                            {reason: mirrorReason, signature: allowedByOurs},
-		"mirror pod projecting a service account token":                                         {reason: mirrorReason, signature: allowedByOurs},
-		"mirror pod projecting a service account token (validate)":                              {reason: mirrorReason, signature: allowedByOurs},
-		"default service account missing":                                                       {reason: "upstream retries the lookup for up to about two seconds and then rejects, ours admits a pod whose default service account does not exist yet (serviceaccount/admission.go getServiceAccount, applyServiceAccount podServiceAccount)", signature: allowedByOurs},
-		"default service account missing (validate)":                                            {reason: "same as the admit case", signature: allowedByOurs},
-		"ephemeral container referencing a secret the service account does not list (validate)": {reason: "ours ignores the ephemeralcontainers subresource, upstream enforces the mountable secrets there and returns a plain error (serviceaccount/admission.go limitEphemeralContainerSecretReferences)", signature: "outcome: upstream denied 500 InternalError; ours allowed"},
-	})
 	runDiffCases(t, cases)
-}
-
-func tokenVolume() corev1.Volume {
-	return corev1.Volume{Name: "kube-api-access", VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
-		DefaultMode: ptr.To(int32(420)),
-		Sources: []corev1.VolumeProjection{
-			{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{Path: "token", ExpirationSeconds: ptr.To(int64(3607))}},
-			{ConfigMap: &corev1.ConfigMapProjection{LocalObjectReference: corev1.LocalObjectReference{Name: "kube-root-ca.crt"}, Items: []corev1.KeyToPath{{Key: "ca.crt", Path: "ca.crt"}}}},
-			{DownwardAPI: &corev1.DownwardAPIProjection{Items: []corev1.DownwardAPIVolumeFile{{Path: "namespace", FieldRef: &corev1.ObjectFieldSelector{APIVersion: "v1", FieldPath: "metadata.namespace"}}}}},
-		},
-	}}}
-}
-
-func addTokenVolume(obj runtime.Object) {
-	pod := obj.(*corev1.Pod)
-	pod.Spec.Volumes = append(pod.Spec.Volumes, tokenVolume())
-}
-
-func defaultAccountAndTokenMount(obj runtime.Object) {
-	pod := obj.(*corev1.Pod)
-	pod.Spec.ServiceAccountName = "default"
-	addTokenVolume(pod)
-	for i := range pod.Spec.Containers {
-		pod.Spec.Containers[i].VolumeMounts = append(pod.Spec.Containers[i].VolumeMounts, corev1.VolumeMount{Name: "kube-api-access", MountPath: "/var/run/secrets/kubernetes.io/serviceaccount", ReadOnly: true})
-	}
 }

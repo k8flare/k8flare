@@ -33,12 +33,27 @@ func TestNodeRestrictionDeniesNonMirrorPodCreate(t *testing.T) {
 }
 
 func TestNodeRestrictionAllowsMirrorPodOnSelf(t *testing.T) {
+	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{
+		"/registry/nodes/k8flare-c1": mustJSON(t, corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "k8flare-c1", UID: "node-uid"}}),
+	}})
+	defer kineSrv.Close()
+	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
+	out := postAdmit(t, h, nodeMirrorPodReq("k8flare-c1", "node-uid"))
+	if !out.Allowed {
+		t.Fatalf("mirror pod on self denied: %+v", out)
+	}
+}
+
+func TestNodeRestrictionDeniesMirrorPodWithoutOwner(t *testing.T) {
 	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
 	out := postAdmit(t, h, nodePodReq("k8flare-c1", "k8flare-c1", true))
-	if !out.Allowed {
-		t.Fatalf("mirror pod on self denied: %+v", out)
+	if out.Allowed {
+		t.Fatal("expected mirror pod without owner deny")
+	}
+	if !strings.Contains(out.Message, `node "k8flare-c1" can only create pods with an owner reference set to itself`) {
+		t.Fatalf("deny message: %q", out.Message)
 	}
 }
 
@@ -260,7 +275,7 @@ func TestNodeRestrictionAllowsOwnResourceSlice(t *testing.T) {
 	}
 }
 
-func TestNodeRestrictionDeniesResourceSliceUpdate(t *testing.T) {
+func TestNodeRestrictionDeniesResourceSliceCreate(t *testing.T) {
 	kineSrv := httptest.NewServer(&memStore{data: map[string][]byte{}})
 	defer kineSrv.Close()
 	h := NewHandler(Config{Kine: rewriteClient(kineSrv)})
@@ -269,13 +284,7 @@ func TestNodeRestrictionDeniesResourceSliceUpdate(t *testing.T) {
 	req.Kind = schema.GroupVersionKind{Group: "resource.k8s.io", Version: "v1", Kind: "ResourceSlice"}
 	req.Name = "probe"
 	req.Namespace = ""
-	req.Operation = "UPDATE"
-	req.OldObject = map[string]any{
-		"apiVersion": "resource.k8s.io/v1",
-		"kind":       "ResourceSlice",
-		"metadata":   map[string]any{"name": "probe"},
-		"spec":       map[string]any{"driver": "k8flare.com/probe", "nodeName": "k8flare-agent"},
-	}
+	req.Operation = "CREATE"
 	req.Object = map[string]any{
 		"apiVersion": "resource.k8s.io/v1",
 		"kind":       "ResourceSlice",
@@ -286,7 +295,7 @@ func TestNodeRestrictionDeniesResourceSliceUpdate(t *testing.T) {
 	if out.Allowed {
 		t.Fatal("expected other ResourceSlice update deny")
 	}
-	if !strings.Contains(out.Message, "can only update ResourceSlice with the same NodeName as the requesting node") {
+	if !strings.Contains(out.Message, "can only create ResourceSlice with the same NodeName as the requesting node") {
 		t.Fatalf("deny message: %q", out.Message)
 	}
 }
@@ -532,12 +541,22 @@ func TestNodeRestrictionIgnoresNonNode(t *testing.T) {
 	}
 }
 
+func nodeMirrorPodReq(node, nodeUID string) admit.Request {
+	req := nodePodReq(node, node, true)
+	meta := req.Object["metadata"].(map[string]any)
+	meta["ownerReferences"] = []any{map[string]any{"apiVersion": "v1", "kind": "Node", "name": node, "uid": nodeUID, "controller": true}}
+	return req
+}
+
 func nodePodReq(node, nodeName string, mirror bool) admit.Request {
 	meta := map[string]any{"name": "p", "namespace": "default"}
 	if mirror {
 		meta["annotations"] = map[string]any{mirrorPodAnnotationKey: "1"}
 	}
-	spec := map[string]any{"serviceAccountName": "default", "containers": []any{map[string]any{"name": "c", "image": "img"}}}
+	spec := map[string]any{"containers": []any{map[string]any{"name": "c", "image": "img"}}}
+	if !mirror {
+		spec["serviceAccountName"] = "default"
+	}
 	if nodeName != "" {
 		spec["nodeName"] = nodeName
 	}

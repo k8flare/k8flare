@@ -132,7 +132,7 @@ func TestServiceAccountValidatesWhatAMutatingWebhookChanged(t *testing.T) {
 }
 
 func TestServiceAccountValidateRequiresAName(t *testing.T) {
-	h := newPodPatchingHandler(t, map[string][]byte{}, `[{"op":"remove","path":"/spec/serviceAccountName"}]`)
+	h := newPodPatchingHandler(t, map[string][]byte{}, `[{"op":"remove","path":"/spec/serviceAccountName"},{"op":"remove","path":"/spec/serviceAccount"}]`)
 	out := postAdmit(t, h, podCreateReq("admit", map[string]any{
 		"containers": []any{map[string]any{"name": "c", "image": "img"}},
 	}))

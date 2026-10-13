@@ -396,9 +396,25 @@ func postAdmit(t *testing.T, h http.Handler, req admit.Request) admit.Response {
 }
 
 type memStore struct {
-	data map[string][]byte
-	mu   sync.Mutex
-	revs map[string]int64
+	data                   map[string][]byte
+	mu                     sync.Mutex
+	revs                   map[string]int64
+	withoutDefaults bool
+}
+
+func (m *memStore) defaultObject(key string) map[string]any {
+	if m.withoutDefaults {
+		return nil
+	}
+	if name, ok := strings.CutPrefix(key, "/registry/namespaces/"); ok {
+		return map[string]any{"apiVersion": "v1", "kind": "Namespace", "metadata": map[string]any{"name": name}}
+	}
+	if rest, ok := strings.CutPrefix(key, "/registry/serviceaccounts/"); ok {
+		if ns, ok := strings.CutSuffix(rest, "/default"); ok {
+			return map[string]any{"apiVersion": "v1", "kind": "ServiceAccount", "metadata": map[string]any{"name": "default", "namespace": ns}}
+		}
+	}
+	return nil
 }
 
 func (m *memStore) revision(key string) int64 {
@@ -459,6 +475,11 @@ func (m *memStore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		k := r.URL.Query().Get("key")
 		if v, ok := m.data[k]; ok {
 			_ = json.NewEncoder(w).Encode(map[string]any{"revision": 1, "kv": map[string]any{"key": k, "value": base64.StdEncoding.EncodeToString(v), "modRevision": m.revision(k)}})
+			return
+		}
+		if obj := m.defaultObject(k); obj != nil {
+			raw, _ := json.Marshal(obj)
+			_ = json.NewEncoder(w).Encode(map[string]any{"revision": 1, "kv": map[string]any{"key": k, "value": base64.StdEncoding.EncodeToString(raw), "modRevision": 1}})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"revision": 1})
@@ -567,7 +588,7 @@ func hasProjectedSAVolume(spec map[string]any) bool {
 	volumes, _ := spec["volumes"].([]any)
 	for _, raw := range volumes {
 		v, _ := raw.(map[string]any)
-		if v != nil && v["name"] == "kube-api-access" {
+		if v != nil && strings.HasPrefix(v["name"].(string), "kube-api-access") {
 			return true
 		}
 	}

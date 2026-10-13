@@ -25,12 +25,16 @@ func applyResourceQuota(ctx context.Context, s *store, req *admit.Request) error
 	if req.Phase != "validate" || (req.Operation != "CREATE" && req.Operation != "UPDATE") {
 		return nil
 	}
-	if req.Subresource != "" || req.Namespace == "" || req.Object == nil {
+	if (req.Subresource != "" && req.Subresource != "resize") || req.Namespace == "" || req.Object == nil {
 		return nil
 	}
 	ev, item, ok := quotaItem(req)
 	if !ok {
 		return nil
+	}
+	handled, err := quotaHandles(ev, req)
+	if err != nil || !handled {
+		return err
 	}
 	for attempt := 0; ; attempt++ {
 		quotas, err := listStored[corev1.ResourceQuota](ctx, s.client, "/registry/resourcequotas/"+req.Namespace+"/")
@@ -41,7 +45,7 @@ func applyResourceQuota(ctx context.Context, s *store, req *admit.Request) error
 		if err != nil {
 			return err
 		}
-		delta, err := ev.Usage(item)
+		delta, err := quotaDelta(ev, req, item)
 		if err != nil {
 			return err
 		}
@@ -112,6 +116,40 @@ func applyResourceQuota(ctx context.Context, s *store, req *admit.Request) error
 			return fmt.Errorf("quota %s: %w", req.Namespace, kine.ErrConflict)
 		}
 	}
+}
+
+func quotaHandles(ev quota.Evaluator, req *admit.Request) (bool, error) {
+	obj, err := decodeRequestObject(req.Object, req.Kind)
+	if err != nil {
+		return false, err
+	}
+	oldObj, err := decodeRequestObject(req.OldObject, req.Kind)
+	if err != nil {
+		return false, err
+	}
+	return ev.Handles(requestAttributes(req, obj, oldObj)), nil
+}
+
+func quotaDelta(ev quota.Evaluator, req *admit.Request, item runtime.Object) (corev1.ResourceList, error) {
+	delta, err := ev.Usage(item)
+	if err != nil {
+		return nil, err
+	}
+	accessor, err := meta.Accessor(item)
+	if req.Operation != "UPDATE" || err != nil || accessor.GetResourceVersion() == "" {
+		return delta, nil
+	}
+	previous := *req
+	previous.Object = req.OldObject
+	_, previousItem, ok := quotaItem(&previous)
+	if !ok {
+		return delta, nil
+	}
+	previousUsage, err := ev.Usage(previousItem)
+	if err != nil {
+		return nil, err
+	}
+	return quota.SubtractWithNonNegativeResult(delta, previousUsage), nil
 }
 
 func prettyPrint(item corev1.ResourceList) string {

@@ -127,10 +127,6 @@ func TestDiffCertificateApproval(t *testing.T) {
 	plain := approving("plain update is ignored", "UPDATE", csr, csr, allowSigners{})
 	plain.subresource = ""
 	cases = append(cases, status, plain)
-	cases = applyKnown(t, cases, map[string]*knownDifference{
-		"empty signer on the old object": {reason: "ours falls back to the new object's signerName when the old one is empty and names it in the message, upstream always judges and names the old object's (approval/admission.go Validate)", messageOnly: true},
-		"approval without an old object": {reason: "upstream rejects a missing old object as a type error, ours judges the new object's signerName (approval/admission.go Validate)", messageOnly: true},
-	})
 	runDiffCases(t, cases)
 }
 
@@ -173,10 +169,6 @@ func TestDiffCertificateSigning(t *testing.T) {
 	create := signing("create is ignored", withCert, nil, allowSigners{})
 	create.operation = "CREATE"
 	cases = append(cases, approval, create)
-	cases = applyKnown(t, cases, map[string]*knownDifference{
-		"empty old signer":                    {reason: "ours falls back to the new object's signerName when the old one is empty and names it in the message, upstream always judges and names the old object's (signing/admission.go Validate)", messageOnly: true},
-		"status update without an old object": {reason: "upstream rejects a missing old object as a type error, ours judges the new object's signerName (signing/admission.go Validate)", messageOnly: true},
-	})
 	runDiffCases(t, cases)
 }
 

@@ -142,14 +142,10 @@ func TestDiffResourceQuotaPods(t *testing.T) {
 	deleted.cluster = []runtime.Object{resourceQuota("q", counts("pods", "1"), counts("pods", "1"))}
 
 	cases = append(cases, dry, update, grow, resize, status, deleted)
-	updateReason := "upstream's pod evaluator handles a plain Update only when the terminating scope changes, ours charges every Update the pod's full usage again (pkg/quota/v1/evaluator/core/pods.go Handles)"
 	cases = applyKnown(t, cases, map[string]*knownDifference{
-		"pod count with no recorded usage":                   {reason: "upstream rejects with 'status unknown for quota' while status.used lacks a tracked resource, ours treats it as zero usage (apiserver resourcequota/controller.go CheckRequest)", signature: "outcome: upstream denied 403 Forbidden; ours allowed"},
-		"quota with no status hard":                          {reason: "upstream ignores a quota whose status.hard is empty, ours falls back to spec.hard and writes status.used (apiserver resourcequota/controller.go, ours quota.go applyResourceQuota)", signature: "outcome: quota status.used (- upstream, + ours):\n- \"q\": nil,\n+ \"q\": {s\"pods\": {i: resource.int64Amount{value: 1}, s: \"1\", Format: \"DecimalSI\"}},"},
-		"status used below the live usage":                   {reason: "ours also counts the live objects in the store and takes the larger of that and status.used, upstream trusts status.used (apiserver resourcequota/controller.go CheckRequest)", signature: "outcome: upstream allowed; ours denied 403 Forbidden"},
-		"update of a pod without a usage change":             {reason: updateReason, signature: "outcome: upstream allowed; ours denied 403 Forbidden"},
-		"update growing a pod's requests":                    {reason: updateReason, signature: "outcome: upstream allowed; ours denied 403 Forbidden"},
-		"resize subresource growing requests over the limit": {reason: "ours skips every subresource, upstream's pod evaluator also charges the resize subresource (pkg/quota/v1/evaluator/core/pods.go Handles)", signature: "outcome: upstream denied 403 Forbidden; ours allowed"},
+		"pod count with no recorded usage": {reason: "upstream rejects with 'status unknown for quota' while status.used lacks a tracked resource, ours treats it as zero usage (apiserver resourcequota/controller.go CheckRequest)", signature: "outcome: upstream denied 403 Forbidden; ours allowed"},
+		"quota with no status hard":        {reason: "upstream ignores a quota whose status.hard is empty, ours falls back to spec.hard and writes status.used (apiserver resourcequota/controller.go, ours quota.go applyResourceQuota)", signature: "outcome: quota status.used (- upstream, + ours):\n- \"q\": nil,\n+ \"q\": {s\"pods\": {i: resource.int64Amount{value: 1}, s: \"1\", Format: \"DecimalSI\"}},"},
+		"status used below the live usage": {reason: "ours also counts the live objects in the store and takes the larger of that and status.used, upstream trusts status.used (apiserver resourcequota/controller.go CheckRequest)", signature: "outcome: upstream allowed; ours denied 403 Forbidden"},
 	})
 	runDiffCases(t, cases)
 }

@@ -109,7 +109,7 @@ var pluginPairs = map[string]pluginPair{
 	"CertificateApproval":           {upstream: approval.PluginName, validate: authorizerOnly(applyCertificateApproval)},
 	"CertificateSigning":            {upstream: signing.PluginName, validate: authorizerOnly(applyCertificateSigning)},
 	"ServiceAccount":                {upstream: serviceaccount.PluginName, admit: serviceAccountAdmit, validate: storeOnly(validateServiceAccount)},
-	"NodeRestriction":               {upstream: noderestriction.PluginName, admit: storeOnly(applyNodeRestriction)},
+	"NodeRestriction":               {upstream: noderestriction.PluginName, admit: applyNodeRestriction},
 	"PodSecurity":                   {upstream: podsecurity.PluginName, validate: storeOnly(applyPodSecurity)},
 	"ResourceQuota":                 {upstream: resourcequota.PluginName, validate: storeOnly(applyResourceQuota)},
 	"PodResize":                     {upstream: podresize.PluginName, validate: storeOnly(validatePodResize)},
@@ -443,7 +443,7 @@ func runOurs(t *testing.T, c diffCase, pair pluginPair) outcome {
 		}
 		data[registryKey(obj)] = raw
 	}
-	backing := &memStore{data: data}
+	backing := &memStore{data: data, withoutDefaults: true}
 	srv := httptest.NewServer(backing)
 	defer srv.Close()
 	s := &store{client: &kine.Client{HTTP: rewriteClient(srv)}}
