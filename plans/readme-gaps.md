@@ -177,13 +177,12 @@ Decided on 2026-10-01, with the owner:
     `TestAForegroundDeletionFinishesOnTheWritesItsCollectsMakeAndThenNeedsNoRetry`.
     The NodeVM scheduler books its 5-minute node-ready timeout once
     (`TestPlanVMsBooksTheNodeReadyTimeoutOfTheOldestUnboundVMOnly`).
-  - Not fixed: a controller whose API call keeps failing re-books its own
-    rate-limited requeue, and since controllers are built anew for each
-    pass their rate limiter starts again at 5 ms every pass, so the
-    follow-up books the next pass in 1 s for as long as the call fails.
-    Seen with a fake client whose pod creates are all refused (`nextMs`
-    231, 241, 243 over three passes of a ReplicationController); not run on
-    a cluster.
+  - A controller whose API call keeps failing marks its default 5 ms
+    rate-limited requeue in the workloads result. The queue follow-up carries
+    that retry through the existing deadline-row failure count, so repeated
+    passes wait 5 s, 10 s, 20 s and so on through the upstream 1000 s cap;
+    a non-rate-limited result clears the count. Host tests cover the deadline
+    marker and the growing retry sequence; not run on a cluster.
   - Not yet run in CI: Conformance with the backoff (four spec processes;
     the first retry is unchanged, the second and later are 10 s, 20 s, ...)
     and without the replica, StatefulSet, gc and containers re-books.

@@ -37,6 +37,7 @@ type followIn struct {
 	Phase           string   `json:"phase"`
 	Failures        int      `json:"failures"`
 	Busy            bool     `json:"busy"`
+	RateLimited     bool     `json:"rateLimited"`
 	MigrateFailed   bool     `json:"migrateFailed"`
 }
 
@@ -94,6 +95,8 @@ func followUp(in followIn) followResult {
 			out.Sends = append(out.Sends, backoff("wl", nil, in.Changed, nil, "", in.Failures))
 		case in.Busy:
 			out.Sends = append(out.Sends, busyRetry("wl", in.Changed, in.Failures))
+		case in.RateLimited:
+			out.Sends = append(out.Sends, backoff("wl", nil, in.Changed, nil, "", in.Failures))
 		case in.NextMs > 0:
 			out.Sends = append(out.Sends, retry("wl", nil, in.Changed, nil, "", ceilSeconds(in.NextMs)))
 		}

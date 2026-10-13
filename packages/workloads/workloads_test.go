@@ -301,6 +301,18 @@ func TestWantedSelectsCSRCleaner(t *testing.T) {
 	}
 }
 
+func TestDeadlinesMarkTheDefaultRateLimitedRetry(t *testing.T) {
+	pending.reset()
+	pending.add(5 * time.Millisecond)
+	if !pending.hasRateLimited() {
+		t.Fatal("default workqueue retry was not marked")
+	}
+	pending.reset()
+	if pending.hasRateLimited() {
+		t.Fatal("successful pass retained rate-limited retry")
+	}
+}
+
 func TestQueueMetricsTrackInFlight(t *testing.T) {
 	work.reset(func(string) bool { return true })
 	q := workqueue.NewTypedRateLimitingQueueWithConfig(

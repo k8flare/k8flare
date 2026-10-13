@@ -30,9 +30,10 @@ func init() {
 }
 
 type deadlines struct {
-	mu    sync.Mutex
-	at    []time.Time
-	muted int
+	mu          sync.Mutex
+	at          []time.Time
+	muted       int
+	rateLimited bool
 }
 
 func (d *deadlines) withoutBooking(deliver func()) {
@@ -61,12 +62,22 @@ func (d *deadlines) add(delay time.Duration) {
 		}
 	}
 	d.at = append(kept, now.Add(delay))
+	if delay == 5*time.Millisecond {
+		d.rateLimited = true
+	}
 }
 
 func (d *deadlines) reset() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.at = nil
+	d.rateLimited = false
+}
+
+func (d *deadlines) hasRateLimited() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.rateLimited
 }
 
 func (d *deadlines) next() (time.Duration, bool) {

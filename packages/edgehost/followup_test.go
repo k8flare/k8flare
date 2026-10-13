@@ -147,6 +147,19 @@ func TestFollowUpBacksOffAFailureRetryFrom5sTo1000s(t *testing.T) {
 	}
 }
 
+func TestFollowUpBacksOffRateLimitedWorkloadsAcrossPasses(t *testing.T) {
+	for failures, delay := range []int{5, 10, 20, 40, 80, 160, 320, 640, 1000, 1000} {
+		got := followUp(followIn{Target: "workloads", PlanOK: true, Changed: []string{"replicasets"}, HasResult: true, Drained: true, RateLimited: true, Failures: failures})
+		if len(got.Sends) != 1 || got.Sends[0].DelaySeconds != delay || got.Sends[0].Failures != failures+1 {
+			t.Fatalf("failures=%d: sends = %+v, want %ds with count %d", failures, got.Sends, delay, failures+1)
+		}
+	}
+	got := followUp(followIn{Target: "workloads", PlanOK: true, Changed: []string{"replicasets"}, HasResult: true, Drained: true, NextMs: 5, Failures: 9})
+	if len(got.Sends) != 1 || got.Sends[0].Failures != 0 {
+		t.Fatalf("success sends = %+v, want no failure count", got.Sends)
+	}
+}
+
 func TestFollowUpClearsTheFailureCountOnSuccess(t *testing.T) {
 	for _, in := range []followIn{
 		{Target: "workloads", PlanOK: true, Changed: []string{"jobs"}, HasResult: true, Drained: true, NextMs: 4000, Failures: 6},

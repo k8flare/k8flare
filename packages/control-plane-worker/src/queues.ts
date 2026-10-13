@@ -160,6 +160,7 @@ async function consumeWorkloadsInner(batch: MessageBatch<QueueMessage>, env: Env
   let hasResult = false;
   let drained = false;
   let busy = false;
+  let rateLimited = false;
   let nextMs = 0;
   if (changed.length > 0) {
     const syncSpan = root.child("rpc.workloads.sync", { "k8flare.changed": changed.join(",") });
@@ -172,12 +173,13 @@ async function consumeWorkloadsInner(batch: MessageBatch<QueueMessage>, env: Env
     hasResult = Boolean(result);
     drained = Boolean(result?.drained);
     busy = Boolean(result?.busy);
+    rateLimited = Boolean(result?.rateLimited);
     nextMs = result?.nextMs ?? 0;
     if (result) console.log(`workloads: ${Object.entries(result.objects).map(([k, v]) => `${k}=${v}`).join(" ")} drained=${result.drained}`);
   }
   const followSpan = root.child("queue.followup", { "k8flare.changed": changed.join(",") });
   await followSpan.measure(async () => {
-    await applySends(env, (await followUp(env, { target: "workloads", planOK: true, provisionFailed, changed, hasResult, drained, busy, nextMs, failures: failuresOf(batch.messages) })).sends);
+    await applySends(env, (await followUp(env, { target: "workloads", planOK: true, provisionFailed, changed, hasResult, drained, busy, rateLimited, nextMs, failures: failuresOf(batch.messages) })).sends);
   });
   batch.ackAll();
 }

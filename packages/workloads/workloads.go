@@ -75,7 +75,8 @@ type Result struct {
 	Drained bool           `json:"drained"`
 	NextMs  int64          `json:"nextMs"`
 	Live    bool           `json:"live"`
-	Busy    bool           `json:"busy,omitempty"`
+	Busy        bool `json:"busy,omitempty"`
+	RateLimited bool `json:"rateLimited,omitempty"`
 }
 
 type pageFunc func(context.Context, metav1.ListOptions) (runtime.Object, error)
@@ -632,6 +633,7 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 	if next, ok := pending.next(); ok {
 		result.NextMs = soonest(result.NextMs, next)
 	}
+	result.RateLimited = pending.hasRateLimited()
 	cancel()
 	stopping := time.NewTimer(shutdownGrace)
 	defer stopping.Stop()

@@ -8,6 +8,7 @@ export interface SyncResult {
   drained: boolean;
   nextMs: number;
   busy?: boolean;
+  rateLimited?: boolean;
 }
 
 export interface NodeHealthResult {
@@ -67,6 +68,7 @@ export class Workloads extends WorkerEntrypoint<Env> {
       objects: { ...acc.objects, ...r.objects },
       drained: acc.drained || r.drained,
       busy: acc.busy || r.busy,
+      rateLimited: acc.rateLimited || r.rateLimited,
       nextMs: acc.nextMs === 0 ? r.nextMs : r.nextMs === 0 ? acc.nextMs : Math.min(acc.nextMs, r.nextMs),
     }));
   }
