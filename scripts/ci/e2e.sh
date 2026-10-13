@@ -247,7 +247,7 @@ metadata:
 spec:
   selectors:
   - cel:
-      expression: device.driver == "ci.example.com/dra"
+      expression: device.driver == "dra.ci.example.com"
 EOF
   "${node_kubectl[@]}" --kubeconfig /var/lib/rancher/k3s/agent/kubelet.kubeconfig --request-timeout=15s create -f - <<EOF
 apiVersion: resource.k8s.io/v1
@@ -255,7 +255,7 @@ kind: ResourceSlice
 metadata:
   name: ci-dra-slice
 spec:
-  driver: ci.example.com/dra
+  driver: dra.ci.example.com
   pool:
     name: ci-dra-pool
     generation: 1
@@ -298,7 +298,7 @@ EOF
     pod=$("${k[@]}" -n ci-dra get pod consumer -o json) || return 1
     pod_uid=$(jq -r '.metadata.uid' <<<"$pod")
     if jq -e --arg uid "$pod_uid" '
-      ((.status.allocation.devices.results? // []) | any(.driver == "ci.example.com/dra" and .pool == "ci-dra-pool" and .device == "ci-dra-device")) and
+      ((.status.allocation.devices.results? // []) | any(.driver == "dra.ci.example.com" and .pool == "ci-dra-pool" and .device == "ci-dra-device")) and
       ((.status.reservedFor? // []) | any(.resource == "pods" and .name == "consumer" and .uid == $uid))
     ' <<<"$claim" >/dev/null &&
       jq -e --arg node "$device_node" --arg other "$other_node" '
