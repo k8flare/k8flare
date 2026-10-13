@@ -10,14 +10,24 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
 	"k8s.io/apiserver/pkg/registry/rest"
+	"k8s.io/kube-aggregator/pkg/apis/apiregistration"
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	helper "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1/helper"
+	"k8s.io/kube-aggregator/pkg/registry/apiservice"
 )
 
 func init() {
+	utilruntime.Must(apiregistration.AddToScheme(registry.InternalScheme))
+	utilruntime.Must(apiregistrationv1.AddToScheme(registry.InternalScheme))
+	registry.Upstreams[schema.GroupResource{Group: "apiregistration.k8s.io", Resource: "apiservices"}] = registry.Upstream{
+		Strategy: apiservice.NewStrategy(registry.InternalScheme),
+		Status:   apiservice.NewStatusStrategy(registry.InternalScheme),
+	}
 	registry.Customizers["apiservices"] = func(store *registry.Store, deps registry.Deps) {
 		kineClient = deps.Kine
 		tunnel = deps.Kubelet.Transport
