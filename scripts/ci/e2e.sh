@@ -834,9 +834,17 @@ stop_devtls() {
 
 stop_control_plane() {
   pkill -9 -f 'wrangler(\.js)? dev' || true
-  pkill -9 -x workerd || true
+  pkill -9 -f '/bin/workerd' || true
   ss -ltnpH 'sport = :18787' | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u | xargs -r kill -9 || true
   wait_for "wrangler dev to release :18787" 60 1 port_free 18787
+  wait_for "every workerd to exit" 60 1 no_workerd
+}
+
+no_workerd() {
+  if pgrep -af '/bin/workerd'; then
+    ss -ltnpH
+    return 1
+  fi
 }
 
 join_second_node() {
