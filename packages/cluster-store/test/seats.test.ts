@@ -121,7 +121,7 @@ test("the rate limiter rejects a user over the rate with Retry-After and lets ot
   assert.equal((await s.acquire({ ...free, user: "user:noisy" })).admitted, true);
 });
 
-test("the seat endpoint holds the seat until the caller cancels the body", async () => {
+test("the seat endpoint holds the seat until the caller releases it", async () => {
   const r = rig();
   const body = { level: "global-default", limit: 1, queues: 0, queueLengthLimit: 0, hand: [], waitMs: 1000 };
   const held = await r.post("/apf/seat", body);
@@ -129,10 +129,10 @@ test("the seat endpoint holds the seat until the caller cancels the body", async
   const refused = await r.post("/apf/seat", body);
   assert.equal(refused.status, 429);
   assert.deepEqual(await refused.json(), { retryAfter: 1 });
-  await held.body!.cancel();
+  const { seat } = (await held.json()) as { seat: number };
+  assert.equal((await r.post("/apf/release", { seat })).status, 200);
   const again = await r.post("/apf/seat", body);
   assert.equal(again.status, 200);
-  await again.body!.cancel();
 });
 
 test("the seat endpoint applies the configured rate limit", async () => {
@@ -142,5 +142,4 @@ test("the seat endpoint applies the configured rate limit", async () => {
   assert.equal(first.status, 200);
   const second = await r.post("/apf/seat", body);
   assert.equal(second.status, 429);
-  await first.body!.cancel();
 });

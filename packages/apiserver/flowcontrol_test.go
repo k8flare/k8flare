@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -54,23 +55,14 @@ func (s *seatServer) count() (int, int) {
 	return len(s.requests), s.held
 }
 
-type seatBody struct {
-	io.Reader
-	s    *seatServer
-	once sync.Once
-}
-
-func (b *seatBody) Close() error {
-	b.once.Do(func() {
-		b.s.mu.Lock()
-		b.s.held--
-		b.s.mu.Unlock()
-	})
-	return nil
-}
-
 func (s *seatServer) wrap(next http.RoundTripper) http.RoundTripper {
 	return roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/apf/release" {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			s.held--
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(nil)), Header: http.Header{}, Request: r}, nil
+		}
 		if r.URL.Path != "/apf/seat" {
 			return next.RoundTrip(r)
 		}
@@ -86,7 +78,7 @@ func (s *seatServer) wrap(next http.RoundTripper) http.RoundTripper {
 			return &http.Response{StatusCode: http.StatusTooManyRequests, Body: io.NopCloser(bytes.NewReader(data)), Header: http.Header{}, Request: r}, nil
 		}
 		s.held++
-		return &http.Response{StatusCode: http.StatusOK, Body: &seatBody{Reader: bytes.NewReader(nil), s: s}, Header: http.Header{}, Request: r}, nil
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"seat":1}`)), Header: http.Header{}, Request: r}, nil
 	})
 }
 

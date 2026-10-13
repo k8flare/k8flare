@@ -247,7 +247,11 @@ export class Cluster extends DurableObject<Env> {
       case "POST /apf/seat": {
         const outcome = await this.seats.acquire((await request.json()) as SeatRequest);
         if (!outcome.admitted) return Response.json({ retryAfter: outcome.retryAfter }, { status: 429 });
-        return new Response(new ReadableStream({ cancel: outcome.release }), { headers: { "Content-Type": "text/plain" } });
+        return Response.json({ seat: outcome.seat });
+      }
+      case "POST /apf/release": {
+        this.seats.release(((await request.json()) as { seat: number }).seat);
+        return Response.json({ ok: true });
       }
       case "GET /stats":
         return Response.json({

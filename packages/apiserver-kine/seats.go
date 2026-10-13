@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 )
+
+const seatReleaseTimeout = 5 * time.Second
 
 type SeatRequest struct {
 	Level            string `json:"level"`
@@ -33,12 +36,18 @@ func (c *Client) AcquireSeat(ctx context.Context, seat SeatRequest) (release fun
 	if err != nil {
 		return nil, 0, fmt.Errorf("kine POST /apf/seat: %w", err)
 	}
+	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusOK:
+		var out struct {
+			Seat int64 `json:"seat"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			return nil, 0, fmt.Errorf("kine POST /apf/seat: %w", err)
+		}
 		var once sync.Once
-		return func() { once.Do(func() { resp.Body.Close() }) }, 0, nil
+		return func() { once.Do(func() { c.releaseSeat(context.WithoutCancel(ctx), out.Seat) }) }, 0, nil
 	case http.StatusTooManyRequests:
-		defer resp.Body.Close()
 		var out struct {
 			RetryAfter int `json:"retryAfter"`
 		}
@@ -47,6 +56,23 @@ func (c *Client) AcquireSeat(ctx context.Context, seat SeatRequest) (release fun
 		}
 		return nil, max(out.RetryAfter, 1), nil
 	}
-	resp.Body.Close()
 	return nil, 0, fmt.Errorf("kine POST /apf/seat: status %d", resp.StatusCode)
+}
+
+func (c *Client) releaseSeat(ctx context.Context, seat int64) {
+	ctx, cancel := context.WithTimeout(ctx, seatReleaseTimeout)
+	defer cancel()
+	data, _ := json.Marshal(map[string]int64{"seat": seat})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, kineBase+"/apf/release", bytes.NewReader(data))
+	if err != nil {
+		println("kine POST /apf/release:", err.Error())
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		println("kine POST /apf/release:", err.Error())
+		return
+	}
+	resp.Body.Close()
 }

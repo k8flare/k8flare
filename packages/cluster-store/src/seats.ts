@@ -8,7 +8,7 @@ export type SeatRequest = {
   user?: string;
 };
 
-export type SeatOutcome = { admitted: true; release: () => void } | { admitted: false; retryAfter: number };
+export type SeatOutcome = { admitted: true; seat: number; release: () => void } | { admitted: false; retryAfter: number };
 
 export const SEAT_HOLD_MS = 60_000;
 const BUCKET_SWEEP_SIZE = 1024;
@@ -41,6 +41,8 @@ type Bucket = { tokens: number; at: number };
 export class Seats {
   private levels = new Map<string, Level>();
   private buckets = new Map<string, Bucket>();
+  private held = new Map<number, () => void>();
+  private lastSeat = 0;
   private qps: number;
   private burst: number;
   private now: () => number;
@@ -99,20 +101,27 @@ export class Seats {
     });
   }
 
+  release(seat: number): void {
+    this.held.get(seat)?.();
+  }
+
   private admit(level: Level, queue: number): SeatOutcome {
+    const seat = ++this.lastSeat;
     level.executing++;
     level.executingIn.set(queue, (level.executingIn.get(queue) ?? 0) + 1);
     let released = false;
     const release = () => {
       if (released) return;
       released = true;
+      this.held.delete(seat);
       this.clearTimer(hold);
       level.executing--;
       level.executingIn.set(queue, (level.executingIn.get(queue) ?? 1) - 1);
       this.dispatch(level);
     };
     const hold = this.setTimer(release, SEAT_HOLD_MS);
-    return { admitted: true, release };
+    this.held.set(seat, release);
+    return { admitted: true, seat, release };
   }
 
   private dispatch(level: Level): void {
