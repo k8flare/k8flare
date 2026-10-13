@@ -71,3 +71,13 @@ func TestAgentRestartedInsideItsRenewalWindowGetsAFullLifetimeLeaf(t *testing.T)
 		})
 	}
 }
+
+func TestLeafLifetimeCanPutAgentsInsideTheK3SRenewalWindow(t *testing.T) {
+	v := NewVault(fakeKine(t))
+	mux := http.NewServeMux()
+	NewWithLeafLifetime(v, "join", time.Hour).Register(mux)
+	leaf := requestNodeLeaf(t, mux, "/v1-k3s/client-kubelet.crt")[0]
+	if time.Until(leaf.NotAfter) > time.Hour+time.Minute {
+		t.Fatalf("the test leaf expires in %v, want at most one hour", time.Until(leaf.NotAfter))
+	}
+}

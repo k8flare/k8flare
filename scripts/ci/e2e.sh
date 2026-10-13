@@ -12,6 +12,7 @@ K3S_VERSION=${K3S_VERSION:-v1.36.2+k3s1}
 K3S_IMAGE=rancher/k3s:${K3S_VERSION/+/-}
 NODES=${NODES:-1}
 AGENT=${AGENT:-k3s}
+AGENT_LEAF_CERTIFICATE_LIFETIME=${AGENT_LEAF_CERTIFICATE_LIFETIME:-1h}
 SERVICE_API=10.43.0.1
 KUBECONFIG_PATH=$PWD/$WORK/kubeconfig.yaml
 STATE=${STATE:-/dev/shm/k8flare-state}
@@ -75,8 +76,8 @@ build_shard() {
 
 dev_vars() {
   [ -f .dev.vars ] && return 0
-  printf 'ADMIN_TOKEN=%s\nREADONLY_TOKEN=%s\nJOIN_TOKEN=%s\nSECRETS_ENCRYPTION_KEYS=ci:%s\n' \
-    "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" "$(openssl rand -base64 32)" > .dev.vars
+  printf 'ADMIN_TOKEN=%s\nREADONLY_TOKEN=%s\nJOIN_TOKEN=%s\nSECRETS_ENCRYPTION_KEYS=ci:%s\nAGENT_LEAF_CERTIFICATE_LIFETIME=%s\n' \
+    "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" "$(openssl rand -base64 32)" "$AGENT_LEAF_CERTIFICATE_LIFETIME" > .dev.vars
   chmod 600 .dev.vars
 }
 
@@ -873,6 +874,41 @@ agent_process() {
   fi
 }
 
+agent_certificate_paths() {
+  local node=$1
+  if [ "$node" = "$(hostname)" ]; then
+    sudo sh -c 'printf "%s\\n" /var/lib/rancher/k3s/agent/*.crt'
+  else
+    docker exec "$node" sh -c 'printf "%s\\n" /var/lib/rancher/k3s/agent/*.crt'
+  fi
+}
+
+agent_leaf_certificates() {
+  local node=$1 cert text details serial not_after
+  while IFS= read -r cert; do
+    if [ "$node" = "$(hostname)" ]; then
+      text=$(sudo openssl x509 -in "$cert" -noout -text)
+    else
+      text=$(docker cp "$node:$cert" - | openssl x509 -noout -text)
+    fi
+    if grep -q 'CA:TRUE' <<<"$text"; then
+      continue
+    fi
+    if [ "$node" = "$(hostname)" ]; then
+      details=$(sudo openssl x509 -in "$cert" -noout -serial -enddate -dateopt iso_8601)
+    else
+      details=$(docker cp "$node:$cert" - | openssl x509 -noout -serial -enddate -dateopt iso_8601)
+    fi
+    serial=$(sed -n 's/^serial=//p' <<<"$details")
+    not_after=$(sed -n 's/^notAfter=//p' <<<"$details")
+    if [ -z "$serial" ] || [ -z "$not_after" ]; then
+      echo "$node: could not read serial and expiry from $cert" >&2
+      return 1
+    fi
+    printf '%s\t%s\t%s\n' "${cert##*/}" "$serial" "$not_after"
+  done < <(agent_certificate_paths "$node") | sort
+}
+
 node_identities() {
   local node
   for node in $(node_names); do
@@ -1141,11 +1177,58 @@ upgrade_with_live_nodes() {
   echo "node usage is served again through the node tunnel with certificates issued by the rotated CAs"
 }
 
+agent_leaves_inside_renewal_window() {
+  local node=$1 certificates=$2 renewal_end file serial not_after
+  renewal_end=$(date -u -d '+120 days' +%Y-%m-%dT%H:%M:%SZ)
+  if [ -z "$certificates" ]; then
+    echo "$node has no non-CA agent certificates" >&2
+    return 1
+  fi
+  while IFS=$'\t' read -r file serial not_after; do
+    if [[ "$not_after" > "$renewal_end" ]]; then
+      echo "$node: $file expires at $not_after, outside k3s's 120-day renewal window ending $renewal_end" >&2
+      return 1
+    fi
+  done <<<"$certificates"
+  echo "$node has $(wc -l <<<"$certificates") agent leaf certificates inside k3s's 120-day renewal window"
+}
+
+agent_leaves_renewed() {
+  local node=$1 before=$2 after=$3 file serial not_after
+  declare -A before_serial before_expiry after_serial after_expiry
+  while IFS=$'\t' read -r file serial not_after; do
+    before_serial["$file"]=$serial
+    before_expiry["$file"]=$not_after
+  done <<<"$before"
+  while IFS=$'\t' read -r file serial not_after; do
+    after_serial["$file"]=$serial
+    after_expiry["$file"]=$not_after
+  done <<<"$after"
+  if [ "${#before_serial[@]}" -ne "${#after_serial[@]}" ]; then
+    echo "$node changed its agent leaf certificate set on restart" >&2
+    diff <(echo "$before") <(echo "$after") >&2 || true
+    return 1
+  fi
+  for file in "${!before_serial[@]}"; do
+    if [ -z "${after_serial[$file]+x}" ] || [ "${before_serial[$file]}" = "${after_serial[$file]}" ]; then
+      echo "$node: $file did not receive a new serial on restart" >&2
+      return 1
+    fi
+    if [[ "${after_expiry[$file]}" < "${before_expiry[$file]}" ]]; then
+      echo "$node: $file expiry moved from ${before_expiry[$file]} backward to ${after_expiry[$file]}" >&2
+      return 1
+    fi
+  done
+  echo "$node renewed every agent leaf certificate with a later or equal expiry"
+}
+
 renew_agent_certificate() {
-  local node uid token process
+  local node uid token process before after
   node=$(hostname)
   uid=$(node_uid "$node")
   process=$(agent_process "$node")
+  before=$(agent_leaf_certificates "$node")
+  agent_leaves_inside_renewal_window "$node" "$before"
   token=$(join_token)
   sudo sed -i "s|^K3S_TOKEN=.*|K3S_TOKEN='$token'|" /etc/systemd/system/k3s-agent.service.env
   sudo systemctl restart k3s-agent
@@ -1158,6 +1241,8 @@ renew_agent_certificate() {
     echo "$node registered again with a new Node UID" >&2
     return 1
   fi
+  after=$(agent_leaf_certificates "$node")
+  agent_leaves_renewed "$node" "$before" "$after"
   sudo cat /var/lib/rancher/k3s/agent/client-ca.crt > "$LIVE/node-client-ca.crt"
   sudo cat /var/lib/rancher/k3s/agent/client-kubelet.crt > "$LIVE/node-client-kubelet.crt"
   if [ "$(certificate_count "$LIVE/node-client-ca.crt")" -ne 2 ]; then
@@ -1194,6 +1279,7 @@ live() {
   rotate_ca_with_live_nodes "$identities" "$containers"
   upgrade_with_live_nodes "$identities" "$containers"
   renew_agent_certificate
+  live_nodes_serve after-rotation
 }
 
 join_evidence() {

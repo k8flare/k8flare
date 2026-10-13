@@ -601,14 +601,15 @@ Decided on 2026-10-01, with the owner:
     embeds the hash of the whole `/cacerts` bundle, so tokens printed before a
     rotation no longer validate for new joins, as in k3s.
   - Leaf lifetimes match k3s (leaves 1 year, CAs 10 years). k3s renews a leaf
-    inside 90 days of expiry, and only when the agent restarts: the agent
-    asks the supervisor for its kubelet, kube-proxy and k3s-controller
-    certificates on every start. The supervisor issues a fresh one each time
-    and does not check for expiry
-    (`apiserver-supervisor/leafrenewal_test.go` checks that a request gets a
-    full-lifetime leaf; the agent's own 90-day decision is k3s code and is
-    only exercised by the restart in `e2e.sh live`). The
-    apiserver-to-kubelet client cert is valid for 24 hours and node-tunnel
+    inside 120 days of expiry (90 days in older releases), and only when the
+    agent restarts: the agent asks the supervisor for its kubelet, kube-proxy
+    and k3s-controller certificates on every start. The supervisor issues a
+    fresh one each time and does not check for expiry. The `live` CI flow sets
+    the test-only `AGENT_LEAF_CERTIFICATE_LIFETIME=1h`, records every non-CA
+    leaf's serial and expiry from the host agent's disk, restarts it, and
+    fails unless each serial changed, each expiry did not move backward, the
+    Node UID stayed stable, the node is Ready, and logs and exec still work.
+    The apiserver-to-kubelet client cert is valid for 24 hours and node-tunnel
     refetches it (and the CA bundle) hourly into the running instance without
     dropping the tunnel, retrying every minute after a failure
     (`control-plane-worker/test/kubeletrefresh.test.ts` drives it on a mocked

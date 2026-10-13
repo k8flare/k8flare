@@ -60,6 +60,7 @@ type Config struct {
 	MaxMutatingRequestsInflight int
 	ClusterUID                  string
 	AuditPolicy                 string
+	LeafCertificateLifetime     time.Duration
 
 	SecretsEncryptionKeys string
 }
@@ -149,7 +150,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	mux.Handle("/openapi/v3", openAPIV3Root(cfg))
 	mux.Handle("/openapi/v3/", openAPIV3Router(cfg))
 	root := http.NewServeMux()
-	kubeletSupervisor := supervisor.New(v, cfg.JoinToken)
+	kubeletSupervisor := supervisor.NewWithLeafLifetime(v, cfg.JoinToken, cfg.LeafCertificateLifetime)
 	kubeletSupervisor.ClientCerts = edgeCert
 	kubeletSupervisor.BootstrapTokens = bearertoken.New(bootstrap)
 	kubeletSupervisor.ServiceAccounts = bearertoken.New(tokens)
