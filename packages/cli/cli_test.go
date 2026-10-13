@@ -356,6 +356,9 @@ func TestTokenRotateBootstrapTokenKeepsItsAttributesAndReplacesItsSecret(t *test
 	if newSecret == "0123456789abcdef" || string(rotated.Data[bootstrapapi.BootstrapTokenIDKey]) != "abc123" || string(rotated.Data[bootstrapapi.BootstrapTokenDescriptionKey]) != "join node" || string(rotated.Data[bootstrapapi.BootstrapTokenUsageSigningKey]) != "true" || string(rotated.Data[bootstrapapi.BootstrapTokenExtraGroupsKey]) != "system:bootstrappers:ci" {
 		t.Fatalf("rotated Secret = %+v", rotated)
 	}
+	if !bytes.Equal(rotated.Data[bootstrapapi.BootstrapTokenExpirationKey], old.Data[bootstrapapi.BootstrapTokenExpirationKey]) {
+		t.Fatalf("expiration %s, want %s", rotated.Data[bootstrapapi.BootstrapTokenExpirationKey], old.Data[bootstrapapi.BootstrapTokenExpirationKey])
+	}
 	if out != k10Of(t, f.respond["GET /cacerts"], "abc123."+newSecret)+"\n" {
 		t.Fatalf("output %q", out)
 	}

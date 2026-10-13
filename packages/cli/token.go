@@ -249,9 +249,6 @@ func tokenRotate(args []string, out io.Writer) error {
 	}
 	_, secret, _ := strings.Cut(newToken, ".")
 	bootstrapToken.Data[bootstrapapi.BootstrapTokenSecretKey] = []byte(secret)
-	if expires, err := time.Parse(time.RFC3339, string(bootstrapToken.Data[bootstrapapi.BootstrapTokenExpirationKey])); err == nil && !bootstrapToken.CreationTimestamp.IsZero() {
-		bootstrapToken.Data[bootstrapapi.BootstrapTokenExpirationKey] = []byte(time.Now().Add(expires.Sub(bootstrapToken.CreationTimestamp.Time)).UTC().Format(time.RFC3339))
-	}
 	if err := c.call("PUT", bootstrapSecretPath(id), nil, &bootstrapToken, nil); err != nil {
 		return err
 	}
