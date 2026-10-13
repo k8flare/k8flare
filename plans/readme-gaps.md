@@ -125,75 +125,67 @@ Decided on 2026-10-01, with the owner:
 
 ## Architecture
 
-- Every deadline is a row in the Cluster object's `deadlines` table and
+- Every controller wake is a row in the Cluster object's `deadlines` table and
   the alarm sends it; an idle cluster books none (`cluster-store`
-  `deadlines.test.ts`). What still books again while a condition lasts:
-  - Upstream's own deadlines, kept on purpose: HPA every 15 s while an HPA
-    exists (the HPA controller's sync period,
-    `pkg/controller/podautoscaler/config/v1alpha1/defaults.go`); the
-    scheduler every 5 minutes while a pod is unschedulable
-    (`DefaultPodMaxInUnschedulablePodsDuration`,
-    `pkg/scheduler/backend/queue/scheduling_queue.go`); a namespace that
-    cannot finish terminating, retried after as long as it has been
-    terminating, so from 2 s doubling to once a minute, which is upstream's
-    namespace controller cap (`nsControllerRateLimiter`, 5 ms to 60 s, "we
-    retry namespace deletion at least every minute, never longer",
-    `pkg/controller/namespace/namespace_controller.go`). The backoff is read
-    from the namespace's deletion time, so a new isolate keeps it.
-  - A retry after a failure backs off: a pass that threw or did not drain, a
-    plan, provision, CRD, extension, add-on, storage-migration, lease-check,
-    HPA or scheduler call that failed, a gc collect with failed syncs, a
-    NodeVM boot that threw. The delay doubles from 5 s (the delay used
-    before, so one failure is retried as fast) to 1000 s (upstream's default
-    controller rate limiter maximum), `failedRetryDelayS` in `followup.go`.
-    The count rides in the retry body, so it is kept in the deadlines row
-    and the message it sends and survives a new isolate; a booking of the
-    same work without a count, which is what a successful pass books,
-    clears it, and a later failure booking keeps the highest count
-    (`followup_test.go`, `deadlines.test.ts`, `followup.test.ts`). A CRD
-    whose names are never accepted stays pending and so backs off to
-    1000 s.
-  - A workloads or accounts sync turned away because another pass holds
-    the lock is retried in 5 s without counting a failure: it ends with the
-    running pass, which its budget bounds.
-  - Work known to remain now is resumed and ends with it: gc orphan event
-    and lease keys past the 200 one collect deletes, in 2 s (events route
-    to no queue); a storage migration with more to rewrite, in 5 s.
-  - No longer booked: `replicaGap` (5 s while a ReplicationController,
-    ReplicaSet or Deployment had `status.replicas` off `spec.replicas`),
-    the StatefulSet 2 s re-run, gc 2 s after a collect that deleted,
-    patched or saw a deleting owner, and the NodeVM scheduler 5 s while
-    any Containers pod or VM existed. Each waited for a write the Cluster
-    object routes: a pod created, Running, Ready or deleted and the owners'
-    own writes reach workloads; every gc delete and patch, and a waited-on
-    dependent's deletion, reach gc; a Containers pod's binding and deletion
-    reach containers (`cluster.test.ts`). Controller retries,
-    `minReadySeconds` and progress deadlines are `AddAfter` calls a pass
-    already books. Scenario tests on the fake client, one pass per batch of
-    writes until a pass writes nothing:
+  `deadlines.test.ts`). Fixed-period audit (2026-10-13, all non-test Go and
+  TypeScript under `packages/`, excluding node-side Linux binaries):
+  - **Removed controller polls.** None remain. `replicaGap` (5 s), the
+    StatefulSet re-run (2 s), post-collect GC re-run (2 s), NodeVM re-run
+    (5 s), Job-pod-event re-run, and the fixed 15 s metrics wake were removed
+    in the preceding queue/deadline work. Each now reacts to its routed write
+    in the same queue turn rather than after its former period. The tests are
     `TestAReplicationControllerScalingUpConvergesOnItsOwnWritesAndBooksNothing`,
     `TestARolloutWaitingForANewPodBooksNothingBeforeItsProgressDeadlineAndFinishesOnThePodsReadyWrite`,
     `TestAStatefulSetWaitingOnAnUnreadyPodBooksNothingAndThatPodsReadyWriteCreatesTheNext`,
-    `TestAForegroundDeletionFinishesOnTheWritesItsCollectsMakeAndThenNeedsNoRetry`.
-    The NodeVM scheduler books its 5-minute node-ready timeout once
-    (`TestPlanVMsBooksTheNodeReadyTimeoutOfTheOldestUnboundVMOnly`).
-  - A controller whose API call keeps failing marks its default 5 ms
-    rate-limited requeue in the workloads result. The queue follow-up carries
-    that retry through the existing deadline-row failure count, so repeated
-    passes follow upstream's 5 ms doubling curve through its 1000 s cap,
-    rounded up to the deadline row's whole seconds; an earlier non-rate-limited
-    deadline still wins, and a non-rate-limited result clears the count. Host
-    tests cover the deadline marker and the growing retry sequence; not run on
-    a cluster.
-  - Not yet run in CI: Conformance with the backoff (four spec processes;
-    the first retry is unchanged, the second and later are 10 s, 20 s, ...)
-    and without the replica, StatefulSet, gc and containers re-books.
-  - A pending Helm hook is not on a period: it is one addons row at the
-    earliest hook deadline, sent once when due and deleted (`POST /cancel`)
-    by a Helm pass that finds no hook pending (`deadlines.test.ts`,
-    `followup_test.go`). Since a booking keeps the earlier due, a hook that
-    finishes and is followed by another still wakes one pass at the first
-    hook's deadline.
+    `TestAForegroundDeletionFinishesOnTheWritesItsCollectsMakeAndThenNeedsNoRetry`,
+    `TestPlanVMsBooksTheNodeReadyTimeoutOfTheOldestUnboundVMOnly`, and
+    `TestSyncDoesNotRebookAPodChangeWhenNothingIsDue`.
+  - **Real controller deadlines, kept.** `packages/hpa/sync.go` returns the
+    upstream 15 s HPA sync deadline only while an HPA exists; the scheduler
+    returns its upstream 5-minute unschedulable-pod flush deadline; namespace
+    deletion retries use its persisted 5 ms-to-60 s upstream rate-limit
+    backoff; Job failure backoff, `minReadySeconds`, progress, TTL, toleration,
+    lease expiry, Helm hook and node-ready deadlines are all calculated from
+    object state. A failed queue call has a persisted 5 s-to-1000 s retry
+    backoff (`failedRetryDelayS` in `followup.go`). These wakes retain their
+    former reaction time because their real deadline is unchanged.
+  - **In-request waits, not controller re-runs.**
+    `packages/loader-kit/src/index.ts:33,52` drives a live Go request every
+    25 ms or 1 s, then a response stream every 100 ms or 5 s; it is the
+    Worker Loader I/O anchor and stops with that request or stream. It was
+    retained because removing it previously hung Go channel and I/O work
+    (`plans/minimal-control-plane.md`); its reaction bounds are unchanged.
+    `packages/worker-bridge/window_js.go:181,211` waits 100 ms for an
+    in-flight response drain and ticks an open run window every 10 s; both
+    stop when the response/window closes and do not book a Cluster wake.
+    `packages/workloads/workloads.go:348,838` waits 50 ms to hand an active
+    pass to its successor and samples active in-flight work every 200 ms until
+    the pass budget; `packages/scheduler/scheduler.go:191,380` waits 10 ms
+    for an active binding/cache to settle, bounded by its 10-second request
+    budget; `packages/crdreconcile/reconcile.go:101` checks controller drain
+    every 50 ms only within the CRD request budget; and
+    `packages/customresources/refill.go:208` waits 20 ms only while the same
+    request settles discovery. These are bounded request-local coordination,
+    not later work; event delivery outside the request remains the Cluster
+    queue, so no idle alarm is booked. Their before/after reaction time is
+    unchanged because they are retained.
+  - **Other fixed waits, kept as deadlines/backoff.**
+    `packages/apiserver-kine/kine.go:536` expires a watch after its 90 s idle
+    deadline, and `:732` redials after its 500 ms exponential failure backoff.
+    `packages/helm/cluster.go:61` waits its caller's mapper-refresh backoff;
+    `packages/loader-kit/src/index.ts:107` uses a 300 ms exponential asset
+    fetch retry; and `packages/customresources/customresources.go:225` is a
+    30-second request deadline for initial CRD sync. Their reaction times are
+    their stated deadlines/backoffs, unchanged.
+    `packages/customresources/customresources.go:142` configures a 5-minute
+    informer resync, but the factory is never started: CRD refills occur only
+    in `freshCRDs.gate` on an API request, so it does not trigger work.
+    `packages/control-plane-worker/src/index.ts:114` yields to the socket
+    runtime at most every 200 ms during an active request. `queues.ts` merely
+    honors a caller-supplied deadline; `cluster-store/src/seats.ts` uses a
+    local request-rate timer; and timeout calls in `node-tunnel` and
+    `podkubelet` are connection, process-kill, or alarm deadlines, not
+    re-runs.
 - Without an HPA, only a `metrics.k8s.io` read scrapes kubelet metrics, when
   the stored snapshot is older than 30 s (`metricsapi`).
 - node-tunnel imports its wasm statically into the Durable Object instead
