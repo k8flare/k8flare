@@ -641,8 +641,15 @@ Decided on 2026-10-01, with the owner:
   the old version during a gradual rollout after the sweep passed their key
   stay at the old encoding until their next write or the next deploy; the
   deploy trigger is exercised against node:sqlite, not workerd.
-- Gradual rollout is not implemented: nothing calls `wrangler versions`,
-  a deploy is one cutover. Nothing tests that nodes keep running across one.
+- `make deploy` uploads the main Worker version without traffic, shifts it through
+  configurable 10%, 50% and 100% steps (with a configurable soak), and checks
+  `/readyz` through the public hostname with a version override after every
+  step. A failed gate restores the prior version at 100%. A pending Durable
+  Object migration refuses the rollout and requires `DEPLOY_ROLLOUT=immediate`.
+  After the main Worker reaches 100%, edge, HPA and attach/detach Workers deploy
+  in that order at 100%; satellites have no public health endpoint, so their
+  only gate is Wrangler command success. The stub-Wrangler shell test covers
+  these paths, but none has run against a deployed Worker.
 - `/livez` is ping only (`apiserver/health.go`); `/readyz` and `/healthz`
   carry the datastore, queue and controller checks.
 - Snapshots: the Durable Object side of `save`, `list`, `restore`,

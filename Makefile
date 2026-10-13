@@ -12,7 +12,7 @@ GROUPS := core coordination discovery node storage apps policy resource rbac bat
 API_GROUPS := core coordination discovery events node storage authentication authorization apps policy resource rbac batch admissionregistration autoscaling scheduling networking certificates flowcontrol apiregistration
 WASM_OPT := wasm-opt -Oz --strip-debug --strip-producers --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals
 
-.PHONY: mirrors wasm opt-wasm-list gen agent cli dev devtls kubeconfig check vet test test-packages clean e2e deploycheck sizes manifests-notify
+.PHONY: mirrors wasm opt-wasm-list gen agent cli dev deploy devtls kubeconfig check vet test test-packages clean e2e deploycheck sizes manifests-notify
 
 mirrors:
 	cd scripts && go run ./mirror
@@ -230,6 +230,9 @@ wrangler.test.jsonc: wrangler.jsonc
 
 dev: wrangler.dev.jsonc node-image
 	env -u CLAUDECODE -u AI_AGENT X_LOCAL_OBSERVABILITY=false MINIFLARE_WORKERD_V8_FLAGS=--single-threaded-gc pnpm exec wrangler dev -c wrangler.dev.jsonc --local --persist-to .wrangler/state --port 18787
+
+deploy: wasm node-image
+	bash scripts/deploy.sh
 
 devtls:
 	cd scripts && go run ./devtls -listen :6443 -upstream http://127.0.0.1:18787 -dir ../.build/devtls
