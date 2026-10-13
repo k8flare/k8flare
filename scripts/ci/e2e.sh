@@ -784,8 +784,8 @@ join_node() {
   sudo mkdir -p /var/lib/rancher/k3s/agent/images
   docker save ghcr.io/k8flare/node-proxy:latest | sudo tee /var/lib/rancher/k3s/agent/images/node-proxy.tar >/dev/null
   nohup sudo journalctl -u k3s-agent -f -o short-precise > "$LOGS/agent.log" 2>&1 < /dev/null &
-  curl -sfL --retry 5 --retry-all-errors https://get.k3s.io |
-    INSTALL_K3S_SKIP_DOWNLOAD=true K3S_URL="https://$API" K3S_TOKEN="$token" timeout 600 sh -s - agent --disable-apiserver-lb --node-name "$(hostname)"
+  curl -sfL --retry 5 --retry-all-errors -o "$WORK/k3s-install.sh" https://get.k3s.io
+  INSTALL_K3S_SKIP_DOWNLOAD=true K3S_URL="https://$API" K3S_TOKEN="$token" timeout 600 sh "$WORK/k3s-install.sh" agent --disable-apiserver-lb --node-name "$(hostname)"
 }
 
 CGROUP_EVACUATE='if [ -f /sys/fs/cgroup/cgroup.controllers ]; then mkdir -p /sys/fs/cgroup/init && xargs -rn1 < /sys/fs/cgroup/cgroup.procs > /sys/fs/cgroup/init/cgroup.procs || :; sed -e "s/ / +/g" -e "s/^/+/" < /sys/fs/cgroup/cgroup.controllers > /sys/fs/cgroup/cgroup.subtree_control; fi; exec "$@"'
