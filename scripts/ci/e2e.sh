@@ -589,6 +589,44 @@ join_container_node() {
   nohup docker logs -f "$name" > "$LOGS/agent-$index.log" 2>&1 < /dev/null &
 }
 
+admin_token() {
+  sed -n 's/^ADMIN_TOKEN=//p' .dev.vars
+}
+
+start_control_plane() {
+  local suffix=${1:-} admin runtime
+  admin=$(admin_token)
+  rm -rf "$REGISTRY"
+  WRANGLER_REGISTRY_PATH=$PWD/$REGISTRY X_LOCAL_OBSERVABILITY=false MINIFLARE_WORKERD_V8_FLAGS="${MINIFLARE_WORKERD_V8_FLAGS:---single-threaded-gc}" nohup pnpm exec wrangler dev -c wrangler.dev.jsonc --local --enable-containers=false --persist-to "$STATE" --port 18787 \
+    < /dev/null 2>&1 | stamped "$LOGS/dev$suffix.log" &
+  wait_for "the control plane" 360 5 curl -sf -m 10 -o /dev/null -H "Authorization: Bearer $admin" http://127.0.0.1:18787/livez
+  runtime=$(user_worker_pid)
+  nohup bash -c "$(declare -f thread_ms dump_main_thread sample_procs); sample_procs $LOGS/dev$suffix.log $runtime $(ps -o ppid= -p "$runtime")" \
+    < /dev/null 2>&1 | stamped "$LOGS/procs$suffix.log" &
+  USER_WORKER_PORT=$(user_worker_port "$admin" "$runtime")
+  echo "user worker $runtime listens on 127.0.0.1:$USER_WORKER_PORT"
+}
+
+start_devtls() {
+  local suffix=${1:-} admin
+  admin=$(admin_token)
+  nohup "$WORK/devtls" -listen ":$API_PORT" -upstream "http://127.0.0.1:$USER_WORKER_PORT" -dir .build/devtls -hosts "${API%%:*},${CONTAINER_API%%:*},$EDGE_LB_HOST,$EDGE_INGRESS_HOST,$EDGE_GATEWAY_HOST" -admin-token "$admin" -strict-edge \
+    < /dev/null 2>&1 | stamped "$LOGS/devtls$suffix.log" &
+  wait_for "devtls" 180 1 curl -sf -m 10 --cacert .build/devtls/server-ca.crt -o /dev/null -H "Authorization: Bearer $admin" "https://$API/livez"
+}
+
+write_kubeconfig() {
+  local ca=$1 out=$2
+  printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: k8flare-ci\n  cluster:\n    server: https://%s\n    certificate-authority: %s\nusers:\n- name: admin\n  user:\n    token: %s\ncontexts:\n- name: k8flare-ci\n  context:\n    cluster: k8flare-ci\n    user: admin\ncurrent-context: k8flare-ci\n' \
+    "$API" "$ca" "$(admin_token)" > "$out"
+  chmod 600 "$out"
+}
+
+prepare_container_nodes() {
+  docker pull -q "$K3S_IMAGE"
+  sudo iptables -C DOCKER-USER -o docker0 -j ACCEPT 2>/dev/null || sudo iptables -I DOCKER-USER -o docker0 -j ACCEPT
+}
+
 up() {
   if [ ! -x /usr/local/bin/k3s ]; then
     curl -sfL -o "$WORK/k3s" "https://github.com/k3s-io/k3s/releases/download/${K3S_VERSION/+/%2B}/k3s"
@@ -599,32 +637,16 @@ up() {
 
   dev_vars
   make wrangler.dev.jsonc
-  local admin runtime worker
-  admin=$(sed -n 's/^ADMIN_TOKEN=//p' .dev.vars)
-  rm -rf "$REGISTRY"
-  WRANGLER_REGISTRY_PATH=$PWD/$REGISTRY X_LOCAL_OBSERVABILITY=false MINIFLARE_WORKERD_V8_FLAGS="${MINIFLARE_WORKERD_V8_FLAGS:---single-threaded-gc}" nohup pnpm exec wrangler dev -c wrangler.dev.jsonc --local --enable-containers=false --persist-to "$STATE" --port 18787 \
-    < /dev/null 2>&1 | stamped "$LOGS/dev.log" &
-  wait_for "the control plane" 360 5 curl -sf -m 10 -o /dev/null -H "Authorization: Bearer $admin" http://127.0.0.1:18787/livez
-  runtime=$(user_worker_pid)
-  nohup bash -c "$(declare -f thread_ms dump_main_thread sample_procs); sample_procs $LOGS/dev.log $runtime $(ps -o ppid= -p "$runtime")" \
-    < /dev/null 2>&1 | stamped "$LOGS/procs.log" &
-  worker=$(user_worker_port "$admin" "$runtime")
-  echo "user worker $runtime listens on 127.0.0.1:$worker"
-  nohup "$WORK/devtls" -listen ":$API_PORT" -upstream "http://127.0.0.1:$worker" -dir .build/devtls -hosts "${API%%:*},${CONTAINER_API%%:*},$EDGE_LB_HOST,$EDGE_INGRESS_HOST,$EDGE_GATEWAY_HOST" -admin-token "$admin" -strict-edge \
-    < /dev/null 2>&1 | stamped "$LOGS/devtls.log" &
-  wait_for "devtls" 180 1 curl -sf -m 10 --cacert .build/devtls/server-ca.crt -o /dev/null -H "Authorization: Bearer $admin" "https://$API/livez"
-
-  printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: k8flare-ci\n  cluster:\n    server: https://%s\n    certificate-authority: %s/.build/devtls/server-ca.crt\nusers:\n- name: admin\n  user:\n    token: %s\ncontexts:\n- name: k8flare-ci\n  context:\n    cluster: k8flare-ci\n    user: admin\ncurrent-context: k8flare-ci\n' \
-    "$API" "$PWD" "$admin" > "$KUBECONFIG_PATH"
-  chmod 600 "$KUBECONFIG_PATH"
+  start_control_plane
+  start_devtls
+  write_kubeconfig "$PWD/.build/devtls/server-ca.crt" "$KUBECONFIG_PATH"
 
   local token index
   token=$(join_token)
   join_node "$token"
   wait_for "a Ready node" 120 5 nodes_ready 1
   if [ "$NODES" -gt 1 ]; then
-    docker pull -q "$K3S_IMAGE"
-    sudo iptables -C DOCKER-USER -o docker0 -j ACCEPT 2>/dev/null || sudo iptables -I DOCKER-USER -o docker0 -j ACCEPT
+    prepare_container_nodes
     for index in $(seq 2 "$NODES"); do
       join_container_node "$token" "$index"
     done
