@@ -685,6 +685,44 @@ join_container_node() {
   nohup docker logs -f "$name" > "$LOGS/agent-$index.log" 2>&1 < /dev/null &
 }
 
+admin_token() {
+  sed -n 's/^ADMIN_TOKEN=//p' .dev.vars
+}
+
+start_control_plane() {
+  local suffix=${1:-} admin runtime
+  admin=$(admin_token)
+  rm -rf "$REGISTRY"
+  WRANGLER_REGISTRY_PATH=$PWD/$REGISTRY X_LOCAL_OBSERVABILITY=false MINIFLARE_WORKERD_V8_FLAGS="${MINIFLARE_WORKERD_V8_FLAGS:---single-threaded-gc}" nohup pnpm exec wrangler dev -c wrangler.dev.jsonc --local --enable-containers=false --persist-to "$STATE" --port 18787 \
+    < /dev/null 2>&1 | stamped "$LOGS/dev$suffix.log" &
+  wait_for "the control plane" 360 5 curl -sf -m 10 -o /dev/null -H "Authorization: Bearer $admin" http://127.0.0.1:18787/livez
+  runtime=$(user_worker_pid)
+  nohup bash -c "$(declare -f thread_ms dump_main_thread sample_procs); sample_procs $LOGS/dev$suffix.log $runtime $(ps -o ppid= -p "$runtime")" \
+    < /dev/null 2>&1 | stamped "$LOGS/procs$suffix.log" &
+  USER_WORKER_PORT=$(user_worker_port "$admin" "$runtime")
+  echo "user worker $runtime listens on 127.0.0.1:$USER_WORKER_PORT"
+}
+
+start_devtls() {
+  local suffix=${1:-} admin
+  admin=$(admin_token)
+  nohup "$WORK/devtls" -listen ":$API_PORT" -upstream "http://127.0.0.1:$USER_WORKER_PORT" -dir .build/devtls -hosts "${API%%:*},${CONTAINER_API%%:*},$EDGE_LB_HOST,$EDGE_INGRESS_HOST,$EDGE_GATEWAY_HOST" -admin-token "$admin" -strict-edge \
+    < /dev/null 2>&1 | stamped "$LOGS/devtls$suffix.log" &
+  wait_for "devtls" 180 1 curl -sf -m 10 --cacert .build/devtls/server-ca.crt -o /dev/null -H "Authorization: Bearer $admin" "https://$API/livez"
+}
+
+write_kubeconfig() {
+  local ca=$1 out=$2
+  printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: k8flare-ci\n  cluster:\n    server: https://%s\n    certificate-authority: %s\nusers:\n- name: admin\n  user:\n    token: %s\ncontexts:\n- name: k8flare-ci\n  context:\n    cluster: k8flare-ci\n    user: admin\ncurrent-context: k8flare-ci\n' \
+    "$API" "$ca" "$(admin_token)" > "$out"
+  chmod 600 "$out"
+}
+
+prepare_container_nodes() {
+  docker pull -q "$K3S_IMAGE"
+  sudo iptables -C DOCKER-USER -o docker0 -j ACCEPT 2>/dev/null || sudo iptables -I DOCKER-USER -o docker0 -j ACCEPT
+}
+
 up() {
   if [ ! -x /usr/local/bin/k3s ]; then
     curl -sfL -o "$WORK/k3s" "https://github.com/k3s-io/k3s/releases/download/${K3S_VERSION/+/%2B}/k3s"
@@ -695,32 +733,16 @@ up() {
 
   dev_vars
   make wrangler.dev.jsonc
-  local admin runtime worker
-  admin=$(sed -n 's/^ADMIN_TOKEN=//p' .dev.vars)
-  rm -rf "$REGISTRY"
-  WRANGLER_REGISTRY_PATH=$PWD/$REGISTRY X_LOCAL_OBSERVABILITY=false MINIFLARE_WORKERD_V8_FLAGS="${MINIFLARE_WORKERD_V8_FLAGS:---single-threaded-gc}" nohup pnpm exec wrangler dev -c wrangler.dev.jsonc --local --enable-containers=false --persist-to "$STATE" --port 18787 \
-    < /dev/null 2>&1 | stamped "$LOGS/dev.log" &
-  wait_for "the control plane" 360 5 curl -sf -m 10 -o /dev/null -H "Authorization: Bearer $admin" http://127.0.0.1:18787/livez
-  runtime=$(user_worker_pid)
-  nohup bash -c "$(declare -f thread_ms dump_main_thread sample_procs); sample_procs $LOGS/dev.log $runtime $(ps -o ppid= -p "$runtime")" \
-    < /dev/null 2>&1 | stamped "$LOGS/procs.log" &
-  worker=$(user_worker_port "$admin" "$runtime")
-  echo "user worker $runtime listens on 127.0.0.1:$worker"
-  nohup "$WORK/devtls" -listen ":$API_PORT" -upstream "http://127.0.0.1:$worker" -dir .build/devtls -hosts "${API%%:*},${CONTAINER_API%%:*},$EDGE_LB_HOST,$EDGE_INGRESS_HOST,$EDGE_GATEWAY_HOST" -admin-token "$admin" -strict-edge \
-    < /dev/null 2>&1 | stamped "$LOGS/devtls.log" &
-  wait_for "devtls" 180 1 curl -sf -m 10 --cacert .build/devtls/server-ca.crt -o /dev/null -H "Authorization: Bearer $admin" "https://$API/livez"
-
-  printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: k8flare-ci\n  cluster:\n    server: https://%s\n    certificate-authority: %s/.build/devtls/server-ca.crt\nusers:\n- name: admin\n  user:\n    token: %s\ncontexts:\n- name: k8flare-ci\n  context:\n    cluster: k8flare-ci\n    user: admin\ncurrent-context: k8flare-ci\n' \
-    "$API" "$PWD" "$admin" > "$KUBECONFIG_PATH"
-  chmod 600 "$KUBECONFIG_PATH"
+  start_control_plane
+  start_devtls
+  write_kubeconfig "$PWD/.build/devtls/server-ca.crt" "$KUBECONFIG_PATH"
 
   local token index
   token=$(join_token)
   join_node "$token"
   wait_for "a Ready node" 120 5 nodes_ready 1
   if [ "$NODES" -gt 1 ]; then
-    docker pull -q "$K3S_IMAGE"
-    sudo iptables -C DOCKER-USER -o docker0 -j ACCEPT 2>/dev/null || sudo iptables -I DOCKER-USER -o docker0 -j ACCEPT
+    prepare_container_nodes
     for index in $(seq 2 "$NODES"); do
       join_container_node "$token" "$index"
     done
@@ -788,11 +810,378 @@ run_e2e() {
   return "$status"
 }
 
+LIVE=$WORK/live
+LIVE_IMAGE=rancher/mirrored-library-busybox:1.37.0
+LIVE_STORAGE_MIGRATE=http://127.0.0.1:18787/internal/storage-migrate
+
+kc() {
+  kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s "$@"
+}
+
+kl() {
+  timeout 240 kubectl --kubeconfig "$KUBECONFIG_PATH" "$@"
+}
+
+port_free() {
+  [ -z "$(ss -ltnH "sport = :$1")" ]
+}
+
+stop_devtls() {
+  pkill -9 -f "$WORK/devtls" || true
+  wait_for "devtls to release :$API_PORT" 30 1 port_free "$API_PORT"
+}
+
+stop_control_plane() {
+  pkill -9 -f 'wrangler dev' || true
+  pkill -9 -x workerd || true
+  wait_for "wrangler dev to release :18787" 60 1 port_free 18787
+}
+
+join_second_node() {
+  prepare_container_nodes
+  join_container_node "$(join_token)" 2
+  wait_for "2 Ready untainted nodes" 120 5 nodes_ready 2
+  echo "the second node $(hostname)-2 joined and 2 nodes are Ready"
+}
+
+node_uid() {
+  kc get node "$1" -o jsonpath='{.metadata.uid}'
+}
+
+agent_process() {
+  local node=$1
+  if [ "$node" = "$(hostname)" ]; then
+    systemctl show k3s-agent -p ExecMainPID -p ExecMainStartTimestamp | paste -sd' ' -
+  else
+    docker inspect -f 'ExecMainPID={{.State.Pid}} StartedAt={{.State.StartedAt}}' "$node"
+  fi
+}
+
+node_identities() {
+  local node
+  for node in $(node_names); do
+    echo "$node uid=$(node_uid "$node") $(agent_process "$node")"
+  done
+}
+
+nodes_unchanged() {
+  local before=$1 when=$2 after
+  after=$(node_identities)
+  if [ "$after" != "$before" ]; then
+    echo "a node was re-registered or its agent restarted $when" >&2
+    diff <(echo "$before") <(echo "$after") >&2 || true
+    return 1
+  fi
+  echo "both nodes kept their Node UID and their agent process $when: $(paste -sd';' - <<<"$after")"
+}
+
+live_pod() {
+  local name=$1 phase=$2 node=$3
+  kc apply -f - <<YAML
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+  namespace: ci-live
+  labels:
+    phase: $phase
+spec:
+  terminationGracePeriodSeconds: 1
+  nodeSelector:
+    kubernetes.io/hostname: $node
+  containers:
+  - name: main
+    image: $LIVE_IMAGE
+    command: [sh, -c, 'echo live-$name && exec sleep 3600']
+YAML
+}
+
+live_pods_ready() {
+  local ready
+  ready=$(kc -n ci-live get pods -l "phase=$1" -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}') || return 1
+  [ "$(grep -c True <<<"$ready")" -eq 2 ]
+}
+
+start_live_pods() {
+  local phase=$1 node n=0
+  for node in $(node_names); do
+    n=$((n + 1))
+    live_pod "$phase-$n" "$phase" "$node"
+  done
+  wait_for "the $phase pods to be Ready on both nodes" 60 5 live_pods_ready "$phase"
+  echo "the $phase pods are Ready on $(kc -n ci-live get pods -l "phase=$phase" -o jsonpath='{range .items[*]}{.metadata.name}{"@"}{.spec.nodeName}{" "}{end}')"
+}
+
+container_states() {
+  kc -n ci-live get pods -l phase=before -o jsonpath='{range .items[*]}{.metadata.name}{" restartCount="}{.status.containerStatuses[0].restartCount}{" containerID="}{.status.containerStatuses[0].containerID}{"\n"}{end}'
+}
+
+containers_unchanged() {
+  local before=$1 when=$2 after
+  after=$(container_states) || return 1
+  if [ "$after" != "$before" ] || [ -z "$after" ]; then
+    echo "a container restarted $when" >&2
+    diff <(echo "$before") <(echo "$after") >&2 || true
+    return 1
+  fi
+  echo "the containers of the before pods were not restarted $when: $(paste -sd';' - <<<"$after")"
+}
+
+pods_serve_logs_and_exec() {
+  local phase=$1 pod got
+  for pod in $(kc -n ci-live get pods -l "phase=$phase" -o jsonpath='{.items[*].metadata.name}'); do
+    got=$(timeout 60 kubectl --kubeconfig "$KUBECONFIG_PATH" -n ci-live logs "$pod") || return 1
+    if [ "$got" != "live-$pod" ]; then
+      echo "kubectl logs $pod printed '$got', want 'live-$pod'"
+      return 1
+    fi
+    got=$(timeout 60 kubectl --kubeconfig "$KUBECONFIG_PATH" -n ci-live exec "$pod" -- hostname) || return 1
+    if [ "$got" != "$pod" ]; then
+      echo "kubectl exec $pod -- hostname printed '$got', want '$pod'"
+      return 1
+    fi
+  done
+  echo "kubectl logs and kubectl exec work on the $phase pods $(kc -n ci-live get pods -l "phase=$phase" -o jsonpath='{range .items[*]}{.metadata.name}{"@"}{.spec.nodeName}{" "}{end}')"
+}
+
+live_nodes_serve() {
+  local phase=$1
+  wait_for "both nodes to be Ready" 60 5 nodes_ready 2
+  wait_for "every kubelet through the node tunnel" 60 5 kubelets_reachable
+  wait_for "kubectl logs and exec on the $phase pods" 24 5 pods_serve_logs_and_exec "$phase"
+  pods_serve_logs_and_exec "$phase"
+}
+
+certificate_count() {
+  grep -c 'BEGIN CERTIFICATE' "$1"
+}
+
+first_certificate() {
+  awk '/BEGIN CERTIFICATE/ { n++ } n == 1 { print } /END CERTIFICATE/ && n == 1 { exit }' "$1"
+}
+
+api_answers() {
+  local out
+  out=$(kubectl --kubeconfig "$1" --request-timeout=15s get --raw /livez 2>&1) || {
+    echo "$1: $out"
+    return 1
+  }
+  [ "$out" = ok ] || {
+    echo "$1: /livez answered '$out'"
+    return 1
+  }
+}
+
+api_refused() {
+  local out
+  if out=$(kubectl --kubeconfig "$1" --request-timeout=15s get --raw /livez 2>&1); then
+    echo "$1: /livez answered '$out', want a refused certificate" >&2
+    return 1
+  fi
+  if ! grep -q 'x509' <<<"$out"; then
+    echo "$1: the call failed, but not on the server certificate: $out" >&2
+    return 1
+  fi
+}
+
+cacerts_rotated() {
+  [ "$(curl -sf -m 10 --cacert "$LIVE/server-ca-old.crt" "https://$API/cacerts" | grep -c 'BEGIN CERTIFICATE')" -eq 2 ]
+}
+
+devtls_serves_rotated_ca() {
+  stop_devtls || return 1
+  start_devtls -rotated || return 1
+  [ "$(certificate_count .build/devtls/server-ca.crt)" -eq 2 ]
+}
+
+rotate_ca_with_live_nodes() {
+  local identities=$1 containers=$2 listed
+  cp .build/devtls/server-ca.crt "$LIVE/server-ca-old.crt"
+  if [ "$(certificate_count "$LIVE/server-ca-old.crt")" -ne 1 ]; then
+    echo "the server CA bundle held by devtls before the rotation is not one certificate" >&2
+    return 1
+  fi
+  write_kubeconfig "$PWD/$LIVE/server-ca-old.crt" "$LIVE/kubeconfig-old-ca.yaml"
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -subj /CN=unrelated -days 1 \
+    -keyout "$LIVE/unrelated-ca.key" -out "$LIVE/unrelated-ca.crt" 2>/dev/null
+  write_kubeconfig "$PWD/$LIVE/unrelated-ca.crt" "$LIVE/kubeconfig-unrelated-ca.yaml"
+  api_answers "$LIVE/kubeconfig-old-ca.yaml"
+  api_refused "$LIVE/kubeconfig-unrelated-ca.yaml"
+  echo "before the rotation a kubeconfig pinned to the one CA works and one pinned to an unrelated CA is refused"
+
+  "$WORK/k8flare" certificate rotate-ca --kubeconfig "$KUBECONFIG_PATH" | tee "$LIVE/rotate-ca.txt"
+  wait_for "/cacerts to hold the new and the old server CA" 12 5 cacerts_rotated
+  echo "/cacerts holds the new and the old server CA"
+  listed=$("$WORK/k8flare" certificate check --kubeconfig "$KUBECONFIG_PATH")
+  if [ "$(grep -c ' ok$' <<<"$listed")" -ne 6 ] || grep -qE 'expired|expiring' <<<"$listed"; then
+    echo "k8flare certificate check does not list the new and the old CA of all three authorities as ok: $listed" >&2
+    return 1
+  fi
+  echo "k8flare certificate check lists 6 CAs, all ok"
+
+  wait_for "devtls to serve an edge certificate from the rotated server CA" 8 10 devtls_serves_rotated_ca
+  first_certificate .build/devtls/server-ca.crt > "$LIVE/server-ca-new.crt"
+  if cmp -s "$LIVE/server-ca-new.crt" "$LIVE/server-ca-old.crt"; then
+    echo "the first certificate of the rotated bundle is still the old CA" >&2
+    return 1
+  fi
+  write_kubeconfig "$PWD/$LIVE/server-ca-new.crt" "$LIVE/kubeconfig-new-ca.yaml"
+  wait_for "the API through a kubeconfig pinned to the new CA only" 12 5 api_answers "$LIVE/kubeconfig-new-ca.yaml"
+  api_answers "$LIVE/kubeconfig-new-ca.yaml"
+  echo "kubectl pinned to the new CA only works against the edge certificate the rotated CA signed"
+  api_answers "$LIVE/kubeconfig-old-ca.yaml"
+  echo "kubectl pinned to the old CA only still works: the edge certificate chain carries the new CA cross-signed by the old one"
+  api_refused "$LIVE/kubeconfig-unrelated-ca.yaml"
+  echo "kubectl pinned to an unrelated CA is refused"
+
+  live_nodes_serve before
+  nodes_unchanged "$identities" "after the CA rotation"
+  containers_unchanged "$containers" "after the CA rotation"
+  wait_for "the node client certificates issued before the rotation to authenticate" 24 5 certificate_identities
+  certificate_identities
+  start_live_pods after-rotation
+  live_nodes_serve after-rotation
+}
+
+change_build_identity() {
+  local manifest sha changed=0
+  for manifest in packages/control-plane-worker/assets/wasm/*.manifest.json; do
+    sha=$(jq -r .sha256 "$manifest" | sha256sum | cut -d' ' -f1)
+    jq --arg sha "$sha" '.sha256 = $sha' "$manifest" > "$manifest.tmp"
+    mv "$manifest.tmp" "$manifest"
+    changed=$((changed + 1))
+  done
+  if [ "$changed" -eq 0 ]; then
+    echo "no worker manifest to change under packages/control-plane-worker/assets/wasm" >&2
+    return 1
+  fi
+  echo "changed the sha256 of $changed worker manifests, so the Worker Loader keys of all components differ"
+}
+
+storage_migrated() {
+  local status
+  status=$(curl -sf -m 30 -X POST -H "Authorization: Bearer $(admin_token)" "$LIVE_STORAGE_MIGRATE") || return 1
+  if ! jq -e '.done == true and ((.failed // {}) | length == 0)' <<<"$status" >/dev/null; then
+    echo "the storage migration is not done: $status"
+    return 1
+  fi
+  echo "the storage migration is done: $status"
+}
+
+watch_sees() {
+  local out names
+  out=$(timeout 60 kubectl --kubeconfig "$KUBECONFIG_PATH" get --raw "/api/v1/namespaces/ci-live/pods?watch=1&resourceVersion=$1&timeoutSeconds=20") || return 1
+  names=$(jq -r 'select(.type == "ADDED") | .object.metadata.name' <<<"$out") || return 1
+  if ! grep -qx "$2" <<<"$names"; then
+    echo "a watch resumed at resourceVersion $1 did not deliver the ADDED event of pod $2"
+    return 1
+  fi
+}
+
+upgrade_with_live_nodes() {
+  local identities=$1 containers=$2 version watcher
+  version=$(kc -n ci-live get pods -o jsonpath='{.metadata.resourceVersion}')
+  kubectl --kubeconfig "$KUBECONFIG_PATH" -n ci-live get pods --watch --no-headers -o name > "$LIVE/watch.out" 2> "$LIVE/watch.err" &
+  watcher=$!
+  wait_for "the in-flight watch to list the pods" 12 5 grep -q pod/ "$LIVE/watch.out"
+
+  stop_devtls
+  stop_control_plane
+  change_build_identity
+  start_control_plane -upgrade
+  start_devtls -upgrade
+  if ! grep -q 'load=' "$LOGS/dev-upgrade.log"; then
+    echo "the restarted control plane loaded no component isolate" >&2
+    return 1
+  fi
+  echo "the restarted control plane loaded new isolates: $(grep -o 'load=[a-z0-9-]*' "$LOGS/dev-upgrade.log" | sort -u | paste -sd' ' -)"
+
+  wait_for "the Ready nodes after the restart" 120 5 nodes_ready 2
+  live_nodes_serve before
+  nodes_unchanged "$identities" "across the control-plane upgrade"
+  containers_unchanged "$containers" "across the control-plane upgrade"
+  live_nodes_serve after-rotation
+
+  live_pod watch-probe probe "$(node_names | cut -d' ' -f1)"
+  wait_for "a watch resumed from before the restart to deliver the new pod" 6 10 watch_sees "$version" watch-probe
+  echo "a watch resumed at resourceVersion $version after the restart delivered the pod watch-probe"
+  if kill -0 "$watcher" 2>/dev/null; then
+    wait_for "the in-flight kubectl get --watch to print the new pod" 12 5 grep -qx pod/watch-probe "$LIVE/watch.out"
+    kill "$watcher" 2>/dev/null || true
+    echo "the in-flight kubectl get --watch survived the restart and printed pod/watch-probe"
+  else
+    echo "the in-flight kubectl get --watch ended with the restart, as kubectl does not retry a closed watch: $(tr '\n' ' ' < "$LIVE/watch.err")"
+  fi
+
+  kc -n ci-live create deployment after-upgrade --image="$LIVE_IMAGE" --replicas=2 -- sleep 3600
+  kl -n ci-live rollout status deployment/after-upgrade --timeout=180s
+  echo "the Deployment ci-live/after-upgrade rolled out 2 replicas on the upgraded control plane"
+  wait_for "the storage migration" 12 5 storage_migrated
+  storage_migrated
+  wait_for "node usage in metrics.k8s.io" 24 5 node_metrics_served
+  echo "node usage is served again through the node tunnel with certificates issued by the rotated CAs"
+}
+
+renew_agent_certificate() {
+  local node uid token process
+  node=$(hostname)
+  uid=$(node_uid "$node")
+  process=$(agent_process "$node")
+  token=$(join_token)
+  sudo sed -i "s|^K3S_TOKEN=.*|K3S_TOKEN='$token'|" /etc/systemd/system/k3s-agent.service.env
+  sudo systemctl restart k3s-agent
+  if [ "$(agent_process "$node")" = "$process" ]; then
+    echo "the k3s agent of $node did not restart" >&2
+    return 1
+  fi
+  wait_for "$node to be Ready again" 120 5 nodes_ready 2
+  if [ "$(node_uid "$node")" != "$uid" ]; then
+    echo "$node registered again with a new Node UID" >&2
+    return 1
+  fi
+  sudo cat /var/lib/rancher/k3s/agent/client-ca.crt > "$LIVE/node-client-ca.crt"
+  sudo cat /var/lib/rancher/k3s/agent/client-kubelet.crt > "$LIVE/node-client-kubelet.crt"
+  if [ "$(certificate_count "$LIVE/node-client-ca.crt")" -ne 2 ]; then
+    echo "$node did not fetch the rotated client CA bundle on restart" >&2
+    return 1
+  fi
+  first_certificate "$LIVE/node-client-ca.crt" > "$LIVE/node-client-ca-new.crt"
+  openssl verify -purpose sslclient -CAfile "$LIVE/node-client-ca-new.crt" -untrusted "$LIVE/node-client-kubelet.crt" "$LIVE/node-client-kubelet.crt"
+  echo "$node restarted with a K10 token of the rotated bundle, kept its Node UID, and its renewed kubelet client certificate verifies against the new client CA alone"
+  wait_for "the renewed client certificate of $node to authenticate" 24 5 node_identity "$node" kubelet.kubeconfig "system:node:$node"
+  node_identity "$node" kubelet.kubeconfig "system:node:$node"
+}
+
+live() {
+  if [ "$AGENT" != k3s ]; then
+    echo "the live node checks need stock k3s agents (AGENT=k3s)" >&2
+    return 1
+  fi
+  mkdir -p "$LIVE"
+  if [ "$NODES" -lt 2 ]; then
+    join_second_node
+  fi
+  if [ "$(wc -w <<<"$(node_names)")" -ne 2 ]; then
+    echo "want exactly 2 nodes, have: $(node_names)" >&2
+    return 1
+  fi
+  kc create namespace ci-live
+  start_live_pods before
+  local identities containers
+  identities=$(node_identities)
+  containers=$(container_states)
+  echo "$identities"
+  echo "$containers"
+  rotate_ca_with_live_nodes "$identities" "$containers"
+  upgrade_with_live_nodes "$identities" "$containers"
+  renew_agent_certificate
+}
+
 join_evidence() {
   local status=$? log
   [ "$status" -eq 0 ] && return 0
   local -a k=(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s)
-  for log in "$LOGS"/agent*.log "$LOGS/devtls.log"; do
+  for log in "$LOGS"/agent*.log "$LOGS/devtls.log" "$LOGS/devtls-rotated.log" "$LOGS/dev-upgrade.log" "$LOGS/devtls-upgrade.log"; do
     [ -f "$log" ] || continue
     echo "::group::last 300 lines of $log"
     tail -n 300 "$log" || true
@@ -816,6 +1205,11 @@ join_evidence() {
   "${k[@]}" -n kube-system logs -l app=local-path-provisioner --tail=200 || true
   grep -E 'metrics|hpa:' "$LOGS/dev.log" | tail -n 100 || true
   echo "::endgroup::"
+  echo "::group::the ci-live pods and the CA rotation"
+  "${k[@]}" -n ci-live get pods,deploy -o wide || true
+  "${k[@]}" -n ci-live describe pods || true
+  cat "$LIVE/rotate-ca.txt" || true
+  echo "::endgroup::"
   echo "::group::the edge routes of ci-edge and the Gateway API"
   "${k[@]}" get crd -o wide | grep -E '^NAME|gateway\.networking\.k8s\.io' || true
   "${k[@]}" -n ci-edge get deploy,pods,svc,endpointslices,ingress -o wide || true
@@ -832,7 +1226,8 @@ case "${1:-all}" in
   build) build ;;
   shard) build_shard "$2" "$3" ;;
   up) trap join_evidence EXIT; up ;;
+  live) trap join_evidence EXIT; live ;;
   test) run_e2e ;;
   all) build; trap join_evidence EXIT; up; trap - EXIT; run_e2e ;;
-  *) echo "usage: $0 [build|shard N OF|up|test|all]" >&2; exit 2 ;;
+  *) echo "usage: $0 [build|shard N OF|up|live|test|all]" >&2; exit 2 ;;
 esac

@@ -162,6 +162,11 @@ jobs:
           SHARD: ${{ matrix.shard }}
           SHARDS: 3
 
+      - name: Rotate the CA and upgrade the control plane with two live nodes
+        if: matrix.shard == 0
+        timeout-minutes: 45
+        run: scripts/ci/e2e.sh live
+
       - name: Save Go caches
         if: always() && steps.build.outcome == 'success' && matrix.shard == 0
         uses: actions/cache/save@v6

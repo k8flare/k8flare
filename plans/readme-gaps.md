@@ -575,7 +575,24 @@ Decided on 2026-10-01, with the owner:
     old CA accepts new leaves. Edge client-cert auth verifies against the
     bundle. `k8flare certificate check` lists each CA with its expiry (the
     apiserver keeps no record of issued leaves, so it cannot list them).
-    Unit tests only, not run against workerd or a real k3s agent.
+    Unit tests cover the CAs and the chains. `scripts/ci/e2e.sh live` (the
+    `required` job, shard 0, after the suite; not yet observed on GitHub
+    Actions) rotates with two Ready stock k3s agents and a running pod per
+    node: it runs `k8flare certificate rotate-ca`, waits for `/cacerts` to
+    hold two certificates, restarts devtls (the CI stand-in for rerunning
+    `k8flare edge-certificate`, since devtls reads its edge certificate and
+    client CA pool once), and checks that both nodes keep their Node UID and
+    agent process, that a kubeconfig pinned to the new CA alone works, that
+    one pinned to the old CA alone still works (the edge certificate chain
+    carries the new CA cross-signed by the old one, so it is not refused,
+    and the nodes' own kubeconfigs rely on this), that one pinned to an
+    unrelated CA is refused, that the nodes' client certificates still
+    authenticate, that `kubectl logs` and `exec` work on a pod per node
+    before and after, and that a new pod schedules on each node. The
+    rotation itself renews no leaf. A restarted agent does: the check
+    restarts the host node's agent with a K10 token printed after the
+    rotation (an old token fails the CA hash check on restart, as in k3s) and
+    verifies the new `client-kubelet.crt` against the new client CA alone.
   - Old CAs are never retired before they expire; a compromised CA cannot be
     dropped from the bundle yet. The service-account signing key is not
     rotated (k3s does that separately).
@@ -587,11 +604,16 @@ Decided on 2026-10-01, with the owner:
     inside 90 days of expiry, and only when the agent restarts: the agent
     asks the supervisor for its kubelet, kube-proxy and k3s-controller
     certificates on every start. The supervisor issues a fresh one each time
-    and does not check for expiry. The agent's own rotation is not exercised
-    here. The apiserver-to-kubelet client cert is now valid for 24 hours and
-    node-tunnel refetches it (and the CA bundle) hourly into the running
-    instance without dropping the tunnel; the TypeScript refresh is not
-    covered by a test.
+    and does not check for expiry
+    (`apiserver-supervisor/leafrenewal_test.go` checks that a request gets a
+    full-lifetime leaf; the agent's own 90-day decision is k3s code and is
+    only exercised by the restart in `e2e.sh live`). The
+    apiserver-to-kubelet client cert is valid for 24 hours and node-tunnel
+    refetches it (and the CA bundle) hourly into the running instance without
+    dropping the tunnel, retrying every minute after a failure
+    (`control-plane-worker/test/kubeletrefresh.test.ts` drives it on a mocked
+    clock). Nothing refreshes a leaf while the agent keeps running: an agent
+    that is never restarted keeps its 1 year leaf until it expires.
 - Snapshots: scheduled ones (`SNAPSHOT_INTERVAL_HOURS`, default 12, 0 disables;
   `SNAPSHOT_RETENTION`, default 5) are tested against a fake R2 only, not
   against workerd.
@@ -649,7 +671,19 @@ Decided on 2026-10-01, with the owner:
   stay at the old encoding until their next write or the next deploy; the
   deploy trigger is exercised against node:sqlite, not workerd.
 - Gradual rollout is not implemented: nothing calls `wrangler versions`,
-  a deploy is one cutover. Nothing tests that nodes keep running across one.
+  a deploy is one cutover. `scripts/ci/e2e.sh live` (not yet observed on
+  GitHub Actions) stops `wrangler dev` and devtls, rewrites the `sha256` of
+  every worker manifest (no Go is rebuilt; the Loader key of each component
+  changes and a fresh process loads new isolates), starts both again on the
+  same state and checks that the nodes return Ready with the same Node UID
+  and agent process, that the containers of a running pod keep their
+  `restartCount` and `containerID`, that a watch resumed at a
+  `resourceVersion` from before the restart delivers a pod created after
+  it, that a new Deployment rolls out, that `POST /internal/storage-migrate`
+  reports `done`, and that `kubectl logs` and `exec` still work (the node
+  tunnel now holds leaves signed by the rotated CAs). `kubectl get --watch`
+  does not reconnect on its own (`UntilWithoutRetry`), so an in-flight one
+  ends with the restart.
 - `/livez` is ping only (`apiserver/health.go`); `/readyz` and `/healthz`
   carry the datastore, queue and controller checks.
 - Snapshots: the Durable Object side of `save`, `list`, `restore`,
