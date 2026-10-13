@@ -20,15 +20,13 @@ Decided on 2026-10-01, with the owner:
   validated by upstream's `pkg/apis/admissionregistration/validation`, run
   on the admission worker (`POST /validate`, `admission/validate.go`) because
   only that worker links the CEL compiler; the group worker sends the object
-  and the old object over its `ADMISSION` binding. Not done: upstream's
-  strategies also authorize `spec.paramKind` (and the binding's `paramRef`
-  and policy lookups) against the caller; that check is not made, as
-  nothing on the admission worker's path carries the caller's authorizer
-  for it.
-- Claim status writes are authorized for `resourceclaims/binding` through
-  the cluster authorizer (`authorization_test.go`). The
-  `resourceclaims/driver` check runs through the same authorizer but no
-  test changes `status.devices`.
+  and the old object over its `ADMISSION` binding. The `paramKind` and
+  `paramRef` read checks of upstream's strategies run in the group worker
+  (`apiserver-admissionregistration/paramauthz.go`) against
+  `authz.New(deps.Kine)`: the rules are upstream's `authz.go` written out
+  again, because the strategy packages import the CEL-linking validation.
+  The resource resolver reads the served resources and the stored CRDs
+  where upstream uses discovery.
 - Streaming over WebSocket: logs and exec pass in Conformance (36857951122:
   `remote command execution over websockets`, `retrieving logs from the
   container over websockets`). attach (v5 channel protocol) and `kubectl
