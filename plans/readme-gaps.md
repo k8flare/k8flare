@@ -16,15 +16,19 @@ Decided on 2026-10-01, with the owner:
 
 ## What you get
 
-- Upstream validation is not used for admissionregistration. Every
-  upstream strategy there imports `pkg/apis/admissionregistration/validation`,
-  which links the CEL compiler: the group worker goes from 56.1 MB to
-  70.1 MB (50,963 functions), over the 64 MiB cap even with
-  `-tags grpcnotrace`. This also leaves VAP bindings and
-  MutatingAdmissionPolicy (and its binding) on the local strategy.
-- Claim status writes skip the two upstream authorization checks
-  (`resourceclaims/binding`, `resourceclaims/driver`): the strategy gets an
-  allow-all authorizer, as the group worker has none.
+- Webhook configurations, VAP, VAP bindings, MAP and MAP bindings are
+  validated by upstream's `pkg/apis/admissionregistration/validation`, run
+  on the admission worker (`POST /validate`, `admission/validate.go`) because
+  only that worker links the CEL compiler; the group worker sends the object
+  and the old object over its `ADMISSION` binding. Not done: upstream's
+  strategies also authorize `spec.paramKind` (and the binding's `paramRef`
+  and policy lookups) against the caller; that check is not made, as
+  nothing on the admission worker's path carries the caller's authorizer
+  for it.
+- Claim status writes are authorized for `resourceclaims/binding` through
+  the cluster authorizer (`authorization_test.go`). The
+  `resourceclaims/driver` check runs through the same authorizer but no
+  test changes `status.devices`.
 - Streaming over WebSocket: logs and exec pass in Conformance (36857951122:
   `remote command execution over websockets`, `retrieving logs from the
   container over websockets`). attach (v5 channel protocol) and `kubectl
@@ -52,8 +56,6 @@ Decided on 2026-10-01, with the owner:
     is closed with 1002 after the handshake.
   SPDY cannot be served: workerd only accepts `Upgrade: websocket`, so
   stream paths answer other upgrades with 426.
-- `apiservices` has no upstream validation either
-  (`apiserver-apiregistration/hooks.go`).
 - ValidatingAdmissionPolicy and MutatingAdmissionPolicy run upstream's
   dispatchers (`admission/vap.go`, `map.go`, `policy.go`) over hooks built
   per request from the store, with upstream's compilers exported by the
