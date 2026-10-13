@@ -785,6 +785,10 @@ node_cost() {
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     { echo '```'; cat "$LOGS/node-cost.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
   fi
+  if grep -q '^unexpected_pod ' "$LOGS/node-cost.txt"; then
+    echo "the platform runs a pod on the node besides CoreDNS and the node API proxy" >&2
+    return 1
+  fi
   if [ "$NODES" -eq 1 ] && [ "$total" -gt "$budget" ]; then
     echo "the platform costs the node $total MiB, over the budget of $budget MiB" >&2
     return 1
