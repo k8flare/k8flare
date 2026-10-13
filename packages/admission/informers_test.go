@@ -86,6 +86,16 @@ func TestStoreFailureIsNotAnEmptyList(t *testing.T) {
 	}
 }
 
+func TestStoreFailureIsNotAMissingObject(t *testing.T) {
+	f := newStoreInformerFactory(context.Background(), failingKine(t))
+	if _, exists, _ := f.priorityClass.GetByKey("high"); exists {
+		t.Fatal("a failed store read must not return an object")
+	}
+	if f.failure == nil {
+		t.Fatal("a failed store read during a lookup must record a failure")
+	}
+}
+
 func TestUnimplementedIndexFailsLoudly(t *testing.T) {
 	f := newStoreInformerFactory(context.Background(), &store{})
 	if _, err := f.priorityClass.ByIndex("byOwner", "x"); err == nil {

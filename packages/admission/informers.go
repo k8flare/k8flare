@@ -228,6 +228,7 @@ func (idx *storeIndexer[T]) GetByKey(key string) (any, bool, error) {
 	}
 	obj, exists, err := getJSON[T](idx.ctx, idx.store.client, idx.prefix+key)
 	if err != nil {
+		idx.fail(err)
 		return nil, false, err
 	}
 	if !exists {
