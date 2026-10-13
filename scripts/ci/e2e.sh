@@ -220,6 +220,99 @@ no_local_path_pods() {
   echo "no local-path pod exists $1"
 }
 
+dynamic_resource_allocation() {
+  local device_node other_node claim pod user
+  local -a k=(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s)
+  local -a node_kubectl
+  read -r device_node other_node _ <<<"$(node_names)"
+  if [ -z "$device_node" ] || [ -z "$other_node" ]; then
+    echo "DRA needs two nodes, got '$device_node' and '$other_node'" >&2
+    return 1
+  fi
+  node_kubectl=(docker exec "$device_node" kubectl)
+  if [ "$device_node" = "$(hostname)" ]; then
+    node_kubectl=(sudo /usr/local/bin/k3s kubectl)
+  fi
+  user=$("${node_kubectl[@]}" --kubeconfig /var/lib/rancher/k3s/agent/kubelet.kubeconfig --request-timeout=15s auth whoami -o jsonpath='{.status.userInfo.username}') || return 1
+  if [ "$user" != "system:node:$device_node" ]; then
+    echo "the DRA ResourceSlice publisher authenticated as '$user', want 'system:node:$device_node'" >&2
+    return 1
+  fi
+  "${k[@]}" create namespace ci-dra
+  "${k[@]}" apply -f - <<'EOF'
+apiVersion: resource.k8s.io/v1
+kind: DeviceClass
+metadata:
+  name: ci-dra
+spec:
+  selectors:
+  - cel:
+      expression: device.driver == "ci.example.com/dra"
+EOF
+  "${node_kubectl[@]}" --kubeconfig /var/lib/rancher/k3s/agent/kubelet.kubeconfig --request-timeout=15s create -f - <<EOF
+apiVersion: resource.k8s.io/v1
+kind: ResourceSlice
+metadata:
+  name: ci-dra-slice
+spec:
+  driver: ci.example.com/dra
+  pool:
+    name: ci-dra-pool
+    generation: 1
+    resourceSliceCount: 1
+  nodeName: $device_node
+  devices:
+  - name: ci-dra-device
+EOF
+  "${k[@]}" -n ci-dra apply -f - <<'EOF'
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: device
+spec:
+  devices:
+    requests:
+    - name: device
+      exactly:
+        deviceClassName: ci-dra
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: consumer
+spec:
+  restartPolicy: Never
+  containers:
+  - name: consumer
+    image: rancher/mirrored-library-busybox:1.37.0
+    command: [sleep, "3600"]
+    resources:
+      claims:
+      - name: device
+  resourceClaims:
+  - name: device
+    resourceClaimName: device
+EOF
+  for _ in $(seq 1 24); do
+    claim=$("${k[@]}" -n ci-dra get resourceclaim device -o json) || return 1
+    pod=$("${k[@]}" -n ci-dra get pod consumer -o json) || return 1
+    if jq -e --arg node "$device_node" --arg other "$other_node" --arg uid "$(jq -r '.metadata.uid' <<<"$pod")" '
+      (.status.allocation.devices.results | any(.driver == "ci.example.com/dra" and .pool == "ci-dra-pool" and .device == "ci-dra-device")) and
+      (.status.reservedFor | any(.resource == "pods" and .name == "consumer" and .uid == $uid)) and
+      (.spec.nodeName == $node and .spec.nodeName != $other)
+    ' <<<"$claim" >/dev/null; then
+      echo "the DRA claim ci-dra/device allocated ci-dra-device on $device_node and reserved consumer there"
+      "${k[@]}" delete namespace ci-dra --wait=false
+      "${k[@]}" delete resourceslice ci-dra-slice --wait=false
+      "${k[@]}" delete deviceclass ci-dra --wait=false
+      return 0
+    fi
+    sleep 5
+  done
+  echo "the DRA claim ci-dra/device was not allocated and reserved on $device_node: $claim; pod: $pod" >&2
+  return 1
+}
+
 volume_bound_on_first_consumer() {
   local -a k=(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s)
   local mode
@@ -647,6 +740,7 @@ up() {
   node_cost
   metrics_served
   volume_bound_on_first_consumer
+  dynamic_resource_allocation
   edge_routing
 }
 

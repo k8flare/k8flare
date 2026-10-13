@@ -321,6 +321,13 @@ Decided on 2026-10-01, with the owner:
   claim is `Bound` to the pod's node, with no local-path pod before the
   claim or after the bind. Remove this entry once both pass in
   CI.
+- Dynamic Resource Allocation is checked in `scripts/ci/e2e.sh up`, which creates a
+  DeviceClass, publishes a ResourceSlice through the device node's kubelet identity,
+  and creates a ResourceClaim and a Pod. The check requires two nodes and verifies
+  that the scheduler allocates the device on the publishing node, reserves the claim
+  for the Pod, and binds the Pod to that node rather than the other one. The Pod is
+  deliberately not required to start because CI does not run a DRA kubelet plugin.
+  This has not yet run on GitHub Actions.
 - HelmChart and HelmChartConfig are honoured by a Worker-side controller in
   the addons Worker (`packages/helm`, `/helm` on the addons Worker, run
   from the `k8flare-addons` queue after the manifest deployer; HelmChart
