@@ -14,5 +14,5 @@
   "services": [
     { "binding": "APISERVER", "service": "k8flare", "entrypoint": "HPAAPIServer" },
   ],
-  "observability": { "enabled": true },
+  "observability": { "enabled": true, "traces": { "enabled": true, "head_sampling_rate": 1, "persist": true } },
 }
