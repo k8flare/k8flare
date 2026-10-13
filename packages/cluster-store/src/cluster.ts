@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { WORKLOAD_PREFIXES } from "./zz_generated_wake.ts";
 import { compactionTarget, nextAlarmAt, snapshotSchedule, snapshotsToPrune, type SnapshotVars } from "./schedule.ts";
+import { Seats, type SeatRequest } from "./seats.ts";
 
 // Cluster holds one cluster's state: a kine-style revisioned key-value log
 // in SQLite. Every write appends a row; the row id is the revision. A
@@ -59,9 +60,11 @@ function closeQuietly(ws: WebSocket, reason: string): void {
 
 export class Cluster extends DurableObject<Env> {
   private watchers = new Map<WebSocket, Watcher>();
+  private seats: Seats;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    this.seats = new Seats(Number(env.API_RATE_LIMIT_QPS ?? 0), Number(env.API_RATE_LIMIT_BURST ?? 0));
     ctx.blockConcurrencyWhile(async () => {
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS kine (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -237,6 +240,11 @@ export class Cluster extends DurableObject<Env> {
     switch (`${request.method} ${url.pathname}`) {
       case "GET /revision":
         return Response.json({ revision: this.revision() });
+      case "POST /apf/seat": {
+        const outcome = await this.seats.acquire((await request.json()) as SeatRequest);
+        if (!outcome.admitted) return Response.json({ retryAfter: outcome.retryAfter }, { status: 429 });
+        return new Response(new ReadableStream({ cancel: outcome.release }), { headers: { "Content-Type": "text/plain" } });
+      }
       case "GET /stats":
         return Response.json({
           revision: this.revision(),
