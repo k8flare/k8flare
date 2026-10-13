@@ -96,6 +96,7 @@ var mirrors = []mirror{
 			),
 			hostOnly("pkg/scheduler/backend/queue/testing.go"),
 			hostOnly("pkg/controller/certificates/cleaner/pcrcleaner.go"),
+			hostOnly("plugin/pkg/auth/authorizer/node/graph_populator.go"),
 			patchJSAST("pkg/controller/nodeipam/node_ipam_controller.go",
 				replaceSelector("cloudprovider", "Interface", "interface{}"),
 			),

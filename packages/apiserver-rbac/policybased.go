@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	authz "github.com/k8flare/k8flare/packages/apiserver-authz"
+	nodeauthz "github.com/k8flare/k8flare/packages/apiserver-authz/nodeauthz"
 	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -46,7 +47,7 @@ type policy struct {
 }
 
 func newPolicy(deps registry.Deps) *policy {
-	return &policy{authorizer: authz.New(deps.Kine), resolver: authz.RuleResolver(deps.Kine)}
+	return &policy{authorizer: authz.New(deps.Kine, nodeauthz.New(deps.Kine)), resolver: authz.RuleResolver(deps.Kine)}
 }
 
 type guard struct {

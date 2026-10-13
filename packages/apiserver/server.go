@@ -17,6 +17,7 @@ import (
 
 	auth "github.com/k8flare/k8flare/packages/apiserver-auth"
 	authz "github.com/k8flare/k8flare/packages/apiserver-authz"
+	nodeauthz "github.com/k8flare/k8flare/packages/apiserver-authz/nodeauthz"
 	installer "github.com/k8flare/k8flare/packages/apiserver-installer"
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
@@ -102,7 +103,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	tokens := auth.WithAuthenticatedGroup(union.New(auth.AdminToken(cfg.AdminToken), auth.ReadonlyToken(cfg.ReadonlyToken), &auth.ComponentTokens{Store: client}, auth.VaultToken{Vault: v}, auth.NodeToken{Vault: v}, sa, bootstrap, oidc, access))
 	edgeCert := auth.EdgeClientCert{ClientCA: func(ctx context.Context) ([]byte, error) { return v.CAPEM(ctx, "client-ca") }}
 	authn := group.NewAuthenticatedGroupAdder(requnion.New(bearertoken.New(tokens), edgeCert, access))
-	authorizer := authz.New(client)
+	authorizer := authz.New(client, nodeauthz.New(client))
 	audits, err := newAuditor(cfg.AuditPolicy, os.Stdout)
 	if err != nil {
 		return nil, fmt.Errorf("audit policy: %w", err)
