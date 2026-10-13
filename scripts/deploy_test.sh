@@ -19,16 +19,18 @@ cat > "$tmp/bin/wrangler" <<'EOF'
 printf '%s\n' "$*" >> "$DEPLOY_TEST_LOG"
 case "$*" in
   *"versions deployments status"*)
-    printf '%s\n' '{"versions":[{"version_id":"old-version","percentage":100}]}'
-    ;;
-  *"versions list"*)
-    printf '%s\n' '[{"id":"old-version"},{"id":"new-version"}]'
+    if [[ "${DEPLOY_TEST_STATUS_FAIL:-}" == "1" ]]; then
+      printf '%s\n' 'status request failed' >&2
+      exit 1
+    fi
+    printf '%s\n' '{"id":"deployment-id","created_on":"2026-10-13T00:00:00.000Z","versions":[{"version_id":"old-version","percentage":100}]}'
     ;;
   *"versions upload"*)
     if [[ "${DEPLOY_TEST_MIGRATION:-}" == "1" ]]; then
       printf '%s\n' 'This Worker has a pending Durable Object migration, which cannot be applied by `wrangler versions upload`.' >&2
       exit 1
     fi
+    printf '%s\n' '{"type":"version-upload","version":1,"worker_name":"k8flare","worker_tag":null,"version_id":"new-version","preview_url":null,"preview_alias_url":null,"wrangler_environment":null,"worker_name_overridden":false,"timestamp":"2026-10-13T00:00:00.000Z"}' >> "$WRANGLER_OUTPUT_FILE_PATH"
     ;;
 esac
 EOF
@@ -85,6 +87,17 @@ assert_contains 'versions deploy new-version@100% -y -c wrangler.attachdetach.js
 assert_before 'versions deploy new-version@100% old-version@0% -y -c wrangler.jsonc' 'versions upload -c wrangler.edge.jsonc'
 assert_before 'versions deploy new-version@100% -y -c wrangler.edge.jsonc' 'versions upload -c wrangler.hpa.jsonc'
 assert_before 'versions deploy new-version@100% -y -c wrangler.hpa.jsonc' 'versions upload -c wrangler.attachdetach.jsonc'
+
+: > "$tmp/log"
+: > "$tmp/curl-count"
+if PATH="$tmp/bin:$PATH" DEPLOY_TEST_LOG="$tmp/log" DEPLOY_TEST_CURL_COUNT="$tmp/curl-count" DEPLOY_TEST_STATUS_FAIL=1 bash "$root/scripts/deploy.sh" 2>"$tmp/status.err"; then
+  exit 1
+fi
+grep -Fq 'status request failed' "$tmp/status.err"
+grep -Fq 'DEPLOY_ROLLOUT=immediate' "$tmp/status.err"
+if grep -Fq 'deploy -c' "$tmp/log"; then
+  exit 1
+fi
 
 : > "$tmp/log"
 : > "$tmp/curl-count"

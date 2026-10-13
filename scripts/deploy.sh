@@ -18,7 +18,7 @@ worker_name() {
   node -e 'const source = require("node:fs").readFileSync(process.argv[1], "utf8"); const match = source.match(/^\s*"name":\s*"([^"]+)"/m); if (!match) process.exit(1); console.log(match[1])' "$1"
 }
 
-hostname() {
+rollout_hostname() {
   if [[ -n "${DEPLOY_ROLLOUT_HOSTNAME:-}" ]]; then
     printf '%s\n' "$DEPLOY_ROLLOUT_HOSTNAME"
     return
@@ -32,28 +32,27 @@ current_version() {
   node -e 'const deployment = JSON.parse(process.argv[1]); const version = deployment.versions.find((candidate) => candidate.percentage > 0); if (!version) process.exit(1); console.log(version.version_id)' "$deployment"
 }
 
-new_version() {
-  local versions
-  versions=$(wrangler versions list --json -c "$1")
-  node -e 'const versions = JSON.parse(process.argv[1]); const version = versions.at(-1); if (!version) process.exit(1); console.log(version.id)' "$versions"
-}
-
 upload() {
   local config=$1
+  local error
   local output
+  local version
+  error=$(mktemp)
   output=$(mktemp)
-  if wrangler versions upload -c "$config" >"$output" 2>&1; then
-    rm -f "$output"
-    return
-  fi
-  if grep -Fq 'pending Durable Object migration' "$output"; then
-    rm -f "$output"
-    printf '%s\n' 'Durable Object migration is pending; gradual rollout cannot apply it. Re-run with DEPLOY_ROLLOUT=immediate.' >&2
+  if ! WRANGLER_OUTPUT_FILE_PATH="$output" wrangler versions upload -c "$config" >"$error" 2>&1; then
+    if grep -Fq 'pending Durable Object migration' "$error"; then
+      rm -f "$error" "$output"
+      printf '%s\n' 'Durable Object migration is pending; gradual rollout cannot apply it. Re-run with DEPLOY_ROLLOUT=immediate.' >&2
+      exit 1
+    fi
+    rm -f "$error" "$output"
+    printf 'versions upload failed for %s\n' "$config" >&2
     exit 1
   fi
+  rm -f "$error"
+  version=$(node -e 'const entries = require("node:fs").readFileSync(process.argv[1], "utf8").trim().split("\n").map(JSON.parse); const entry = entries.find((candidate) => candidate.type === "version-upload" && candidate.version_id); if (!entry) process.exit(1); console.log(entry.version_id)' "$output")
   rm -f "$output"
-  printf 'versions upload failed for %s\n' "$config" >&2
-  exit 1
+  printf '%s\n' "$version"
 }
 
 ready() {
@@ -61,7 +60,7 @@ ready() {
   local name
   local host
   name=$(worker_name "$main_config")
-  host=$(hostname)
+  host=$(rollout_hostname)
   for ((attempt = 1; attempt <= ready_retries; attempt++)); do
     if curl --fail --silent --show-error --header "Cloudflare-Workers-Version-Overrides: ${name}=\"${version}\"" "https://${host}/readyz"; then
       return
@@ -84,8 +83,7 @@ deploy_satellite() {
   local config=$1
   local deployment
   local version
-  upload "$config"
-  version=$(new_version "$config")
+  version=$(upload "$config")
   if wrangler versions deploy "${version}@100%" -y -c "$config"; then
     return
   fi
@@ -100,13 +98,11 @@ if [[ "${DEPLOY_ROLLOUT:-}" == immediate ]]; then
 fi
 
 if ! old_version=$(current_version "$main_config"); then
-  printf '%s\n' 'No deployed main Worker version was found; using an immediate deploy.' >&2
-  immediate_deploy
-  exit 0
+  printf '%s\n' 'Could not read the deployed main Worker version. For a first deploy, re-run with DEPLOY_ROLLOUT=immediate.' >&2
+  exit 1
 fi
 
-upload "$main_config"
-new_version=$(new_version "$main_config")
+new_version=$(upload "$main_config")
 IFS=, read -r -a steps <<< "$rollout_steps"
 for step in "${steps[@]}"; do
   wrangler versions deploy "${new_version}@${step}%" "${old_version}@$((100 - step))%" -y -c "$main_config"
