@@ -93,7 +93,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	authorizer := authz.New(client)
+	authorizer := authz.NewWithoutNode(client)
 	crdREST, err := customresourcedefinition.NewREST(scheme, restOptions{client: client, codec: codecs.LegacyCodec(apiextensionsv1.SchemeGroupVersion)})
 	if err != nil {
 		return nil, err
