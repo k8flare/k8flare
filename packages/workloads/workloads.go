@@ -416,6 +416,7 @@ func SyncWithin(ctx context.Context, client kubernetes.Interface, rootCA, signin
 			result.Objects[k] = v
 		}
 		result.Drained = result.Drained && follow.Drained
+		result.RateLimited = result.RateLimited || follow.RateLimited
 		if follow.NextMs > 0 && (result.NextMs <= 0 || follow.NextMs < result.NextMs) {
 			result.NextMs = follow.NextMs
 		}
