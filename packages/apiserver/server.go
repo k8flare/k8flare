@@ -167,7 +167,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 			return
 		}
 		mux.ServeHTTP(w, r)
-	}), authn, authorizer, audits, cfg.MaxRequestsInflight, cfg.MaxMutatingRequestsInflight))
+	}), authn, authorizer, audits, newFlowControl(client, cfg.MaxRequestsInflight+cfg.MaxMutatingRequestsInflight)))
 	auditedRoot := withBypassAudit(root, audits)
 	var once sync.Once
 	var keyReady atomic.Bool

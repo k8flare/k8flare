@@ -666,13 +666,75 @@ Decided on 2026-10-01, with the owner:
   - Both sides cache the component key per isolate. A point-in-time
     restore of the Cluster Durable Object to before the key existed leaves
     running isolates on the old key until they are recycled.
-- Rate limiting is max-in-flight only (`MAX_REQUESTS_INFLIGHT`,
-  `MAX_MUTATING_REQUESTS_INFLIGHT`, 400 and 200, watches and streams
-  exempt, `system:masters` served when full). The count is per isolate,
-  not cluster-wide. API Priority and Fairness does not build against the
-  lean client-go (no FlowControl informers) and its controller needs
-  goroutines and informers the Workers do not keep; no Workers Rate
-  Limiting binding is wired.
+- API Priority and Fairness and the rate limit are on the request path,
+  covered by host tests (`packages/apiserver/flowcontrol_test.go`,
+  `packages/cluster-store/test/seats.test.ts`) but not yet by E2E on a
+  running cluster.
+  - The front classifies every request (watches included; exec, attach,
+    logs, port-forward and proxy skip it, as upstream's filter does) by
+    the stored FlowSchemas and PriorityLevelConfigurations, read per
+    isolate and cached for 2 s, so an edit takes effect within 2 s without
+    a restart. Missing `exempt` / `catch-all` objects are imagined, and
+    FlowSchemas that name a missing or broken level are dropped, as
+    upstream's controller does. Responses carry
+    `X-Kubernetes-PF-FlowSchema-UID` and
+    `X-Kubernetes-PF-PriorityLevel-UID`.
+  - The matching code (`flowcontrol_rule.go`) is a copy of upstream's
+    `pkg/util/flowcontrol/rule.go`, not an import: that package does not
+    build for js because `apf_controller.go` needs the Flowcontrol informer
+    group that the lean informer factory drops. Keeping `rule.go` for js
+    through `scripts/mirror` would need `make mirrors`, which this change
+    did not run. `TestClassificationMatchesUpstreamAPFController` runs
+    upstream's real controller on the host and compares 252 request/user
+    pairs against the bootstrap objects plus custom, ServiceAccount and
+    dangling FlowSchemas. Reused as is: `apihelpers.FlowSchemaSequence`
+    (precedence order), `shufflesharding` (queue hands) and the bootstrap
+    objects.
+  - Seats are counted in the Cluster Durable Object, the one place shared
+    by every isolate. A non-exempt request makes one `POST /apf/seat`
+    through the `STORAGE` binding before it is served. The Durable Object
+    answers once the request is admitted (or 429) and keeps the response
+    body open; the seat is released when the front closes that body, so
+    release costs no second request. Exempt requests (`system:masters`,
+    which covers the privileged component identities, and the probes)
+    make no call. Cost: one Durable Object request and one round trip per
+    non-exempt request. The per-request RBAC reads cannot carry it because
+    upstream runs APF before authorization. Release depends on workerd
+    calling the Durable Object stream's `cancel` when the caller aborts; this
+    has been checked in Node, not in workerd. Every seat is also reclaimed
+    after 60 s (`SEAT_HOLD_MS`), and the bridge already ends a body after
+    60 s. If the seat call fails (old Durable Object code, transport error),
+    the request is served.
+  - The concurrency limit per level is upstream's nominal limit
+    (`ceil((MAX_REQUESTS_INFLIGHT + MAX_MUTATING_REQUESTS_INFLIGHT) *
+    shares / sum of shares)`), which replaces the per-isolate max-in-flight
+    filter, as it does upstream when APF is on. Queuing levels pick the
+    shortest queue of the request's shuffle-sharded hand, reject at
+    `queueLengthLimit` and after a 15 s wait (upstream's default with no
+    request deadline). Watches hold their seat until the response starts.
+    Not like upstream: queues are served in turn instead of by virtual
+    finish time, every request takes one seat (no work estimator), levels
+    do not borrow or lend, and the 429 always says `Retry-After: 1`.
+  - Rate limit: a token bucket per user (`user:<name>`), or per
+    `CF-Connecting-IP` for `system:anonymous`, kept in the same Durable
+    Object call, so it costs nothing extra and is exact for the whole
+    cluster. `API_RATE_LIMIT_QPS` / `API_RATE_LIMIT_BURST` in
+    `wrangler.jsonc` (100 and 200; `wrangler.dev.jsonc` inherits them; 0
+    disables), answered with 429 and the seconds until the next token. The
+    component identities in `apiserver-auth/component.go` are never rate
+    limited. Requests that make no seat call (exempt ones, and the
+    long-running ones other than watches) are not rate limited either. A
+    Workers Rate Limiting binding was not used: it counts per Cloudflare
+    location, and the Worker Loader isolate would need another binding hop
+    to reach it.
+  - Not done: the FlowSchema `Dangling` status condition and the
+    `apiserver_flowcontrol_nominal_limit_seats` metric on `/metrics`. The
+    non-Conformance e2e spec "should ensure that requests can be classified
+    by adding FlowSchema and PriorityLevelConfiguration" waits for both,
+    so it is expected to fail. The two Conformance specs ("should support
+    FlowSchema / PriorityLevelConfiguration API operations") exercise only
+    the API, which this does not change. The two "can't be drowned out"
+    specs are skipped upstream.
 - Admission order: `admission/chain.go` runs the plugins in upstream's
   `AllOrderedPlugins` order, each in the phase its upstream plugin
   implements (NodeRestriction in `admit`, before the mutating webhooks),

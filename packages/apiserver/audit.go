@@ -85,8 +85,8 @@ func newAuditor(policyYAML string, out io.Writer) (*auditor, error) {
 	}, nil
 }
 
-func withFrontFilters(inner http.Handler, authn authenticator.Request, authorization authorizer.Authorizer, a *auditor, nonMutating, mutating int) http.Handler {
-	authorized := withInflightLimit(auth.WithAuthorization(inner, authorization), nonMutating, mutating)
+func withFrontFilters(inner http.Handler, authn authenticator.Request, authorization authorizer.Authorizer, a *auditor, fc *flowControl) http.Handler {
+	authorized := withPriorityAndFairness(auth.WithAuthorization(inner, authorization), fc)
 	audited := filters.WithAudit(withAuditConfig(auth.WithImpersonation(authorized), a.policy), a.sink, a.policy, longRunningRequest)
 	authenticated := auth.WithAuthentication(audited, authn, func(failed http.Handler) http.Handler {
 		preserveFailure := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
