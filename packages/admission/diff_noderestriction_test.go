@@ -1,6 +1,8 @@
 package admission
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	authenticationv1 "k8s.io/api/authentication/v1"
@@ -14,8 +16,29 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apiserver/pkg/authentication/user"
+	"k8s.io/apiserver/pkg/authorization/authorizer"
 	"k8s.io/utils/ptr"
 )
+
+type audienceGrants map[string]bool
+
+func (g audienceGrants) Authorize(_ context.Context, attrs authorizer.Attributes) (authorizer.Decision, string, error) {
+	if attrs.GetVerb() == "request-serviceaccounts-token-audience" && attrs.GetNamespace() == "ns" && attrs.GetName() == "sa" && g[attrs.GetResource()] {
+		return authorizer.DecisionAllow, "", nil
+	}
+	return authorizer.DecisionNoOpinion, "", nil
+}
+
+type failingAuthorizer struct{ decision authorizer.Decision }
+
+func (f failingAuthorizer) Authorize(context.Context, authorizer.Attributes) (authorizer.Decision, string, error) {
+	return f.decision, "", errors.New("authorizer unavailable")
+}
+
+func caseWithAuthorizer(c diffCase, a authorizer.Authorizer) diffCase {
+	c.authorizer = a
+	return c
+}
 
 func nodeUser(name string) user.Info {
 	return &user.DefaultInfo{Name: "system:node:" + name, Groups: []string{"system:nodes", "system:authenticated"}}
@@ -266,10 +289,51 @@ func TestDiffNodeRestriction(t *testing.T) {
 		return &authenticationv1.BoundObjectReference{APIVersion: "v1", Kind: "Pod", Name: "p", UID: types.UID(uid)}
 	}
 	sa := diffServiceAccount("sa", nil)
+	audienceToken := func(audience, uid string) *authenticationv1.TokenRequest {
+		tr := &authenticationv1.TokenRequest{ObjectMeta: metav1.ObjectMeta{Name: "sa", Namespace: "ns"}, Spec: authenticationv1.TokenRequestSpec{BoundObjectRef: podRef(uid)}}
+		if audience != "" {
+			tr.Spec.Audiences = []string{audience}
+		}
+		return tr
+	}
+	csiPod := func(volume corev1.Volume) *corev1.Pod {
+		return p1(func(p *corev1.Pod) {
+			p.UID = types.UID("pod-uid")
+			p.Spec.Volumes = []corev1.Volume{volume}
+		})
+	}
+	inlineCSI := corev1.Volume{Name: "v", VolumeSource: corev1.VolumeSource{CSI: &corev1.CSIVolumeSource{Driver: "driver"}}}
+	claimVolume := corev1.Volume{Name: "v", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "claim"}}}
+	ephemeralVolume := corev1.Volume{Name: "v", VolumeSource: corev1.VolumeSource{Ephemeral: &corev1.EphemeralVolumeSource{VolumeClaimTemplate: &corev1.PersistentVolumeClaimTemplate{}}}}
+	gceInline := corev1.Volume{Name: "v", VolumeSource: corev1.VolumeSource{GCEPersistentDisk: &corev1.GCEPersistentDiskVolumeSource{PDName: "disk"}}}
+	csiDriver := func(name, audience string) *storagev1.CSIDriver {
+		return &storagev1.CSIDriver{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: storagev1.CSIDriverSpec{TokenRequests: []storagev1.TokenRequest{{Audience: audience}}}}
+	}
+	csiVolume := func(driver string) *corev1.PersistentVolume {
+		return &corev1.PersistentVolume{ObjectMeta: metav1.ObjectMeta{Name: "pv"}, Spec: corev1.PersistentVolumeSpec{PersistentVolumeSource: corev1.PersistentVolumeSource{CSI: &corev1.CSIPersistentVolumeSource{Driver: driver, VolumeHandle: "h"}}}}
+	}
+	gcePV := &corev1.PersistentVolume{ObjectMeta: metav1.ObjectMeta{Name: "pv"}, Spec: corev1.PersistentVolumeSpec{PersistentVolumeSource: corev1.PersistentVolumeSource{GCEPersistentDisk: &corev1.GCEPersistentDiskVolumeSource{PDName: "disk"}}}}
+	boundClaim := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "claim", Namespace: "ns"}, Spec: corev1.PersistentVolumeClaimSpec{VolumeName: "pv"}}
+	ephemeralClaim := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "p-v", Namespace: "ns"}, Spec: corev1.PersistentVolumeClaimSpec{VolumeName: "pv"}}
 	cases = append(cases,
 		tokenCase("node requests a token bound to its pod", n1, tokenRequest(podRef("pod-uid")), boundPod, sa),
 		tokenCase("node requests a token for an audience the pod does not reference", n1, &authenticationv1.TokenRequest{ObjectMeta: metav1.ObjectMeta{Name: "sa", Namespace: "ns"}, Spec: authenticationv1.TokenRequestSpec{Audiences: []string{"other"}, BoundObjectRef: podRef("pod-uid")}}, boundPod, sa),
 		tokenCase("node requests a token with two audiences", n1, &authenticationv1.TokenRequest{ObjectMeta: metav1.ObjectMeta{Name: "sa", Namespace: "ns"}, Spec: authenticationv1.TokenRequestSpec{Audiences: []string{"aud", "aud2"}, BoundObjectRef: podRef("pod-uid")}}, boundPod, sa),
+		caseWithAuthorizer(tokenCase("node requests an audience the authorizer grants", n1, audienceToken("other", "pod-uid"), boundPod, sa), audienceGrants{"other": true}),
+		caseWithAuthorizer(tokenCase("node requests an audience the authorizer grants for another audience", n1, audienceToken("other", "pod-uid"), boundPod, sa), audienceGrants{"third": true}),
+		caseWithAuthorizer(tokenCase("authorizer errors while denying the audience", n1, audienceToken("other", "pod-uid"), boundPod, sa), failingAuthorizer{decision: authorizer.DecisionNoOpinion}),
+		caseWithAuthorizer(tokenCase("authorizer errors while allowing the audience", n1, audienceToken("other", "pod-uid"), boundPod, sa), failingAuthorizer{decision: authorizer.DecisionAllow}),
+		tokenCase("node requests no audience from a pod that projects none", n1, audienceToken("", "pod-uid"), boundPod, sa),
+		tokenCase("node requests no audience from a pod that projects the empty one", n1, audienceToken("", "pod-uid"), csiPod(corev1.Volume{Name: "t", VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{Path: "token"}}}}}}), sa),
+		tokenCase("audience offered by a CSI driver of an inline volume", n1, audienceToken("other", "pod-uid"), csiPod(inlineCSI), csiDriver("driver", "other"), sa),
+		tokenCase("audience not offered by the CSI driver of an inline volume", n1, audienceToken("third", "pod-uid"), csiPod(inlineCSI), csiDriver("driver", "other"), sa),
+		tokenCase("CSI driver of an inline volume is missing", n1, audienceToken("other", "pod-uid"), csiPod(inlineCSI), sa),
+		tokenCase("audience offered through a bound claim", n1, audienceToken("other", "pod-uid"), csiPod(claimVolume), csiDriver("driver", "other"), boundClaim, csiVolume("driver"), sa),
+		tokenCase("claim of a volume is missing", n1, audienceToken("other", "pod-uid"), csiPod(claimVolume), csiDriver("driver", "other"), sa),
+		tokenCase("volume of a claim is missing", n1, audienceToken("other", "pod-uid"), csiPod(claimVolume), csiDriver("driver", "other"), boundClaim, sa),
+		tokenCase("audience offered through an ephemeral claim", n1, audienceToken("other", "pod-uid"), csiPod(ephemeralVolume), csiDriver("driver", "other"), ephemeralClaim, csiVolume("driver"), sa),
+		tokenCase("audience offered by the CSI driver an in-tree inline volume migrates to", n1, audienceToken("other", "pod-uid"), csiPod(gceInline), csiDriver("pd.csi.storage.gke.io", "other"), sa),
+		tokenCase("audience offered by the CSI driver an in-tree volume migrates to", n1, audienceToken("other", "pod-uid"), csiPod(claimVolume), csiDriver("pd.csi.storage.gke.io", "other"), boundClaim, gcePV, sa),
 		tokenCase("node requests a token without a bound object", n1, tokenRequest(nil), boundPod, sa),
 		tokenCase("node requests a token bound to a secret", n1, tokenRequest(&authenticationv1.BoundObjectReference{APIVersion: "v1", Kind: "Secret", Name: "s", UID: "u"}), boundPod, sa),
 		tokenCase("node requests a token bound to a pod without a UID", n1, tokenRequest(podRef("")), boundPod, sa),
@@ -312,31 +376,5 @@ func TestDiffNodeRestriction(t *testing.T) {
 		pvcNodeCase("node creates a claim status", "CREATE", "status", n1, claim(nil), nil),
 		pvcNodeCase("not a node user updates a claim", "UPDATE", "", alice, claim(nil), claim(nil)),
 	)
-	notFound := "outcome: upstream denied 404 NotFound; ours denied 403 Forbidden"
-	allowed := "outcome: upstream denied 403 Forbidden; ours allowed"
-	ownerReason := "ours does not check the mirror pod's owner references (single owner, kind Node, own name, controller, no blockOwnerDeletion, matching node UID) (noderestriction/admission.go admitPodCreate)"
-	refReason := "ours does not reject a mirror pod that references secrets, config maps, claims or service accounts (noderestriction/admission.go admitPodCreate, podutil.HasAPIObjectReference)"
-	missingReason := "a missing target is NotFound for upstream and Forbidden for ours (noderestriction/admission.go admitPod, admitPodEviction, admitServiceAccount)"
-	cases = applyKnown(t, cases, map[string]*knownDifference{
-		"mirror pod without an owner reference":                            {reason: ownerReason, signature: allowed},
-		"mirror pod with two owner references":                             {reason: ownerReason, signature: allowed},
-		"mirror pod owned by another node":                                 {reason: ownerReason, signature: allowed},
-		"mirror pod whose owner is not a controller":                       {reason: ownerReason, signature: allowed},
-		"mirror pod blocking owner deletion":                               {reason: ownerReason, signature: allowed},
-		"mirror pod with the wrong owner UID":                              {reason: ownerReason, signature: allowed},
-		"mirror pod whose node object is missing":                          {reason: ownerReason, signature: "outcome: upstream denied 404 NotFound; ours allowed"},
-		"mirror pod referencing a secret volume":                           {reason: refReason, signature: allowed},
-		"mirror pod referencing a service account":                         {reason: refReason, signature: allowed},
-		"mirror pod referencing a config map env":                          {reason: refReason, signature: allowed},
-		"mirror pod referencing a claim":                                   {reason: refReason, signature: allowed},
-		"node deletes a missing pod":                                       {reason: missingReason, signature: notFound},
-		"node evicts a missing pod":                                        {reason: missingReason, signature: notFound},
-		"node requests a token for a missing pod":                          {reason: missingReason, signature: notFound},
-		"node requests a token for an audience the pod does not reference": {reason: "ours has no ServiceAccountNodeAudienceRestriction: it allows any audience, upstream requires the audience in a pod volume or an authorizer decision (noderestriction/admission.go validateNodeServiceAccountAudience)", signature: allowed},
-		"node requests a token with two audiences":                         {reason: "ours has no ServiceAccountNodeAudienceRestriction: it does not limit a node to 0 or 1 audiences (noderestriction/admission.go validateNodeServiceAccountAudience)", signature: allowed},
-		"node updates claim status phase":                                  {reason: "upstream appends a field diff to the message, ours does not (noderestriction/admission.go admitPVCStatus)", messageOnly: true},
-		"node updates claim spec through status":                           {reason: "upstream appends a field diff to the message, ours does not (noderestriction/admission.go admitPVCStatus)", messageOnly: true},
-		"node updates claim labels through status":                         {reason: "upstream appends a field diff to the message, ours does not (noderestriction/admission.go admitPVCStatus)", messageOnly: true},
-	})
 	runDiffCases(t, cases)
 }

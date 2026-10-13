@@ -2,8 +2,11 @@ package admission
 
 import (
 	"context"
+	"errors"
+	"net/http"
 
 	admit "github.com/k8flare/k8flare/packages/apiserver-admit"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -124,7 +127,7 @@ func runUpstreamPlugin(ctx context.Context, plugin admission.Interface, req *adm
 			return nil
 		}
 		if err := mutator.Admit(ctx, attrs, legacyObjectInterfaces); err != nil {
-			return err
+			return asAPIStatus(err)
 		}
 		if attrs.GetObject() != nil && req.Object != nil {
 			versioned, err := toVersionedObject(attrs.GetObject(), req.Kind.GroupVersion())
@@ -145,8 +148,21 @@ func runUpstreamPlugin(ctx context.Context, plugin admission.Interface, req *adm
 			return nil
 		}
 		if err := validator.Validate(ctx, attrs, legacyObjectInterfaces); err != nil {
-			return err
+			return asAPIStatus(err)
 		}
 		return nil
 	}
+}
+
+func asAPIStatus(err error) error {
+	var status apierrors.APIStatus
+	if errors.As(err, &status) {
+		return err
+	}
+	return &apierrors.StatusError{ErrStatus: metav1.Status{
+		Status:  metav1.StatusFailure,
+		Code:    http.StatusInternalServerError,
+		Reason:  metav1.StatusReasonInternalError,
+		Message: err.Error(),
+	}}
 }

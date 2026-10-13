@@ -25,7 +25,7 @@ var chain = []chainPlugin{
 	{name: computeClassPluginName, admit: withStore(applyComputeClass)},
 	{name: "LimitRanger", admit: withStore(applyLimitRanger), validate: withStore(validateLimitRanger)},
 	{name: "ServiceAccount", admit: withStore(applyServiceAccount), validate: withStore(validateServiceAccount)},
-	{name: "NodeRestriction", admit: withStore(applyNodeRestriction)},
+	{name: "NodeRestriction", admit: withStoreAndAuthorizer(applyNodeRestriction)},
 	{name: "TaintNodesByCondition", admit: withStore(applyTaintNodesByCondition)},
 	{name: "PodSecurity", validate: withStore(applyPodSecurity)},
 	{name: "Priority", admit: withStore(applyPriority), validate: withStore(validatePriorityClass)},
@@ -50,6 +50,10 @@ var chain = []chainPlugin{
 
 func withStore(f func(context.Context, *store, *admit.Request) error) pluginFunc {
 	return func(h *Handler, ctx context.Context, req *admit.Request) error { return f(ctx, h.store, req) }
+}
+
+func withStoreAndAuthorizer(f func(context.Context, *store, authorizer.Authorizer, *admit.Request) error) pluginFunc {
+	return func(h *Handler, ctx context.Context, req *admit.Request) error { return f(ctx, h.store, h.authz, req) }
 }
 
 func withAuthorizer(f func(context.Context, authorizer.Authorizer, *admit.Request) error) pluginFunc {

@@ -17,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apiserver/pkg/admission"
+	"k8s.io/apiserver/pkg/authorization/authorizer"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/informers"
 	informerscore "k8s.io/client-go/informers/core"
@@ -382,16 +383,21 @@ func (idx *storeIndexer[T]) GetIndexers() cache.Indexers {
 
 type storeInformerFactory struct {
 	informers.SharedInformerFactory
-	ctx           context.Context
-	store         *store
-	priorityClass cache.Indexer
-	limitRange    cache.Indexer
-	storageClass  cache.Indexer
-	ingressClass  cache.Indexer
-	runtimeClass  cache.Indexer
-	node          cache.Indexer
-	namespace     cache.Indexer
-	failure       error
+	ctx            context.Context
+	store          *store
+	priorityClass  cache.Indexer
+	limitRange     cache.Indexer
+	storageClass   cache.Indexer
+	ingressClass   cache.Indexer
+	runtimeClass   cache.Indexer
+	node           cache.Indexer
+	pod            cache.Indexer
+	serviceAccount cache.Indexer
+	claim          cache.Indexer
+	volume         cache.Indexer
+	csiDriver      cache.Indexer
+	namespace      cache.Indexer
+	failure        error
 }
 
 func newStoreInformerFactory(ctx context.Context, s *store) *storeInformerFactory {
@@ -404,6 +410,11 @@ func newStoreInformerFactory(ctx context.Context, s *store) *storeInformerFactor
 	f.limitRange = newStoreIndexer[*corev1.LimitRange](ctx, s, "/registry/limitranges/", true, f.fail)
 	f.storageClass = newStoreIndexer[*storagev1.StorageClass](ctx, s, "/registry/storageclasses/", false, f.fail)
 	f.node = newStoreIndexer[*corev1.Node](ctx, s, "/registry/nodes/", false, f.fail)
+	f.pod = newStoreIndexer[*corev1.Pod](ctx, s, "/registry/pods/", true, f.fail)
+	f.serviceAccount = newStoreIndexer[*corev1.ServiceAccount](ctx, s, "/registry/serviceaccounts/", true, f.fail)
+	f.claim = newStoreIndexer[*corev1.PersistentVolumeClaim](ctx, s, "/registry/persistentvolumeclaims/", true, f.fail)
+	f.volume = newStoreIndexer[*corev1.PersistentVolume](ctx, s, "/registry/persistentvolumes/", false, f.fail)
+	f.csiDriver = newStoreIndexer[*storagev1.CSIDriver](ctx, s, "/registry/csidrivers/", false, f.fail)
 	f.namespace = newStoreIndexer[*corev1.Namespace](ctx, s, "/registry/namespaces/", false, f.fail)
 	f.runtimeClass = newStoreIndexer[*nodev1.RuntimeClass](ctx, s, "/registry/runtimeclasses/", false, f.fail)
 	f.ingressClass = newStoreIndexer[*networkingv1.IngressClass](ctx, s, "/registry/ingressclasses/", false, f.fail)
@@ -416,7 +427,11 @@ func (f *storeInformerFactory) fail(err error) {
 	}
 }
 
-type informerFactoryInitializer struct{ factory *storeInformerFactory }
+type informerFactoryInitializer struct {
+	factory *storeInformerFactory
+	authz   authorizer.Authorizer
+	client  kubernetes.Interface
+}
 
 func (i informerFactoryInitializer) Initialize(plugin admission.Interface) {
 	if w, ok := plugin.(interface {
@@ -429,12 +444,32 @@ func (i informerFactoryInitializer) Initialize(plugin admission.Interface) {
 	}); ok {
 		w.SetExternalKubeInformerFactory(i.factory)
 	}
+	if w, ok := plugin.(interface {
+		SetExternalKubeClientSet(kubernetes.Interface)
+	}); ok && i.client != nil {
+		w.SetExternalKubeClientSet(i.client)
+	}
+	if w, ok := plugin.(interface {
+		SetAuthorizer(authorizer.Authorizer)
+	}); ok {
+		w.SetAuthorizer(i.authz)
+	}
 }
 
 func initUpstreamPlugin(register func(*admission.Plugins), name string, f *storeInformerFactory) (admission.Interface, error) {
+	return initUpstreamPluginWithAuthorizer(register, name, f, nil)
+}
+
+func initUpstreamPluginWithAuthorizer(register func(*admission.Plugins), name string, f *storeInformerFactory, authz authorizer.Authorizer) (admission.Interface, error) {
 	plugins := admission.NewPlugins()
 	register(plugins)
-	return plugins.InitPlugin(name, nil, informerFactoryInitializer{f})
+	return plugins.InitPlugin(name, nil, informerFactoryInitializer{factory: f, authz: authz})
+}
+
+func initUpstreamPluginWithClient(register func(*admission.Plugins), name string, f *storeInformerFactory, client kubernetes.Interface) (admission.Interface, error) {
+	plugins := admission.NewPlugins()
+	register(plugins)
+	return plugins.InitPlugin(name, nil, informerFactoryInitializer{factory: f, client: client})
 }
 
 func runWithFactory(ctx context.Context, plugin admission.Interface, f *storeInformerFactory, req *admit.Request) error {
@@ -479,6 +514,16 @@ func (f *storeInformerFactory) InformerFor(obj runtime.Object, newFunc internali
 		return storeInformer{indexer: f.node}
 	case *corev1.Namespace:
 		return storeInformer{indexer: f.namespace}
+	case *corev1.Pod:
+		return storeInformer{indexer: f.pod}
+	case *corev1.ServiceAccount:
+		return storeInformer{indexer: f.serviceAccount}
+	case *corev1.PersistentVolumeClaim:
+		return storeInformer{indexer: f.claim}
+	case *corev1.PersistentVolume:
+		return storeInformer{indexer: f.volume}
+	case *storagev1.CSIDriver:
+		return storeInformer{indexer: f.csiDriver}
 	case *nodev1.RuntimeClass:
 		return storeInformer{indexer: f.runtimeClass}
 	case *networkingv1.IngressClass:

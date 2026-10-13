@@ -396,9 +396,10 @@ func postAdmit(t *testing.T, h http.Handler, req admit.Request) admit.Response {
 }
 
 type memStore struct {
-	data map[string][]byte
-	mu   sync.Mutex
-	revs map[string]int64
+	data                   map[string][]byte
+	mu                     sync.Mutex
+	revs                   map[string]int64
+	withoutDefaultAccounts bool
 }
 
 func (m *memStore) revision(key string) int64 {
@@ -459,6 +460,11 @@ func (m *memStore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		k := r.URL.Query().Get("key")
 		if v, ok := m.data[k]; ok {
 			_ = json.NewEncoder(w).Encode(map[string]any{"revision": 1, "kv": map[string]any{"key": k, "value": base64.StdEncoding.EncodeToString(v), "modRevision": m.revision(k)}})
+			return
+		}
+		if ns, ok := strings.CutPrefix(k, "/registry/serviceaccounts/"); ok && !m.withoutDefaultAccounts && strings.HasSuffix(ns, "/default") {
+			sa, _ := json.Marshal(map[string]any{"apiVersion": "v1", "kind": "ServiceAccount", "metadata": map[string]any{"name": "default", "namespace": strings.TrimSuffix(ns, "/default")}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"revision": 1, "kv": map[string]any{"key": k, "value": base64.StdEncoding.EncodeToString(sa), "modRevision": 1}})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"revision": 1})
@@ -567,7 +573,7 @@ func hasProjectedSAVolume(spec map[string]any) bool {
 	volumes, _ := spec["volumes"].([]any)
 	for _, raw := range volumes {
 		v, _ := raw.(map[string]any)
-		if v != nil && v["name"] == "kube-api-access" {
+		if v != nil && strings.HasPrefix(v["name"].(string), "kube-api-access") {
 			return true
 		}
 	}
