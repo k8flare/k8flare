@@ -209,6 +209,17 @@ claim_bound_to_pod_node() {
   echo "the claim ci-volume/data is $state, the pod writer runs there and wrote to it"
 }
 
+no_local_path_pods() {
+  local pods
+  pods=$(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s get pods -A -o json |
+    jq -r '.items[] | select(.metadata.labels.app == "local-path-provisioner" or .metadata.annotations["k8flare.io/local-path-failures"] != null or (.metadata.name | test("^(local-path-provisioner|helper-pod)-"))) | .metadata.namespace + "/" + .metadata.name + " on " + (.spec.nodeName // "no node")') || return 1
+  if [ -n "$pods" ]; then
+    echo "local-path pods exist $1: $pods" >&2
+    return 1
+  fi
+  echo "no local-path pod exists $1"
+}
+
 volume_bound_on_first_consumer() {
   local -a k=(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s)
   local mode
@@ -217,6 +228,7 @@ volume_bound_on_first_consumer() {
     echo "the local-path StorageClass binds '$mode', want WaitForFirstConsumer" >&2
     return 1
   fi
+  no_local_path_pods "before the claim"
   "${k[@]}" create namespace ci-volume
   "${k[@]}" apply -f - <<'EOF'
 apiVersion: v1
@@ -258,6 +270,7 @@ spec:
 EOF
   wait_for "the pod writer to write to its claim" 60 5 volume_pod_ready
   claim_bound_to_pod_node
+  no_local_path_pods "after the claim bound"
   "${k[@]}" delete namespace ci-volume --wait=false
 }
 
