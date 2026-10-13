@@ -4,6 +4,7 @@ import (
 	"context"
 
 	authz "github.com/k8flare/k8flare/packages/apiserver-authz"
+	nodeauthz "github.com/k8flare/k8flare/packages/apiserver-authz/nodeauthz"
 	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -73,7 +74,7 @@ func init() {
 			attrs := attributesFrom(authorizer.AttributesRecord{
 				User: &user.DefaultInfo{Name: review.Spec.User, UID: review.Spec.UID, Groups: review.Spec.Groups, Extra: extraFrom(review.Spec.Extra)},
 			}, review.Spec.ResourceAttributes, review.Spec.NonResourceAttributes)
-			decision, reason, err := authz.New(deps.Kine).Authorize(ctx, attrs)
+			decision, reason, err := authz.New(deps.Kine, nodeauthz.New(deps.Kine)).Authorize(ctx, attrs)
 			review.Status = reviewStatus(decision, reason, err)
 			return review
 		}
@@ -83,7 +84,7 @@ func init() {
 			review := obj.(*authorizationv1.SelfSubjectAccessReview)
 			u, _ := genericapirequest.UserFrom(ctx)
 			attrs := attributesFrom(authorizer.AttributesRecord{User: u}, review.Spec.ResourceAttributes, review.Spec.NonResourceAttributes)
-			decision, reason, err := authz.New(deps.Kine).Authorize(ctx, attrs)
+			decision, reason, err := authz.New(deps.Kine, nodeauthz.New(deps.Kine)).Authorize(ctx, attrs)
 			review.Status = reviewStatus(decision, reason, err)
 			return review
 		}
@@ -98,7 +99,7 @@ func init() {
 			attrs := attributesFrom(authorizer.AttributesRecord{
 				User: &user.DefaultInfo{Name: review.Spec.User, UID: review.Spec.UID, Groups: review.Spec.Groups, Extra: extraFrom(review.Spec.Extra)},
 			}, review.Spec.ResourceAttributes, review.Spec.NonResourceAttributes)
-			decision, reason, err := authz.New(deps.Kine).Authorize(ctx, attrs)
+			decision, reason, err := authz.New(deps.Kine, nodeauthz.New(deps.Kine)).Authorize(ctx, attrs)
 			review.Status = reviewStatus(decision, reason, err)
 			return review
 		}

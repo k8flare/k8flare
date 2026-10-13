@@ -1,4 +1,4 @@
-package authz
+package nodeauthz
 
 import (
 	"context"
@@ -27,7 +27,7 @@ type nodeAuthorizer struct {
 	rules  []rbacv1.PolicyRule
 }
 
-func newNodeAuthorizer(client *kine.Client) authorizer.Authorizer {
+func New(client *kine.Client) authorizer.Authorizer {
 	return &nodeAuthorizer{client: client, ident: nodeidentifier.NewDefaultNodeIdentifier(), rules: bootstrappolicy.NodeRules()}
 }
 

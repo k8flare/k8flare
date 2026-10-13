@@ -9,6 +9,7 @@ import (
 	"github.com/emicklei/go-restful/v3"
 	admit "github.com/k8flare/k8flare/packages/apiserver-admit"
 	authz "github.com/k8flare/k8flare/packages/apiserver-authz"
+	nodeauthz "github.com/k8flare/k8flare/packages/apiserver-authz/nodeauthz"
 	registry "github.com/k8flare/k8flare/packages/apiserver-registry"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -134,7 +135,7 @@ func Install(mux *http.ServeMux, deps registry.Deps, only ...schema.GroupVersion
 			EquivalentResourceRegistry:  runtime.NewEquivalentResourceRegistry(),
 			TypeConverter:               typeConverter,
 			Admit:                       admitHandler(deps.Admission),
-			Authorizer:                  authz.New(deps.Kine),
+			Authorizer:                  authz.New(deps.Kine, nodeauthz.New(deps.Kine)),
 			MinRequestTimeout:           30 * time.Minute,
 		}
 		if _, _, err := group.InstallREST(container); err != nil {

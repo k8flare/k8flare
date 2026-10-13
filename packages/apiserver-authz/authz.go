@@ -36,12 +36,10 @@ var (
 	bootstrapNamespaceBindings   = bootstrappolicy.NamespaceRoleBindings()
 )
 
-func New(client *kine.Client) authorizer.Authorizer {
-	return chain{authorizerfactory.NewPrivilegedGroups(user.SystemPrivilegedGroup), newNodeAuthorizer(client), rbacFor(client)}
-}
-
-func NewWithoutNode(client *kine.Client) authorizer.Authorizer {
-	return chain{authorizerfactory.NewPrivilegedGroups(user.SystemPrivilegedGroup), rbacFor(client)}
+func New(client *kine.Client, before ...authorizer.Authorizer) authorizer.Authorizer {
+	c := chain{authorizerfactory.NewPrivilegedGroups(user.SystemPrivilegedGroup)}
+	c = append(c, before...)
+	return append(c, rbacFor(client))
 }
 
 func Resolver(client *kine.Client) authorizer.RuleResolver {

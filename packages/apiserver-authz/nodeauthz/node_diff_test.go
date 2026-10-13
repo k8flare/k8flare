@@ -1,4 +1,4 @@
-package authz
+package nodeauthz
 
 import (
 	"bytes"
@@ -114,7 +114,7 @@ func (s diffState) project(t *testing.T) authorizer.Authorizer {
 	for _, slice := range s.slices {
 		store.put(t, resourceSliceCodec, "/registry/resourceslices/"+slice.Name, slice)
 	}
-	return newNodeAuthorizer(&kine.Client{HTTP: &http.Client{Transport: store}})
+	return New(&kine.Client{HTTP: &http.Client{Transport: store}})
 }
 
 type fakeStore map[string][]byte

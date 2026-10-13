@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	auth "github.com/k8flare/k8flare/packages/apiserver-auth"
+	nodeauthz "github.com/k8flare/k8flare/packages/apiserver-authz/nodeauthz"
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
 )
@@ -32,7 +33,7 @@ func componentAuthorizer(key []byte) (authorizer.Authorizer, *auth.ComponentToke
 		_ = json.NewEncoder(w).Encode(map[string]any{"revision": 1, "kvs": []any{}})
 	}))
 	client := &kine.Client{HTTP: &http.Client{Transport: rewriteHost{base: srv.URL, next: srv.Client().Transport}}}
-	return New(client), &auth.ComponentTokens{Store: client}, srv.Close
+	return New(client, nodeauthz.New(client)), &auth.ComponentTokens{Store: client}, srv.Close
 }
 
 func TestComponentIdentitiesGetOnlyTheirUpstreamRoles(t *testing.T) {

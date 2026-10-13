@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	nodeauthz "github.com/k8flare/k8flare/packages/apiserver-authz/nodeauthz"
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
@@ -17,7 +18,8 @@ func TestAnonymousGetsOnlyPublicInfo(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"revision": 1, "kvs": []any{}})
 	}))
 	defer srv.Close()
-	a := New(&kine.Client{HTTP: &http.Client{Transport: rewriteHost{base: srv.URL, next: srv.Client().Transport}}})
+	client := &kine.Client{HTTP: &http.Client{Transport: rewriteHost{base: srv.URL, next: srv.Client().Transport}}}
+	a := New(client, nodeauthz.New(client))
 	anonymous := &user.DefaultInfo{Name: user.Anonymous, Groups: []string{user.AllUnauthenticated}}
 	cases := []struct {
 		path  string
