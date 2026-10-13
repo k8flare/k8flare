@@ -784,7 +784,7 @@ join_node() {
   sudo mkdir -p /var/lib/rancher/k3s/agent/images
   docker save ghcr.io/k8flare/node-proxy:latest | sudo tee /var/lib/rancher/k3s/agent/images/node-proxy.tar >/dev/null
   nohup sudo journalctl -u k3s-agent -f -o short-precise > "$LOGS/agent.log" 2>&1 < /dev/null &
-  curl -sfL https://get.k3s.io |
+  curl -sfL --retry 5 --retry-all-errors https://get.k3s.io |
     INSTALL_K3S_SKIP_DOWNLOAD=true K3S_URL="https://$API" K3S_TOKEN="$token" timeout 600 sh -s - agent --disable-apiserver-lb --node-name "$(hostname)"
 }
 
@@ -854,7 +854,7 @@ prepare_container_nodes() {
 
 up() {
   if [ ! -x /usr/local/bin/k3s ]; then
-    curl -sfL -o "$WORK/k3s" "https://github.com/k3s-io/k3s/releases/download/${K3S_VERSION/+/%2B}/k3s"
+    curl -sfL --retry 5 --retry-all-errors -o "$WORK/k3s" "https://github.com/k3s-io/k3s/releases/download/${K3S_VERSION/+/%2B}/k3s"
     sudo install -m 0755 "$WORK/k3s" /usr/local/bin/k3s
   fi
   sudo /usr/local/bin/k3s ctr version >/dev/null 2>&1 || true
