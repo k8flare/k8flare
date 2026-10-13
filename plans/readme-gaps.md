@@ -670,8 +670,12 @@ Decided on 2026-10-01, with the owner:
   the old version during a gradual rollout after the sweep passed their key
   stay at the old encoding until their next write or the next deploy; the
   deploy trigger is exercised against node:sqlite, not workerd.
-- Gradual rollout is not implemented: nothing calls `wrangler versions`,
-  a deploy is one cutover. `scripts/ci/e2e.sh live` (not yet observed on
+- `make deploy` (`scripts/deploy.sh`) shifts the main Worker to a new
+  version in steps (10, 50, 100 percent by default) with a `/readyz` gate
+  pinned to the new version and a rollback when it fails, then moves the
+  edge, HPA and attach/detach Workers; `scripts/deploy_test.sh` checks the
+  command sequence against a stub `wrangler` in the Unit workflow. It has
+  not been run against a Cloudflare account. `scripts/ci/e2e.sh live` (not yet observed on
   GitHub Actions) stops `wrangler dev` and devtls, rewrites the `sha256` of
   every worker manifest (no Go is rebuilt; the Loader key of each component
   changes and a fresh process loads new isolates), starts both again on the
