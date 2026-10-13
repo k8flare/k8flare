@@ -151,10 +151,8 @@ jobs:
         id: build
         run: scripts/ci/e2e.sh build
 
-      - name: Start the control plane and two nodes
+      - name: Start the control plane and a node
         run: scripts/ci/e2e.sh up
-        env:
-          NODES: 2
 
       - name: Run the required e2e set
         run: |

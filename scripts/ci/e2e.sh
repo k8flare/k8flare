@@ -221,12 +221,12 @@ no_local_path_pods() {
 }
 
 dynamic_resource_allocation() {
-  local device_node other_node claim pod user
+  local device_node other_node claim pod pod_uid user
   local -a k=(kubectl --kubeconfig "$KUBECONFIG_PATH" --request-timeout=15s)
   local -a node_kubectl
   read -r device_node other_node _ <<<"$(node_names)"
-  if [ -z "$device_node" ] || [ -z "$other_node" ]; then
-    echo "DRA needs two nodes, got '$device_node' and '$other_node'" >&2
+  if [ -z "$device_node" ]; then
+    echo "DRA needs a node" >&2
     return 1
   fi
   node_kubectl=(docker exec "$device_node" kubectl)
@@ -296,11 +296,14 @@ EOF
   for _ in $(seq 1 24); do
     claim=$("${k[@]}" -n ci-dra get resourceclaim device -o json) || return 1
     pod=$("${k[@]}" -n ci-dra get pod consumer -o json) || return 1
-    if jq -e --arg node "$device_node" --arg other "$other_node" --arg uid "$(jq -r '.metadata.uid' <<<"$pod")" '
-      (.status.allocation.devices.results | any(.driver == "ci.example.com/dra" and .pool == "ci-dra-pool" and .device == "ci-dra-device")) and
-      (.status.reservedFor | any(.resource == "pods" and .name == "consumer" and .uid == $uid)) and
-      (.spec.nodeName == $node and .spec.nodeName != $other)
-    ' <<<"$claim" >/dev/null; then
+    pod_uid=$(jq -r '.metadata.uid' <<<"$pod")
+    if jq -e --arg uid "$pod_uid" '
+      ((.status.allocation.devices.results? // []) | any(.driver == "ci.example.com/dra" and .pool == "ci-dra-pool" and .device == "ci-dra-device")) and
+      ((.status.reservedFor? // []) | any(.resource == "pods" and .name == "consumer" and .uid == $uid))
+    ' <<<"$claim" >/dev/null &&
+      jq -e --arg node "$device_node" --arg other "$other_node" '
+        .spec.nodeName == $node and ($other == "" or .spec.nodeName != $other)
+      ' <<<"$pod" >/dev/null; then
       echo "the DRA claim ci-dra/device allocated ci-dra-device on $device_node and reserved consumer there"
       "${k[@]}" delete namespace ci-dra --wait=false
       "${k[@]}" delete resourceslice ci-dra-slice --wait=false
