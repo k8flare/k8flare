@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apiserver/pkg/admission"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
+	apicompatibility "k8s.io/apiserver/pkg/util/compatibility"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/informers"
 	informerscore "k8s.io/client-go/informers/core"
@@ -30,6 +31,7 @@ import (
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 	nodev1client "k8s.io/client-go/kubernetes/typed/node/v1"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/component-base/compatibility"
 	"k8s.io/component-base/featuregate"
 )
 
@@ -443,6 +445,11 @@ func (i informerFactoryInitializer) Initialize(plugin admission.Interface) {
 		SetExternalKubeInformerFactory(informers.SharedInformerFactory)
 	}); ok {
 		w.SetExternalKubeInformerFactory(i.factory)
+	}
+	if w, ok := plugin.(interface {
+		InspectEffectiveVersion(compatibility.EffectiveVersion)
+	}); ok {
+		w.InspectEffectiveVersion(apicompatibility.DefaultBuildEffectiveVersion())
 	}
 	if w, ok := plugin.(interface {
 		SetExternalKubeClientSet(kubernetes.Interface)

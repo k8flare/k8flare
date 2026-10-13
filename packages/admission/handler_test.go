@@ -399,7 +399,22 @@ type memStore struct {
 	data                   map[string][]byte
 	mu                     sync.Mutex
 	revs                   map[string]int64
-	withoutDefaultAccounts bool
+	withoutDefaults bool
+}
+
+func (m *memStore) defaultObject(key string) map[string]any {
+	if m.withoutDefaults {
+		return nil
+	}
+	if name, ok := strings.CutPrefix(key, "/registry/namespaces/"); ok {
+		return map[string]any{"apiVersion": "v1", "kind": "Namespace", "metadata": map[string]any{"name": name}}
+	}
+	if rest, ok := strings.CutPrefix(key, "/registry/serviceaccounts/"); ok {
+		if ns, ok := strings.CutSuffix(rest, "/default"); ok {
+			return map[string]any{"apiVersion": "v1", "kind": "ServiceAccount", "metadata": map[string]any{"name": "default", "namespace": ns}}
+		}
+	}
+	return nil
 }
 
 func (m *memStore) revision(key string) int64 {
@@ -462,9 +477,9 @@ func (m *memStore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"revision": 1, "kv": map[string]any{"key": k, "value": base64.StdEncoding.EncodeToString(v), "modRevision": m.revision(k)}})
 			return
 		}
-		if ns, ok := strings.CutPrefix(k, "/registry/serviceaccounts/"); ok && !m.withoutDefaultAccounts && strings.HasSuffix(ns, "/default") {
-			sa, _ := json.Marshal(map[string]any{"apiVersion": "v1", "kind": "ServiceAccount", "metadata": map[string]any{"name": "default", "namespace": strings.TrimSuffix(ns, "/default")}})
-			_ = json.NewEncoder(w).Encode(map[string]any{"revision": 1, "kv": map[string]any{"key": k, "value": base64.StdEncoding.EncodeToString(sa), "modRevision": 1}})
+		if obj := m.defaultObject(k); obj != nil {
+			raw, _ := json.Marshal(obj)
+			_ = json.NewEncoder(w).Encode(map[string]any{"revision": 1, "kv": map[string]any{"key": k, "value": base64.StdEncoding.EncodeToString(raw), "modRevision": 1}})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"revision": 1})

@@ -443,7 +443,7 @@ func runOurs(t *testing.T, c diffCase, pair pluginPair) outcome {
 		}
 		data[registryKey(obj)] = raw
 	}
-	backing := &memStore{data: data, withoutDefaultAccounts: true}
+	backing := &memStore{data: data, withoutDefaults: true}
 	srv := httptest.NewServer(backing)
 	defer srv.Close()
 	s := &store{client: &kine.Client{HTTP: rewriteClient(srv)}}

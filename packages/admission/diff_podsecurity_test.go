@@ -187,13 +187,5 @@ func TestDiffPodSecurity(t *testing.T) {
 	other.resource = schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
 	other.cluster = []runtime.Object{baseline}
 	cases = append(cases, status, ephemeral, deleted, other)
-	updateReason := "upstream skips an update whose containers differ only in ways other than image (isSignificantPodUpdate), ours evaluates every update, so it rejects a metadata-only update of an already violating pod (pod-security-admission admission.go ValidatePod)"
-	denied := "outcome: upstream allowed; ours denied 403 Forbidden"
-	cases = applyKnown(t, cases, map[string]*knownDifference{
-		"privileged pod without a namespace object":        {reason: "upstream fails with InternalError when the namespace cannot be fetched, ours treats a missing namespace as unlabeled (pod-security-admission admission.go ValidatePod)", signature: "outcome: upstream denied 500 InternalError; ours allowed"},
-		"update leaving a violating pod unchanged":         {reason: updateReason, signature: denied},
-		"update making a pod violate":                      {reason: "upstream considers a security-context-only change insignificant and allows it (the pod validation rejects it elsewhere), ours evaluates and rejects (pod-security-admission admission.go isSignificantContainerUpdate)", signature: denied},
-		"update changing only metadata on a violating pod": {reason: updateReason, signature: denied},
-	})
 	runDiffCases(t, cases)
 }
