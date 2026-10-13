@@ -29,9 +29,14 @@ func init() {
 	workqueue.DelayObserver = pending.add
 }
 
+type deadline struct {
+	at          time.Time
+	rateLimited bool
+}
+
 type deadlines struct {
 	mu          sync.Mutex
-	at          []time.Time
+	at          []deadline
 	muted       int
 	rateLimited bool
 }
@@ -56,13 +61,14 @@ func (d *deadlines) add(delay time.Duration) {
 		return
 	}
 	kept := d.at[:0]
-	for _, t := range d.at {
-		if t.After(now) {
-			kept = append(kept, t)
+	for _, entry := range d.at {
+		if entry.at.After(now) {
+			kept = append(kept, entry)
 		}
 	}
-	d.at = append(kept, now.Add(delay))
-	if delay == 5*time.Millisecond {
+	rateLimited := delay == 5*time.Millisecond
+	d.at = append(kept, deadline{at: now.Add(delay), rateLimited: rateLimited})
+	if rateLimited {
 		d.rateLimited = true
 	}
 }
@@ -81,13 +87,21 @@ func (d *deadlines) hasRateLimited() bool {
 }
 
 func (d *deadlines) next() (time.Duration, bool) {
+	return d.nextMatching(func(deadline) bool { return true })
+}
+
+func (d *deadlines) nextExcludingRateLimited() (time.Duration, bool) {
+	return d.nextMatching(func(entry deadline) bool { return !entry.rateLimited })
+}
+
+func (d *deadlines) nextMatching(keep func(deadline) bool) (time.Duration, bool) {
 	now := time.Now()
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	var earliest time.Time
-	for _, t := range d.at {
-		if t.After(now) && (earliest.IsZero() || t.Before(earliest)) {
-			earliest = t
+	for _, entry := range d.at {
+		if keep(entry) && entry.at.After(now) && (earliest.IsZero() || entry.at.Before(earliest)) {
+			earliest = entry.at
 		}
 	}
 	if earliest.IsZero() {

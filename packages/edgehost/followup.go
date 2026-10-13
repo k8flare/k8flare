@@ -3,6 +3,7 @@ package edgehost
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 )
 
 const (
@@ -26,6 +27,7 @@ type followIn struct {
 	Names           []string `json:"names"`
 	Node            string   `json:"node"`
 	NextMs          int64    `json:"nextMs"`
+	OtherNextMs     int64    `json:"otherNextMs"`
 	Drained         bool     `json:"drained"`
 	HasResult       bool     `json:"hasResult"`
 	HPAs            int      `json:"hpas"`
@@ -96,7 +98,7 @@ func followUp(in followIn) followResult {
 		case in.Busy:
 			out.Sends = append(out.Sends, busyRetry("wl", in.Changed, in.Failures))
 		case in.RateLimited:
-			out.Sends = append(out.Sends, backoff("wl", nil, in.Changed, nil, "", in.Failures))
+			out.Sends = append(out.Sends, rateLimitedRetry("wl", in.Changed, in.Failures, in.OtherNextMs))
 		case in.NextMs > 0:
 			out.Sends = append(out.Sends, retry("wl", nil, in.Changed, nil, "", ceilSeconds(in.NextMs)))
 		}
@@ -181,6 +183,23 @@ func retry(queue string, attempt *int, changed, names []string, node string, del
 
 func backoff(queue string, attempt *int, changed, names []string, node string, failures int) followSend {
 	send := retry(queue, attempt, changed, names, node, failedRetryDelayS(failures))
+	send.Failures = failures + 1
+	return send
+}
+
+func rateLimitedRetry(queue string, changed []string, failures int, otherNextMs int64) followSend {
+	delayMs := int64(5)
+	for range failures {
+		if delayMs >= 1000*time.Second.Milliseconds() {
+			break
+		}
+		delayMs *= 2
+	}
+	delayMs = min(delayMs, int64(1000*time.Second.Milliseconds()))
+	if otherNextMs > 0 && otherNextMs < delayMs {
+		delayMs = otherNextMs
+	}
+	send := retry(queue, nil, changed, nil, "", ceilSeconds(delayMs))
 	send.Failures = failures + 1
 	return send
 }

@@ -180,9 +180,11 @@ Decided on 2026-10-01, with the owner:
   - A controller whose API call keeps failing marks its default 5 ms
     rate-limited requeue in the workloads result. The queue follow-up carries
     that retry through the existing deadline-row failure count, so repeated
-    passes wait 5 s, 10 s, 20 s and so on through the upstream 1000 s cap;
-    a non-rate-limited result clears the count. Host tests cover the deadline
-    marker and the growing retry sequence; not run on a cluster.
+    passes follow upstream's 5 ms doubling curve through its 1000 s cap,
+    rounded up to the deadline row's whole seconds; an earlier non-rate-limited
+    deadline still wins, and a non-rate-limited result clears the count. Host
+    tests cover the deadline marker and the growing retry sequence; not run on
+    a cluster.
   - Not yet run in CI: Conformance with the backoff (four spec processes;
     the first retry is unchanged, the second and later are 10 s, 20 s, ...)
     and without the replica, StatefulSet, gc and containers re-books.

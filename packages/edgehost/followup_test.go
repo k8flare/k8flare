@@ -148,13 +148,17 @@ func TestFollowUpBacksOffAFailureRetryFrom5sTo1000s(t *testing.T) {
 }
 
 func TestFollowUpBacksOffRateLimitedWorkloadsAcrossPasses(t *testing.T) {
-	for failures, delay := range []int{5, 10, 20, 40, 80, 160, 320, 640, 1000, 1000} {
+	for failures, delay := range []int{1, 1, 1, 1, 1, 1, 1, 1, 2, 3, 6, 11, 21, 41, 82, 164, 328, 656, 1000, 1000} {
 		got := followUp(followIn{Target: "workloads", PlanOK: true, Changed: []string{"replicasets"}, HasResult: true, Drained: true, RateLimited: true, Failures: failures})
 		if len(got.Sends) != 1 || got.Sends[0].DelaySeconds != delay || got.Sends[0].Failures != failures+1 {
 			t.Fatalf("failures=%d: sends = %+v, want %ds with count %d", failures, got.Sends, delay, failures+1)
 		}
 	}
-	got := followUp(followIn{Target: "workloads", PlanOK: true, Changed: []string{"replicasets"}, HasResult: true, Drained: true, NextMs: 5, Failures: 9})
+	got := followUp(followIn{Target: "workloads", PlanOK: true, Changed: []string{"replicasets"}, HasResult: true, Drained: true, RateLimited: true, OtherNextMs: 2000, Failures: 12})
+	if len(got.Sends) != 1 || got.Sends[0].DelaySeconds != 2 {
+		t.Fatalf("other deadline sends = %+v, want 2s", got.Sends)
+	}
+	got = followUp(followIn{Target: "workloads", PlanOK: true, Changed: []string{"replicasets"}, HasResult: true, Drained: true, NextMs: 5, Failures: 9})
 	if len(got.Sends) != 1 || got.Sends[0].Failures != 0 {
 		t.Fatalf("success sends = %+v, want no failure count", got.Sends)
 	}

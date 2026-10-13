@@ -7,6 +7,7 @@ export interface SyncResult {
   objects: Record<string, number>;
   drained: boolean;
   nextMs: number;
+  otherNextMs?: number;
   busy?: boolean;
   rateLimited?: boolean;
 }
@@ -69,6 +70,7 @@ export class Workloads extends WorkerEntrypoint<Env> {
       drained: acc.drained || r.drained,
       busy: acc.busy || r.busy,
       rateLimited: acc.rateLimited || r.rateLimited,
+      otherNextMs: acc.otherNextMs === undefined ? r.otherNextMs : r.otherNextMs === undefined ? acc.otherNextMs : Math.min(acc.otherNextMs, r.otherNextMs),
       nextMs: acc.nextMs === 0 ? r.nextMs : r.nextMs === 0 ? acc.nextMs : Math.min(acc.nextMs, r.nextMs),
     }));
   }

@@ -71,12 +71,13 @@ func init() {
 }
 
 type Result struct {
-	Objects map[string]int `json:"objects"`
-	Drained bool           `json:"drained"`
-	NextMs  int64          `json:"nextMs"`
-	Live    bool           `json:"live"`
-	Busy        bool `json:"busy,omitempty"`
-	RateLimited bool `json:"rateLimited,omitempty"`
+	Objects     map[string]int `json:"objects"`
+	Drained     bool           `json:"drained"`
+	NextMs      int64          `json:"nextMs"`
+	OtherNextMs int64          `json:"otherNextMs,omitempty"`
+	Live        bool           `json:"live"`
+	Busy        bool           `json:"busy,omitempty"`
+	RateLimited bool           `json:"rateLimited,omitempty"`
 }
 
 type pageFunc func(context.Context, metav1.ListOptions) (runtime.Object, error)
@@ -417,6 +418,9 @@ func SyncWithin(ctx context.Context, client kubernetes.Interface, rootCA, signin
 		}
 		result.Drained = result.Drained && follow.Drained
 		result.RateLimited = result.RateLimited || follow.RateLimited
+		if follow.OtherNextMs > 0 && (result.OtherNextMs <= 0 || follow.OtherNextMs < result.OtherNextMs) {
+			result.OtherNextMs = follow.OtherNextMs
+		}
 		if follow.NextMs > 0 && (result.NextMs <= 0 || follow.NextMs < result.NextMs) {
 			result.NextMs = follow.NextMs
 		}
@@ -635,6 +639,9 @@ func syncPass(ctx context.Context, client kubernetes.Interface, rootCA, signingC
 		result.NextMs = soonest(result.NextMs, next)
 	}
 	result.RateLimited = pending.hasRateLimited()
+	if next, ok := pending.nextExcludingRateLimited(); ok {
+		result.OtherNextMs = next.Milliseconds()
+	}
 	cancel()
 	stopping := time.NewTimer(shutdownGrace)
 	defer stopping.Stop()
