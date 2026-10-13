@@ -9,6 +9,7 @@ import (
 
 	"github.com/k8flare/k8flare/packages/addons"
 	"github.com/k8flare/k8flare/packages/helm"
+	"github.com/k8flare/k8flare/packages/localpath"
 	bridge "github.com/k8flare/k8flare/packages/worker-bridge"
 	"helm.sh/helm/v3/pkg/chartutil"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -50,7 +51,23 @@ func main() {
 		Lookup:       cfg,
 		Wait:         time.Second,
 	}
+	localPath := &localpath.Controller{Client: client, Disabled: addons.ParseDisable(bridge.Getenv("DISABLE"))[localpath.AddonName]}
 	bridge.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/local-path" {
+			wake, err := localPath.Reconcile(r.Context())
+			if err != nil {
+				println("local-path: reconcile failed:", err.Error())
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			var nextMs int64
+			if !wake.IsZero() {
+				nextMs = max(time.Until(wake).Milliseconds(), 1)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]int64{"nextMs": nextMs})
+			return
+		}
 		if r.URL.Path == "/helm" {
 			if addons.ParseDisable(bridge.Getenv("DISABLE"))["helm-controller"] {
 				w.Write([]byte("{}"))
