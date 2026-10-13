@@ -833,11 +833,17 @@ stop_devtls() {
 }
 
 stop_control_plane() {
+  pkill -INT -f 'wrangler(\.js)? dev' || true
+  wait_for "wrangler dev to exit on SIGINT" 30 1 no_wrangler || true
   pkill -9 -f 'wrangler(\.js)? dev' || true
   pkill -9 -f '/bin/workerd' || true
   ss -ltnpH 'sport = :18787' | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u | xargs -r kill -9 || true
   wait_for "wrangler dev to release :18787" 60 1 port_free 18787
   wait_for "every workerd to exit" 60 1 no_workerd
+}
+
+no_wrangler() {
+  ! pgrep -af 'wrangler(\.js)? dev'
 }
 
 no_workerd() {
@@ -1102,6 +1108,9 @@ upgrade_with_live_nodes() {
   start_devtls -upgrade
   if ! grep -q 'load=' "$LOGS/dev-upgrade.log"; then
     echo "the restarted control plane loaded no component isolate" >&2
+    ss -ltnpH >&2 || true
+    ss -lxpH >&2 || true
+    tail -n 60 "$(ls -t "$HOME"/.config/.wrangler/logs/wrangler-*.log | head -1)" >&2 || true
     return 1
   fi
   echo "the restarted control plane loaded new isolates: $(grep -o 'load=[a-z0-9-]*' "$LOGS/dev-upgrade.log" | sort -u | paste -sd' ' -)"
