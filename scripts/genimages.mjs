@@ -1,20 +1,22 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { unstable_readConfig } from "wrangler";
+import { loadAndParseConfig } from "@cloudflare/config";
 
 const root = resolve(dirname(new URL(import.meta.url).pathname), "..");
-const configPath = resolve(root, process.argv[2] ?? "wrangler.jsonc");
+const configPath = resolve(root, process.argv[2] ?? "cloudflare.config.ts");
 const outPath = resolve(root, "packages/control-plane-worker/src/podkubelet/images.generated.ts");
-const config = unstable_readConfig({ config: configPath });
+const parsed = await loadAndParseConfig(configPath, { isPreview: false, mode: undefined });
+if (!parsed.result.success) throw new Error(parsed.result.error.message);
+const config = parsed.result.data;
 
 const images = {};
 for (const app of config.containers ?? []) {
   for (const [name, image] of Object.entries(app.images ?? {})) {
     if (typeof image !== "object" || !image.dockerfile) continue;
     const dockerfile = resolve(dirname(configPath), image.dockerfile);
-    const context = image.build_context ? resolve(dirname(configPath), image.build_context) : dirname(dockerfile);
-    const buildArgs = Object.entries(image.build_vars ?? {}).flatMap(([k, v]) => ["--build-arg", `${k}=${v}`]);
+    const context = image.buildContext ? resolve(dirname(configPath), image.buildContext) : dirname(dockerfile);
+    const buildArgs = Object.entries(image.buildVars ?? {}).flatMap(([k, v]) => ["--build-arg", `${k}=${v}`]);
     const id = execFileSync("docker", ["build", "-q", "-f", dockerfile, ...buildArgs, context], { encoding: "utf8" }).trim();
     const [inspected] = JSON.parse(execFileSync("docker", ["image", "inspect", id], { encoding: "utf8" }));
     const cfg = inspected.Config ?? {};

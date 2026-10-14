@@ -12,6 +12,9 @@ importers:
         specifier: ^0.3.7
         version: 0.3.7
     devDependencies:
+      '@cloudflare/config':
+        specifier: 0.23.0
+        version: 0.23.0
       cf:
         specifier: 1.0.0-beta.12
         version: 1.0.0-beta.12
