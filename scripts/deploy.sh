@@ -7,15 +7,24 @@ rollout_steps=${DEPLOY_ROLLOUT_STEPS:-10,50,100}
 soak_seconds=${DEPLOY_ROLLOUT_SOAK_SECONDS:-30}
 ready_retries=12
 ready_retry_seconds=5
-main_config=wrangler.jsonc
+main_config=cloudflare.config.ts
 satellite_configs=(wrangler.edge.jsonc wrangler.hpa.jsonc wrangler.attachdetach.jsonc)
 
 wrangler() {
   pnpm exec wrangler "$@"
 }
 
+cf() {
+  pnpm exec cf "$@"
+}
+
+if [[ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
+  CLOUDFLARE_ACCOUNT_ID=$(sed -n 's/^[[:space:]]*CLOUDFLARE_ACCOUNT_ID: bindings.text("\([^"]*\)"),$/\1/p' "$main_config")
+  export CLOUDFLARE_ACCOUNT_ID
+fi
+
 worker_name() {
-  node -e 'const source = require("node:fs").readFileSync(process.argv[1], "utf8"); const match = source.match(/^\s*"name":\s*"([^"]+)"/m); if (!match) process.exit(1); console.log(match[1])' "$1"
+  node -e 'const source = require("node:fs").readFileSync(process.argv[1], "utf8"); const match = source.match(/^\t\tname:\s*"([^"]+)"/m); if (!match) process.exit(1); console.log(match[1])' "$1"
 }
 
 rollout_hostname() {
@@ -23,13 +32,42 @@ rollout_hostname() {
     printf '%s\n' "$DEPLOY_ROLLOUT_HOSTNAME"
     return
   fi
-  node -e 'const source = require("node:fs").readFileSync(process.argv[1], "utf8"); const match = source.match(/"routes":\s*\[\s*\{\s*"pattern":\s*"([^"]+)",\s*"custom_domain":\s*true/); if (!match) process.exit(1); console.log(match[1].replace(/\/\*$/, ""))' "$main_config"
+  node -e 'const source = require("node:fs").readFileSync(process.argv[1], "utf8"); const match = source.match(/domains:[^\n]*: \[\s*"([^"]+)"/); if (!match) process.exit(1); console.log(match[1])' "$main_config"
 }
 
 current_version() {
-  local deployment
-  deployment=$(wrangler versions deployments status --json -c "$1")
-  node -e 'const deployment = JSON.parse(process.argv[1]); const serving = deployment.versions.filter((candidate) => candidate.percentage > 0); if (serving.length === 0) process.exit(1); if (serving.length > 1) process.exit(3); console.log(serving[0].version_id)' "$deployment"
+  local deployments
+  deployments=$(cf workers deployments list --worker "$(worker_name "$1")")
+  node -e 'const deployment = JSON.parse(process.argv[1]).deployments[0]; const serving = deployment.versions.filter((candidate) => candidate.percentage > 0); if (serving.length === 0) process.exit(1); if (serving.length > 1) process.exit(3); console.log(serving[0].version_id)' "$deployments"
+}
+
+upload_main() {
+  local error
+  local tag
+  local name
+  error=$(mktemp)
+  tag="deploy-$(date +%s)-$$"
+  name=$(worker_name "$main_config")
+  if ! cf workers versions create --tag "$tag" >"$error" 2>&1; then
+    if grep -Fiq 'migration' "$error"; then
+      cat "$error" >&2
+      rm -f "$error"
+      printf '%s\n' 'Durable Object migration is pending; gradual rollout cannot apply it. Re-run with DEPLOY_ROLLOUT=immediate.' >&2
+      exit 1
+    fi
+    cat "$error" >&2
+    rm -f "$error"
+    printf 'versions create failed for %s\n' "$main_config" >&2
+    exit 1
+  fi
+  rm -f "$error"
+  cf workers versions list --worker-id "$name" --per-page 25 | node -e 'const versions = JSON.parse(require("node:fs").readFileSync(0, "utf8")).filter((candidate) => candidate.annotations?.["workers/tag"] === process.argv[1]); if (versions.length === 0) process.exit(1); console.log(versions.sort((a, b) => b.number - a.number)[0].id)' "$tag"
+}
+
+deploy_main_versions() {
+  local split
+  split=$(node -e 'console.log(JSON.stringify(process.argv.slice(1).map((entry) => { const [version_id, percentage] = entry.split("@"); return { version_id, percentage: Number(percentage) }; })))' "$@")
+  cf workers deployments create --worker "$(worker_name "$main_config")" --strategy percentage --versions "$split"
 }
 
 upload() {
@@ -74,7 +112,8 @@ ready() {
 
 immediate_deploy() {
   local config
-  for config in "$main_config" "${satellite_configs[@]}"; do
+  cf deploy
+  for config in "${satellite_configs[@]}"; do
     wrangler deploy -c "$config"
   done
 }
@@ -107,12 +146,12 @@ if [[ "$status" != 0 ]]; then
   exit 1
 fi
 
-new_version=$(upload "$main_config")
+new_version=$(upload_main)
 IFS=, read -r -a steps <<< "$rollout_steps"
 for step in "${steps[@]}"; do
-  if ! wrangler versions deploy "${new_version}@${step}%" "${old_version}@$((100 - step))%" -y -c "$main_config" || ! ready "$new_version"; then
+  if ! deploy_main_versions "${new_version}@${step}" "${old_version}@$((100 - step))" || ! ready "$new_version"; then
     printf '%s\n' 'Main Worker rollout step or readiness gate failed; rolling back to the previous version.' >&2
-    wrangler versions deploy "${old_version}@100%" -y -c "$main_config"
+    deploy_main_versions "${old_version}@100"
     exit 1
   fi
   if [[ "$step" != "${steps[${#steps[@]} - 1]}" ]]; then
