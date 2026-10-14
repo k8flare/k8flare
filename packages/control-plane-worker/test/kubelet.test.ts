@@ -290,8 +290,19 @@ async function harness(pod: Pod) {
   api.configMaps.cm = { hello: "world" };
   const waits: Promise<unknown>[] = [];
   const peers: Array<{ uid: string; port: number; url: string; host: string | null }> = [];
+  const podKubelet = {
+    idFromName: (n: string) => n,
+    get: (id: unknown) => ({
+      fetch: async () => new Response("self"),
+      ingress: async (port: number, request: Request) => {
+        peers.push({ uid: String(id), port, url: request.url, host: request.headers.get("Host") });
+        return new Response(`peer ${id}:${port}`);
+      },
+    }),
+  };
   const ctx = {
     id: { name: pod.metadata.uid },
+    exports: { PodKubelet: podKubelet },
     storage,
     container,
     blockConcurrencyWhile: (fn: () => Promise<void>) => fn(),
@@ -300,16 +311,6 @@ async function harness(pod: Pod) {
   const env = {
     CLUSTER_UID: "",
     CLUSTER: { idFromName: (n: string) => n, get: () => ({ fetch: async () => Response.json({ revision: 1, kv: { key: "/vault/component-key", value: btoa("component-key"), modRevision: 1 } }) }) },
-    POD_KUBELET: {
-      idFromName: (n: string) => n,
-      get: (id: unknown) => ({
-        fetch: async () => new Response("self"),
-        ingress: async (port: number, request: Request) => {
-          peers.push({ uid: String(id), port, url: request.url, host: request.headers.get("Host") });
-          return new Response(`peer ${id}:${port}`);
-        },
-      }),
-    },
     POD_LEDGER: { idFromName: (n: string) => n, get: () => ledger },
     __apiserver: (request: Request) => api.handle(request),
   };

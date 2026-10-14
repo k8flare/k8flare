@@ -59,22 +59,15 @@ interface TrackedVM {
 // the next poke can retry fresh (see the timeout branch in reconcile()).
 const NODE_READY_TIMEOUT_MS = 5 * 60_000;
 
-type VMEnv = Env & {
-  NODE_VM_SMALL?: DurableObjectNamespace;
-  NODE_VM_MEDIUM?: DurableObjectNamespace;
-  NODE_VM_LARGE?: DurableObjectNamespace;
-};
-
 type NodeVMStub = {
   up(nodeName: string, mesh?: string, join?: string, extra?: Record<string, string>): Promise<void>;
   destroyVM(): Promise<void>;
 };
 
-export function vmBinding(env: Env, tier: SizeTier): DurableObjectNamespace | undefined {
-  const e = env as VMEnv;
-  if (tier === "small") return e.NODE_VM_SMALL as DurableObjectNamespace | undefined;
-  if (tier === "medium") return e.NODE_VM_MEDIUM as DurableObjectNamespace | undefined;
-  return e.NODE_VM_LARGE as DurableObjectNamespace | undefined;
+export function vmNamespace(exports: Cloudflare.Exports, tier: SizeTier) {
+  if (tier === "small") return exports.NodeVMSmall;
+  if (tier === "medium") return exports.NodeVMMedium;
+  return exports.NodeVMLarge;
 }
 
 export class CFContainersScheduler extends DurableObject<Env> {
@@ -89,8 +82,7 @@ export class CFContainersScheduler extends DurableObject<Env> {
   // clusters/clusterenv.ts's prefixNs (so the gateway's kubelet bridge
   // resolves the same instance).
   private vmStub(tier: SizeTier, podUID: string): NodeVMStub {
-    const ns = vmBinding(this.env, tier);
-    if (!ns) throw new Error(`NODE_VM_${tier} is not bound`);
+    const ns = vmNamespace(this.ctx.exports, tier);
     return ns.get(ns.idFromName(`${this.clusterName()}/${podUID}`)) as unknown as NodeVMStub;
   }
 

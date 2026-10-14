@@ -268,8 +268,8 @@ export default {
     }
     return apiserverFetch(env, asAPIRequest(request));
   },
-  async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
-    await consume(batch as MessageBatch<QueueMessage>, env);
+  async queue(batch: MessageBatch<unknown>, env: Env, ctx: ExecutionContext): Promise<void> {
+    await consume(batch as MessageBatch<QueueMessage>, env, ctx.exports.PodKubelet);
   },
   tail(events: TraceItem[]): void {
     for (const e of events) {

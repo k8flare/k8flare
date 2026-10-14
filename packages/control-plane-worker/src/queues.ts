@@ -3,6 +3,7 @@ import { Trace } from "./otel";
 import { apiserverFetch } from "./loader.ts";
 import { clusterStub } from "./clusterid.ts";
 import { deployAddons, reconcileHelm, reconcileLocalPath } from "./addons.ts";
+import type { PodKubelet } from "./podkubelet/kubelet.ts";
 import { wakePodKubelets } from "./podkubelet/wake.ts";
 import { componentToken } from "./componenttoken.ts";
 
@@ -314,9 +315,9 @@ async function consumeLeases(batch: MessageBatch<QueueMessage>, env: Env): Promi
   batch.ackAll();
 }
 
-export async function consume(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
+export async function consume(batch: MessageBatch<QueueMessage>, env: Env, kubelets: DurableObjectNamespace<PodKubelet>): Promise<void> {
   const target = targetOf(batch.queue);
-  await dispatch(batch, env, target);
+  await dispatch(batch, env, kubelets, target);
   if (target && target !== "leases") await recordPass(env, target);
 }
 
@@ -328,7 +329,7 @@ async function recordPass(env: Env, target: Target): Promise<void> {
   }
 }
 
-async function dispatch(batch: MessageBatch<QueueMessage>, env: Env, target: Target | null): Promise<void> {
+async function dispatch(batch: MessageBatch<QueueMessage>, env: Env, kubelets: DurableObjectNamespace<PodKubelet>, target: Target | null): Promise<void> {
   switch (target) {
     case "scheduler":
       return consumeScheduler(batch, env);
@@ -345,7 +346,7 @@ async function dispatch(batch: MessageBatch<QueueMessage>, env: Env, target: Tar
     case "extensions":
       return consumeExtensions(batch, env);
     case "containers":
-      return consumeContainers(batch, env);
+      return consumeContainers(batch, env, kubelets);
     case "attachdetach":
       return consumeAttachDetach(batch, env);
     case "addons":
@@ -382,7 +383,7 @@ async function consumeAddons(batch: MessageBatch<QueueMessage | BucketChange>, e
   batch.ackAll();
 }
 
-async function consumeContainers(batch: MessageBatch<QueueMessage>, env: Env): Promise<void> {
+async function consumeContainers(batch: MessageBatch<QueueMessage>, env: Env, kubelets: DurableObjectNamespace<PodKubelet>): Promise<void> {
   const keys = new Set<string>();
   for (const msg of batch.messages) {
     if (msg.body.kind === "change") keys.add(msg.body.key);
@@ -391,7 +392,7 @@ async function consumeContainers(batch: MessageBatch<QueueMessage>, env: Env): P
   const stub = env.NODE_SCHED.get(env.NODE_SCHED.idFromName(clusterName(env)));
   const resp = await stub.fetch("https://nodesched.internal/reconcile");
   const body = resp.ok ? ((await resp.json()) as { nextMs?: number; failed?: boolean }) : {};
-  const woken = await wakePodKubelets(env, [...keys]);
+  const woken = await wakePodKubelets(env, kubelets, [...keys]);
   console.log(`containers: keys=${keys.size} status=${resp.status} nextMs=${body.nextMs ?? 0} failed=${Boolean(body.failed)} kubelets=${woken}`);
   await applySends(env, (await followUp(env, { target: "containers", ok: resp.ok && !body.failed, nextMs: body.nextMs ?? 0, failures: failuresOf(batch.messages) })).sends);
   batch.ackAll();

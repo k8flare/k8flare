@@ -1,4 +1,5 @@
 import { bindings, defineConfig, defineContainer, exports, triggers } from "cf/config";
+import * as entrypoint from "./packages/control-plane-worker/src/index.ts" with { type: "cf-worker" };
 
 const nodeVMSmall = defineContainer({
 	name: "NodeVMSmall",
@@ -36,7 +37,7 @@ export default defineConfig({
 		compatibilityFlags: [
 			"new_module_registry",
 		],
-		entrypoint: "packages/control-plane-worker/src/index.ts",
+		entrypoint,
 		workersDev: true,
 		logpush: true,
 		observability: {
@@ -176,6 +177,10 @@ export default defineConfig({
 			R2_ACCOUNT_ID: bindings.text("ed17c5c18eb6052e70234ec181709fba"),
 			R2_BUCKET: bindings.text("k8flare-pods"),
 			CLOUDFLARE_ACCOUNT_ID: bindings.text("ed17c5c18eb6052e70234ec181709fba"),
+			ADMIN_TOKEN: bindings.secret(),
+			READONLY_TOKEN: bindings.secret(),
+			JOIN_TOKEN: bindings.secret(),
+			SECRETS_ENCRYPTION_KEYS: bindings.secret(),
 			PODS_R2: bindings.r2({
 				name: "k8flare-pods",
 			}),
@@ -289,22 +294,6 @@ export default defineConfig({
 			NODE_SCHED: bindings.durableObject({
 				worker: "k8flare",
 				exportName: "CFContainersScheduler",
-			}),
-			NODE_VM_SMALL: bindings.durableObject({
-				worker: "k8flare",
-				exportName: "NodeVMSmall",
-			}),
-			NODE_VM_MEDIUM: bindings.durableObject({
-				worker: "k8flare",
-				exportName: "NodeVMMedium",
-			}),
-			NODE_VM_LARGE: bindings.durableObject({
-				worker: "k8flare",
-				exportName: "NodeVMLarge",
-			}),
-			POD_KUBELET: bindings.durableObject({
-				worker: "k8flare",
-				exportName: "PodKubelet",
 			}),
 			POD_LEDGER: bindings.durableObject({
 				worker: "k8flare",

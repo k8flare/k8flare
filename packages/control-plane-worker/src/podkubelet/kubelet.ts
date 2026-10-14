@@ -127,7 +127,7 @@ export class PodKubelet extends DurableObject<Env> {
   }
 
   private ledger(): DurableObjectStub<PodLedger> {
-    return this.env.POD_LEDGER.get(this.env.POD_LEDGER.idFromName(clusterName(this.env)));
+    return this.env.POD_LEDGER.get(this.env.POD_LEDGER.idFromName(clusterName(this.env))) as DurableObjectStub<PodLedger>;
   }
 
   private async save(): Promise<void> {
@@ -174,7 +174,7 @@ export class PodKubelet extends DurableObject<Env> {
       if (!target) return null;
       if (target.kind === "unreachable") return { fetch: async () => unreachable(target.status, target.reason) };
       if (target.uid === this.uid) return { fetch: (req) => this.ingress(target.port, req) };
-      const stub = podKubeletStub(this.env, target.uid);
+      const stub = podKubeletStub(this.ctx.exports.PodKubelet, target.uid);
       return { fetch: (req) => stub.ingress(target.port, req) };
     } catch (err) {
       const message = `resolving ${host}:${port} in the cluster failed: ${errorText(err)}`;
@@ -380,7 +380,7 @@ export class PodKubelet extends DurableObject<Env> {
     await this.save();
     this.attachMonitor();
     await this.ledger().setRunning(this.uid, true).catch(() => {});
-    const self = this.env.POD_KUBELET.get(this.ctx.id) as unknown as Fetcher;
+    const self = this.ctx.exports.PodKubelet.get(this.ctx.id) as unknown as Fetcher;
     try {
       await container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS);
       await container.interceptAllOutboundHttp(self);

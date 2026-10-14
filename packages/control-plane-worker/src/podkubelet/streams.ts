@@ -1,6 +1,6 @@
 import { bytesOf } from "../podstream.ts";
 import { LOGS_UNAVAILABLE } from "./dial.ts";
-import type { ExecOptions, ExecStreams } from "./kubelet.ts";
+import type { ExecOptions, ExecStreams, PodKubelet } from "./kubelet.ts";
 import {
   STREAM_ERR,
   STREAM_RESIZE,
@@ -215,13 +215,13 @@ export async function servePodStream(env: Env, ctx: ExecutionContext, loc: { url
   const pair = new WebSocketPair();
   const server = pair[1];
   server.accept();
-  ctx.waitUntil(dispatch(env, server, location, protocol));
+  ctx.waitUntil(dispatch(env, ctx.exports.PodKubelet, server, location, protocol));
   const headers = new Headers();
   if (protocol) headers.set("Sec-WebSocket-Protocol", protocol);
   return new Response(null, { status: 101, webSocket: pair[0], headers });
 }
 
-async function dispatch(env: Env, server: WebSocket, location: StreamLocation | null, protocol: string): Promise<void> {
+async function dispatch(env: Env, kubelets: DurableObjectNamespace<PodKubelet>, server: WebSocket, location: StreamLocation | null, protocol: string): Promise<void> {
   if (!location) {
     closeQuietly(server, 1008, "unsupported stream path");
     return;
@@ -245,7 +245,7 @@ async function dispatch(env: Env, server: WebSocket, location: StreamLocation | 
     closeQuietly(server, 1008, `pod ${location.namespace}/${location.name} has no container on ${VIRTUAL_NODE}`);
     return;
   }
-  const kubelet = podKubeletStub(env, entry.uid) as unknown as StreamKubelet;
+  const kubelet = podKubeletStub(kubelets, entry.uid) as unknown as StreamKubelet;
   if (location.kind === "exec") await serveExec(server, codec, kubelet, location.search);
   else await servePortForward(server, codec, kubelet, location.search, { name: location.name, uid: entry.uid });
 }

@@ -1,3 +1,4 @@
+import type { PodKubelet } from "./kubelet.ts";
 import { VIRTUAL_NODE } from "./spec.ts";
 import { podKubeletStub, podLedgerStub } from "./wake.ts";
 
@@ -7,7 +8,7 @@ function text(status: number, message: string): Response {
   return new Response(`${message}\n`, { status, headers: { "Content-Type": "text/plain; charset=utf-8" } });
 }
 
-export async function servePodDial(env: Env, request: Request): Promise<Response | null> {
+export async function servePodDial(env: Env, kubelets: DurableObjectNamespace<PodKubelet>, request: Request): Promise<Response | null> {
   const url = new URL(request.url);
   const parts = url.pathname.split("/").filter(Boolean);
   if ((parts[0] !== "dial" && parts[0] !== "node") || parts[1] !== VIRTUAL_NODE) return null;
@@ -24,5 +25,5 @@ export async function servePodDial(env: Env, request: Request): Promise<Response
   const prefix = `/${parts.slice(0, 4).join("/")}`;
   const rest = url.pathname.slice(prefix.length) || "/";
   const forwarded = new Request(`http://${host}:${port}${rest}${url.search}`, request);
-  return podKubeletStub(env, entry.uid).ingress(port, forwarded);
+  return podKubeletStub(kubelets, entry.uid).ingress(port, forwarded);
 }

@@ -6,15 +6,15 @@ import { VIRTUAL_NODE } from "./spec.ts";
 
 const POD_KEY = /^\/registry\/pods\/([^/]+)\/([^/]+)$/;
 
-export function podKubeletStub(env: Env, uid: string): DurableObjectStub<PodKubelet> {
-  return env.POD_KUBELET.get(env.POD_KUBELET.idFromName(uid));
+export function podKubeletStub(kubelets: DurableObjectNamespace<PodKubelet>, uid: string): DurableObjectStub<PodKubelet> {
+  return kubelets.get(kubelets.idFromName(uid));
 }
 
 export function podLedgerStub(env: Env): DurableObjectStub<PodLedger> {
-  return env.POD_LEDGER.get(env.POD_LEDGER.idFromName(clusterName(env)));
+  return env.POD_LEDGER.get(env.POD_LEDGER.idFromName(clusterName(env))) as DurableObjectStub<PodLedger>;
 }
 
-export async function wakePodKubelets(env: Env, keys: string[]): Promise<number> {
+export async function wakePodKubelets(env: Env, kubelets: DurableObjectNamespace<PodKubelet>, keys: string[]): Promise<number> {
   const api = new PodAPI(env);
   let woken = 0;
   for (const key of keys) {
@@ -32,7 +32,7 @@ export async function wakePodKubelets(env: Env, keys: string[]): Promise<number>
     }
     for (const uid of uids) {
       try {
-        await podKubeletStub(env, uid).reconcile({ namespace, name });
+        await podKubeletStub(kubelets, uid).reconcile({ namespace, name });
         woken++;
       } catch (err) {
         console.log(`podkubelet: reconcile ${namespace}/${name} (${uid}): ${String(err)}`);

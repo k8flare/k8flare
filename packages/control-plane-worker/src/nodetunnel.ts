@@ -5,7 +5,7 @@ import { servePodDial } from "./podkubelet/dial.ts";
 
 export class NodeTunnels extends WorkerEntrypoint<Env> {
   async fetch(request: Request): Promise<Response> {
-    const viaPod = await servePodDial(this.env, request);
+    const viaPod = await servePodDial(this.env, this.ctx.exports.PodKubelet, request);
     if (viaPod) return viaPod;
     const viaVpc = await vpcFetch(this.env, request);
     if (viaVpc) return viaVpc;
