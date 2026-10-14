@@ -342,40 +342,86 @@ func (c *collector) deleteItem(ctx context.Context, it *item, policy metav1.Dele
 	return nil
 }
 
+type current struct {
+	resourceVersion string
+	finalizers      []string
+	owners          []metav1.OwnerReference
+}
+
 func (c *collector) dropOwners(ctx context.Context, it *item, remove map[types.UID]bool) error {
-	owners := it.owners()
-	kept := make([]metav1.OwnerReference, 0, len(owners))
-	for _, ref := range owners {
-		if !remove[ref.UID] {
-			kept = append(kept, ref)
+	return c.patchRetryingConflicts(ctx, it, func(cur current) (map[string]any, bool) {
+		kept := make([]metav1.OwnerReference, 0, len(cur.owners))
+		for _, ref := range cur.owners {
+			if !remove[ref.UID] {
+				kept = append(kept, ref)
+			}
 		}
-	}
-	if len(kept) == len(owners) {
-		return nil
-	}
-	return c.patchMeta(ctx, it, map[string]any{"ownerReferences": kept})
+		return map[string]any{"ownerReferences": kept}, len(kept) != len(cur.owners)
+	})
 }
 
 func (c *collector) removeFinalizer(ctx context.Context, it *item, name string) error {
-	kept := make([]string, 0, len(it.Finalizers))
-	for _, f := range it.Finalizers {
-		if f != name {
-			kept = append(kept, f)
+	return c.patchRetryingConflicts(ctx, it, func(cur current) (map[string]any, bool) {
+		kept := make([]string, 0, len(cur.finalizers))
+		for _, f := range cur.finalizers {
+			if f != name {
+				kept = append(kept, f)
+			}
 		}
+		return map[string]any{"finalizers": kept}, len(kept) != len(cur.finalizers)
+	})
+}
+
+const conflictRetries = 5
+
+func (c *collector) patchRetryingConflicts(ctx context.Context, it *item, build func(current) (map[string]any, bool)) error {
+	cur := current{resourceVersion: it.ResourceVersion, finalizers: it.Finalizers, owners: it.owners()}
+	for attempt := 0; ; attempt++ {
+		fields, needed := build(cur)
+		if !needed {
+			return nil
+		}
+		err := c.patchMetaAt(ctx, it, cur.resourceVersion, fields)
+		if !apierrors.IsConflict(err) || attempt == conflictRetries {
+			return err
+		}
+		fresh, found, getErr := c.latest(ctx, it)
+		if getErr != nil || !found {
+			return getErr
+		}
+		cur = fresh
 	}
-	if len(kept) == len(it.Finalizers) {
-		return nil
+}
+
+func (c *collector) latest(ctx context.Context, it *item) (current, bool, error) {
+	res, err := c.resource(it)
+	if err != nil {
+		return current{}, false, err
 	}
-	return c.patchMeta(ctx, it, map[string]any{"finalizers": kept})
+	fresh, err := res.Get(ctx, it.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return current{}, false, nil
+	}
+	if err != nil {
+		return current{}, false, fmt.Errorf("get %s: %w", it.key, err)
+	}
+	if fresh.GetUID() != it.UID {
+		return current{}, false, nil
+	}
+	return current{resourceVersion: fresh.GetResourceVersion(), finalizers: fresh.GetFinalizers(), owners: fresh.GetOwnerReferences()}, true, nil
 }
 
 func (c *collector) patchMeta(ctx context.Context, it *item, fields map[string]any) error {
+	return c.patchMetaAt(ctx, it, it.ResourceVersion, fields)
+}
+
+func (c *collector) patchMetaAt(ctx context.Context, it *item, resourceVersion string, fields map[string]any) error {
 	res, err := c.resource(it)
 	if err != nil {
 		return err
 	}
 	fields["uid"] = it.UID
-	fields["resourceVersion"] = it.ResourceVersion
+	fields["resourceVersion"] = resourceVersion
 	patch, err := json.Marshal(map[string]any{"metadata": fields})
 	if err != nil {
 		return err

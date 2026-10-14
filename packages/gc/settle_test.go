@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	kine "github.com/k8flare/k8flare/packages/apiserver-kine"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -85,6 +86,9 @@ func (a *storeAPI) Patch(_ context.Context, name string, _ types.PatchType, data
 		return nil, err
 	}
 	meta := obj["metadata"].(map[string]any)
+	if sent, ok := patch.Metadata["resourceVersion"]; ok && sent != storedVersion(meta) {
+		return nil, apierrors.NewConflict(schema.GroupResource{Resource: a.resource}, name, errors.New("the object has been modified"))
+	}
 	for _, field := range []string{"ownerReferences", "finalizers"} {
 		if v, ok := patch.Metadata[field]; ok {
 			meta[field] = v
@@ -96,6 +100,23 @@ func (a *storeAPI) Patch(_ context.Context, name string, _ types.PatchType, data
 	}
 	a.write(name, obj)
 	return nil, nil
+}
+
+func storedVersion(meta map[string]any) string {
+	if v, ok := meta["resourceVersion"].(string); ok {
+		return v
+	}
+	return "1"
+}
+
+func (a *storeAPI) Get(_ context.Context, name string, _ metav1.GetOptions, _ ...string) (*unstructured.Unstructured, error) {
+	a.store.mu.Lock()
+	defer a.store.mu.Unlock()
+	obj, ok := a.read(name)
+	if !ok {
+		return nil, apierrors.NewNotFound(schema.GroupResource{Resource: a.resource}, name)
+	}
+	return &unstructured.Unstructured{Object: obj}, nil
 }
 
 func (a *storeAPI) read(name string) (map[string]any, bool) {
@@ -241,5 +262,52 @@ func TestACollectCountsADeleteItCouldNotMakeAsFailed(t *testing.T) {
 	}
 	if res.Failed != 1 || res.Deleted != 1 {
 		t.Fatalf("result = %+v, want the refused delete counted as failed", res)
+	}
+}
+
+func modifiedElsewhere(store *fakeKineStore, key string) {
+	raw, _ := base64.StdEncoding.DecodeString(store.data[key])
+	var obj map[string]any
+	_ = json.Unmarshal(raw, &obj)
+	obj["metadata"].(map[string]any)["resourceVersion"] = "2"
+	updated, _ := json.Marshal(obj)
+	store.data[key] = base64.StdEncoding.EncodeToString(updated)
+}
+
+func TestAnOrphanDeletionOutlastsPodsModifiedAfterTheSnapshot(t *testing.T) {
+	store := &fakeKineStore{data: map[string]string{}}
+	foregroundRC(store.data, 0)
+	rc := owned("rc")
+	rc.Kind = "ReplicationController"
+	rc.key = "/registry/replicationcontrollers/default/rc"
+	now := metav1.Now()
+	rc.DeletionTimestamp = &now
+	rc.Finalizers = []string{orphanFinalizer}
+	storedItem(store.data, rc)
+	for i := range 5 {
+		pod := owned(fmt.Sprintf("pod-%d", i), ref("rc", true))
+		storedItem(store.data, pod)
+		if i%2 == 1 {
+			modifiedElsewhere(store, pod.key)
+		}
+	}
+	modifiedElsewhere(store, rc.key)
+	res, err := collectAgainst(store, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Failed != 0 {
+		t.Fatalf("result = %+v, want a conflict on a pod or the rc retried within the pass", res)
+	}
+	if _, ok := store.data[rc.key]; ok {
+		t.Fatal("rc still present: the orphan finalizer was not removed in the same pass")
+	}
+	for i := range 5 {
+		raw, _ := base64.StdEncoding.DecodeString(store.data[fmt.Sprintf("/registry/pods/default/pod-%d", i)])
+		var pod item
+		_ = json.Unmarshal(raw, &pod)
+		if len(pod.OwnerReferences) != 0 {
+			t.Fatalf("pod-%d still owned by %v", i, pod.OwnerReferences)
+		}
 	}
 }
