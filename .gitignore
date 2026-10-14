@@ -1,6 +1,7 @@
 node_modules/
 .build/
 .wrangler/
+.cloudflare/
 dist/
 *.tsbuildinfo
 *.wasm
