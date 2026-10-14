@@ -22,7 +22,7 @@ import (
 )
 
 func TestAdmissionExtensions(t *testing.T) {
-	url, cs := startDevURLWith(t, "wrangler.test.jsonc", "packages/apiserver/testdata/user-echo/wrangler.jsonc")
+	url, cs := startDevURLWith(t, "test", "packages/apiserver/testdata/user-echo/wrangler.jsonc")
 	c := ctx(t)
 	sideEffects := admissionregv1.SideEffectClassNone
 	fail := admissionregv1.Fail

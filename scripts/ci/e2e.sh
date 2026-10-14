@@ -16,7 +16,7 @@ AGENT_LEAF_CERTIFICATE_LIFETIME=${AGENT_LEAF_CERTIFICATE_LIFETIME:-2400h}
 SERVICE_API=10.43.0.1
 KUBECONFIG_PATH=$PWD/$WORK/kubeconfig.yaml
 STATE=${STATE:-/dev/shm/k8flare-state}
-CLUSTER_DOMAIN=$(sed -n 's/^ *"CLUSTER_DOMAIN": "\([^"]*\)",$/\1/p' wrangler.jsonc)
+CLUSTER_DOMAIN=$(sed -n 's/^[[:space:]]*CLUSTER_DOMAIN: bindings.text("\([^"]*\)"),$/\1/p' cloudflare.config.ts)
 EDGE_LB_HOST=web--ci-edge.$CLUSTER_DOMAIN
 EDGE_INGRESS_HOST=ingress.ci-edge.example
 EDGE_GATEWAY_HOST=gateway.ci-edge.example
@@ -821,7 +821,7 @@ start_control_plane() {
   local suffix=${1:-} admin runtime
   admin=$(admin_token)
   rm -rf "$REGISTRY"
-  WRANGLER_REGISTRY_PATH=$PWD/$REGISTRY X_LOCAL_OBSERVABILITY=false MINIFLARE_WORKERD_V8_FLAGS="${MINIFLARE_WORKERD_V8_FLAGS:---single-threaded-gc}" nohup pnpm exec wrangler dev -c wrangler.dev.jsonc --local --enable-containers=false --persist-to "$STATE" --port 18787 \
+  WRANGLER_REGISTRY_PATH=$PWD/$REGISTRY X_LOCAL_OBSERVABILITY=false MINIFLARE_WORKERD_V8_FLAGS="${MINIFLARE_WORKERD_V8_FLAGS:---single-threaded-gc}" nohup pnpm exec wrangler dev --x-new-config -e dev --local --enable-containers=false --persist-to "$STATE" --port 18787 \
     < /dev/null 2>&1 | stamped "$LOGS/dev$suffix.log" &
   wait_for "the control plane" 360 5 curl -sf -m 10 -o /dev/null -H "Authorization: Bearer $admin" http://127.0.0.1:18787/livez
   runtime=$(user_worker_pid)
@@ -861,7 +861,6 @@ up() {
   sudo test -x /var/lib/rancher/k3s/data/current/bin/containerd
 
   dev_vars
-  make wrangler.dev.jsonc
   start_control_plane
   start_devtls
   write_kubeconfig "$PWD/.build/devtls/server-ca.crt" "$KUBECONFIG_PATH"

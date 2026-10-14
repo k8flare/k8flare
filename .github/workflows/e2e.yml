@@ -323,7 +323,7 @@ jobs:
             -e "s|^SECRETS_ENCRYPTION_KEYS=.*|SECRETS_ENCRYPTION_KEYS=ci:$(openssl rand -base64 32)|" \
             .dev.vars
 
-      - name: Serve wrangler dev on :18787 with make dev
+      - name: Serve cf dev on :18787 with make dev
         timeout-minutes: 30
         run: |
           mkdir -p .build/ci/logs

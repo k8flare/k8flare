@@ -4,7 +4,7 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "dev": "cf dev --local --persist-to .cloudflare/state",
+    "dev": "cf dev",
     "types": "cf workers types",
     "check": "tsc --noEmit"
   },

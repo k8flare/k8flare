@@ -204,7 +204,7 @@ gen: images
 	go run ./packages/openapi/cmd/bakeopenapi
 
 ## images: record ENTRYPOINT/CMD/WorkingDir/User/Env of every image declared under
-## containers[].images in wrangler.jsonc, for the PodKubelet Durable Object.
+## containers[].images in cloudflare.config.ts, for the PodKubelet Durable Object.
 images:
 	pnpm exec node scripts/genimages.mjs
 
@@ -217,19 +217,11 @@ cli: mirrors
 node-image: mirrors
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o packages/control-plane-worker/images/node/k8flare-agent ./packages/agent
 
-# CLAUDECODE is unset on purpose: with it set, wrangler dev enters its
+# CLAUDECODE is unset on purpose: with it set, the wrangler dev under cf dev enters its
 # AI-agent mode, whose observability capture buffers application/json
 # streaming responses until they close, which stalls every JSON watch.
-## dev: wrangler.dev.jsonc is wrangler.jsonc with local observability off; its
-## capture outgrew the dev server's heap during long e2e runs. Production keeps it on.
-wrangler.dev.jsonc: wrangler.jsonc
-	sed -e 's/^  "observability": .*/  "observability": { "enabled": false },/' -e '/^  "routes": /d' $< > $@
-
-wrangler.test.jsonc: wrangler.jsonc
-	sed 's/^  "services": \[$$/  "services": [ { "binding": "WORKER_user-echo", "service": "k8flare-user-echo" },/' $< > $@
-
-dev: wrangler.dev.jsonc node-image
-	env -u CLAUDECODE -u AI_AGENT X_LOCAL_OBSERVABILITY=false MINIFLARE_WORKERD_V8_FLAGS=--single-threaded-gc pnpm exec wrangler dev -c wrangler.dev.jsonc --local --persist-to .wrangler/state --port 18787
+dev: node-image
+	env -u CLAUDECODE -u AI_AGENT X_LOCAL_OBSERVABILITY=false MINIFLARE_WORKERD_V8_FLAGS=--single-threaded-gc pnpm exec cf dev --mode dev --port 18787
 
 deploy: wasm node-image
 	bash scripts/deploy.sh
@@ -246,7 +238,7 @@ kubeconfig:
 	@echo "export KUBECONFIG=$(CURDIR)/.build/kubeconfig.yaml"
 
 check:
-	pnpm exec wrangler types >/dev/null
+	pnpm exec cf workers types >/dev/null
 	pnpm exec tsc --noEmit
 
 vet: mirrors
@@ -267,7 +259,7 @@ e2e:
 test:
 	cd scripts && go run ./e2e -set conformance -procs $(or $(PROCS),4)
 
-test-packages: wasm wrangler.test.jsonc
+test-packages: wasm
 	go test -count=1 -timeout 70m ./packages/...
 
 ## sizes: print the optimised size and linked function count of every worker,

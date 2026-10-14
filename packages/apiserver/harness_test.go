@@ -34,7 +34,7 @@ const (
 	secretsEncryptionKeys = "test:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 )
 
-// startDev runs `wrangler dev` for the worker with a throwaway state
+// startDev runs `wrangler dev --x-new-config` for the worker with a throwaway state
 // directory and returns a clientset for it. The wasm assets must already be
 // built (make wasm).
 func startDev(t *testing.T) *kubernetes.Clientset {
@@ -47,10 +47,10 @@ var devState string
 
 func startDevURL(t *testing.T) (string, *kubernetes.Clientset) {
 	t.Helper()
-	return startDevURLWith(t, "wrangler.jsonc")
+	return startDevURLWith(t, "")
 }
 
-func startDevURLWith(t *testing.T, configs ...string) (string, *kubernetes.Clientset) {
+func startDevURLWith(t *testing.T, mode string, userWorkers ...string) (string, *kubernetes.Clientset) {
 	t.Helper()
 	_, file, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(file), "../..")
@@ -67,41 +67,27 @@ func startDevURLWith(t *testing.T, configs ...string) (string, *kubernetes.Clien
 			t.Fatalf("wasm assets missing; run make wasm: %v", err)
 		}
 	}
-	args := []string{"exec", "wrangler", "dev", "--local", "--enable-containers=false"}
-	for _, c := range configs {
-		if _, err := os.Stat(filepath.Join(root, c)); err != nil {
-			t.Fatalf("wrangler config missing; make test-packages generates wrangler.test.jsonc: %v", err)
-		}
-		args = append(args, "-c", c)
-	}
-	port := freePort(t)
 	state := t.TempDir()
 	devState = state
-	cmd := exec.Command("pnpm", append(args,
+	env := append(devEnv(), "WRANGLER_REGISTRY_PATH="+filepath.Join(state, "registry"))
+	for i, c := range userWorkers {
+		if _, err := os.Stat(filepath.Join(root, c)); err != nil {
+			t.Fatalf("user worker config missing: %v", err)
+		}
+		spawnWrangler(t, root, env, fmt.Sprintf("user-worker-%d.log", i), state,
+			"exec", "wrangler", "dev", "-c", c, "--local", "--persist-to", filepath.Join(state, fmt.Sprintf("user-%d", i)),
+			"--port", fmt.Sprint(freePort(t)), "--inspector-port", "0")
+	}
+	args := []string{"exec", "wrangler", "dev", "--x-new-config", "--local", "--enable-containers=false"}
+	if mode != "" {
+		args = append(args, "-e", mode)
+	}
+	port := freePort(t)
+	spawnWrangler(t, root, env, "wrangler.log", state, append(args,
 		"--persist-to", state, "--port", fmt.Sprint(port), "--inspector-port", "0",
 		"--local-upstream", fmt.Sprintf("127.0.0.1:%d", port),
 		"--var", "ADMIN_TOKEN:"+devToken, "--var", "READONLY_TOKEN:"+readonlyDevToken, "--var", "JOIN_TOKEN:"+joinToken,
 		"--var", "SECRETS_ENCRYPTION_KEYS:"+secretsEncryptionKeys)...)
-	cmd.Dir = root
-	cmd.Env = devEnv()
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	logFile, err := os.Create(filepath.Join(state, "wrangler.log"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd.Stdout, cmd.Stderr = logFile, logFile
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-		_ = cmd.Wait()
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		if t.Failed() {
-			log, _ := os.ReadFile(logFile.Name())
-			t.Logf("wrangler dev log:\n%s", log)
-		}
-	})
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 	deadline := time.Now().Add(3 * time.Minute)
 	for _, path := range []string{"/version", "/api/v1/namespaces/default"} {
@@ -221,6 +207,31 @@ func (r resendWhenDevProxyDrops) RoundTrip(req *http.Request) (*http.Response, e
 		}
 		time.Sleep(time.Second)
 	}
+}
+
+func spawnWrangler(t *testing.T, root string, env []string, logName, logDir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("pnpm", args...)
+	cmd.Dir = root
+	cmd.Env = env
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	logFile, err := os.Create(filepath.Join(logDir, logName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stdout, cmd.Stderr = logFile, logFile
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+		_ = cmd.Wait()
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if t.Failed() {
+			log, _ := os.ReadFile(logFile.Name())
+			t.Logf("%s:\n%s", logName, log)
+		}
+	})
 }
 
 func freePort(t *testing.T) int {

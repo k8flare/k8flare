@@ -1,4 +1,4 @@
-import { bindings, defineConfig, defineContainer, exports, triggers } from "cf/config";
+import { type ConfigContext, bindings, defineConfig, defineContainer, exports, triggers } from "cf/config";
 import * as entrypoint from "./packages/control-plane-worker/src/index.ts" with { type: "cf-worker" };
 
 const nodeVMSmall = defineContainer({
@@ -31,7 +31,7 @@ const podKubelet = defineContainer({
 });
 
 export default defineConfig({
-	worker: {
+	worker: (ctx: ConfigContext) => ({
 		name: "k8flare",
 		compatibilityDate: "2026-09-01",
 		compatibilityFlags: [
@@ -40,7 +40,7 @@ export default defineConfig({
 		entrypoint,
 		workersDev: true,
 		logpush: true,
-		observability: {
+		observability: ctx.mode === "dev" ? { enabled: false } : {
 			enabled: true,
 			logs: {
 				enabled: true,
@@ -58,7 +58,7 @@ export default defineConfig({
 				"/wasm/*",
 			],
 		},
-		domains: [
+		domains: ctx.mode === "dev" ? [] : [
 			"k8flare.kooffice.jp",
 		],
 		triggers: [
@@ -302,6 +302,7 @@ export default defineConfig({
 			CF_VERSION: bindings.versionMetadata(),
 			LOADER: bindings.workerLoader(),
 			ASSETS: bindings.assets(),
+			...(ctx.mode === "test" ? { "WORKER_user-echo": bindings.worker({ worker: "k8flare-user-echo" }) } : {}),
 		},
 		exports: {
 			Cluster: exports.durableObject({ storage: "sqlite" }),
@@ -314,6 +315,6 @@ export default defineConfig({
 			PodKubelet: exports.durableObject({ storage: "sqlite", container: podKubelet }),
 			PodLedger: exports.durableObject({ storage: "sqlite" }),
 		},
-	},
+	}),
 	containers: [nodeVMSmall, nodeVMMedium, nodeVMLarge, podKubelet],
 });

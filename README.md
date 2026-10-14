@@ -189,7 +189,7 @@ CoreDNS, and the small node API proxy, and nothing else from the platform.
   Service: webhooks with the URL `https://k8flare.com/worker/<name>`, and
   any of them with the `k8flare.com/worker: <name>` annotation. A Worker
   named in either feature is reached through a service binding
-  `WORKER_<name>` added to `services` in `wrangler.jsonc`.
+  `WORKER_<name>` added to `env` in `cloudflare.config.ts`.
 - **LoadBalancer Services on the edge.** `type: LoadBalancer` is
   published as `{name}--{namespace}.<cluster domain>` and routed to
   ready endpoints through the node tunnel, with TLS from Cloudflare.
@@ -211,7 +211,7 @@ pnpm install
 make mirrors
 make wasm
 make gen             # after a Kubernetes bump
-make dev             # wrangler dev on :18787
+make dev             # cf dev on :18787
 make devtls          # https://localhost:6443 -> :18787
 make kubeconfig      # .build/kubeconfig.yaml
 make test            # Kubernetes Conformance against the local cluster
