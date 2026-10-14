@@ -31,5 +31,5 @@ func ResolveImage(image string, declared []string) (string, error) {
 	if image == platformImage || accountRegistryImage.MatchString(image) {
 		return image, nil
 	}
-	return "", fmt.Errorf("image %q cannot run on Containers: images must be declared in wrangler.jsonc containers[].images or be digest-pinned in the account registry (registry.cloudflare.com/<account>/<repo>@sha256:<digest>)", image)
+	return "", fmt.Errorf("image %q cannot run on Containers: images must be declared in cloudflare.config.ts containers[].images or be digest-pinned in the account registry (registry.cloudflare.com/<account>/<repo>@sha256:<digest>)", image)
 }

@@ -89,7 +89,7 @@ func TestResolveImage(t *testing.T) {
 		if tc.ok != (err == nil) || got != tc.want {
 			t.Fatalf("%s: got %q, %v", tc.image, got, err)
 		}
-		if err != nil && !strings.Contains(err.Error(), "declared in wrangler.jsonc containers[].images or be digest-pinned") {
+		if err != nil && !strings.Contains(err.Error(), "declared in cloudflare.config.ts containers[].images or be digest-pinned") {
 			t.Fatalf("message: %v", err)
 		}
 	}
